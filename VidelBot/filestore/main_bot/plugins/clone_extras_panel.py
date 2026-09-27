@@ -7,6 +7,7 @@ from pyrogram.types import CallbackQuery, InlineKeyboardButton as Btn, InlineKey
 
 from filestore.database.main_db import MainDB
 from filestore.fs_config import LOGGER, MAX_BOTS_PER_USER, OWNERS
+from core.ui import smart_edit
 from filestore.worker_bot.extras import TOGGLE_KEYS, analytics_text, setting, settings_panel
 
 log = LOGGER(__name__)
@@ -51,7 +52,7 @@ async def extras_panel_cb(client: Client, query: CallbackQuery):
     if not bot:
         return
     text, kb = _panel(bot)
-    await query.message.edit_text(text, reply_markup=kb)
+    await smart_edit(query.message, text, reply_markup=kb)
     await query.answer()
 
 
@@ -65,7 +66,7 @@ async def extras_toggle_cb(client: Client, query: CallbackQuery):
     await main_db.update_setting(bot_id, key, value)
     bot.setdefault("settings", {})[key] = value
     text, kb = _panel(bot)
-    await query.message.edit_text(text, reply_markup=kb)
+    await smart_edit(query.message, text, reply_markup=kb)
     await query.answer("✅ On" if value else "▫️ Off")
 
 
@@ -75,7 +76,7 @@ async def extras_analytics_cb(client: Client, query: CallbackQuery):
     if not bot:
         return
     text = await analytics_text(bot["_id"], bot.get("bot_username", ""))
-    await query.message.edit_text(text, reply_markup=Kb([
+    await smart_edit(query.message, text, reply_markup=Kb([
         [Btn("🔄 ʀᴇꜰʀᴇsʜ", callback_data=f"xan_{bot['_id']}"), Btn("🔙 ᴇxᴛʀᴀs", callback_data=f"xtr_{bot['_id']}")]]))
     await query.answer()
 
@@ -108,7 +109,7 @@ async def extras_guide_cb(client: Client, query: CallbackQuery):
     bot = await _owned(query, int(query.matches[0].group(1)))
     if not bot:
         return
-    await query.message.edit_text(CLONE_GUIDE, reply_markup=Kb([[Btn("🔙 ᴇxᴛʀᴀs", callback_data=f"xtr_{bot['_id']}")]]))
+    await smart_edit(query.message, CLONE_GUIDE, reply_markup=Kb([[Btn("🔙 ᴇxᴛʀᴀs", callback_data=f"xtr_{bot['_id']}")]]))
     await query.answer()
 
 
@@ -120,7 +121,8 @@ async def transfer_owner_cb(client: Client, query: CallbackQuery):
         return
     from filestore.main_bot.plugins.bot_settings import _get_state
     _get_state()[query.from_user.id] = {"step": "awaiting_new_owner", "data": {"bot_id": bot["_id"]}}
-    await query.message.edit_text(
+    await smart_edit(
+        query.message,
         "<b>👑 Transfer ownership</b>\n\n<blockquote>"
         f"Send the <b>user ID</b> of the new owner of @{bot.get('bot_username', 'unknown')}.\n\n"
         "• they must have started Videl once\n• they get full control, you lose access\n"
@@ -189,6 +191,6 @@ async def transfer_owner_confirm_cb(client: Client, query: CallbackQuery):
                                           "Manage it from 🤖 My Bots.")
     except Exception:
         pass
-    await query.message.edit_text(f"<b>✅ @{bot.get('bot_username', 'unknown')} now belongs to</b> <code>{target}</code>.",
+    await smart_edit(query.message, f"<b>✅ @{bot.get('bot_username', 'unknown')} now belongs to</b> <code>{target}</code>.",
                                   reply_markup=Kb([[Btn("🔙 ᴍʏ ʙᴏᴛs", callback_data="my_bots")]]))
     await query.answer("Transferred")

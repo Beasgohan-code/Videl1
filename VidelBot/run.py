@@ -149,6 +149,8 @@ async def main():
     try:
         from filestore.database.main_db import MainDB
         await MainDB().ensure_indexes()
+        from core.db import ensure_module_indexes
+        await ensure_module_indexes()
     except Exception as e:
         log.warning(f"clone index setup skipped: {e}")
 
@@ -189,6 +191,8 @@ async def main():
 
     import watchdog
     watchdog.start(app)
+    from core.ui import fill_pic_pool
+    asyncio.create_task(fill_pic_pool())      # random start pics ready before the first /start
     if config.DAILY_REPORT:
         asyncio.create_task(botlog.daily_report_loop(app))
 

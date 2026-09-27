@@ -117,3 +117,29 @@ class VidelDB:
 
 
 vdb = VidelDB()
+
+
+async def ensure_module_indexes():
+    """Indexes for the module databases that the original bots never created. Every saver / encoder
+    lookup is by `id` → without these each one is a full collection scan. Non-unique on purpose:
+    old databases may contain duplicate rows and a unique index would fail to build there."""
+    import logging
+    log = logging.getLogger("videl.db")
+    jobs = []
+    try:
+        from database.db import db as saver_db
+        jobs.append(("saver users.id", saver_db.col, "id"))
+    except Exception:
+        pass
+    try:
+        from VideoEncoder.utils.database.access_db import db as enc_db
+        jobs.append(("encoder users.id", enc_db.col, "id"))
+    except Exception:
+        pass
+    jobs.append(("fsub_requests", vdb.db["fsub_requests"], [("chat", 1), ("user", 1)]))
+    for name, col, keys in jobs:
+        try:
+            await col.create_index(keys, background=True)
+        except Exception as e:
+            log.warning(f"index {name} skipped: {e}")
+

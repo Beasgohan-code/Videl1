@@ -5,6 +5,7 @@ and the saver's /add_unsubscribe · /del_unsubscribe stubs – now fully impleme
 Channels = FSUB_CHANNELS env + channels added at runtime with /add_fsub.
 Supports normal join and join-request mode (a pending request counts as joined).
 """
+import asyncio
 import logging
 import time
 
@@ -75,21 +76,27 @@ async def missing_channels(client: Client, user_id: int) -> list:
     channels = await all_channels()
     if not channels:
         return []
-    missing = []
-    for chat in channels:
+    modes = await vdb.get_setting("fsub_modes", {}) or {}
+
+    async def still_missing(chat) -> bool:
         try:
             member = await client.get_chat_member(chat, user_id)
             if member.status in _ALLOWED and (member.status != enums.ChatMemberStatus.RESTRICTED or member.is_member):
-                continue
+                return False
         except UserNotParticipant:
             pass
         except Exception as e:
             # Misconfigured channel → don't lock everybody out.
             log.warning(f"fsub check failed for {chat}: {e}")
-            continue
-        if await request_mode(chat) and await vdb.db["fsub_requests"].find_one({"chat": str(chat), "user": user_id}):
-            continue
-        missing.append(chat)
+            return False
+        if bool(modes.get(str(chat), FSUB_REQUEST_MODE)) and \
+                await vdb.db["fsub_requests"].find_one({"chat": str(chat), "user": user_id}):
+            return False
+        return True
+
+    # all channels at once – with 3 channels that's one round-trip of latency instead of three
+    results = await asyncio.gather(*(still_missing(c) for c in channels))
+    missing = [c for c, m in zip(channels, results) if m]
     if not missing:
         _ok_cache[user_id] = time.time()
     return missing

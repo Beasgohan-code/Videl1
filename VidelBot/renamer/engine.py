@@ -55,6 +55,7 @@ class Job:
     created: float = field(default_factory=time.time)
     cancelled: bool = False
     status: Message = None
+    label: str = ""                 # escaped new file name, shown in the progress message
 
 
 def media_of(message: Message):
@@ -132,28 +133,20 @@ def _bar(pct: float) -> str:
     return "■" * filled + "□" * (20 - filled)
 
 
-def progress_cb(job: Job, title: str):
-    state = {"last": 0.0, "start": time.time()}
+RENAME_PROGRESS = ("<b>{title}</b>\n📄 <code>{name}</code>\n\n<code>[{bar}]</code> <b>{percentage:.1f}%</b>\n\n"
+                   "💾 {current} / {total}\n⚡ {speed}/s · ⏳ {eta}")
 
-    async def cb(current, total):
-        if job.cancelled:
-            raise StopTransmission
-        now = time.time()
-        if now - state["last"] < PROGRESS_EVERY and current != total:
-            return
-        state["last"] = now
-        elapsed = max(now - state["start"], 0.001)
-        speed = current / elapsed
-        pct = (current * 100 / total) if total else 0
-        eta = (total - current) / speed if speed > 0 and total else 0
-        text = (f"<b>{title}</b>\n<code>[{_bar(pct)}]</code> <b>{pct:.1f}%</b>\n\n"
-                f"💾 {humanbytes(current)} / {humanbytes(total)}\n"
-                f"⚡ {humanbytes(speed)}/s · ⏳ {readable_time(eta) if eta else '—'}")
-        try:
-            await job.status.edit_text(text, reply_markup=_cancel_kb(job))
-        except Exception:
-            pass
-    return cb
+
+def progress_cb(job: Job, title: str):
+    """Live progress with ⏹ Cancel; cancelling raises StopTransmission inside pyrogram."""
+    from core.progress import LiveProgress
+
+    class _Bar(LiveProgress):
+        def render(self, current, total):
+            return super().render(current, total).replace("█", "■").replace("░", "□")
+
+    return _Bar(job.status, title, template=RENAME_PROGRESS, every=PROGRESS_EVERY,
+                cancel=lambda: job.cancelled, reply_markup=_cancel_kb(job), name=job.label or "file").update
 
 
 # ─────────────────────────── ffmpeg helpers ───────────────────────────
@@ -302,6 +295,7 @@ async def process(client, job: Job):
         return
     to_mkv = settings.get("mkv", True)
     new_name = extract.new_filename(template, old_name, to_mkv=to_mkv)
+    job.label = html.escape(new_name[:80], quote=False)
     size = getattr(media, "file_size", 0) or 0
 
     async def reply(text):

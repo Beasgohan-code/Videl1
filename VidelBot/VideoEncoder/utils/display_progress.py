@@ -7,10 +7,24 @@ import time
 from .. import PROGRESS
 
 
+_last_edit: dict = {}          # (chat, message id) -> last edit time
+
+
 async def progress_for_pyrogram(current, total, ud_type, message, start):
     now = time.time()
-    diff = now - start
-    if round(diff % 5.00) == 0 or current == total:
+    diff = max(now - start, 0.001)
+    # One edit per 5 s per status message. The original `round(diff % 5) == 0` was true for a whole
+    # second out of every five – pyrogram calls this once per chunk, so that meant dozens of edits (and
+    # FloodWaits) in that second, each one blocking the transfer while it ran.
+    key = (getattr(getattr(message, "chat", None), "id", None), getattr(message, "id", None))
+    if current != total and now - _last_edit.get(key, 0) < 5:
+        return
+    _last_edit[key] = now
+    if current == total or len(_last_edit) > 500:
+        _last_edit.pop(key, None)
+        if len(_last_edit) > 500:
+            _last_edit.clear()
+    if True:
         try:
             percentage = current * 100 / total
             speed = current / diff

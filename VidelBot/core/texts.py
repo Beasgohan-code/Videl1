@@ -21,7 +21,8 @@ START_TXT = """<b>👋 Hello {mention},</b>
 <b>│ ◈ 📥 Save restricted content</b>
 <b>│ ◈ 🎬 Video encoder (x264 / x265)</b>
 <b>│ ◈ ⚡ Clone your own FileStore bot</b>
-<b>│ ◈ 🧰 Rename · MediaInfo · Upload · QR</b>
+<b>│ ◈ ✏️ Auto-Rename · metadata · thumbnails</b>
+<b>│ ◈ 🧰 MediaInfo · Upload · QR · Short links</b>
 <b>│ ◈ 💎 Premium with Telegram Stars</b>
 <b>│ ◈ 🎁 Gifts · 🔁 Subscriptions · 🤝 Referrals</b>
 <b>╰──────────────────╯</b></blockquote>
@@ -92,6 +93,9 @@ CLONE_START_MSG = f"""<b>━━━━━━━━━━━━━━━━━━�
 │ ◈ ᴀᴅᴍɪɴ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ
 │ ◈ ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇ ᴛɪᴍᴇʀ
 │ ◈ ꜰᴏʀᴍᴀᴛᴛᴇᴅ ʟɪɴᴋ ɢᴇɴᴇʀᴀᴛᴏʀ
+│ ◈ sᴍᴀʀᴛ ʟɪɴᴋs · ᴇxᴘɪʀʏ · ᴘᴀssᴡᴏʀᴅ · ⭐
+│ ◈ sᴇᴀʀᴄʜ · ʀᴇǫᴜᴇsᴛs · ᴀɴᴀʟʏᴛɪᴄs
+│ ◈ ᴘʀᴇᴍɪᴜᴍ ᴜsᴇʀs · sᴄʜᴇᴅᴜʟᴇᴅ ʙʀᴏᴀᴅᴄᴀsᴛs
 ╰──────────────────╯
 
 ʟɪᴍɪᴛ: <b>{MAX_BOTS_PER_USER}</b> ʙᴏᴛ(s) ᴘᴇʀ ᴜsᴇʀ</blockquote>
@@ -118,7 +122,9 @@ CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━
 ◈ <b>ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇ</b> — sᴇᴛ ᴛɪᴍᴇʀ
 ◈ <b>sᴛᴀʀᴛ ᴄᴏɴꜰɪɢ</b> — ᴄᴜsᴛᴏᴍ ᴡᴇʟᴄᴏᴍᴇ
 ◈ <b>ʙᴏᴛ ᴘʀᴏꜰɪʟᴇ ᴘʜᴏᴛᴏ</b> — sᴇᴛ ʏᴏᴜʀ ʙᴏᴛ's ᴀᴠᴀᴛᴀʀ (ɴᴏ @BotFather)
-◈ <b>ᴘʀᴏᴛᴇᴄᴛ · ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ · ʙᴀᴄᴋᴜᴘ · ᴛʀᴀɴsꜰᴇʀ</b></blockquote>
+◈ <b>ᴘʀᴏᴛᴇᴄᴛ · ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ · ʙᴀᴄᴋᴜᴘ · ᴛʀᴀɴsꜰᴇʀ</b>
+◈ <b>✨ ᴇxᴛʀᴀs</b> — sᴇᴀʀᴄʜ, ʀᴇǫᴜᴇsᴛs, ᴀɴᴛɪ-ꜰʟᴏᴏᴅ, ᴀᴜᴛᴏ-ʟɪɴᴋ sᴡɪᴛᴄʜᴇs
+◈ <b>📈 ᴀɴᴀʟʏᴛɪᴄs · 👑 ᴛʀᴀɴsꜰᴇʀ ᴏᴡɴᴇʀsʜɪᴘ</b></blockquote>
 
 <blockquote expandable><b>📌 ᴡᴏʀᴋᴇʀ ʙᴏᴛ ᴄᴏᴍᴍᴀɴᴅs:</b>
 
@@ -127,7 +133,12 @@ CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━
 <code>/batch</code> — ʟɪɴᴋ ꜰᴏʀ ᴍᴜʟᴛɪᴘʟᴇ ᴘᴏsᴛs
 <code>/custom_batch</code> — ᴄᴜsᴛᴏᴍ ʙᴀᴛᴄʜ
 <code>/flink</code> — ꜰᴏʀᴍᴀᴛᴛᴇᴅ ʟɪɴᴋs
-<code>/broadcast</code> — ᴍᴇssᴀɢᴇ ᴀʟʟ ᴜsᴇʀs
+<code>/smartlink</code> · <code>/links</code> — ᴇxᴘɪʀɪɴɢ / ʟɪᴍɪᴛᴇᴅ / ᴘᴀssᴡᴏʀᴅ / ⭐ ʟɪɴᴋs
+<code>/setpremium</code> · <code>/addpremium</code> — ᴘʀᴇᴍɪᴜᴍ sᴋɪᴘs ᴛʜᴇ sʜᴏʀᴛᴇɴᴇʀ
+<code>/search</code> · <code>/index</code> · <code>/autolink</code> — ꜰɪɴᴅ &amp; ᴀᴜᴛᴏ-sʜᴀʀᴇ ꜰɪʟᴇs
+<code>/broadcast</code> · <code>/schedules</code> — ɴᴏᴡ ᴏʀ sᴄʜᴇᴅᴜʟᴇᴅ (ᴘɪɴ · sɪʟᴇɴᴛ)
+<code>/analytics</code> · <code>/export</code> — sᴛᴀᴛs &amp; ʙᴀᴄᴋᴜᴘ
+<code>/requests</code> · <code>/setbuttons</code> · <code>/sethelp</code> — ᴜsᴇʀ ᴛᴏᴏʟs
 <code>/ban</code> · <code>/unban</code> — ᴜsᴇʀ ᴍᴏᴅᴇʀᴀᴛɪᴏɴ
 <code>/ping</code> · <code>/id</code> · <code>/users</code> — ᴜᴛɪʟɪᴛʏ</blockquote>"""
 

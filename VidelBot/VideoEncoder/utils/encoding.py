@@ -1,6 +1,5 @@
-
-
 import asyncio
+import html as _html
 import json
 import math
 import os
@@ -554,6 +553,7 @@ async def handle_progress(proc, msg, message, filepath):
         f.seek(0)
         json.dump(statusMsg, f, indent=2)
     total_time = None
+    last_stats = None
     while proc.returncode == None:
         await asyncio.sleep(5)
         if not os.path.exists(download_dir + 'process.txt'):
@@ -573,23 +573,27 @@ async def handle_progress(proc, msg, message, filepath):
                 elapsed_time = int(time_in_us[-1]) / 1000000 if time_in_us else 0.0
                 if not total_time:
                     total_time, _ = await media_info(filepath)   # probe once, not every 5 s
+                header = f"<b>🎬 Encoding</b> <code>{_html.escape(name[:60])}</code>"
                 if not total_time:
-                    progress_str = f"<b>Encoding Video…</b>\n• Done: {TimeFormatter(elapsed_time) or '0s'}"
+                    progress_str = f"{header}\n• Done: {TimeFormatter(elapsed_time) or '0s'}"
                     ETA = "-"
                 else:
                     difference = math.floor((total_time - elapsed_time) / speed) if speed > 0 else 0
                     ETA = TimeFormatter(difference) if difference > 0 else "-"
                     percentage = max(0, min(100, math.floor(elapsed_time * 100 / total_time)))
-                    progress_str = "<b>Encoding Video:</b> {0}%\n{1}{2}".format(
-                        round(percentage, 2),
-                        ''.join(['█' for i in range(math.floor(percentage / 10))]),
-                        ''.join(['░' for i in range(10 - math.floor(percentage / 10))])
-                    )
+                    filled = math.floor(percentage / 5)
+                    progress_str = (f"{header}\n<code>[{'█' * filled}{'░' * (20 - filled)}]</code> "
+                                    f"<b>{percentage}%</b>\n• Encoded: {TimeFormatter(elapsed_time) or '0s'}"
+                                    f" of {TimeFormatter(total_time)}")
             except Exception as e:           # never let a progress glitch orphan the ffmpeg process
                 LOGGER.warning(f"encode progress: {e}")
                 continue
-            stats = f'{progress_str} \n' \
-                    f'• ETA: {ETA}'
+            speed_txt = f"{speed:g}x" if speed and speed > 0 else "—"
+            stats = f'{progress_str}\n• Speed: {speed_txt} · ETA: {ETA}\n• Elapsed: ' \
+                    f'{TimeFormatter(time.time() - COMPRESSION_START_TIME) or "0s"}'
+            if stats == last_stats:
+                continue                     # nothing new – don't spend an API call
+            last_stats = stats
             try:
                 await msg.edit(
                     text=stats,

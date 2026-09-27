@@ -172,9 +172,9 @@ def version() -> str:
 
 
 # ─────────────────────────── keyboards ───────────────────────────
-_DANGER = ("❌", "🗑", "🚫", "🔴", "⛔", "➖", "🛑")
+_DANGER = ("❌", "🗑", "🚫", "🔴", "⛔", "➖", "🛑", "⏹")
 _SUCCESS = ("✅", "💎", "⭐", "🟢", "🎁", "🆓", "🎉", "♾", "🔁 Resume", "💳")
-_PRIMARY = ("⚡", "🚀", "🤖 Create", "🔑", "🤝", "📢 Select")
+_PRIMARY = ("⚡", "🚀", "🤖 Create", "🔑", "🤝", "📢 Select", "✨")
 
 
 def style_for(text: str, data: str = "") -> str | None:
@@ -184,7 +184,7 @@ def style_for(text: str, data: str = "") -> str | None:
     t = (text or "").strip()
     d = data or ""
     if d.startswith(("confirm_delete_", "do_delete_", "cancel_creation", "support_cancel", "uadm:ban", "uadm:pdel",
-                     "sub_toggle:cancel")) or t.startswith(_DANGER):
+                     "sub_toggle:cancel", "xownok_")) or t.startswith(_DANGER):
         return "danger"
     if d.startswith(("stars_buy:", "stars_sub", "gift_buy:", "buy_premium", "trial_btn", "create_bot", "uadm:p",
                      "sub_toggle:resume")) or t.startswith(_SUCCESS):

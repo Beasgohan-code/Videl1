@@ -14,10 +14,10 @@ Extras applied to every saved file:
 """
 
 import asyncio
+import html
 import os
 import re
 import shutil
-import time
 
 from pyrogram import Client, enums, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -50,7 +50,7 @@ class script(object):
 <i>After payment, send the screenshot to the admin for activation.</i>
 """
     PROGRESS_BAR = """\
-<b>⚡ Processing Task...</b>
+<b>{title}</b>
 <blockquote>
 <b>Progress: {bar} {percentage:.1f}%</b>
 <b>🚀 Speed:</b> <code>{speed}/s</code>
@@ -155,57 +155,21 @@ def get_message_type(msg):
     return None
 
 
-async def _status_updater(client, statusfile, message, chat):
-    while not os.path.exists(statusfile):
-        await asyncio.sleep(3)
-    while os.path.exists(statusfile):
-        try:
-            with open(statusfile, "r", encoding="utf-8") as f:
-                txt = f.read()
-            await client.edit_message_text(chat, message.id, txt)
-        except Exception:
-            pass
-        await asyncio.sleep(5)
+def _live(status, user_id: int, title: str):
+    """In-place progress for one transfer (SRC progress layout) with a ⏹ Cancel button."""
+    from core.progress import LiveProgress
+    return LiveProgress(status, title, template=script.PROGRESS_BAR,
+                        cancel=lambda: bool(batch_temp.IS_BATCH.get(user_id)),
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Cancel", callback_data="sv_cancel")]]))
 
 
-downstatus = _status_updater
-upstatus = _status_updater
-
-
-def progress(current, total, message, type):
-    if batch_temp.IS_BATCH.get(message.from_user.id):
-        raise Exception("Cancelled")
-    if not hasattr(progress, "cache"):
-        progress.cache = {}
-        progress.start_time = {}
-
-    now = time.time()
-    task_id = f"{message.id}{type}"
-    last_time = progress.cache.get(task_id, 0)
-    progress.start_time.setdefault(task_id, now)
-
-    if (now - last_time) > 5 or current == total:
-        try:
-            elapsed = now - progress.start_time[task_id]
-            percentage = current * 100 / total if total else 0
-            speed = current / elapsed if elapsed > 0 else 0
-            eta = (total - current) / speed if speed > 0 else 0
-            filled = int(percentage / 5)
-            bar = "█" * filled + "░" * (20 - filled)
-            status = script.PROGRESS_BAR.format(
-                bar=bar, percentage=percentage,
-                current=humanbytes(current), total=humanbytes(total),
-                speed=humanbytes(speed), elapsed=TimeFormatter(elapsed * 1000),
-                eta=TimeFormatter(eta * 1000),
-            )
-            with open(f"{message.id}{type}status.txt", "w", encoding="utf-8") as f:
-                f.write(status)
-            progress.cache[task_id] = now
-            if current == total:
-                progress.start_time.pop(task_id, None)
-                progress.cache.pop(task_id, None)
-        except Exception:
-            pass
+@Client.on_callback_query(filters.regex(r"^sv_cancel$"))
+async def cancel_transfer_cb(client: Client, query):
+    uid = query.from_user.id
+    if batch_temp.IS_BATCH.get(uid) is False:
+        batch_temp.IS_BATCH[uid] = True
+        return await query.answer("⏹ Cancelling…")
+    await query.answer("Nothing is running.", show_alert=True)
 
 
 @Client.on_message(filters.command(["plan"]) & filters.private)
@@ -395,29 +359,29 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
                                      reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
     temp_dir = f"downloads/{message.id}_{msgid}"
     os.makedirs(temp_dir, exist_ok=True)
-    down_status = f"{message.id}downstatus.txt"
-    up_status = f"{message.id}upstatus.txt"
+    cancelled = lambda: bool(batch_temp.IS_BATCH.get(user_id))  # noqa: E731
 
     try:
-        asyncio.create_task(downstatus(client, down_status, smsg, message.chat.id))
-        file = await acc.download_media(msg, file_name=f"{temp_dir}/", progress=progress,
-                                        progress_args=[message, "down"])
-        if os.path.exists(down_status):
-            os.remove(down_status)
+        file = await acc.download_media(msg, file_name=f"{temp_dir}/",
+                                        progress=_live(smsg, user_id, "⬇️ Downloading…").update)
         if not file:
-            raise Exception("download returned nothing")
+            raise Exception("Cancelled" if cancelled() else "download returned nothing")
     except Exception as e:
-        if os.path.exists(down_status):
-            os.remove(down_status)
         shutil.rmtree(temp_dir, ignore_errors=True)
-        if batch_temp.IS_BATCH.get(user_id) or "Cancelled" in str(e):
+        if cancelled() or "Cancelled" in str(e):
             return await smsg.edit("❌ <b>Task Cancelled</b>", parse_mode=enums.ParseMode.HTML)
         logger.error(f"download failed: {e}")
-        return await smsg.edit(f"❌ <b>Download failed:</b> <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
+        return await smsg.edit(f"❌ <b>Download failed:</b> <code>{html.escape(str(e))[:300]}</code>",
+                               parse_mode=enums.ParseMode.HTML)
 
     sent = None
+    failed = None
     try:
-        asyncio.create_task(upstatus(client, up_status, smsg, message.chat.id))
+        try:
+            await smsg.edit("<b>⬆️ Preparing upload…</b>", parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
+        up = _live(smsg, user_id, "⬆️ Uploading…").update
         ph_path = None
         thumb_id = await db.get_thumbnail(user_id)
         if thumb_id:
@@ -439,29 +403,36 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
         common = dict(caption=caption, parse_mode=enums.ParseMode.HTML)
 
         if msg_type == "Document":
-            sent = await client.send_document(message.chat.id, file, thumb=ph_path, progress=progress,
-                                              progress_args=[message, "up"], **common)
+            sent = await client.send_document(message.chat.id, file, thumb=ph_path, progress=up, **common)
         elif msg_type == "Video":
             sent = await client.send_video(message.chat.id, file, duration=msg.video.duration,
                                            width=msg.video.width, height=msg.video.height, thumb=ph_path,
-                                           supports_streaming=True, progress=progress,
-                                           progress_args=[message, "up"], **common)
+                                           supports_streaming=True, progress=up, **common)
         elif msg_type == "Animation":
             sent = await client.send_animation(message.chat.id, file, **common)
         elif msg_type in ("Audio", "Voice"):
-            sent = await client.send_audio(message.chat.id, file, thumb=ph_path, progress=progress,
-                                           progress_args=[message, "up"], **common)
+            sent = await client.send_audio(message.chat.id, file, thumb=ph_path, progress=up, **common)
         elif msg_type == "Photo":
             sent = await client.send_photo(message.chat.id, file, **common)
         elif msg_type == "Sticker":
             sent = await client.send_sticker(message.chat.id, file)
-        await forward_to_dump(client, user_id, sent)
+        if sent is None and cancelled():
+            failed = "cancel"
+        else:
+            await forward_to_dump(client, user_id, sent)
     except Exception as e:
-        await smsg.edit(f"Upload Failed: {e}")
+        failed = str(e) or type(e).__name__
+        logger.error(f"upload failed: {e}")
     finally:
-        if os.path.exists(up_status):
-            os.remove(up_status)
         shutil.rmtree(temp_dir, ignore_errors=True)
+    if failed:
+        # keep the status message – the user has to see why nothing arrived
+        text = ("❌ <b>Task Cancelled</b>" if failed == "cancel"
+                else f"❌ <b>Upload failed:</b> <code>{html.escape(failed)[:300]}</code>")
+        try:
+            return await smsg.edit(text, parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            return
     try:
         await client.delete_messages(message.chat.id, [smsg.id])
     except Exception:

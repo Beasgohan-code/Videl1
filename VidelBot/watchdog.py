@@ -371,8 +371,39 @@ class Watchdog:
                     d.pop(k, None)
         except Exception:
             pass
+        self._trim_module_caches()
         gc.collect()
         return round(psutil.Process().memory_info().rss / 1048576, 1)
+
+    @staticmethod
+    def _trim_module_caches():
+        """Per-user dicts that only ever grew: drop idle entries (each block is independent)."""
+        now = time.time()
+
+        def drop_old(d: dict, max_age: float, key=lambda v: v):
+            for k in [k for k, v in list(d.items()) if now - key(v) > max_age]:
+                d.pop(k, None)
+
+        try:
+            from renamer import store
+            drop_old(store._cache, store.CACHE_TTL, key=lambda v: v[0])
+        except Exception:
+            pass
+        try:
+            from renamer import engine as rn
+            for uid in [u for u, lock in list(rn._locks.items()) if not lock.locked() and not rn._pending.get(u)]:
+                rn._locks.pop(uid, None)
+            drop_old(rn._cancel_before, 3600)
+        except Exception:
+            pass
+        try:
+            from core import botlog, errors, support
+            drop_old(botlog._start_seen, 86400)
+            drop_old(errors._last_sent, 86400)
+            drop_old(support._last, 3600)
+        except Exception:
+            pass
+        # saver batch_temp.IS_BATCH is NOT trimmed: a True entry may be a pending /cancel.
 
 
 def start(app) -> Watchdog:

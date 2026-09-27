@@ -1,4 +1,5 @@
 """Shared UI helpers for every Videl module (no handlers in here)."""
+import asyncio
 import logging
 import random
 
@@ -78,21 +79,55 @@ def readable_time(seconds: float) -> str:
 
 
 # ─────────────────────────── pictures / effects ───────────────────────────
+_pic_pool: list = []          # pre-fetched random pic URLs → /start never waits for the pic API
+_pic_refill = None
+PIC_POOL_SIZE = 12
+
+
+async def _fetch_pic(session) -> str:
+    try:
+        async with session.get(random.choice(_PIC_APIS)) as r:
+            if r.status == 200:
+                return (await r.json(content_type=None)).get("url") or ""
+    except Exception as e:
+        log.debug(f"pic api failed: {e}")
+    return ""
+
+
+async def fill_pic_pool(n: int = PIC_POOL_SIZE):
+    """Top the pool up (concurrently). Safe to call any time; failures just leave it smaller."""
+    need = n - len(_pic_pool)
+    if need <= 0 or START_PICS or not RANDOM_START_PIC:
+        return
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as s:
+            urls = await asyncio.gather(*(_fetch_pic(s) for _ in range(need)))
+        _pic_pool.extend(u for u in urls if u and u not in _pic_pool)
+    except Exception as e:
+        log.debug(f"pic pool refill failed: {e}")
+
+
+def _schedule_refill():
+    global _pic_refill
+    if _pic_refill and not _pic_refill.done():
+        return
+    try:
+        _pic_refill = asyncio.get_running_loop().create_task(fill_pic_pool())
+    except RuntimeError:
+        pass
+
+
 async def random_start_pic() -> str:
-    """START_PIC (random if several) or – like the original saver – a random SFW anime pic."""
+    """START_PIC (random if several) or – like the original saver – a random SFW anime pic.
+    Pics come from a pool filled in the background, so the menu is never held up by the pic API."""
     if START_PICS:
         return random.choice(START_PICS)
     if not RANDOM_START_PIC:
         return ""
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=6)) as s:
-            async with s.get(random.choice(_PIC_APIS)) as r:
-                if r.status == 200:
-                    url = (await r.json(content_type=None)).get("url")
-                    if url:
-                        return url
-    except Exception as e:
-        log.debug(f"pic api failed: {e}")
+    if len(_pic_pool) < PIC_POOL_SIZE // 2:
+        _schedule_refill()
+    if _pic_pool:
+        return _pic_pool.pop(random.randrange(len(_pic_pool)))
     return random.choice(_FALLBACK_PICS)
 
 

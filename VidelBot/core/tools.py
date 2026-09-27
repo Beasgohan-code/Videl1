@@ -33,21 +33,8 @@ def _media(msg: Message):
 
 
 def _progress_cb(status: Message, action: str):
-    last = {"t": 0.0}
-
-    async def cb(current, total):
-        now = time.time()
-        if now - last["t"] < 4 and current != total:
-            return
-        last["t"] = now
-        pct = current * 100 / total if total else 0
-        bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
-        try:
-            await status.edit_text(f"<b>{action}</b>\n<code>[{bar}] {pct:.1f}%</code>\n"
-                                   f"{humanbytes(current)} / {humanbytes(total)}")
-        except Exception:
-            pass
-    return cb
+    from core.progress import LiveProgress
+    return LiveProgress(status, action, every=4).update
 
 
 # ─────────────────────────── /ping ───────────────────────────
