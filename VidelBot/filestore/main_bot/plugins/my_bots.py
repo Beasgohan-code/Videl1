@@ -181,9 +181,11 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
         ],
         [
             InlineKeyboardButton("📥 ʀᴇsᴛᴏʀᴇ", callback_data=f"restore_bot_{bot_id}"),
+            InlineKeyboardButton("🛠 ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ", callback_data=f"toggle_maint_{bot_id}"),
         ],
         [
-            InlineKeyboardButton("🛠 ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ", callback_data=f"toggle_maint_{bot_id}"),
+            InlineKeyboardButton("✨ ᴇxᴛʀᴀs", callback_data=f"xtr_{bot_id}"),
+            InlineKeyboardButton("📈 ᴀɴᴀʟʏᴛɪᴄs", callback_data=f"xan_{bot_id}"),
         ],
         *[row for row in [_rotate_row(bot)] if row],
         [
@@ -786,11 +788,25 @@ async def backup_bot_callback(client: Client, query: CallbackQuery):
     except Exception:
         backup["counts"] = {}
 
+    import html as _html
+    dump = json.dumps(backup, indent=2, ensure_ascii=False, default=str)
+    if len(dump) > 3000:
+        # too long for one message – a cut-off JSON can't be restored, so send it as a file
+        import io
+        f = io.BytesIO(dump.encode())
+        f.name = f"backup_{bot.get('bot_username', bot_id)}.json"
+        try:
+            await client.send_document(user_id, f, caption="<b>💾 Backup</b> – open it and paste the text into 📥 Restore.")
+        except Exception as e:
+            log.warning(f"backup file send failed: {e}")
+        body = "<i>Sent as a .json file above (too long for a message).</i>"
+    else:
+        body = f"<pre>{_html.escape(dump)}</pre>"
     text = (
         f"<b>💾 Bot Backup</b>\n\n"
         f"<b>Bot:</b> @{bot.get('bot_username', 'unknown')}\n"
         f"<b>ID:</b> <code>{bot_id}</code>\n\n"
-        f"<pre>{json.dumps(backup, indent=2, ensure_ascii=False)[:3500]}</pre>\n\n"
+        f"{body}\n\n"
         f"<i>⚠️ API keys &amp; tokens are NOT included for security.</i>"
     )
     await query.message.edit_text(

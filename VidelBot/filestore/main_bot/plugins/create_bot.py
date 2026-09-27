@@ -496,6 +496,13 @@ async def handle_creation_input(client: Client, message: Message):
         )
 
     # -------------------------------------------------------------------------
+    # STEP: New owner for 👑 ownership transfer (clone_extras_panel.py)
+    # -------------------------------------------------------------------------
+    elif step == "awaiting_new_owner":
+        from filestore.main_bot.plugins.clone_extras_panel import handle_new_owner_input
+        await handle_new_owner_input(client, message, state)
+
+    # -------------------------------------------------------------------------
     # STEP: Restore settings from JSON backup
     # -------------------------------------------------------------------------
     elif step == "awaiting_restore_json":
@@ -517,12 +524,19 @@ async def handle_creation_input(client: Client, message: Message):
             return
 
         settings = data.get("settings", data)
-        keys = ["auto_delete_time", "protect_content", "permanent_link",
-                "maintenance_mode", "maintenance_msg", "start_msg", "start_pic", "caption"]
+        if not isinstance(settings, dict):
+            await message.reply("<b>❌ That JSON has no settings.</b>")
+            return
+        from filestore.worker_bot.extras import TOGGLE_KEYS
+        keys = ["auto_delete_time", "protect_content", "permanent_link", "maintenance_msg",
+                "start_message", "start_pic", "force_pic", "custom_caption",
+                "file_buttons", "help_text", "about_text", "premium_stars", "premium_days", *sorted(TOGGLE_KEYS)]
+        aliases = {"start_msg": "start_message", "caption": "custom_caption"}   # names used by old backups
         applied = []
-        for k in keys:
-            if k in settings:
-                await main_db.update_setting(bot_id, k, settings[k])
+        for k, v in settings.items():
+            k = aliases.get(k, k)
+            if k in keys:
+                await main_db.update_setting(bot_id, k, v)
                 applied.append(k)
 
         short = data.get("shortener", {})

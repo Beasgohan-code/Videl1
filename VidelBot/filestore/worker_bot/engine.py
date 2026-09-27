@@ -1,5 +1,6 @@
 
 import asyncio
+import html as _html
 
 from config import env_int
 from pyrogram import Client, filters, ContinuePropagation
@@ -202,60 +203,45 @@ class WorkerEngine:
             return InlineKeyboardMarkup(buttons) if buttons else None
 
         # =====================================================================
-        # HANDLER: /start
+        # SHARED HELPERS: gate() and deliver() – reused by /start, smart links,
+        # paid links, search results and Stars purchases (filestore/worker_bot/extras.py)
         # =====================================================================
+        from types import SimpleNamespace
+        from filestore.database.extras_db import CloneExtras, media_details
+        from filestore.worker_bot import extras as clone_extras
 
-        @app.on_message(filters.command("start") & filters.private)
-        async def worker_start(client: Client, message: Message):
+        xdb = CloneExtras(bot_id)
+
+        async def fresh_doc() -> dict:
+            return await main_db.get_bot(bot_id) or bot_doc
+
+        async def gate(client: Client, message: Message, start_param: str = None, doc: dict = None) -> bool:
+            """Ban / maintenance / force-sub checks. Replies and returns False when the user may not continue."""
             user_id = message.from_user.id
-            current_bot_doc = await main_db.get_bot(bot_id) or bot_doc
+            doc = doc or await fresh_doc()
 
-            # Track user
-            if not await worker_db.present_user(user_id):
-                await worker_db.add_user(user_id)
-                
-                if log_channel_id:
-                    log_text = (
-                        f"<b>#NewUser</b>\n\n"
-                        f"<b>Iᴅ</b> - <code>{user_id}</code>\n"
-                        f"<b>Nᴀᴍᴇ</b> - {message.from_user.first_name}\n"
-                        f"<b>username</b> - @{message.from_user.username or 'N/A'}"
-                    )
-                    try:
-                        await client.send_message(chat_id=log_channel_id, text=log_text)
-                    except Exception as e:
-                        log.error(f"Failed to send #NewUser log to {log_channel_id}: {e}")
-
-            # Check ban
-            banned = await worker_db.get_ban_users()
-            if user_id in banned:
+            if await worker_db.ban_user_exist(user_id):
                 await message.reply(
                     "<b>━━━━━━━━━━━━━━━━━━━━━\n"
                     "⛔ 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗\n"
                     "━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
                     "<blockquote>ʏᴏᴜ ᴀʀᴇ ʙᴀɴɴᴇᴅ ꜰʀᴏᴍ ᴜsɪɴɢ ᴛʜɪs ʙᴏᴛ.</blockquote>"
                 )
-                return
+                return False
 
-            # Maintenance mode
-            settings = current_bot_doc.get("settings", {})
+            settings = doc.get("settings", {})
             if settings.get("maintenance_mode") and not await is_admin(user_id):
-                maint_msg = settings.get(
+                await message.reply(settings.get(
                     "maintenance_msg",
                     "<b>🛠 Under Maintenance</b>\n\n"
                     "<blockquote>This bot is temporarily under maintenance.\n"
                     "Please try again later.</blockquote>"
-                )
-                await message.reply(maint_msg)
-                return
+                ))
+                return False
 
-            # Check force-sub
             if not await check_force_sub(client, user_id):
-                start_param = message.command[1] if len(message.command) > 1 else None
                 fsub_markup = await build_fsub_buttons(client, user_id, start_param)
-                settings = current_bot_doc.get("settings", {})
                 force_pic = settings.get("force_pic", "")
-
                 text = (
                     "<b>━━━━━━━━━━━━━━━━━━━━━\n"
                     "🔒 𝗔𝗖𝗖𝗘𝗦𝗦 𝗥𝗘𝗦𝗧𝗥𝗜𝗖𝗧𝗘𝗗\n"
@@ -264,22 +250,238 @@ class WorkerEngine:
                     f"ᴛᴏ ᴜsᴇ ᴛʜɪs ʙᴏᴛ ʏᴏᴜ ᴍᴜsᴛ ᴊᴏɪɴ ᴛʜᴇ\n"
                     f"ᴄʜᴀɴɴᴇʟs ʙᴇʟᴏᴡ ᴀɴᴅ ᴛᴀᴘ <b>♻️ ʀᴇʟᴏᴀᴅ</b>.</blockquote>"
                 )
-
                 if force_pic and force_pic.lower() not in ["none", "ɴᴏɴᴇ", "0"]:
                     await message.reply_photo(photo=force_pic, caption=text, reply_markup=fsub_markup)
                 else:
                     await message.reply(text, reply_markup=fsub_markup)
+                return False
+            return True
+
+        async def shortener_gate(client: Client, message: Message, user_id: int, doc: dict, reload_param: str) -> bool:
+            """True → user may receive files now. Admins and clone-premium users skip verification."""
+            shortener_cfg = doc.get("shortener", {})
+            if not (shortener_cfg.get("enabled") and shortener_cfg.get("domain") and shortener_cfg.get("api_key_encrypted")):
+                return True
+            expire_secs = shortener_cfg.get("verify_expire", 86400)
+            if await is_admin(user_id) or await xdb.is_premium(user_id) or await worker_db.is_verified(user_id, expire_secs):
+                return True
+
+            # Build verify URL — shorten the bot's start link so user must visit shortener
+            me_ = await client.get_me()
+            token = await worker_db.new_verify_token(user_id)
+            verify_url = f"https://t.me/{me_.username}?start=verify_{token}"
+            from filestore.utils.shortener import shorten_url
+            api_key = ""
+            try:
+                api_key = decrypt_token(shortener_cfg["api_key_encrypted"])
+            except Exception:
+                # keys saved by older versions were stored in plain text
+                api_key = shortener_cfg.get("api_key_encrypted", "")
+            shortened = await shorten_url(verify_url, api_key, shortener_cfg.get("domain", ""),
+                                          shortener_cfg.get("provider", "adlinkfly"))
+
+            expire_hrs = expire_secs // 3600
+            buttons = [[InlineKeyboardButton("🔗 ᴠᴇʀɪꜰʏ", url=shortened)]]
+            tut_link = shortener_cfg.get("tutorial_link", "")
+            if shortener_cfg.get("tutorial_enabled", False) and tut_link:
+                buttons.append([InlineKeyboardButton("📹 ᴛᴜᴛᴏʀɪᴀʟ", url=tut_link)])
+            buttons.append([InlineKeyboardButton("✅ ɪ ʜᴀᴠᴇ ᴠᴇʀɪꜰɪᴇᴅ",
+                                                 url=f"https://t.me/{me_.username}?start={reload_param}")])
+            if (doc.get("settings") or {}).get("premium_stars"):
+                buttons.append([InlineKeyboardButton("💎 sᴋɪᴘ ᴡɪᴛʜ ᴘʀᴇᴍɪᴜᴍ",
+                                                     url=f"https://t.me/{me_.username}?start=premium")])
+
+            await message.reply(
+                "<b>━━━━━━━━━━━━━━━━━━━━━\n"
+                "🔗 𝗩𝗘𝗥𝗜𝗙𝗜𝗖𝗔𝗧𝗜𝗢𝗡 𝗥𝗘𝗤𝗨𝗜𝗥𝗘𝗗\n"
+                "━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+                f"<blockquote>ʜᴇʏ {message.from_user.mention},\n\n"
+                f"ᴛᴀᴘ <b>🔗 ᴠᴇʀɪꜰʏ</b> ᴀɴᴅ ᴄᴏᴍᴘʟᴇᴛᴇ ᴛʜᴇ\n"
+                f"sʜᴏʀᴛ ʟɪɴᴋ ᴛᴏ ᴜɴʟᴏᴄᴋ ꜰɪʟᴇs.\n\n"
+                f"ᴀꜰᴛᴇʀ ᴠᴇʀɪꜰʏɪɴɢ, ᴛᴀᴘ\n"
+                f"<b>✅ ɪ ʜᴀᴠᴇ ᴠᴇʀɪꜰɪᴇᴅ</b>.\n\n"
+                f"◈ ᴠᴀʟɪᴅ ꜰᴏʀ: <b>{expire_hrs}h</b></blockquote>",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            return False
+
+        async def deliver(client: Client, message: Message, base64_string: str, *, user_id: int = None,
+                          doc: dict = None, skip_shortener: bool = False, reload_param: str = None) -> int:
+            """Decode a share-link payload and send its files. Returns how many files were sent."""
+            user_id = user_id or message.from_user.id
+            reload_param = reload_param or base64_string
+            try:
+                string = await decode(base64_string)
+            except Exception:
+                await message.reply("<b>❌ This link is broken or incomplete.</b>\n"
+                                    "<i>Ask the sender for a fresh link.</i>")
+                return 0
+            argument = string.split("-")
+
+            ids = []
+            if len(argument) == 3:
+                try:
+                    start = int(int(argument[1]) / abs(log_channel_id))
+                    end = int(int(argument[2]) / abs(log_channel_id))
+                    if abs(end - start) + 1 > MAX_LINK_FILES:   # check BEFORE building the list
+                        await message.reply(f"<b>❌ This link covers too many files (max {MAX_LINK_FILES}).</b>")
+                        return 0
+                    ids = list(range(start, end + 1)) if start <= end else list(range(start, end - 1, -1))
+                except Exception as e:
+                    log.error(f"Error decoding IDs: {e}")
+                    return 0
+            elif len(argument) == 2:
+                try:
+                    ids = [int(int(argument[1]) / abs(log_channel_id))]
+                except Exception as e:
+                    log.error(f"Error decoding ID: {e}")
+                    return 0
+
+            if not ids:
+                return 0
+            if len(ids) > MAX_LINK_FILES:        # crafted link → don't build/serve a giant range
+                await message.reply(f"<b>❌ This link covers too many files (max {MAX_LINK_FILES}).</b>")
+                return 0
+
+            doc = doc or await fresh_doc()
+            if not skip_shortener and not await shortener_gate(client, message, user_id, doc, reload_param):
+                return 0
+
+            # Only show loading for large batches (>5 files)
+            temp_msg = None
+            if len(ids) > 5:
+                temp_msg = await message.reply("<b>⏳ ʟᴏᴀᴅɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs...</b>")
+            try:
+                messages = await get_messages(client, log_channel_id, ids)
+            except Exception as e:
+                await message.reply(
+                    "<b>━━━━━━━━━━━━━━━━━━━━━\n"
+                    "❌ 𝗘𝗥𝗥𝗢𝗥\n"
+                    "━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+                    "<blockquote>sᴏᴍᴇᴛʜɪɴɢ ᴡᴇɴᴛ ᴡʀᴏɴɢ ᴡʜɪʟᴇ ꜰᴇᴛᴄʜɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs.</blockquote>"
+                )
+                log.error(f"Error getting messages: {e}")
+                return 0
+            finally:
+                if temp_msg:
+                    try:
+                        await temp_msg.delete()
+                    except Exception:
+                        pass
+
+            settings = doc.get("settings", {})
+            protect_content = settings.get("protect_content", False)
+            custom_caption = settings.get("custom_caption", "")
+            file_markup = clone_extras.file_buttons_markup(settings)
+
+            from filestore.utils.caption_logic import get_file_details, format_caption
+
+            sent_msgs = []
+            label = ""
+            for msg in messages:
+                if msg.empty:
+                    continue
+                if not label:
+                    label = (media_details(msg) or {}).get("name", "")
+
+                # Apply custom caption formatting
+                original_caption = msg.caption.html if msg.caption else ""
+                if custom_caption and getattr(msg, "media", None):
+                    formatted_custom = format_caption(custom_caption, get_file_details(msg))
+                    caption_text = f"{original_caption}\n\n{formatted_custom}" if original_caption else formatted_custom
+                else:
+                    caption_text = original_caption
+
+                for attempt in range(3):
+                    try:
+                        copied = await msg.copy(
+                            chat_id=user_id,
+                            caption=caption_text if caption_text else None,
+                            parse_mode=ParseMode.HTML,
+                            protect_content=protect_content,
+                            reply_markup=file_markup,
+                        )
+                        sent_msgs.append(copied)
+                        await asyncio.sleep(0)
+                        break
+                    except FloodWait as e:          # big batches: wait instead of dropping files
+                        await asyncio.sleep(min(int(e.value) + 1, 120))
+                    except Exception as e:
+                        log.error(f"Failed to copy message: {e}")
+                        break
+
+            if not sent_msgs:
+                await message.reply("<b>❌ These files are no longer available.</b>")
+                return 0
+            try:
+                await xdb.record_delivery(base64_string, len(sent_msgs), label)
+            except Exception as e:
+                log.warning(f"analytics failed: {e}")
+
+            # Auto-delete
+            del_timer = await worker_db.get_del_timer()
+            if del_timer > 0:
+                notification = await message.reply(
+                    f"<b>⏱ These files will be auto-deleted in {get_exp_time(del_timer)}.\n"
+                    f"Save or forward them before deletion!</b>"
+                )
+                reload_url = f"https://t.me/{(await client.get_me()).username}?start={reload_param}"
+                asyncio.create_task(
+                    _schedule_delete(client, sent_msgs, notification, del_timer, reload_url)
+                )
+            return len(sent_msgs)
+
+        ctx = SimpleNamespace(
+            bot_id=bot_id, owner_id=owner_id, log_channel_id=log_channel_id, worker_db=worker_db, xdb=xdb,
+            main_db=main_db, is_admin=is_admin, gate=gate, deliver=deliver, fresh_doc=fresh_doc,
+            handle_start=None, tasks=[],
+        )
+        clone_extras.setup_extras(app, ctx)
+
+        # =====================================================================
+        # HANDLER: /start
+        # =====================================================================
+
+        @app.on_message(filters.command("start") & filters.private)
+        async def worker_start(client: Client, message: Message):
+            user_id = message.from_user.id
+            current_bot_doc = await fresh_doc()
+
+            # Track user
+            if not await worker_db.present_user(user_id):
+                await worker_db.add_user(user_id)
+                try:
+                    await xdb.record_new_user()
+                except Exception:
+                    pass
+
+                if log_channel_id:
+                    log_text = (
+                        f"<b>#NewUser</b>\n\n"
+                        f"<b>Iᴅ</b> - <code>{user_id}</code>\n"
+                        f"<b>Nᴀᴍᴇ</b> - {_html.escape(message.from_user.first_name or '')}\n"
+                        f"<b>username</b> - @{message.from_user.username or 'N/A'}"
+                    )
+                    try:
+                        await client.send_message(chat_id=log_channel_id, text=log_text)
+                    except Exception as e:
+                        log.error(f"Failed to send #NewUser log to {log_channel_id}: {e}")
+
+            # deep-link payload is case-sensitive base64 → take it from the raw text
+            parts = (message.text or "").split(None, 1)
+            param = parts[1].strip() if len(parts) > 1 else ""
+
+            if not await gate(client, message, param or None, current_bot_doc):
                 return
 
             # Handle /start verify — mark user as verified via shortener
-            text = message.text
-            if len(message.command) > 1 and message.command[1] == "verify":
+            if param == "verify":
                 # old static link (or typed by hand) – never grants access
                 await message.reply("<b>⌛ This verification link is invalid or expired.</b>\n"
                                     "<i>Tap your file link again to get a fresh one.</i>")
                 return
-            if len(message.command) > 1 and message.command[1].startswith("verify_"):
-                if not await worker_db.consume_verify_token(user_id, message.command[1][7:]):
+            if param.startswith("verify_"):
+                if not await worker_db.consume_verify_token(user_id, param[7:]):
                     await message.reply("<b>⌛ This verification link is invalid or expired.</b>\n"
                                         "<i>Tap your file link again to get a fresh one.</i>")
                     return
@@ -293,220 +495,45 @@ class WorkerEngine:
                 )
                 return
 
-            # Check for deep link (file retrieval)
-            if len(text) > 7:
-                try:
-                    base64_string = text.split(" ", 1)[1]
-                except IndexError:
-                    return
+            # smart links, premium, help … (extras.py)
+            if param and ctx.handle_start and await ctx.handle_start(client, message, param, current_bot_doc):
+                return
 
-                try:
-                    string = await decode(base64_string)
-                except Exception:
-                    await message.reply("<b>❌ This link is broken or incomplete.</b>\n"
-                                        "<i>Ask the sender for a fresh link.</i>")
-                    return
-                argument = string.split("-")
+            if param:
+                await deliver(client, message, param, doc=current_bot_doc)
+                return
 
-                ids = []
-                if len(argument) == 3:
-                    try:
-                        start = int(int(argument[1]) / abs(log_channel_id))
-                        end = int(int(argument[2]) / abs(log_channel_id))
-                        if abs(end - start) + 1 > MAX_LINK_FILES:   # check BEFORE building the list
-                            await message.reply(f"<b>❌ This link covers too many files (max {MAX_LINK_FILES}).</b>")
-                            return
-                        ids = list(range(start, end + 1)) if start <= end else list(range(start, end - 1, -1))
-                    except Exception as e:
-                        log.error(f"Error decoding IDs: {e}")
-                        return
-                elif len(argument) == 2:
-                    try:
-                        ids = [int(int(argument[1]) / abs(log_channel_id))]
-                    except Exception as e:
-                        log.error(f"Error decoding ID: {e}")
-                        return
+            # Normal /start - welcome message
+            settings = current_bot_doc.get("settings", {})
+            start_pic = settings.get("start_pic", "")
+            start_message = settings.get("start_message", "")
 
-                if not ids:
-                    return
-                if len(ids) > MAX_LINK_FILES:        # crafted link → don't build/serve a giant range
-                    await message.reply(f"<b>❌ This link covers too many files (max {MAX_LINK_FILES}).</b>")
-                    return
-
-                # ---- SHORTENER VERIFICATION GATE ----
-                shortener_cfg = current_bot_doc.get("shortener", {})
-                if shortener_cfg.get("enabled") and shortener_cfg.get("domain") and shortener_cfg.get("api_key_encrypted"):
-                    expire_secs = shortener_cfg.get("verify_expire", 86400)
-                    is_admin_user = await is_admin(user_id)
-
-                    if not is_admin_user and not await worker_db.is_verified(user_id, expire_secs):
-                        # Build verify URL — shorten the bot's start link so user must visit shortener
-                        me = await client.get_me()
-                        token = await worker_db.new_verify_token(user_id)
-                        verify_url = f"https://t.me/{me.username}?start=verify_{token}"
-                        from filestore.utils.shortener import shorten_url
-                        from filestore.utils.security import decrypt_token
-                        api_key = ""
-                        try:
-                            if shortener_cfg.get("api_key_encrypted"):
-                                api_key = decrypt_token(shortener_cfg["api_key_encrypted"])
-                        except Exception:
-                            # keys saved by older versions were stored in plain text
-                            api_key = shortener_cfg.get("api_key_encrypted", "")
-                        shortened = await shorten_url(
-                            verify_url,
-                            api_key,
-                            shortener_cfg.get("domain", ""),
-                            shortener_cfg.get("provider", "adlinkfly"),
-                        )
-
-                        expire_hrs = expire_secs // 3600
-                        buttons = [
-                            [InlineKeyboardButton(
-                                "🔗 ᴠᴇʀɪꜰʏ", url=shortened
-                            )],
-                        ]
-
-                        # Tutorial button if enabled
-                        tut_link = shortener_cfg.get("tutorial_link", "")
-                        tut_enabled = shortener_cfg.get("tutorial_enabled", False)
-                        if tut_enabled and tut_link:
-                            buttons.append([
-                                InlineKeyboardButton("📹 ᴛᴜᴛᴏʀɪᴀʟ", url=tut_link)
-                            ])
-
-                        # Try Again button to re-check after visiting
-                        buttons.append([
-                            InlineKeyboardButton(
-                                "✅ ɪ ʜᴀᴠᴇ ᴠᴇʀɪꜰɪᴇᴅ",
-                                url=f"https://t.me/{me.username}?start={base64_string}",
-                            )
-                        ])
-
-                        await message.reply(
-                            "<b>━━━━━━━━━━━━━━━━━━━━━\n"
-                            "🔗 𝗩𝗘𝗥𝗜𝗙𝗜𝗖𝗔𝗧𝗜𝗢𝗡 𝗥𝗘𝗤𝗨𝗜𝗥𝗘𝗗\n"
-                            "━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-                            f"<blockquote>ʜᴇʏ {message.from_user.mention},\n\n"
-                            f"ᴛᴀᴘ <b>🔗 ᴠᴇʀɪꜰʏ</b> ᴀɴᴅ ᴄᴏᴍᴘʟᴇᴛᴇ ᴛʜᴇ\n"
-                            f"sʜᴏʀᴛ ʟɪɴᴋ ᴛᴏ ᴜɴʟᴏᴄᴋ ꜰɪʟᴇs.\n\n"
-                            f"ᴀꜰᴛᴇʀ ᴠᴇʀɪꜰʏɪɴɢ, ᴛᴀᴘ\n"
-                            f"<b>✅ ɪ ʜᴀᴠᴇ ᴠᴇʀɪꜰɪᴇᴅ</b>.\n\n"
-                            f"◈ ᴠᴀʟɪᴅ ꜰᴏʀ: <b>{expire_hrs}h</b></blockquote>",
-                            reply_markup=InlineKeyboardMarkup(buttons),
-                        )
-                        return
-
-                # Only show loading for large batches (>5 files)
-                temp_msg = None
-                if len(ids) > 5:
-                    temp_msg = await message.reply(
-                        "<b>⏳ ʟᴏᴀᴅɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs...</b>"
-                    )
-                try:
-                    messages = await get_messages(client, log_channel_id, ids)
-                except Exception as e:
-                    await message.reply(
-                        "<b>━━━━━━━━━━━━━━━━━━━━━\n"
-                        "❌ 𝗘𝗥𝗥𝗢𝗥\n"
-                        "━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-                        "<blockquote>sᴏᴍᴇᴛʜɪɴɢ ᴡᴇɴᴛ ᴡʀᴏɴɢ ᴡʜɪʟᴇ ꜰᴇᴛᴄʜɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs.</blockquote>"
-                    )
-                    log.error(f"Error getting messages: {e}")
-                    return
-                finally:
-                    if temp_msg:
-                        try:
-                            await temp_msg.delete()
-                        except Exception:
-                            pass
-
-                settings = current_bot_doc.get("settings", {})
-                protect_content = settings.get("protect_content", False)
-                custom_caption = settings.get("custom_caption", "")
-
-                from filestore.utils.caption_logic import get_file_details, format_caption
-
-                sent_msgs = []
-                for msg in messages:
-                    if msg.empty:
-                        continue
-                        
-                    # Apply custom caption formatting
-                    caption_text = ""
-                    original_caption = msg.caption.html if msg.caption else ""
-                    if custom_caption and getattr(msg, "media", None):
-                        file_details = get_file_details(msg)
-                        formatted_custom = format_caption(custom_caption, file_details)
-                        if original_caption:
-                            caption_text = f"{original_caption}\n\n{formatted_custom}"
-                        else:
-                            caption_text = formatted_custom
-                    else:
-                        caption_text = original_caption
-                        
-                    for attempt in range(3):
-                        try:
-                            copied = await msg.copy(
-                                chat_id=user_id,
-                                caption=caption_text if caption_text else None,
-                                parse_mode=ParseMode.HTML,
-                                protect_content=protect_content,
-                            )
-                            sent_msgs.append(copied)
-                            await asyncio.sleep(0)
-                            break
-                        except FloodWait as e:          # big batches: wait instead of dropping files
-                            await asyncio.sleep(min(int(e.value) + 1, 120))
-                        except Exception as e:
-                            log.error(f"Failed to copy message: {e}")
-                            break
-
-                # Auto-delete
-                del_timer = await worker_db.get_del_timer()
-                if del_timer > 0 and sent_msgs:
-                    notification = await message.reply(
-                        f"<b>⏱ These files will be auto-deleted in {get_exp_time(del_timer)}.\n"
-                        f"Save or forward them before deletion!</b>"
-                    )
-
-                    reload_url = f"https://t.me/{(await client.get_me()).username}?start={message.command[1]}" if len(message.command) > 1 else None
-
-                    asyncio.create_task(
-                        _schedule_delete(client, sent_msgs, notification, del_timer, reload_url)
-                    )
-
+            if not start_message:
+                start_message = (
+                    f"<blockquote>ᴡᴇʟᴄᴏᴍᴇ {message.from_user.mention}!\n\n"
+                    f"ɪ ᴄᴀɴ sᴛᴏʀᴇ ꜰɪʟᴇs ᴀɴᴅ sʜᴀʀᴇ ᴛʜᴇᴍ\n"
+                    f"ᴠɪᴀ sᴘᴇᴄɪᴀʟ ʟɪɴᴋs.</blockquote>"
+                )
             else:
-                # Normal /start - welcome message
-                settings = current_bot_doc.get("settings", {})
-                start_pic = settings.get("start_pic", "")
-                start_message = settings.get("start_message", "")
-
-                if not start_message:
-                    start_message = (
-                        f"<blockquote>ᴡᴇʟᴄᴏᴍᴇ {message.from_user.mention}!\n\n"
-                        f"ɪ ᴄᴀɴ sᴛᴏʀᴇ ꜰɪʟᴇs ᴀɴᴅ sʜᴀʀᴇ ᴛʜᴇᴍ\n"
-                        f"ᴠɪᴀ sᴘᴇᴄɪᴀʟ ʟɪɴᴋs.</blockquote>"
+                try:
+                    me_ = await client.get_me()
+                    start_message = start_message.format(
+                        mention=message.from_user.mention,
+                        first=message.from_user.first_name,
+                        last=message.from_user.last_name or "",
+                        id=user_id,
+                        bot_mention=f"@{me_.username}",
+                        username=message.from_user.username or "",
                     )
-                else:
-                    try:
-                        me = await client.get_me()
-                        start_message = start_message.format(
-                            mention=message.from_user.mention,
-                            first=message.from_user.first_name,
-                            last=message.from_user.last_name or "",
-                            id=user_id,
-                            bot_mention=f"@{me.username}",
-                            username=message.from_user.username or "",
-                        )
-                    except (KeyError, IndexError, ValueError):
-                        # If custom message has unknown placeholders, just send it raw
-                        pass
+                except (KeyError, IndexError, ValueError):
+                    # If custom message has unknown placeholders, just send it raw
+                    pass
 
-                if start_pic and start_pic.lower() not in ["none", "ɴᴏɴᴇ", "0"]:
-                    await message.reply_photo(photo=start_pic, caption=start_message)
-                else:
-                    await message.reply(start_message)
+            markup = clone_extras.start_markup(settings)
+            if start_pic and start_pic.lower() not in ["none", "ɴᴏɴᴇ", "0"]:
+                await message.reply_photo(photo=start_pic, caption=start_message, reply_markup=markup)
+            else:
+                await message.reply(start_message, reply_markup=markup)
 
         # =====================================================================
         # HANDLER: Chat join request (request-based force-sub)
@@ -557,47 +584,6 @@ class WorkerEngine:
                 await message.reply(f"<b>✅ User {target_id} has been unbanned from this bot!</b>")
             except ValueError:
                 await message.reply("<b>❌ Invalid User ID.</b>")
-
-        # =====================================================================
-        # HANDLER: /broadcast (admin only)
-        # =====================================================================
-
-        @app.on_message(filters.command("broadcast") & filters.private)
-        async def handle_worker_broadcast(client: Client, message: Message):
-            if not await is_admin(message.from_user.id):
-                return
-            if not message.reply_to_message:
-                await message.reply("<b>❌ Please reply to a message to broadcast.</b>")
-                return
-
-            b_msg = await message.reply("<b>⏳ Preparing broadcast...</b>")
-            users = await worker_db.full_userbase()
-            
-            if not users:
-                await b_msg.edit("<b>❌ No users found in database.</b>")
-                return
-
-            await b_msg.edit(f"<b>⏳ Broadcasting to {len(users)} users...</b>")
-            
-            success = 0
-            failed = 0
-            
-            for uid in users:
-                try:
-                    await message.reply_to_message.copy(uid)
-                    success += 1
-                    await asyncio.sleep(0.1) # Small delay
-                except Exception as e:
-                    failed += 1
-                    log.error(f"Worker broadcast failed for user {uid}: {e}")
-                    
-            await b_msg.edit(
-                f"<b>✅ Broadcast Completed</b>\n\n"
-                f"<b>Total Users:</b> {len(users)}\n"
-                f"<b>Success:</b> {success}\n"
-                f"<b>Failed:</b> {failed}"
-            )
-
 
         # =====================================================================
         # NEW: /ping, /id, /users (admin tools)
@@ -654,18 +640,11 @@ class WorkerEngine:
             await app.start()
             app.set_parse_mode(ParseMode.HTML)
 
-            # Set bot commands in the Telegram menu
-            from pyrogram.types import BotCommand
-            await app.set_bot_commands([
-                BotCommand("start", "Start the bot / Retrieve files"),
-                BotCommand("genlink", "Generate link for a single post"),
-                BotCommand("batch", "Generate link for multiple posts"),
-                BotCommand("custom_batch", "Generate link for custom posts"),
-                BotCommand("flink", "Formatted links generator"),
-                BotCommand("broadcast", "Broadcast a message (Admin)"),
-            ])
-
             me = await app.get_me()
+            # command menus (users / admins) + scheduled-broadcast loop
+            await clone_extras.after_start(app, ctx)
+            app._videl_ctx = ctx
+
             log.info(f"Worker started: @{me.username} (ID: {bot_id})")
 
             async with self._lock:
@@ -681,6 +660,8 @@ class WorkerEngine:
             app = self.workers.pop(bot_id, None)
 
         if app:
+            for task in getattr(getattr(app, "_videl_ctx", None), "tasks", []):
+                task.cancel()
             try:
                 # Prevent app.stop() from hanging forever if there's a connection issue
                 await asyncio.wait_for(app.stop(block=False), timeout=3.0)

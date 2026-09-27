@@ -248,15 +248,16 @@ class WorkerDB:
     async def copy_data_from(self, source_bot_id: int) -> dict:
         """Copy all collections from source_bot_id to this bot. Returns stats."""
         db = get_db()
-        source_prefix = f"bot_{source_bot_id}"
-        dest_prefix = f"bot_{self.bot_id}"
+        # trailing "_" matters: "bot_123" must not match bot 1234's collections
+        source_prefix = f"bot_{source_bot_id}_"
+        dest_prefix = f"bot_{self.bot_id}_"
         stats = {}
 
         collections = await db.list_collection_names()
         source_collections = [c for c in collections if c.startswith(source_prefix)]
 
         for src_col_name in source_collections:
-            suffix = src_col_name[len(source_prefix):]  # e.g. "_users"
+            suffix = src_col_name[len(source_prefix):]  # e.g. "users"
             dest_col_name = f"{dest_prefix}{suffix}"
 
             src_col = db[src_col_name]
@@ -281,7 +282,7 @@ class WorkerDB:
     async def drop_all_collections(self):
         """Drop all collections for this bot. Use when permanently purging a bot."""
         db = get_db()
-        prefix = f"bot_{self.bot_id}"
+        prefix = f"bot_{self.bot_id}_"      # trailing "_" → never touches bot 1234 when purging 123
         collections = await db.list_collection_names()
         for col_name in collections:
             if col_name.startswith(prefix):

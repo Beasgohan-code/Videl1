@@ -146,6 +146,11 @@ async def main():
 
     from core.db import vdb
     await vdb.warm_up()
+    try:
+        from filestore.database.main_db import MainDB
+        await MainDB().ensure_indexes()
+    except Exception as e:
+        log.warning(f"clone index setup skipped: {e}")
 
     # DB admins (/add_admin) must be merged before the plugins build their filters
     from core.admins import load_db_admins

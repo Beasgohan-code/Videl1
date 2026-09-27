@@ -18,6 +18,15 @@ class MainDB:
         self.users = db["main_users"]
         self.cooldowns = db["creation_cooldowns"]
 
+    async def ensure_indexes(self):
+        """My Bots / worker start-up / cooldown look-ups – cheap to create, idempotent."""
+        try:
+            await self.bots.create_index([("owner_id", 1), ("is_deleted", 1)])
+            await self.bots.create_index("is_active")
+            await self.bots.create_index("bot_token_encrypted")
+        except Exception as e:
+            log.warning(f"filestore index creation skipped: {e}")
+
     # =========================================================================
     # USER MANAGEMENT
     # =========================================================================
@@ -148,6 +157,13 @@ class MainDB:
             return True
         return False
 
+    async def transfer_owner(self, bot_id: int, new_owner: int):
+        """Give a clone to another user (keeps users, files, links and settings)."""
+        await self.bots.update_one(
+            {"_id": bot_id},
+            {"$set": {"owner_id": new_owner, "transferred_at": datetime.now(timezone.utc)}},
+        )
+
     async def set_bot_active(self, bot_id: int, active: bool):
         """Enable or disable a bot."""
         await self.bots.update_one(
@@ -162,8 +178,15 @@ class MainDB:
             {"$set": {"log_channel_id": channel_id}},
         )
 
+    _last_active_written: dict = {}
+
     async def update_last_active(self, bot_id: int):
-        """Update the last_active timestamp of a bot."""
+        """Update the last_active timestamp of a bot (at most once a minute – it runs on every update)."""
+        import time
+        now = time.monotonic()
+        if now - self._last_active_written.get(bot_id, -1e9) < 60:
+            return
+        self._last_active_written[bot_id] = now
         await self.bots.update_one(
             {"_id": bot_id},
             {"$set": {"last_active": datetime.now(timezone.utc)}},

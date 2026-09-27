@@ -6,7 +6,7 @@ Videl is **one** Telegram bot that combines:
 |---|---|
 | 📥 **Content Saver** (`saver/`) | Save posts/media from public **and** restricted channels (via `/login`), single links or ranges, custom caption / thumbnail, word delete/replace filters, auto-forward to a dump chat, free & premium plans |
 | 🎬 **Video Encoder** (`VideoEncoder/`) | x264 / x265 encoding with per-user settings (CRF, preset, resolution, audio codec, watermark, hard-subs…), queue, direct-link & batch encodes, Drive upload |
-| 🤖 **Clone Bots** (`filestore/`) | Users create their **own FileStore bot** from inside Videl. Each clone runs as a worker: permanent share links, `/genlink`, `/batch`, `/custom_batch`, `/flink` (quality-grouped links), multi force-sub, join-requests, auto-delete, shorteners + verification, custom start text/pic/caption, backups, transfer, maintenance. Idle clones hibernate automatically. |
+| 🤖 **Clone Bots** (`filestore/`) | Users create their **own FileStore bot** from inside Videl. Each clone runs as a worker: permanent share links, `/genlink`, `/batch`, `/custom_batch`, `/flink` (quality-grouped links), multi force-sub, join-requests, auto-delete, shorteners + verification, custom start text/pic/caption, backups, transfer, maintenance – plus **smart links** (expiring / first-N-users / password / sold for ⭐ Stars), **premium users** who skip the shortener, auto-index + **/search & inline search**, **analytics**, **scheduled broadcasts**, **requests inbox**, file buttons, anti-flood and **ownership transfer** ([details](#-clone-bot-extras)). Idle clones hibernate automatically. |
 | ✏️ **Auto-Rename** (`renamer/`) | Set a template once (`/autorename {title} S{season}E{episode} [{quality}]`) and every file you send comes back renamed – smart season / episode / quality / audio / year / codec extraction, classic `[SSeason] [EPEpisode]` keywords too, output as document / video / audio (`/setmedia`), optional MKV conversion, **metadata** (title, author, artist, audio / video / subtitle track titles, encoded-by, custom tag), custom thumbnail & caption, **sequence mode** (send a season in any order → sorted delivery), live progress with cancel, per-user queue, `/testrename` preview, `/leaderboard` (today / week / month / year / all-time), optional **shortener verification** for free users, anti-NSFW filter and a dump channel |
 | ⭐ **Stars Premium** (`core/payments.py`) | Users buy Premium in-app with **Telegram Stars** – one-time plans, **monthly auto-renewing subscriptions** (`/mysub` cancel/resume), **gift Premium to a friend** (`/gift`, native user picker), instant activation, receipts, `/stars` (live Stars balance + revenue) and `/refund` |
 | 🤝 **Growth** (`core/growth.py`) | `/refer` invite links (every `REFERRAL_TARGET` new users → `REFERRAL_REWARD_DAYS` Premium), `/redeem` codes (`/gencode`, `/codes`, `/delcode`), one-time `/trial` |
@@ -66,6 +66,22 @@ unreachable (3 network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, Vid
 * **Bot profile photo** (Bot API 9.4 `setMyProfilePhoto`) – owners: `/setbotpic` · `/delbotpic`; clone owners: dashboard → 📩 Start cfg → 🤖 Bot profile photo
 * **Stars subscriptions** (30-day auto-renew, cancel / resume) and **Premium gifts**
 * **Native pickers** (`request_chat` / `request_user` keyboard buttons) – 📢 *Select channel* when creating a clone / changing its log or force-sub channel, 👤 *Choose a friend* for gifts
+
+## 🤖 Clone bot extras
+
+Everything below works inside **every clone** (commands are typed in the clone, admins only unless marked 👤).
+Switches also live in Videl → 🤖 My Bots → your bot → **✨ Extras**.
+
+| Pack | Commands | What it does |
+|---|---|---|
+| 🔗 **Smart links** | `/smartlink LINK [24h] [x100] [pass=…] [stars=25] [note=…]` · `/links` | Wraps any `/genlink` / `/batch` link (`t.me/bot?start=sl_…`): expires after a time, only the first N users (re-opening is free), asks for a password (hashed, the typed password is deleted, 3 tries), or is **sold for Telegram Stars** – buyers can reopen forever and are never refused after paying. |
+| 💎 **Premium** | `/setpremium 50 30` · `/addpremium ID [days]` · `/delpremium` · `/premiumusers` · 👤 `/plan` | Premium users skip shortener verification. Sell it for Stars (`/plan` → ⭐ Buy) or give it by hand (0 days = lifetime, extends instead of resetting). Invoices are checked on pre-checkout (price, currency, buyer). |
+| 🗂 **Index & search** | `/index` · `/searchmode on` · 👤 `/search name` · inline `@clone name` · `/autolink dm\|edit\|post on` · `/setpostchannel` | New storage-channel files are indexed automatically (`/index` scans older posts). Multi-word search with pages; inline search needs **/setinline** for the clone in @BotFather. Auto-link can DM you the link, add a 📥 button to the stored post, or publish a card in another channel. |
+| 📊 **Owner tools** | `/analytics` · `/broadcast [pin] [silent] [forward] [in 2h\|at 21:30]` · `/schedules` · `/export` (owner) | 14-day sparkline of opens / new users, top links, Stars earned, premium & search counts. Broadcasts show live progress with ⛔ Stop, remove users who blocked the bot and can be scheduled (`LOG_TZ`). Export = users CSV + settings JSON (no keys). |
+| 🙋 **Users & UX** | 👤 `/request text` · `/requests` · `/setbuttons A - url \| B - url` · `/delbuttons` · `/sethelp` · `/setabout` · `/antiflood` · `/maintenance` · `/requestmode` · `/settings` | Requests (3/day, premium 10) land in the admins' DM with ✅ Done / ❌ Reject / 💬 Reply. Buttons appear under every delivered file. Custom `/help` & `/about` (placeholders `{mention}` `{first}` `{bot}`). Anti-flood: 8 msgs / 10 s → growing cool-down, optional auto-ban. |
+| 👑 **Ownership** | Videl → My Bots → ✨ Extras → 👑 Transfer | Hand a clone (users, files, links, settings) to someone who has started Videl; confirmed, logged as `#CloneTransferred`, the clone restarts under its new owner. |
+
+Clones get their own command menus: a short one for users and the full admin menu for the owner + admins.
 
 ## 🚀 Deploy
 
@@ -200,7 +216,7 @@ MP4 → MKV / metadata use stream copy (no re-encode); if a file can't be remuxe
 pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
-The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes. Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
+The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes, and `tests/test_phase8.py` for the clone extras (smart-link limits / passwords / expiry, Stars checkout + delivery, premium, index + search, requests, anti-flood, broadcasts & schedules, export, the ✨ Extras panel and ownership transfer). Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
 
 ## 🗂 Layout
 
@@ -224,7 +240,8 @@ tests/            offline test-suite
 ```
 
 ### Handler order
-`-10` payments (never blocked) → `-4` user tracking (+ referral credit) → `-3` ban / maintenance → `-2` force-subscribe → `-1` reply routers (support inbox, gift picker, rename-settings input) → `0` modules → `1–2` clone link generators.
+`-10` payments (never blocked) → `-4` user tracking (+ referral credit) → `-3` ban / maintenance → `-2` force-subscribe → `-1` reply routers (support inbox, gift picker, rename-settings input) → `0` modules → `1–2` clone link generators.  
+Inside clones: `-10` Stars payments → `-3` anti-flood → `-2` password / request-reply input → `-1` activity → `0` commands → `1–2` link generators → `3` storage-channel indexer.
 
 ## 📜 Licence
 

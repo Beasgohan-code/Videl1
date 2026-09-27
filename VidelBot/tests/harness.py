@@ -62,7 +62,7 @@ class FakeMsg(Message):
         self.id = FakeMsg._next_id
         self.from_user = FakeUser(uid) if uid else None
         self.chat = SimpleNamespace(id=chat_id if chat_id is not None else uid, type=chat_type,
-                                    title="Chat", username=None)
+                                    title="Chat", username=None, usernames=None)
         self.text = text
         self.caption = None
         self.media = None
