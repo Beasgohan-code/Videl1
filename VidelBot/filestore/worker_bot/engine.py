@@ -1,6 +1,9 @@
 
 import asyncio
+
+from config import env_int
 from pyrogram import Client, filters, ContinuePropagation
+from pyrogram.errors import FloodWait
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 from pyrogram.enums import ParseMode
 from pyrogram.types import (
@@ -15,6 +18,8 @@ from filestore.database.main_db import MainDB
 from filestore.database.worker_db import WorkerDB
 from filestore.utils.security import decrypt_token
 from filestore.utils.helpers import encode, decode, get_messages, get_message_id, get_exp_time
+
+MAX_LINK_FILES = env_int("MAX_LINK_FILES", 1000)   # files one share link may deliver
 log = LOGGER(__name__)
 main_db = MainDB()
 
@@ -295,7 +300,12 @@ class WorkerEngine:
                 except IndexError:
                     return
 
-                string = await decode(base64_string)
+                try:
+                    string = await decode(base64_string)
+                except Exception:
+                    await message.reply("<b>❌ This link is broken or incomplete.</b>\n"
+                                        "<i>Ask the sender for a fresh link.</i>")
+                    return
                 argument = string.split("-")
 
                 ids = []
@@ -303,6 +313,9 @@ class WorkerEngine:
                     try:
                         start = int(int(argument[1]) / abs(log_channel_id))
                         end = int(int(argument[2]) / abs(log_channel_id))
+                        if abs(end - start) + 1 > MAX_LINK_FILES:   # check BEFORE building the list
+                            await message.reply(f"<b>❌ This link covers too many files (max {MAX_LINK_FILES}).</b>")
+                            return
                         ids = list(range(start, end + 1)) if start <= end else list(range(start, end - 1, -1))
                     except Exception as e:
                         log.error(f"Error decoding IDs: {e}")
@@ -315,6 +328,9 @@ class WorkerEngine:
                         return
 
                 if not ids:
+                    return
+                if len(ids) > MAX_LINK_FILES:        # crafted link → don't build/serve a giant range
+                    await message.reply(f"<b>❌ This link covers too many files (max {MAX_LINK_FILES}).</b>")
                     return
 
                 # ---- SHORTENER VERIFICATION GATE ----
@@ -429,17 +445,22 @@ class WorkerEngine:
                     else:
                         caption_text = original_caption
                         
-                    try:
-                        copied = await msg.copy(
-                            chat_id=user_id,
-                            caption=caption_text if caption_text else None,
-                            parse_mode=ParseMode.HTML,
-                            protect_content=protect_content,
-                        )
-                        sent_msgs.append(copied)
-                        await asyncio.sleep(0)
-                    except Exception as e:
-                        log.error(f"Failed to copy message: {e}")
+                    for attempt in range(3):
+                        try:
+                            copied = await msg.copy(
+                                chat_id=user_id,
+                                caption=caption_text if caption_text else None,
+                                parse_mode=ParseMode.HTML,
+                                protect_content=protect_content,
+                            )
+                            sent_msgs.append(copied)
+                            await asyncio.sleep(0)
+                            break
+                        except FloodWait as e:          # big batches: wait instead of dropping files
+                            await asyncio.sleep(min(int(e.value) + 1, 120))
+                        except Exception as e:
+                            log.error(f"Failed to copy message: {e}")
+                            break
 
                 # Auto-delete
                 del_timer = await worker_db.get_del_timer()

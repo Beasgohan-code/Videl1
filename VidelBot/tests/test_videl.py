@@ -36,7 +36,7 @@ def test_all_plugins_import_and_register():
     assert n >= 150
     run(__import__("asyncio").sleep(0.2))
     groups = app.dispatcher.groups
-    assert sorted(k for k in groups if k < 0) == [-10, -4, -3, -2, -1]
+    assert sorted(k for k in groups if k < 0) == [-10, -5, -4, -3, -2, -1]   # -5 = senderless_gate
     assert any(h.callback.__module__ == "core.errors" for h in app.dispatcher.error_handlers)
 
 

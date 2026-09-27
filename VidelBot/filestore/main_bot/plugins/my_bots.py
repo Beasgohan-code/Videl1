@@ -304,37 +304,28 @@ async def toggle_permanent_link_callback(client: Client, query: CallbackQuery):
     current = settings.get("permanent_link", False)
     new_val = not current
 
+    if new_val and not BACKEND_API_URL:
+        await query.answer("🔗 Permanent links need the owner's BACKEND_API_URL (Cloudflare worker) – "
+                           "it isn't configured on this Videl instance.", show_alert=True)
+        return
+
     await main_db.update_setting(bot_id, "permanent_link", new_val)
 
-    # Send user data to API if enabled
+    # Register the user with the permanent-link backend
     if new_val:
         import aiohttp
-        from filestore.fs_config import BACKEND_API_URL
-
-        bot_username = bot.get("bot_username", "unknown")
-
         try:
-            async with aiohttp.ClientSession() as session:
-                # Assuming simple authentication with BACKEND_API_SECRET set in environment
-                import os
-                api_secret = BACKEND_API_SECRET
-                headers = {"Authorization": f"Bearer {api_secret}"}
-
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
                 async with session.post(
-                    f"{BACKEND_API_URL}/api/user",
-                    json={
-                        "userId": str(user_id),
-                        "botUsername": bot_username
-                    },
-                    headers=headers
+                    f"{BACKEND_API_URL.rstrip('/')}/api/user",
+                    json={"userId": str(user_id), "botUsername": bot.get("bot_username", "unknown")},
+                    headers={"Authorization": f"Bearer {BACKEND_API_SECRET}"},
                 ) as resp:
-                    resp_data = await resp.json()
-                    if not resp_data.get("success"):
-                        await query.answer("⚠️ API Error while syncing user data", show_alert=True)
+                    resp_data = await resp.json(content_type=None)
+                    if not (resp_data or {}).get("success"):
+                        LOGGER.warning(f"Permanent link backend refused user {user_id}: {resp_data}")
         except Exception as e:
-            await query.answer("⚠️ Connection Error to Backend API", show_alert=True)
-            import logging
-            logging.getLogger(__name__).error(f"Permanent Link API Error: {e}")
+            LOGGER.error(f"Permanent Link API Error: {e}")
 
     # Restart worker to pick up changes
     from filestore.worker_bot.engine import worker_engine

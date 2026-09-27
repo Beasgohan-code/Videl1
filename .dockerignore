@@ -1,0 +1,28 @@
+# only VidelBot/ is needed in the image
+.git
+.github
+**/__pycache__
+**/*.pyc
+**/*.session
+**/*.session-journal
+**/config.env
+**/.env
+**/.pytest_cache
+VidelBot/tests
+VidelBot/pytest.ini
+VidelBot/logs
+VidelBot/downloads
+VidelBot/VideoEncoder/utils/extras/downloads
+VidelBot/VideoEncoder/utils/extras/encodes
+VidelBot/.restart_reason
+VidelBot/.restart_msg.json
+# old prototype files in the repo root (not used by VidelBot)
+__init__.py
+__main__.py
+config.py
+custom_filter.py
+data.py
+helper
+info
+modules
+keep_alive.py

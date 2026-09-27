@@ -67,6 +67,7 @@ async def on_task_complete():
 
 
 async def handle_tasks(message, mode):
+    msg = None
     try:
         msg = await message.reply_text("<b>💠 Downloading...</b>")
         if mode == 'tg':
@@ -82,7 +83,11 @@ async def handle_tasks(message, mode):
     except IndexError:
         return
     except MessageIdInvalid:
-        await msg.edit('Download Cancelled!')
+        if msg is not None:
+            try:
+                await msg.edit('Download Cancelled!')
+            except Exception:
+                pass
     except FileNotFoundError:
         LOGGER.error('[FileNotFoundError]: Maybe due to cancel, hmm')
         import traceback
@@ -147,6 +152,7 @@ async def batch_task(message, msg):
         filepath = await handle_download_url(message, msg, True)
     if not filepath:
         await msg.edit('NO ZIP FOUND!')
+        return
     if os.path.isfile(filepath):
         path = await get_zip_folder(filepath)
         await handle_extract(filepath)
@@ -226,11 +232,13 @@ async def handle_download_url(message, msg, batch):
             url = parts[0]
             custom_file_name = " ".join(parts[1:])
 
-    direct = direct_link_generator(url)
+    direct = await asyncio.to_thread(direct_link_generator, url)   # uses blocking requests
     if direct:
         url = direct
 
-    # Ensure filename is safe/valid or fallback
+    # Ensure filename is safe/valid (no paths / traversal) or fallback
+    custom_file_name = os.path.basename((custom_file_name or "").replace("\\", "/")).strip().lstrip(".")
+    custom_file_name = "".join(ch for ch in custom_file_name if ch not in '<>:"|?*\x00')[:200]
     if not custom_file_name:
         custom_file_name = "downloaded_file"
 

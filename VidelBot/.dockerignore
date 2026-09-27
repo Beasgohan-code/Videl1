@@ -10,3 +10,7 @@ VideoEncoder/utils/extras/encodes/
 .git
 tests/
 .restart_reason
+.env
+.pytest_cache/
+.restart_msg.json
+pytest.ini

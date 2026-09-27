@@ -2,6 +2,7 @@
 Global middleware – runs before every module. Pyrogram runs one handler per
 group, lowest group first, so each gate lives in its own group:
 
+  group -5 → sender-less messages (channel posts, anonymous admins) stop here, except /id
   group -4 → user tracking / new-user log   (never blocks)
   group -3 → ban + maintenance gate         (StopPropagation)
   group -2 → force-subscribe gate           (core/fsub.py)
@@ -28,6 +29,31 @@ def _gate_reason(user_id: int):
     if vdb.cached_setting("maintenance", False):
         return MAINT_TEXT
     return None
+
+
+def _is_command(message: Message) -> bool:
+    text = message.text or message.caption or ""
+    return text.startswith("/")
+
+
+@Client.on_message(filters.incoming & ~filters.service, group=-5)
+async def senderless_gate(client: Client, message: Message):
+    """Channel posts and anonymous-admin messages have no from_user; every module expects one.
+    Let /id through (useful to read a channel's ID), give anonymous admins a hint, drop the rest."""
+    if message.from_user:
+        return
+    text = message.text or message.caption or ""
+    cmd = text.split()[0][1:].split("@")[0].lower() if text.startswith("/") and text.split() else ""
+    if cmd == "id":
+        return
+    if _is_command(message) and message.chat and message.chat.type.value in ("group", "supergroup") \
+            and message.sender_chat and message.sender_chat.id == message.chat.id:
+        try:
+            await message.reply_text("👤 You're posting as the group (anonymous admin). "
+                                     "Turn off <b>Remain anonymous</b> or DM me to use commands.")
+        except Exception:
+            pass
+    raise StopPropagation
 
 
 @Client.on_message(filters.private & filters.incoming, group=-4)

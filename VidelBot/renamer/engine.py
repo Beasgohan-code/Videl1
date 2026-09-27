@@ -11,6 +11,8 @@ import itertools
 import json
 import logging
 import os
+
+from config import env_int
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -25,9 +27,9 @@ log = logging.getLogger("videl.rename")
 
 WORK_DIR = "downloads/rename"
 TG_LIMIT = 2000 * 1024 * 1024               # bots can upload up to 2000 MiB
-CONCURRENCY = max(1, int(os.environ.get("RENAME_CONCURRENCY", "3") or 3))
-QUEUE_LIMIT = max(1, int(os.environ.get("RENAME_QUEUE_LIMIT", "30") or 30))
-DUMP_CHANNEL = int(os.environ.get("RENAME_DUMP_CHANNEL", "0") or 0)
+CONCURRENCY = max(1, env_int("RENAME_CONCURRENCY", 3))
+QUEUE_LIMIT = max(1, env_int("RENAME_QUEUE_LIMIT", 30))
+DUMP_CHANNEL = env_int("RENAME_DUMP_CHANNEL", 0)
 PROGRESS_EVERY = 5
 
 SEM = asyncio.Semaphore(CONCURRENCY)

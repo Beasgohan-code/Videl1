@@ -18,6 +18,8 @@ import asyncio
 import html
 import logging
 import os
+
+from config import env_int
 import time
 
 from pyrogram import Client, StopPropagation, enums, filters
@@ -30,7 +32,7 @@ from renamer import engine, extract, store, verify
 
 log = logging.getLogger("videl.rename.ui")
 
-LEADERBOARD_DELETE_TIMER = int(os.environ.get("LEADERBOARD_DELETE_TIMER", "30") or 30)
+LEADERBOARD_DELETE_TIMER = env_int("LEADERBOARD_DELETE_TIMER", 30)
 LEADERBOARD_PIC = os.environ.get("LEADERBOARD_PIC", "")
 SAMPLE = "[SubsPlease] Solo Leveling S02E05 (1080p) [Dual Audio Hindi Jap] x265.mkv"
 

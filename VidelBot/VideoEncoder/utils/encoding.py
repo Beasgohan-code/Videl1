@@ -51,6 +51,11 @@ async def extract_subs(filepath, msg, user_id):
     else:
         output = os.path.join(encode_dir, str(msg.id) + '.ass')
 
+    return await asyncio.to_thread(_extract_subs_sync, filepath, output)
+
+
+def _extract_subs_sync(filepath, output):
+    """ffmpeg / mkvextract / font install – blocking, so it runs in a worker thread."""
     try:
         subprocess.call(['ffmpeg', '-y', '-i', filepath, '-map', 's:0', output])
         # mkvextract might not be in PATH on Windows, handle gracefully
@@ -71,6 +76,9 @@ async def extract_subs(filepath, msg, user_id):
         except Exception as e:
             LOGGER.warning(f"Font moving failed (likely not supported on this OS): {e}")
 
+        if not os.path.exists(output) or os.path.getsize(output) == 0:
+            LOGGER.error("Extract subs failed: ffmpeg produced no subtitle file")
+            return None
         return output
     except Exception as e:
         LOGGER.error(f"Extract subs failed: {e}")
@@ -344,10 +352,9 @@ Dialogue: 0,0:00:00.00,9:59:59.99,MotionStyle,,0,0,0,Banner;10;0;50,{motion_text
 
     # Audio
     a = await db.get_audio(message.from_user.id)
-    a_i = get_codec(filepath, channel='a:0')
-    if a_i == []:
-        audio_opts = ''
-    else:
+    # "-map 0:a?" is optional, so files without audio are fine – never drop audio just
+    # because the ffprobe check failed (corrupt header, probe timeout …)
+    if True:
         if a == 'dd':
             audio_opts = f'-c:a ac3 {sample} {bitrate}'
         elif a == 'aac':
@@ -414,15 +421,13 @@ Dialogue: 0,0:00:00.00,9:59:59.99,MotionStyle,,0,0,0,Banner;10;0;50,{motion_text
     await handle_progress(proc, msg, message, filepath)
     # Wait for the subprocess to finish
     stdout, stderr = await proc.communicate()
-    e_response = stderr.decode().strip()
-    t_response = stdout.decode().strip()
-    LOGGER.error(f"FFmpeg stderr: {e_response}")
+    e_response = stderr.decode(errors="ignore").strip()
+    t_response = stdout.decode(errors="ignore").strip()
     if t_response:
-        LOGGER.info(f"FFmpeg stdout: {t_response}")
-    await proc.communicate()
+        LOGGER.info(f"FFmpeg stdout: {t_response[-500:]}")
 
-    if not os.path.isfile(output_filepath) or os.path.getsize(output_filepath) == 0:
-        LOGGER.error(f"Encoding failed: {output_filepath} not created or is 0 bytes.")
+    if proc.returncode != 0 or not os.path.isfile(output_filepath) or os.path.getsize(output_filepath) == 0:
+        LOGGER.error(f"Encoding failed (exit {proc.returncode}): {e_response[-800:]}")
         if os.path.isfile(output_filepath):
             os.remove(output_filepath)
         return None
@@ -548,46 +553,41 @@ async def handle_progress(proc, msg, message, filepath):
         statusMsg['user'] = message.from_user.id
         f.seek(0)
         json.dump(statusMsg, f, indent=2)
+    total_time = None
     while proc.returncode == None:
         await asyncio.sleep(5)
+        if not os.path.exists(download_dir + 'process.txt'):
+            continue                      # ffmpeg hasn't written progress yet
         with open(download_dir + 'process.txt', 'r+') as file:
             text = file.read()
             frame = re.findall(r"frame=(\d+)", text)
             time_in_us = re.findall(r"out_time_ms=(\d+)", text)
             progress = re.findall(r"progress=(\w+)", text)
             speed = re.findall(r"speed=(\d+\.?\d*)", text)
-            if len(frame):
-                frame = int(frame[-1])
-            else:
-                frame = 1
-            if len(speed):
-                speed = speed[-1]
-            else:
-                speed = 1
-            if len(time_in_us):
-                time_in_us = time_in_us[-1]
-            else:
-                time_in_us = 1
             if len(progress):
                 if progress[-1] == "end":
                     LOGGER.info(progress[-1])
                     break
-            breakexecution_time = TimeFormatter(
-                (time.time() - COMPRESSION_START_TIME))
-            elapsed_time = int(time_in_us)/1000000
-            total_time, bitrate = await media_info(filepath)
-            difference = math.floor((total_time - elapsed_time) / float(speed))
-            ETA = "-"
-            if difference > 0:
-                ETA = TimeFormatter(difference)
-            percentage = math.floor(elapsed_time * 100 / total_time)
-            progress_str = "<b>Encoding Video:</b> {0}%\n{1}{2}".format(
-                round(percentage, 2),
-                ''.join(['█' for i in range(
-                    math.floor(percentage / 10))]),
-                ''.join(['░' for i in range(
-                    10 - math.floor(percentage / 10))])
-            )
+            try:
+                speed = float(speed[-1]) if speed else 1.0
+                elapsed_time = int(time_in_us[-1]) / 1000000 if time_in_us else 0.0
+                if not total_time:
+                    total_time, _ = await media_info(filepath)   # probe once, not every 5 s
+                if not total_time:
+                    progress_str = f"<b>Encoding Video…</b>\n• Done: {TimeFormatter(elapsed_time) or '0s'}"
+                    ETA = "-"
+                else:
+                    difference = math.floor((total_time - elapsed_time) / speed) if speed > 0 else 0
+                    ETA = TimeFormatter(difference) if difference > 0 else "-"
+                    percentage = max(0, min(100, math.floor(elapsed_time * 100 / total_time)))
+                    progress_str = "<b>Encoding Video:</b> {0}%\n{1}{2}".format(
+                        round(percentage, 2),
+                        ''.join(['█' for i in range(math.floor(percentage / 10))]),
+                        ''.join(['░' for i in range(10 - math.floor(percentage / 10))])
+                    )
+            except Exception as e:           # never let a progress glitch orphan the ffmpeg process
+                LOGGER.warning(f"encode progress: {e}")
+                continue
             stats = f'{progress_str} \n' \
                     f'• ETA: {ETA}'
             try:

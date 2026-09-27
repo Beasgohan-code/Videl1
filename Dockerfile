@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────
-#  Videl – all-in-one Telegram bot  ·  VidelBot/Dockerfile (for platforms whose root directory is set to VidelBot)
+#  Videl – all-in-one Telegram bot  ·  root Dockerfile
 #  Used by Railway, Render, Koyeb, Heroku (container stack),
-#  Northflank, Fly.io, docker compose … – build context = VidelBot/
+#  Northflank, Fly.io, docker compose … – builds ./VidelBot
 # ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim-bookworm
 
@@ -24,10 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # dependencies first → cached layer when only code changes
-COPY requirements.txt .
+COPY VidelBot/requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-COPY . .
+COPY VidelBot/ .
 RUN chmod +x extract && mkdir -p downloads logs
 
 EXPOSE 8080

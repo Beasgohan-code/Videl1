@@ -140,7 +140,9 @@ async def login_handler(bot: Client, message: Message):
     text = message.text
     if text.strip() in ("❌ Cancel", "Cancel"):
         return await cancel_login(bot, message)
-    state = LOGIN_STATE[user_id]
+    state = LOGIN_STATE.get(user_id)
+    if not state:          # expired by the watchdog / cancelled meanwhile
+        return
     step = state["step"]
     progress = PROGRESS_STEPS.get(step, "")
    

@@ -1,40 +1,41 @@
 # ── Telegram ─────────────────────────────────────────
 pyrofork==2.3.69
-aiogram==3.31.0          # Bot API 10.3 bridge (outgoing only – see core/botapi.py)
-TgCrypto
-python-dotenv
-tzdata
+aiogram==3.31.0                 # Bot API 10.3 bridge (outgoing only – see core/botapi.py)
+TgCrypto==1.2.5
+python-dotenv==1.2.3
+tzdata==2026.4
 
 # ── Networking ───────────────────────────────────────
-aiohttp
-requests
-httpx
+aiohttp==3.14.3
+requests==2.34.2
+httpx==0.28.1
 
 # ── Database ─────────────────────────────────────────
-motor
-dnspython
+motor==3.7.1
+dnspython==2.8.0
 
 # ── Security / tools ────────────────────────────────
-cryptography
-qrcode[pil]
+cryptography==50.0.1
+qrcode[pil]==8.2
+pillow==12.3.0                  # thumbnails (auto-rename, saver)
 
 # ── Encoder: media / downloads ───────────────────────
-hachoir
-beautifulsoup4
-lxml
-pySmartDL
-psutil
-js2py
-cloudscraper
-lk21
-speedtest-cli
+hachoir==3.4.0
+beautifulsoup4==4.15.0
+lxml==6.1.3
+pySmartDL==1.3.4
+psutil==7.2.2
+js2py==0.74
+cloudscraper==1.2.71
+lk21==1.6.0
+speedtest-cli==2.1.3
 
 # ── Encoder: Google Drive upload (optional feature) ──
-google-api-core
-google-auth
-oauth2client<4.0.0
-google~=3.0.0
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
-httplib2
+google-api-core==2.39.0
+google-auth==2.58.1
+oauth2client==3.0.0
+google==3.0.0
+google-api-python-client==2.200.0
+google-auth-httplib2==0.4.2
+google-auth-oauthlib==1.4.1
+httplib2==0.32.0

@@ -18,12 +18,11 @@ from pathlib import Path
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.getcwd())
 
+import config  # noqa: E402,F401  (loads config.env + cleans env values – must be first)
 import logger  # noqa: E402,F401  (configures logging)
 import pyrogram.utils  # noqa: E402
 
 pyrogram.utils.MIN_CHANNEL_ID = -1009147483647  # support newer channel IDs
-
-import config  # noqa: E402
 
 log = logging.getLogger("videl")
 
@@ -133,12 +132,17 @@ async def main():
     asyncio.create_task(keep_alive.self_ping_loop())
 
     from filestore.database.mongo import get_motor_client
-    try:
-        await get_motor_client().admin.command("ping")
-        log.info("✅ MongoDB connected")
-    except Exception as e:
-        log.error(f"❌ MongoDB connection failed: {e}")
-        sys.exit(1)
+    for attempt in range(1, 6):             # Atlas DNS / cold-start hiccups are common on free hosts
+        try:
+            await get_motor_client().admin.command("ping")
+            log.info("✅ MongoDB connected")
+            break
+        except Exception as e:
+            if attempt == 5:
+                log.error(f"❌ MongoDB connection failed: {e} — check DB_URI and the Atlas IP allow-list (0.0.0.0/0)")
+                sys.exit(1)
+            log.warning(f"MongoDB not reachable yet ({e}) – retry {attempt}/5 in {attempt * 5}s")
+            await asyncio.sleep(attempt * 5)
 
     from core.db import vdb
     await vdb.warm_up()

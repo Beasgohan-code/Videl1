@@ -39,23 +39,21 @@ def setup_link_gen(app: Client, log_channel_id: int, is_admin_func):
         settings = bot.get("settings", {})
         if settings.get("permanent_link") and BACKEND_API_URL:
             try:
-                import os
-                api_secret = BACKEND_API_SECRET
-                headers = {"Authorization": f"Bearer {api_secret}"}
+                headers = {"Authorization": f"Bearer {BACKEND_API_SECRET}"}
 
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
                     async with session.post(
-                        f"{BACKEND_API_URL}/api/link",
+                        f"{BACKEND_API_URL.rstrip('/')}/api/link",
                         json={
                             "token": encoded,
                             "userId": str(bot["owner_id"])
                         },
                         headers=headers
                     ) as resp:
-                        resp_data = await resp.json()
-                        if resp_data.get("success"):
+                        resp_data = await resp.json(content_type=None)
+                        if (resp_data or {}).get("success"):
                             # Return the permanent link
-                            return f"{BACKEND_API_URL}/?url={encoded}"
+                            return f"{BACKEND_API_URL.rstrip('/')}/?url={encoded}"
             except Exception as e:
                 log.error(f"Permanent Link API Error: {e}")
 
@@ -144,6 +142,11 @@ def setup_link_gen(app: Client, log_channel_id: int, is_admin_func):
         if not last_id:
             return await message.reply("<b>❌ Fᴀɪʟᴇᴅ ᴛᴏ ɢᴇᴛ LAST ᴍᴇssᴀɢᴇ ID.</b>")
 
+        from filestore.worker_bot.engine import MAX_LINK_FILES
+        if abs(last_id - first_id) + 1 > MAX_LINK_FILES:
+            return await message.reply(f"<b>❌ Tᴏᴏ ᴍᴀɴʏ ᴘᴏsᴛs ({abs(last_id - first_id) + 1}). "
+                                       f"Mᴀx {MAX_LINK_FILES} ᴘᴇʀ ʟɪɴᴋ – sᴘʟɪᴛ ɪᴛ ɪɴᴛᴏ sᴍᴀʟʟᴇʀ ʙᴀᴛᴄʜᴇs.</b>")
+
         # Range link
         encoded = await encode(f"get-{first_id * abs(log_channel_id)}-{last_id * abs(log_channel_id)}")
         me = await client.get_me()
@@ -178,8 +181,8 @@ def setup_link_gen(app: Client, log_channel_id: int, is_admin_func):
             reply_markup=CANCEL_MARKUP
         )
 
-        first_id = None
-        last_id = None
+        from filestore.worker_bot.engine import MAX_LINK_FILES
+        ids = []
 
         while True:
             rcv_msg = await wait_for_input(user_id)
@@ -187,38 +190,67 @@ def setup_link_gen(app: Client, log_channel_id: int, is_admin_func):
                 await message.reply("<b><i>🆑 Oᴘᴇʀᴀᴛɪᴏɴ Cᴀɴᴄᴇʟʟᴇᴅ/Tɪᴍᴇᴅ Oᴜᴛ...</i></b>")
                 break
 
-            if hasattr(rcv_msg, "text") and rcv_msg.text == "/done":
-                if not first_id:
+            if getattr(rcv_msg, "text", None) and rcv_msg.text.split("@")[0].strip() == "/done":
+                if not ids:
                     await message.reply("<b>❌ Nᴏ ᴍᴇssᴀɢᴇs ᴡᴇʀᴇ ᴀᴅᴅᴇᴅ.</b>")
-                else:
-                    encoded = await encode(f"get-{first_id * abs(log_channel_id)}-{last_id * abs(log_channel_id)}")
-                    me = await client.get_me()
-                    link = await process_link(encoded, user_id, me.id)
-                    await message.reply(
-                        f"<b>✅ Cᴜsᴛᴏᴍ Bᴀᴛᴄʜ Lɪɴᴋ Gᴇɴᴇʀᴀᴛᴇᴅ:\n\n<blockquote><code>{link}</code></blockquote></b>",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Oᴘᴇɴ Lɪɴᴋ", url=link)]])
-                    )
+                    break
+                ids = await _contiguous(client, ids)
+                if not ids:
+                    await message.reply("<b>❌ Cᴏᴜʟᴅɴ'ᴛ sᴛᴏʀᴇ ᴛʜᴇ ʙᴀᴛᴄʜ ɪɴ ᴛʜᴇ ᴅʙ ᴄʜᴀɴɴᴇʟ.</b>")
+                    break
+                first_id, last_id = ids[0], ids[-1]
+                encoded = await encode(f"get-{first_id * abs(log_channel_id)}-{last_id * abs(log_channel_id)}")
+                me = await client.get_me()
+                link = await process_link(encoded, user_id, me.id)
+                await message.reply(
+                    f"<b>✅ Cᴜsᴛᴏᴍ Bᴀᴛᴄʜ Lɪɴᴋ Gᴇɴᴇʀᴀᴛᴇᴅ ({len(ids)} ꜰɪʟᴇs):\n\n<blockquote><code>{link}</code></blockquote></b>",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Oᴘᴇɴ Lɪɴᴋ", url=link)]])
+                )
 
-                    # Log to main log channel
-                    log_msg = (
-                        f"<b>🔗 Lɪɴᴋ Gᴇɴᴇʀᴀᴛᴇᴅ</b>\n\n"
-                        f"<b>• Bᴏᴛ:</b> @{me.username}\n"
-                        f"<b>• Bᴏᴛ ID:</b> <code>{me.id}</code>\n"
-                        f"<b>• Oᴡɴᴇʀ:</b> <code>{user_id}</code>\n"
-                        f"<b>• Lᴏɢ Cʜᴀɴɴᴇʟ:</b> <code>{log_channel_id}</code>\n"
-                        f"<b>• Mᴇᴛʜᴏᴅ:</b> <code>/custom_batch</code>\n"
-                        f"<b>• Lɪɴᴋ:</b> {link}"
-                    )
-                    await send_main_log(client, log_msg)
+                # Log to main log channel
+                log_msg = (
+                    f"<b>🔗 Lɪɴᴋ Gᴇɴᴇʀᴀᴛᴇᴅ</b>\n\n"
+                    f"<b>• Bᴏᴛ:</b> @{me.username}\n"
+                    f"<b>• Bᴏᴛ ID:</b> <code>{me.id}</code>\n"
+                    f"<b>• Oᴡɴᴇʀ:</b> <code>{user_id}</code>\n"
+                    f"<b>• Lᴏɢ Cʜᴀɴɴᴇʟ:</b> <code>{log_channel_id}</code>\n"
+                    f"<b>• Mᴇᴛʜᴏᴅ:</b> <code>/custom_batch</code>\n"
+                    f"<b>• Lɪɴᴋ:</b> {link}"
+                )
+                await send_main_log(client, log_msg)
                 break
 
+            if len(ids) >= MAX_LINK_FILES:
+                await rcv_msg.reply(f"<b>⚠️ Mᴀx {MAX_LINK_FILES} ꜰɪʟᴇs – sᴇɴᴅ /done.</b>", quote=True)
+                continue
             msg_id = await get_message_id(client, rcv_msg, log_channel_id)
             if msg_id:
-                if first_id is None:
-                    first_id = msg_id
-                last_id = msg_id
+                ids.append(msg_id)
             else:
                 await rcv_msg.reply("<b>❌ Fᴀɪʟᴇᴅ ᴛᴏ ᴘʀᴏᴄᴇss ᴛʜɪs ᴍᴇssᴀɢᴇ. Sᴋɪᴘᴘɪɴɢ...</b>", quote=True)
+
+    async def _contiguous(client: Client, ids: list) -> list:
+        """A share link is a range, so the chosen posts must sit next to each other in the DB channel.
+        Posts picked from different places are re-copied (in order) so the link holds exactly them."""
+        if ids == list(range(ids[0], ids[0] + len(ids))):
+            return ids
+        from pyrogram.errors import FloodWait
+        fresh = []
+        for mid in ids:
+            for _ in range(3):
+                try:
+                    copied = await client.copy_message(log_channel_id, log_channel_id, mid)
+                    fresh.append(copied.id)
+                    break
+                except FloodWait as e:
+                    await asyncio.sleep(min(int(e.value) + 1, 60))
+                except Exception as e:
+                    log.error(f"custom_batch copy of {mid} failed: {e}")
+                    break
+        if not fresh:
+            return []
+        # another post may have landed in between – the range still starts/ends on our copies
+        return fresh
 
     @app.on_callback_query(filters.regex(r"^link_gen:cancel$"))
     async def cancel_cb(client: Client, query: CallbackQuery):

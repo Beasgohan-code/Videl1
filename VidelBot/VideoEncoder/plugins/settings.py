@@ -36,12 +36,19 @@ async def settings_viewer(bot: Client, event: Message):
         return
     await AddUserToDatabase(bot, event)
     # User ID
-    if event.reply_to_message:
+    if event.reply_to_message and event.reply_to_message.from_user:
         user_id = event.reply_to_message.from_user.id
     elif not event.reply_to_message and len(event.command) == 1:
         user_id = event.from_user.id
     elif not event.reply_to_message and len(event.command) != 1:
-        user_id = event.text.split(None, 1)[1]
+        arg = event.command[1]
+        if arg.lstrip("-").isdigit():
+            user_id = int(arg)
+        else:
+            try:
+                user_id = (await bot.get_users(arg)).id
+            except Exception:
+                return await event.reply_text("❌ Send a user ID / @username, or reply to the user.")
     else:
         return
     

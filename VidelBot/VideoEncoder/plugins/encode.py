@@ -1,6 +1,5 @@
-
-
 import asyncio
+import re
 
 from pyrogram import Client, filters
 
@@ -56,11 +55,11 @@ async def url_encode(app, message):
     if not c:
         return
     await AddUserToDatabase(app, message)
-    data.append(message)
-    if len(message.text.split()) == 1:
-        await message.reply_text("Usage: /ddl [url] | [filename]")
-        data.remove(data[0])
+    parts = message.text.split()
+    if len(parts) == 1 or not re.match(r"^https?://", parts[1], re.I):
+        await message.reply_text("Usage: /ddl [url] | [filename]\n<i>The link must start with http:// or https://</i>")
         return
+    data.append(message)
     if len(data) == 1:
         await handle_tasks(message, 'url')
     else:
@@ -74,11 +73,13 @@ async def batch_encode(app, message):
     if not c:
         return
     await AddUserToDatabase(app, message)
-    data.append(message)
-    if len(message.text.split()) == 1:
-        await message.reply_text("Usage: /batch [url]")
-        data.remove(data[0])
+    parts = message.text.split()
+    replied_zip = bool(message.reply_to_message and message.reply_to_message.document)
+    if not replied_zip and (len(parts) == 1 or not re.match(r"^https?://", parts[1], re.I)):
+        await message.reply_text("Usage: /batch [url] – or reply /batch to a .zip / archive\n"
+                                 "<i>The link must start with http:// or https://</i>")
         return
+    data.append(message)
     if len(data) == 1:
         await handle_tasks(message, 'batch')
     else:

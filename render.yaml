@@ -1,13 +1,18 @@
-# One-click Render deploy (Docker web service – the keep-alive server answers health checks).
+# Render Blueprint – Dashboard → New → Blueprint → pick this repo.
+# Docker web service; the built-in keep-alive server answers /health and pings itself so the free plan never sleeps.
 services:
   - type: web
     name: videl
     runtime: docker
-    rootDir: VidelBot
     dockerfilePath: ./Dockerfile
+    dockerContext: .
     plan: free
+    region: singapore
+    numInstances: 1
     healthCheckPath: /health
+    autoDeploy: true
     envVars:
+      # ── required ──
       - key: BOT_TOKEN
         sync: false
       - key: API_ID
@@ -18,9 +23,20 @@ services:
         sync: false
       - key: OWNER_ID
         sync: false
+      # ── recommended ──
       - key: LOG_CHANNEL
         sync: false
       - key: ENCRYPTION_KEY
         sync: false
+      - key: FSUB_CHANNELS
+        sync: false
+      - key: RENAME_DUMP_CHANNEL
+        sync: false
       - key: BOT_NAME
         value: Videl
+      - key: LOG_TZ
+        value: Asia/Kolkata
+      - key: AIOGRAM_ENABLED
+        value: "True"
+      - key: MAX_LINK_FILES
+        value: "1000"

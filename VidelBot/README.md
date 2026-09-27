@@ -69,24 +69,56 @@ unreachable (3 network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, Vid
 
 ## 🚀 Deploy
 
-1. Copy `config.env.sample` → `config.env` and fill at least `BOT_TOKEN`, `API_ID`, `API_HASH`, `DB_URI`, `OWNER_ID`.
-2. Generate an `ENCRYPTION_KEY` (clone-bot tokens are Fernet-encrypted in MongoDB):
-   ```bash
-   python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
-   ```
-3. Run:
-   ```bash
-   # Docker (recommended – includes ffmpeg)
-   docker build -t videl . && docker run --env-file config.env -p 8080:8080 videl
+### 1 · Collect the variables
+| Variable | Where to get it |
+|---|---|
+| `BOT_TOKEN` | @BotFather → /newbot |
+| `API_ID`, `API_HASH` | https://my.telegram.org → API development tools |
+| `DB_URI` | MongoDB Atlas (free M0 works) → Connect → Drivers |
+| `OWNER_ID` | your numeric user id (send /id to the bot or @userinfobot) |
+| `ENCRYPTION_KEY` | `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` – encrypts clone-bot tokens. **Keep it safe:** lose it and clone owners must re-add their bots |
+| `LOG_CHANNEL` *(recommended)* | a channel id (`-100…`) where the bot is admin |
 
-   # or bare metal (needs ffmpeg + ffprobe in PATH)
-   pip install -r requirements.txt && python3 run.py
-   ```
-4. Optional: in @BotFather enable **/setinline** (inline QR / short links) and, for Stars, nothing else is needed – Stars work out of the box.
+Everything else is optional; see `config.env.sample`. Inline `# comments` pasted along with a value are stripped automatically, and a malformed number falls back to its default with a warning instead of crashing.
 
-**One-click configs** in the repository root: `render.yaml` (Render blueprint), `heroku.yml` + `app.json` (Heroku container stack). `Procfile` works on Koyeb / Railway / Heroku.
+### 2 · Pick a platform
+All platforms build the **root `Dockerfile`** (Python 3.11 + ffmpeg/ffprobe, mediainfo, mkvtoolnix, 7z; tini as PID 1). The container serves `/health` on `$PORT` for health checks.
 
-> Keep the **ENCRYPTION_KEY** safe – if you lose it, existing clone bots can't be decrypted and their owners must re-add them.
+| Platform | How |
+|---|---|
+| **Railway** | New Project → Deploy from GitHub repo. `railway.toml` sets the Dockerfile builder, the `/health` check and restart-on-failure. Add the variables under *Variables*. |
+| **Render** | Dashboard → New → **Blueprint** → pick the repo (`render.yaml`), or [one-click](https://render.com/deploy?repo=https://github.com/Beasgohan-code/Videl1). Fill the `sync: false` variables. |
+| **Heroku** | `heroku create && heroku stack:set container && git push heroku HEAD:main` (`heroku.yml`), or [one-click](https://heroku.com/deploy?template=https://github.com/Beasgohan-code/Videl1) (`app.json`). |
+| **Koyeb / Northflank / Fly.io** | Create a service from the GitHub repo with the **Dockerfile** builder, port `8080`, health check path `/health`. |
+| **VPS with Docker** | `cp VidelBot/config.env.sample VidelBot/config.env` → edit → `docker compose up -d --build` (logs: `docker compose logs -f`). |
+| **VPS without Docker** | `sudo apt install ffmpeg mediainfo mkvtoolnix p7zip-full` → `cd VidelBot && python3.11 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt` → create `config.env` → `python3 run.py` (systemd unit below). |
+| **Platform root dir = `VidelBot/`** | `VidelBot/Dockerfile` and `VidelBot/Procfile` are the same build for that layout. |
+
+> ⚠️ Run **exactly one** instance per bot token (keep replicas at 1). Two copies would steal each other's updates.
+
+<details><summary>systemd unit (VPS without Docker)</summary>
+
+```ini
+# /etc/systemd/system/videl.service  →  sudo systemctl enable --now videl
+[Unit]
+Description=Videl Telegram bot
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/Videl1/VidelBot
+ExecStart=/opt/Videl1/VidelBot/.venv/bin/python run.py
+Restart=on-failure
+RestartSec=10
+User=videl
+
+[Install]
+WantedBy=multi-user.target
+```
+</details>
+
+### 3 · After the first start
+* The owner gets a DM plus a `LOG_CHANNEL` post saying the bot is online. Commands are registered automatically.
+* Optional: in @BotFather turn on **/setinline** (inline QR / short links), and enable **Bot Management Mode** for one-tap managed clone bots.
 
 ### Keep-alive (`keep_alive.py`)
 Serves `GET /` and `GET /health` (JSON: uptime, running clones, encoder queue, last watchdog sweep) on `0.0.0.0:$PORT`.

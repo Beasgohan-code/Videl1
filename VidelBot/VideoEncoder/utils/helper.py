@@ -63,10 +63,15 @@ async def check_chat(message, chat):
 
 
 async def handle_url(url, filepath, msg):
-    downloader = SmartDL(url, filepath, progress_bar=False, threads=10)
-    downloader.start(blocking=False)
+    # SmartDL's constructor probes the URL synchronously – keep it off the event loop
+    downloader = await asyncio.to_thread(SmartDL, url, filepath, progress_bar=False, threads=10)
+    await asyncio.to_thread(downloader.start, blocking=False)
     while not downloader.isFinished():
         await progress_for_url(downloader, msg)
+        await asyncio.sleep(6)              # edit at most every few seconds (FloodWait otherwise)
+    if not downloader.isSuccessful():
+        errors = "; ".join(str(e) for e in downloader.get_errors()[-2:]) or "unknown error"
+        raise RuntimeError(f"Download failed: {errors}")
 
 
 async def handle_encode(filepath, message, msg, audio_map=None):

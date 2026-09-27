@@ -24,6 +24,52 @@ except ImportError:  # python-dotenv is optional at runtime
     pass
 
 
+def _clean_environ():
+    """`docker run --env-file`, Railway/Render/Koyeb dashboards etc. pass values literally, so a
+    line copied from config.env.sample like `KEEP_ALIVE_INTERVAL=240   # seconds` would reach the
+    bot as "240   # seconds" and crash int().  Strip such inline comments and surrounding quotes
+    once, here, for every module that reads os.environ."""
+    import re
+    comment = re.compile(r"\s+#.*$")
+    for key, value in list(os.environ.items()):
+        new = value.strip()
+        if len(new) >= 2 and new[0] == new[-1] and new[0] in "\"'":
+            new = new[1:-1]                      # quoted → keep content verbatim
+        elif new.startswith("#"):
+            new = ""                             # `KEY=   # comment` → empty
+        else:
+            new = comment.sub("", new)
+        if new != value:
+            os.environ[key] = new
+
+
+_clean_environ()
+
+
+def _env_num(cast, name, default, empty=None):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if raw == "":
+        return default if empty is None else empty
+    try:
+        return cast(raw)
+    except ValueError:
+        import sys
+        print(f"[config] {name}={raw!r} is not a valid {cast.__name__} – using {default}", file=sys.stderr)
+        return default
+
+
+def env_int(name, default, empty=None):
+    """int env var; a malformed value logs a warning and falls back instead of crashing boot."""
+    return _env_num(int, name, default, empty)
+
+
+def env_float(name, default, empty=None):
+    return _env_num(float, name, default, empty)
+
+
 def _ids(*names):
     """Parse one or more env vars holding user/chat IDs separated by space or comma."""
     out = []
@@ -45,7 +91,7 @@ def _bool(name, default=False):
 # Telegram Bot Credentials
 # ==============================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-API_ID = int(os.environ.get("API_ID", "0") or 0)
+API_ID = env_int("API_ID", 0)
 API_HASH = os.environ.get("API_HASH", "")
 BOT_NAME = os.environ.get("BOT_NAME", "Videl")
 
@@ -77,18 +123,18 @@ ENCODER_DB_NAME = os.environ.get("ENCODER_DB_NAME") or os.environ.get("SESSION_N
 # ==============================
 # Logging
 # ==============================
-LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "0") or 0)
+LOG_CHANNEL = env_int("LOG_CHANNEL", 0)
 ERROR_MESSAGE = _bool("ERROR_MESSAGE", True)
 # Events that are ALSO sent to every owner in DM (the log channel always gets everything).
 OWNER_DM_EVENTS = set(os.environ.get(
     "OWNER_DM_EVENTS", "BotStarted BotStopped CloneCreated CloneDeleted StarsPayment LowDisk AutoRestart"
 ).replace(",", " ").split())
 LOG_START_EVENTS = _bool("LOG_START_EVENTS", True)        # log returning users pressing /start
-START_LOG_COOLDOWN_MIN = int(os.environ.get("START_LOG_COOLDOWN_MIN", "60") or 60)  # per user
+START_LOG_COOLDOWN_MIN = env_int("START_LOG_COOLDOWN_MIN", 60)  # per user
 LOG_LOGINS = _bool("LOG_LOGINS", True)                    # log /login and /logout of the saver
 LOG_LINKS = _bool("LOG_LINKS", True)                      # log clone-bot link generation
 DAILY_REPORT = _bool("DAILY_REPORT", True)                # daily summary to the log channel
-DAILY_REPORT_HOUR = int(os.environ.get("DAILY_REPORT_HOUR", "0") or 0)   # 0-23, in LOG_TZ
+DAILY_REPORT_HOUR = env_int("DAILY_REPORT_HOUR", 0)   # 0-23, in LOG_TZ
 LOG_TZ = os.environ.get("LOG_TZ", "Asia/Kolkata")         # timezone for log timestamps
 
 # ==============================
@@ -120,8 +166,8 @@ FSUB_REQUEST_MODE = _bool("FSUB_REQUEST_MODE", False)  # use join-request links 
 # ==============================
 # Save-Restricted: limits & premium
 # ==============================
-FREE_LIMIT_DAILY = int(os.environ.get("FREE_LIMIT_DAILY", "10") or 10)
-FREE_LIMIT_SIZE_GB = float(os.environ.get("FREE_LIMIT_SIZE_GB", "2") or 2)
+FREE_LIMIT_DAILY = env_int("FREE_LIMIT_DAILY", 10)
+FREE_LIMIT_SIZE_GB = env_float("FREE_LIMIT_SIZE_GB", 2)
 UPI_ID = os.environ.get("UPI_ID", "")            # shown on the /plan page (optional)
 QR_CODE = os.environ.get("QR_CODE", "")          # payment QR image URL (optional)
 SUBSCRIPTION = os.environ.get("SUBSCRIPTION", "")  # banner image for /plan (optional)
@@ -138,16 +184,16 @@ PREMIUM_PRICES = os.environ.get(
     "PREMIUM_PRICES", "1 Month: ₹50 / $1 | 3 Months: ₹120 / $2.5 | Lifetime: ₹200 / $4"
 )
 # Monthly auto-renewing Stars subscription (⭐ per 30 days). 0 disables it.
-SUBSCRIPTION_STARS = int(os.environ.get("SUBSCRIPTION_STARS", "90") or 0)
+SUBSCRIPTION_STARS = env_int("SUBSCRIPTION_STARS", 90, empty=0)
 # Let users buy Premium for a friend (native Telegram user picker + Stars).
 GIFTS_ENABLED = _bool("GIFTS_ENABLED", True)
 
 # ==============================
 # Growth: referrals · redeem codes · free trial
 # ==============================
-REFERRAL_TARGET = int(os.environ.get("REFERRAL_TARGET", "5") or 0)          # 0 disables rewards
-REFERRAL_REWARD_DAYS = int(os.environ.get("REFERRAL_REWARD_DAYS", "3") or 0)
-TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "1") or 0)                    # 0 disables /trial
+REFERRAL_TARGET = env_int("REFERRAL_TARGET", 5, empty=0)          # 0 disables rewards
+REFERRAL_REWARD_DAYS = env_int("REFERRAL_REWARD_DAYS", 3, empty=0)
+TRIAL_DAYS = env_int("TRIAL_DAYS", 1, empty=0)                    # 0 disables /trial
 
 # ==============================
 # Modern Bot API UX
@@ -168,7 +214,7 @@ BOT_API_URL = os.environ.get("BOT_API_URL", "")          # optional self-hosted 
 COLORED_BUTTONS = _bool("COLORED_BUTTONS", True)         # 🟩 success / 🟥 danger / 🟦 primary buttons
 EPHEMERAL_REPLIES = _bool("EPHEMERAL_REPLIES", True)     # /help /id /ping … in groups → visible only to the caller
 MANAGED_BOTS = _bool("MANAGED_BOTS", True)               # one-tap clone creation (needs Bot Management Mode)
-MANAGED_PAIR_TIMEOUT = int(os.environ.get("MANAGED_PAIR_TIMEOUT", "300") or 300)  # seconds to wait for the new bot
+MANAGED_PAIR_TIMEOUT = env_int("MANAGED_PAIR_TIMEOUT", 300)  # seconds to wait for the new bot
 SUPPORT_ENABLED = _bool("SUPPORT_ENABLED", True)  # /support inbox → owners reply by replying
 
 # ==============================
@@ -191,17 +237,17 @@ if not ENCODE_DIR.endswith("/"):
 MONGO_URI = DB_URI
 FS_DB_NAME = os.environ.get("FS_DB_NAME") or os.environ.get("MONGO_DB_NAME", "VidelFileStore")
 VIDEL_DB_NAME = os.environ.get("VIDEL_DB_NAME", "Videl")  # core (users / bans / settings)
-MAIN_LOG_CHANNEL = int(os.environ.get("MAIN_LOG_CHANNEL", "0") or 0) or LOG_CHANNEL
-MAX_BOTS_PER_USER = int(os.environ.get("MAX_BOTS_PER_USER", "1") or 1)
-BOT_CREATION_COOLDOWN = int(os.environ.get("BOT_CREATION_COOLDOWN", "30") or 30)
-HIBERNATION_HOURS = int(os.environ.get("HIBERNATION_HOURS", "48") or 48)
-DEFAULT_AUTO_DELETE = int(os.environ.get("DEFAULT_AUTO_DELETE", "0") or 0)
+MAIN_LOG_CHANNEL = env_int("MAIN_LOG_CHANNEL", 0) or LOG_CHANNEL
+MAX_BOTS_PER_USER = env_int("MAX_BOTS_PER_USER", 1)
+BOT_CREATION_COOLDOWN = env_int("BOT_CREATION_COOLDOWN", 30)
+HIBERNATION_HOURS = env_int("HIBERNATION_HOURS", 48)
+DEFAULT_AUTO_DELETE = env_int("DEFAULT_AUTO_DELETE", 0)
 ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", "")  # Fernet key – encrypts clone bot tokens in DB
 BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "")
 BACKEND_API_SECRET = os.environ.get("BACKEND_API_SECRET", "")
 FREEIMAGE_API_KEY = os.environ.get("FREEIMAGE_API_KEY", "")  # empty → catbox.moe fallback
 CLONE_ENABLED = _bool("CLONE_ENABLED", True)
-TG_BOT_WORKERS = int(os.environ.get("TG_BOT_WORKERS", "16") or 16)
+TG_BOT_WORKERS = env_int("TG_BOT_WORKERS", 16)
 
 # Source code link returned by the (unlisted) /source command – required by the
 # AGPL-3.0 licence of the bundled code when you run a modified copy publicly.
@@ -210,7 +256,7 @@ SOURCE_URL = os.environ.get("SOURCE_URL", "https://github.com/Beasgohan-code/Vid
 # ==============================
 # Web keep-alive
 # ==============================
-PORT = int(os.environ.get("PORT", "8080") or 8080)
+PORT = env_int("PORT", 8080)
 # Public URL of this app – pinged periodically so free hosts (Render/Koyeb/Replit…)
 # don't put it to sleep. Auto-detected on Render, Koyeb, Railway and Heroku.
 KEEP_ALIVE_URL = (
@@ -221,15 +267,15 @@ KEEP_ALIVE_URL = (
     or (f"https://{os.environ['HEROKU_APP_NAME']}.herokuapp.com" if os.environ.get("HEROKU_APP_NAME") else "")
     or ""
 )
-KEEP_ALIVE_INTERVAL = int(os.environ.get("KEEP_ALIVE_INTERVAL", "240") or 240)  # seconds
+KEEP_ALIVE_INTERVAL = env_int("KEEP_ALIVE_INTERVAL", 240)  # seconds
 
 # ==============================
 # Watchdog / auto cleanup
 # ==============================
-WATCHDOG_INTERVAL = int(os.environ.get("WATCHDOG_INTERVAL", "600") or 600)        # seconds between sweeps
-CLEANUP_AFTER_HOURS = float(os.environ.get("CLEANUP_AFTER_HOURS", "6") or 6)       # delete temp files older than this
-MIN_FREE_DISK_GB = float(os.environ.get("MIN_FREE_DISK_GB", "2") or 2)             # aggressive cleanup below this
-STATE_TIMEOUT_MIN = int(os.environ.get("STATE_TIMEOUT_MIN", "15") or 15)           # drop abandoned login/setup flows
+WATCHDOG_INTERVAL = env_int("WATCHDOG_INTERVAL", 600)        # seconds between sweeps
+CLEANUP_AFTER_HOURS = env_float("CLEANUP_AFTER_HOURS", 6)       # delete temp files older than this
+MIN_FREE_DISK_GB = env_float("MIN_FREE_DISK_GB", 2)             # aggressive cleanup below this
+STATE_TIMEOUT_MIN = env_int("STATE_TIMEOUT_MIN", 15)           # drop abandoned login/setup flows
 AUTO_RESTART_ON_HANG = _bool("AUTO_RESTART_ON_HANG", True)                         # restart if Telegram is unreachable
 
 
