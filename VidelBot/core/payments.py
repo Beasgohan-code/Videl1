@@ -166,7 +166,20 @@ async def buy_cmd(client: Client, message: Message):
 
 # ─────────────────────────── subscription ───────────────────────────
 async def subscription_link(client: Client, user_id: int) -> str:
-    """Create a Stars subscription invoice link (auto-renews every 30 days)."""
+    """Create a Stars subscription invoice link (auto-renews every 30 days).
+    Bot API ``createInvoiceLink(subscription_period)`` via aiogram, MTProto fallback."""
+    from core import botapi
+    title = f"{BOT_NAME} Premium · Monthly"
+    desc = (f"Premium that renews automatically every 30 days for ⭐{SUBSCRIPTION_STARS}. "
+            "Cancel anytime with /mysub.")
+    if botapi.enabled():
+        from aiogram.types import LabeledPrice
+        url = await botapi.try_call(lambda b: b.create_invoice_link(
+            title=title, description=desc, payload=make_sub_payload(user_id), currency="XTR",
+            prices=[LabeledPrice(label="Premium · 30 days", amount=SUBSCRIPTION_STARS)],
+            subscription_period=SUB_PERIOD))
+        if url:
+            return url
     r = await client.invoke(raw.functions.payments.ExportInvoice(
         invoice_media=raw.types.InputMediaInvoice(
             title=f"{BOT_NAME} Premium · Monthly",
@@ -260,11 +273,15 @@ async def sub_toggle_cb(client: Client, query: CallbackQuery):
     sub = await vdb.db["subscriptions"].find_one({"user": uid, "active": True})
     if not sub:
         return await query.answer("No active subscription.", show_alert=True)
-    try:
-        await client.invoke(raw.functions.payments.BotCancelStarsSubscription(
-            user_id=await client.resolve_peer(uid), charge_id=sub["charge_id"], restore=restore or None))
-    except Exception as e:
-        return await query.answer(f"❌ Telegram error: {e}"[:190], show_alert=True)
+    from core import botapi
+    done = botapi.enabled() and await botapi.try_call(lambda b: b.edit_user_star_subscription(
+        user_id=uid, telegram_payment_charge_id=sub["charge_id"], is_canceled=not restore))
+    if not done:
+        try:
+            await client.invoke(raw.functions.payments.BotCancelStarsSubscription(
+                user_id=await client.resolve_peer(uid), charge_id=sub["charge_id"], restore=restore or None))
+        except Exception as e:
+            return await query.answer(f"❌ Telegram error: {e}"[:190], show_alert=True)
     await vdb.db["subscriptions"].update_one({"_id": sub["_id"]}, {"$set": {"canceled": not restore}})
     sub["canceled"] = not restore
     await query.answer("🔁 Auto-renew resumed." if restore else "❌ Auto-renew canceled – Premium stays until the period ends.",
@@ -455,7 +472,7 @@ async def successful_payment(client: Client, message: Message):
     else:
         head = (f"<b>🎉 Payment received – thank you!</b>\n\n<blockquote><b>💎 Premium:</b> Active\n"
                 f"<b>📅 Valid until:</b> {until}\n<b>⭐ Paid:</b> {sp.total_amount} Stars</blockquote>\n"
-                "<i>Enjoy unlimited saves & big files!</i>")
+                "<i>Enjoy unlimited saves &amp; big files!</i>")
         kb = InlineKeyboardMarkup([[Btn("📊 My Plan", callback_data="myplan_back_btn")], receipt])
     try:
         await client.send_message(message.chat.id, head, message_effect_id=effect("party"), reply_markup=kb)
@@ -469,7 +486,7 @@ async def successful_payment(client: Client, message: Message):
             await client.send_message(
                 target,
                 f"<b>🎁 You received a gift!</b>\n\n<blockquote>{giver} gifted you <b>{BOT_NAME} Premium</b> "
-                f"({_label(days)}).\n<b>📅 Valid until:</b> {until}</blockquote>\n<i>Enjoy unlimited saves & big files!</i>",
+                f"({_label(days)}).\n<b>📅 Valid until:</b> {until}</blockquote>\n<i>Enjoy unlimited saves &amp; big files!</i>",
                 message_effect_id=effect("heart"),
                 reply_markup=InlineKeyboardMarkup([[Btn("📊 My Plan", callback_data="myplan_back_btn")]]),
             )
@@ -516,11 +533,10 @@ async def stars_stats(client: Client, message: Message):
         n, total = (agg[0]["n"], agg[0]["stars"]) if agg else (0, 0)
         subs = await vdb.db["subscriptions"].count_documents({"active": True, "canceled": {"$ne": True}})
         gifts = await col.count_documents({"kind": "gift", "refunded": False})
-        try:
-            balance = f"<code>{await client.get_stars_balance()}</code> ⭐"
-        except Exception as e:
-            balance = f"<i>unavailable ({type(e).__name__})</i>"
+        balance = await star_balance(client)
+        balance = f"<code>{balance}</code> ⭐" if balance is not None else "<i>unavailable</i>"
         last = await col.find().sort("date", -1).limit(10).to_list(10)
+        tg_lines = await telegram_transactions(5)
     icon = {"sub": "🔁", "gift": "🎁"}
     lines = [
         f"• {icon.get(p.get('kind'), '💎')} <code>{p['user']}</code> · {_label(p['days'])} · ⭐{p['stars']}"
@@ -534,7 +550,37 @@ async def stars_stats(client: Client, message: Message):
         f"Paid orders: <code>{n}</code>\nStars earned: <code>{total}</code>\n"
         f"Active subscriptions: <code>{subs}</code>\nGifts sold: <code>{gifts}</code>\n"
         f"Plans: {plans}\nSubscription: {sub_txt}</blockquote>\n\n<b>Latest:</b>\n" + ("\n".join(lines) or "—")
+        + (("\n\n<b>🧾 Telegram ledger (Bot API):</b>\n" + "\n".join(tg_lines)) if tg_lines else "")
     )
+
+
+async def star_balance(client):
+    """Live Stars balance: Bot API getMyStarBalance (aiogram) → MTProto fallback."""
+    from core import botapi
+    if botapi.enabled():
+        got = await botapi.try_call(lambda b: b.get_my_star_balance())
+        if got is not None:
+            return got.amount
+    try:
+        return await client.get_stars_balance()
+    except Exception:
+        return None
+
+
+async def telegram_transactions(limit: int = 5) -> list:
+    """Last Stars transactions straight from Telegram (getStarTransactions)."""
+    from core import botapi
+    if not botapi.enabled():
+        return []
+    got = await botapi.try_call(lambda b: b.get_star_transactions(limit=limit))
+    out = []
+    for t in getattr(got, "transactions", None) or []:
+        when = t.date.strftime("%d %b %H:%M") if hasattr(t.date, "strftime") else str(t.date)
+        src = getattr(t, "source", None)
+        who = getattr(getattr(src, "user", None), "id", None)
+        sign = "➕" if src is not None else "➖"
+        out.append(f"• {sign} ⭐{t.amount} · {when}" + (f" · <code>{who}</code>" if who else ""))
+    return out
 
 
 @Client.on_message(filters.command("refund") & filters.user(OWNERS))

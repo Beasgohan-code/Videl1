@@ -1,6 +1,6 @@
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from pyrogram import Client, filters
 from pyrogram.types import (
@@ -67,6 +67,67 @@ async def _has_shared_chat(_, __, m: Message) -> bool:
 
 shared_chat_filter = filters.create(_has_shared_chat)
 
+
+
+async def accept_token(client: Client, user_id: int, token: str, status_msg, managed: bool = False) -> bool:
+    """Validate a bot token and move the wizard to the channel step.
+    Shared by the classic "paste your token" flow and the one-tap managed-bot flow."""
+    state = _creation_state.setdefault(user_id, {"step": "awaiting_token", "data": {}})
+    state.setdefault("data", {})
+    if managed:
+        state["data"]["managed"] = True
+    bot_info = await validate_bot_token(token)
+    if not bot_info:
+        await status_msg.edit_text(
+            "<b>❌ Invalid bot token!</b>\n\n"
+            "The token could not be verified with Telegram.\n"
+            "Please check and send again.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
+            ]),
+        )
+        return False
+
+    # Check if bot is already registered
+    bot_id = bot_info["id"]
+    existing = await main_db.get_bot(bot_id)
+    if existing:
+        if existing.get("is_deleted") and existing.get("owner_id") == user_id:
+            pass # Allow recreating a soft-deleted bot
+        else:
+            await status_msg.edit_text(
+                "<b>❌ This bot is already registered!</b>\n\n"
+                f"Bot @{bot_info.get('username', 'unknown')} is already in use.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
+                ]),
+            )
+            _creation_state.pop(user_id, None)
+            return False
+
+    # Save token and move to next step
+    state["data"]["token"] = token
+    state["data"]["bot_info"] = bot_info
+    state["step"] = "awaiting_channel"
+
+    bot_name = bot_info.get("first_name", "Unknown")
+    bot_username = bot_info.get("username", "unknown")
+
+    await status_msg.edit_text(
+        f"<b>✅ Token verified!</b>\n\n"
+        f"<blockquote>Bot: <b>{bot_name}</b> (@{bot_username})\n\n"
+        f"<b>Step 2/2:</b> Send me the <b>Log Channel ID</b>.\n\n"
+        f"This is where your bot will store files.\n"
+        f"Make sure the bot (@{bot_username}) is an admin in the channel.\n\n"
+        f"Example: <code>-1001234567890</code></blockquote>",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
+        ]),
+    )
+    await offer_channel_picker(client, user_id, state)
+    return True
+
+
 # =============================================================================
 # CALLBACK: Create Bot (entry point)
 # =============================================================================
@@ -92,6 +153,8 @@ async def create_bot_callback(client: Client, query: CallbackQuery):
     # Check cooldown
     last_created = await main_db.get_cooldown(user_id)
     if last_created:
+        if last_created.tzinfo is not None:  # stored aware, Mongo may return naive UTC
+            last_created = last_created.replace(tzinfo=None) - (last_created.utcoffset() or timedelta(0))
         elapsed = (datetime.utcnow() - last_created).total_seconds()
         if elapsed < BOT_CREATION_COOLDOWN:
             remaining = int(BOT_CREATION_COOLDOWN - elapsed)
@@ -104,16 +167,23 @@ async def create_bot_callback(client: Client, query: CallbackQuery):
     # Set user state to "awaiting token"
     _creation_state[user_id] = {"step": "awaiting_token", "data": {}}
 
+    # Bot Management Mode → offer one-tap creation (no BotFather / token copy)
+    from filestore.main_bot.plugins import managed_bots
+    one_tap = await managed_bots.available()
+    kb = [[InlineKeyboardButton("⚡ One-tap create (no token)", callback_data="managed_new")]] if one_tap else []
+    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")])
+    extra = ("\n\n<b>⚡ New:</b> tap <b>One-tap create</b> and Telegram makes the bot for you – "
+             "no BotFather, no token.") if one_tap else ""
+
     await query.message.edit_text(
         text=(
             "<b>🤖 Create a New Bot</b>\n\n"
             "<blockquote><b>Step 1/2:</b> Send me your bot token.\n\n"
             "You can get a bot token from @BotFather.\n"
             "Example: <code>123456:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw</code></blockquote>"
+            + extra
         ),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(kb),
     )
     await query.answer()
 
@@ -191,6 +261,11 @@ async def handle_creation_input(client: Client, message: Message):
     if step == "awaiting_token":
         token = message.text.strip()
 
+        if token.startswith("@"):
+            from filestore.main_bot.plugins import managed_bots
+            if await managed_bots.claim_username(client, message, user_id, token):
+                return
+
         # Basic format check
         if ":" not in token or len(token) < 20:
             await message.reply(
@@ -206,55 +281,7 @@ async def handle_creation_input(client: Client, message: Message):
         # Validate with Telegram API
         status_msg = await message.reply("<b>⏳ Validating bot token...</b>")
 
-        bot_info = await validate_bot_token(token)
-        if not bot_info:
-            await status_msg.edit_text(
-                "<b>❌ Invalid bot token!</b>\n\n"
-                "The token could not be verified with Telegram.\n"
-                "Please check and send again.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-                ]),
-            )
-            return
-
-        # Check if bot is already registered
-        bot_id = bot_info["id"]
-        existing = await main_db.get_bot(bot_id)
-        if existing:
-            if existing.get("is_deleted") and existing.get("owner_id") == user_id:
-                pass # Allow recreating a soft-deleted bot
-            else:
-                await status_msg.edit_text(
-                    "<b>❌ This bot is already registered!</b>\n\n"
-                    f"Bot @{bot_info.get('username', 'unknown')} is already in use.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
-                    ]),
-                )
-                _creation_state.pop(user_id, None)
-                return
-
-        # Save token and move to next step
-        state["data"]["token"] = token
-        state["data"]["bot_info"] = bot_info
-        state["step"] = "awaiting_channel"
-
-        bot_name = bot_info.get("first_name", "Unknown")
-        bot_username = bot_info.get("username", "unknown")
-
-        await status_msg.edit_text(
-            f"<b>✅ Token verified!</b>\n\n"
-            f"<blockquote>Bot: <b>{bot_name}</b> (@{bot_username})\n\n"
-            f"<b>Step 2/2:</b> Send me the <b>Log Channel ID</b>.\n\n"
-            f"This is where your bot will store files.\n"
-            f"Make sure the bot (@{bot_username}) is an admin in the channel.\n\n"
-            f"Example: <code>-1001234567890</code></blockquote>",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-            ]),
-        )
-        await offer_channel_picker(client, user_id, state)
+        await accept_token(client, user_id, token, status_msg)
 
     # -------------------------------------------------------------------------
     # STEP 2: Awaiting log channel ID
@@ -342,6 +369,9 @@ async def handle_creation_input(client: Client, message: Message):
             bot_username=bot_username,
             log_channel_id=channel_id,
         )
+        if state["data"].get("managed"):
+            # created through Bot Management Mode → Videl can rotate its token later
+            await main_db.bots.update_one({"_id": bot_id}, {"$set": {"managed": True}})
 
         # Set cooldown
         await main_db.set_cooldown(user_id)

@@ -71,7 +71,6 @@ async def on_new_user(client, user, text: str) -> bool:
     name = botlog.esc(user.first_name or str(user.id))
     try:
         if rewarded:
-            from core.payments import until_text
             await client.send_message(
                 ref, f"<b>🎉 Referral reward unlocked!</b>\n\n<blockquote><b>{name}</b> joined with your link.\n"
                      f"<b>👥 Referrals:</b> {count}\n<b>💎 Reward:</b> +{_label(REFERRAL_REWARD_DAYS)} Premium\n"
@@ -102,7 +101,7 @@ async def refer_view(client, user_id: int):
     count, rewards = doc.get("referrals", 0), doc.get("referral_rewards", 0)
     reward_line = (f"🎁 Every <b>{REFERRAL_TARGET}</b> friends who join = <b>+{_label(REFERRAL_REWARD_DAYS)} Premium</b>\n"
                    if REFERRAL_TARGET > 0 and REFERRAL_REWARD_DAYS > 0 else "")
-    text = (f"<b>🤝 Refer & Earn</b>\n\n<blockquote>{reward_line}"
+    text = (f"<b>🤝 Refer &amp; Earn</b>\n\n<blockquote>{reward_line}"
             f"👥 <b>Your referrals:</b> {count}\n🏆 <b>Rewards earned:</b> {rewards}\n"
             f"{_progress(count)}</blockquote>\n\n<b>🔗 Your link:</b>\n<code>{link}</code>")
     share = f"https://t.me/share/url?url={quote(link)}&text={quote(f'Try {BOT_NAME} – save restricted content, encode videos & more!')}"

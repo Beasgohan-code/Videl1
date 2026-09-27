@@ -77,7 +77,8 @@ async def id_cmd(client: Client, message: Message):
         m = _media(r)
         if m and getattr(m, "file_id", None):
             lines.append(f"<b>📎 File ID:</b> <code>{m.file_id}</code>")
-    await message.reply_text("\n".join(lines))
+    from core.ui import group_reply
+    await group_reply(message, "\n".join(lines))
 
 
 # ─────────────────────────── /info ───────────────────────────
@@ -107,7 +108,8 @@ async def info_cmd(client: Client, message: Message):
         f"<b>Last seen:</b> {status}"
         "</blockquote>"
     )
-    await message.reply_text(text)
+    from core.ui import group_reply
+    await group_reply(message, text)
 
 
 # ─────────────────────────── /json ───────────────────────────

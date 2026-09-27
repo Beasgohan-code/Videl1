@@ -269,7 +269,15 @@ class WorkerEngine:
             # Handle /start verify — mark user as verified via shortener
             text = message.text
             if len(message.command) > 1 and message.command[1] == "verify":
-                await worker_db.set_verified(user_id)
+                # old static link (or typed by hand) – never grants access
+                await message.reply("<b>⌛ This verification link is invalid or expired.</b>\n"
+                                    "<i>Tap your file link again to get a fresh one.</i>")
+                return
+            if len(message.command) > 1 and message.command[1].startswith("verify_"):
+                if not await worker_db.consume_verify_token(user_id, message.command[1][7:]):
+                    await message.reply("<b>⌛ This verification link is invalid or expired.</b>\n"
+                                        "<i>Tap your file link again to get a fresh one.</i>")
+                    return
                 await message.reply(
                     "<b>━━━━━━━━━━━━━━━━━━━━━\n"
                     "✅ 𝗩𝗘𝗥𝗜𝗙𝗜𝗘𝗗\n"
@@ -318,7 +326,8 @@ class WorkerEngine:
                     if not is_admin_user and not await worker_db.is_verified(user_id, expire_secs):
                         # Build verify URL — shorten the bot's start link so user must visit shortener
                         me = await client.get_me()
-                        verify_url = f"https://t.me/{me.username}?start=verify"
+                        token = await worker_db.new_verify_token(user_id)
+                        verify_url = f"https://t.me/{me.username}?start=verify_{token}"
                         from filestore.utils.shortener import shorten_url
                         from filestore.utils.security import decrypt_token
                         api_key = ""
@@ -326,7 +335,8 @@ class WorkerEngine:
                             if shortener_cfg.get("api_key_encrypted"):
                                 api_key = decrypt_token(shortener_cfg["api_key_encrypted"])
                         except Exception:
-                            api_key = ""
+                            # keys saved by older versions were stored in plain text
+                            api_key = shortener_cfg.get("api_key_encrypted", "")
                         shortened = await shorten_url(
                             verify_url,
                             api_key,

@@ -28,7 +28,7 @@ START_TXT = """<b>👋 Hello {mention},</b>
 <b>👇 Select an Option Below to Get Started:</b>
 """
 
-HELP_TXT = f"""<b>📚 Comprehensive Help & User Guide</b>
+HELP_TXT = f"""<b>📚 Comprehensive Help &amp; User Guide</b>
 <blockquote><b>1️⃣ Public Channels (No Login Required)</b></blockquote>
 • Forward or send the post link directly.
 • Compatible with any public channel or group.
@@ -44,7 +44,7 @@ HELP_TXT = f"""<b>📚 Comprehensive Help & User Guide</b>
 • 🎬 Reply <code>/dl</code> to any video to encode it.
 • ⚡ <code>/clone</code> — create your own FileStore bot.
 • 🧰 <code>/rename</code> · <code>/mediainfo</code> · <code>/upload</code> · <code>/qr</code> · <code>/short</code>
-<blockquote><b>5️⃣ Premium & Rewards</b></blockquote>
+<blockquote><b>5️⃣ Premium &amp; Rewards</b></blockquote>
 • ⭐ <code>/buy</code> — pay with Telegram Stars · 🔁 <code>/mysub</code> monthly auto-renew
 • 🎁 <code>/gift</code> — gift Premium to a friend (pick them from your contacts)
 • 🆓 <code>/trial</code> · 🎟 <code>/redeem CODE</code> · 🤝 <code>/refer</code> — earn Premium free
@@ -53,8 +53,8 @@ HELP_TXT = f"""<b>📚 Comprehensive Help & User Guide</b>
 • <b>Daily Quota:</b> {FREE_LIMIT_DAILY} Files / 24 Hours
 • <b>File Size Cap:</b> {FREE_LIMIT_SIZE_GB:g}GB Maximum
 <blockquote><b>💎 Premium Membership Benefits:</b></blockquote>
-• Unlimited Downloads & No Restrictions.
-• Priority Support & Advanced Features.
+• Unlimited Downloads &amp; No Restrictions.
+• Priority Support &amp; Advanced Features.
 """
 
 ABOUT_TXT = """<b>ℹ️ About This Bot</b>
@@ -97,7 +97,7 @@ CLONE_START_MSG = f"""<b>━━━━━━━━━━━━━━━━━━�
 <i>⬇️ ᴛᴀᴘ ᴀ ʙᴜᴛᴛᴏɴ ᴛᴏ ɢᴇᴛ sᴛᴀʀᴛᴇᴅ ⬇️</i>"""
 
 CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━━━
-📖 𝗛𝗘𝗟𝗣 & 𝗚𝗨𝗜𝗗𝗘
+📖 𝗛𝗘𝗟𝗣 &amp; 𝗚𝗨𝗜𝗗𝗘
 ━━━━━━━━━━━━━━━━━━━━━</b>
 
 <blockquote><b>⚙️ ʜᴏᴡ ᴛᴏ ᴄʀᴇᴀᴛᴇ ʏᴏᴜʀ ʙᴏᴛ:</b>
@@ -143,7 +143,7 @@ CLONE_ABOUT_MSG = f"""<b>━━━━━━━━━━━━━━━━━━�
 │ ◈ ᴇɴᴄʀʏᴘᴛᴇᴅ ᴛᴏᴋᴇɴ sᴛᴏʀᴀɢᴇ
 │ ◈ ꜰᴏʀᴄᴇ sᴜʙ (ᴊᴏɪɴ + ʀᴇǫᴜᴇsᴛ)
 │ ◈ ᴜʀʟ sʜᴏʀᴛᴇɴᴇʀ
-│ ◈ ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇ & ᴀᴅᴍɪɴ
+│ ◈ ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇ &amp; ᴀᴅᴍɪɴ
 │ ◈ ꜰᴏʀᴍᴀᴛᴛᴇᴅ ʟɪɴᴋ ɢᴇɴ
 │ ◈ ᴀᴜᴛᴏ-ʜɪʙᴇʀɴᴀᴛɪᴏɴ
 ╰──────────────────╯</blockquote>"""
@@ -202,14 +202,17 @@ ENC_HELP = """<b>📕 Commands List</b>:
 TOOLS_HELP = """<b>🧰 Tools</b>
 
 <blockquote expandable>/mediainfo — reply to a file: codecs, resolution, bitrate, tracks
-/rename &lt;new name&gt; — reply to a file to rename & re-upload it
+/rename &lt;new name&gt; — reply to a file to rename &amp; re-upload it
 /upload — reply to a file (≤ 200 MB) to get a public download link
 /short &lt;url&gt; — shorten a long link
 /qr &lt;text&gt; — make a QR code
 /id — chat / user / forwarded IDs
 /info — user info (reply / id / username)
 /json — raw JSON of a message (reply)
-/ping — bot latency</blockquote>
+/ping — bot latency
+/guide — illustrated guide (rich message with plans &amp; FAQ)</blockquote>
+
+<i>In groups, /help /id /info /guide answer <b>only you</b> (ephemeral messages).</i>
 
 <i>Inline: type <code>@{username} text</code> in any chat to share a QR / short link.</i>
 """
@@ -217,7 +220,7 @@ TOOLS_HELP = """<b>🧰 Tools</b>
 ADMIN_HELP = """<b>👮 Admin</b>
 
 <blockquote expandable><b>Bot</b>
-/stats — users, modules & server stats
+/stats — users, modules &amp; server stats
 /users — user counts
 /user &lt;id | @name&gt; — full profile + ban / premium buttons
 /msg &lt;id&gt; &lt;text&gt; — message a user · /export — users CSV
@@ -244,6 +247,9 @@ Support: users send /support → it lands in your DM → <b>reply</b> to answer.
 
 <b>Owner</b>
 /setbotpic (reply to a photo) · /delbotpic — bot profile photo
+/botapi — aiogram / Bot API bridge status, capabilities &amp; live button-colour demo
+/giftpremium &lt;user&gt; &lt;3|6|12&gt; — gift Telegram Premium from the bot's Stars
+/gifts — Telegram gifts · /sendgift &lt;user&gt; &lt;gift_id&gt; [text]
 
 <b>Clone bots</b>
 /clonestats — platform stats · /bots — list all clone bots · /sys — system

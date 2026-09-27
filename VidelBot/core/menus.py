@@ -171,7 +171,7 @@ async def start_cmd(client: Client, message: Message):
         await remove_channel_picker(client, uid, old, "⌨️ Setup closed.")
     await react(message)
 
-    # Deep links: t.me/<bot>?start=premium | clone | help | settings | refer | gift | sub | trial | support
+    # Deep links: t.me/<bot>?start=premium | clone | help | guide | settings | refer | gift | sub | trial | support
     # (ref_<id> referral links fall through to the normal home screen)
     arg = message.command[1].lower() if len(message.command) > 1 else ""
 
@@ -204,6 +204,10 @@ async def start_cmd(client: Client, message: Message):
     if arg == "trial":
         from core.growth import trial_cmd
         return await trial_cmd(client, message)
+    if arg in ("guide", "tutorial"):
+        from core.extras import send_guide
+        me = client.me or await client.get_me()
+        return await send_guide(client, message.chat.id, me.username)
     if arg == "support":
         from core.support import support_cmd
         message.command = ["support"]
@@ -220,15 +224,22 @@ async def start_cmd(client: Client, message: Message):
 @Client.on_message(filters.command("start") & filters.group)
 async def start_group(client: Client, message: Message):
     b = await _bot(client)
-    await message.reply_text(
-        f"👋 <b>{BOT_NAME}</b> is alive!",
-        reply_markup=InlineKeyboardMarkup([[Btn("🚀 Open in private", url=f"https://t.me/{b['username']}?start=help")]]),
+    from core.ui import group_reply
+    await group_reply(
+        message, f"👋 <b>{BOT_NAME}</b> is alive!",
+        InlineKeyboardMarkup([[Btn("🚀 Open in private", url=f"https://t.me/{b['username']}?start=help")]]),
     )
 
 
 @Client.on_message(filters.command("help"))
 async def help_cmd(client: Client, message: Message):
     uid = message.from_user.id if message.from_user else 0
+    if message.chat.id < 0 and uid:
+        # groups: help only for the caller (ephemeral) with a deep link to the full menu
+        from core.ui import group_reply
+        me = client.me or await client.get_me()
+        kb = InlineKeyboardMarkup([[Btn("🚀 Open full menu", url=f"https://t.me/{me.username}?start=help")]])
+        return await group_reply(message, texts.HELP_TXT, kb)
     await stream.typewriter(client, message.chat.id, texts.HELP_TXT)
     await message.reply_text(texts.HELP_TXT, reply_markup=help_kb(uid, close=True), parse_mode=HTML,
                              disable_web_page_preview=True)

@@ -116,7 +116,14 @@ async def send_with_preview(client, chat_id: int, text: str, reply_markup=None, 
     Send `text` with `pic` rendered as a LARGE link preview shown ABOVE the text
     (link_preview_options: prefer_large_media + show_above_text). Unlike a photo,
     the result is a text message → up to 4096 chars and every module can edit it.
+
+    With the aiogram bridge on, the message goes out through the Bot API so the
+    buttons get colours (Bot API 9.4 ``style``); otherwise / on error → MTProto.
     """
+    from core import botapi
+    if botapi.is_main(client) and await botapi.send_text(chat_id, text, reply_markup, pic=pic, reply_to=reply_to,
+                                                         effect_id=effect_id):
+        return True
     if pic:
         try:
             return await client.send_web_page(
@@ -138,6 +145,9 @@ async def send_with_preview(client, chat_id: int, text: str, reply_markup=None, 
 
 async def edit_with_preview(client, message, text: str, reply_markup=None, pic: str = ""):
     """Edit a text message and attach `pic` as a large preview above the text."""
+    from core import botapi
+    if botapi.is_main(client) and await botapi.edit_text(message.chat.id, message.id, text, reply_markup, pic=pic):
+        return
     if not pic:
         return await smart_edit(message, text, reply_markup)
     try:
@@ -165,6 +175,10 @@ async def smart_edit(message, text: str, reply_markup=None, preview: bool = Fals
     """
     try:
         if message.text is not None or not message.media:
+            from core import botapi
+            if botapi.is_main(getattr(message, "_client", None)) and \
+                    await botapi.edit_text(message.chat.id, message.id, text, reply_markup, preview=preview):
+                return message
             return await message.edit_text(text, reply_markup=reply_markup, parse_mode=HTML,
                                            disable_web_page_preview=not preview)
         if len(text) <= 1024:
@@ -180,6 +194,18 @@ async def smart_edit(message, text: str, reply_markup=None, preview: bool = Fals
         return message
     except Exception as e:
         log.warning(f"smart_edit failed: {e}")
+
+
+async def group_reply(message, text: str, reply_markup=None):
+    """Reply to a command. In groups the answer is an *ephemeral* message (Bot API
+    10.3) that only the caller sees – no chat spam; elsewhere / on failure a normal reply."""
+    from pyrogram.enums import ChatType
+    u = message.from_user
+    if u and message.chat and message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        from core import botapi
+        if botapi.is_main(getattr(message, "_client", None)) and await botapi.ephemeral(message.chat.id, u.id, text, reply_markup):
+            return True
+    return await message.reply_text(text, reply_markup=reply_markup, parse_mode=HTML, disable_web_page_preview=True)
 
 
 # ─────────────────────────── uploads ───────────────────────────

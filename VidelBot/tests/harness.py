@@ -18,6 +18,7 @@ os.environ.update(
     BOT_TOKEN="123456:TEST", API_ID="1", API_HASH="x", DB_URI="mongodb://localhost:27017",
     OWNER_ID="111", ADMINS="222", LOG_CHANNEL="-100123", START_PIC="https://example.com/pic.jpg",
     ENCRYPTION_KEY="", KEEP_ALIVE_URL="", STARS_PLANS="30:100 90:250 0:500",
+    AIOGRAM_ENABLED="False",   # bridge tests switch it on with a recording session
 )
 
 import motor.motor_asyncio  # noqa: E402
@@ -45,6 +46,7 @@ class FakeUser(User):
         self.username = username
         self.is_bot = False
         self.is_premium = False
+        self.usernames = None   # real pyrogram Users have it (filters.user reads it)
         self.language_code = "en"
 
     @property
@@ -141,7 +143,7 @@ class FakeClient:
         self.calls = []
         self.parse_mode = enums.ParseMode.DEFAULT
         self.parser = Parser(self)
-        self.me = SimpleNamespace(id=999, username="VidelBot", first_name="Videl", mention="Videl",
+        self.me = SimpleNamespace(id=123456, username="VidelBot", first_name="Videl", mention="Videl",
                                   is_bot=True)
         self.members = {}        # (chat, uid) -> ChatMemberStatus | Exception
         self.fail = set()        # method names that should raise
@@ -226,3 +228,83 @@ def load_all():
             mods.append(importlib.import_module(".".join(path.with_suffix("").parts)))
     enable_blocking_logs()
     return mods
+
+
+# ───────────────────────── aiogram (Bot API) test session ─────────────────────────
+from aiogram.client.session.base import BaseSession  # noqa: E402
+
+
+class RecordingSession(BaseSession):
+    """Records every Bot API request (method object + the exact form payload the
+    real aiohttp session would send) and returns canned results.
+
+    responses: {"SendMessage": value | callable(method)}; fail: {"GetMe": Exception}
+    """
+
+    def __init__(self, responses=None, fail=None):
+        super().__init__()
+        self.requests = []
+        self.payloads = []
+        self.responses = responses or {}
+        self.fail = fail or {}
+
+    async def make_request(self, bot, method, timeout=None):
+        files = {}
+        payload = {}
+        for key, value in method.model_dump(warnings=False).items():
+            value = self.prepare_value(value, bot=bot, files=files)
+            if value:
+                payload[key] = _maybe_json(value)
+        payload.update({k: f"<file {k}>" for k in files})
+        name = type(method).__name__
+        self.requests.append(method)
+        self.payloads.append((name, payload))
+        if name in self.fail:
+            raise self.fail[name]
+        r = self.responses.get(name, _default_result(name))
+        return r(method) if callable(r) else r
+
+    def names(self):
+        return [n for n, _ in self.payloads]
+
+    def last(self, name):
+        for n, p in reversed(self.payloads):
+            if n == name:
+                return p
+        return None
+
+    async def close(self):
+        pass
+
+    async def stream_content(self, *a, **k):  # pragma: no cover
+        yield b""
+
+
+def _maybe_json(v):
+    """Form values are strings on the wire; decode JSON ones for easy asserts."""
+    import json
+    try:
+        return json.loads(v)
+    except Exception:
+        return v
+
+
+def _default_result(name):
+    from aiogram import types as at
+    msg = at.Message(message_id=1, date=0, chat=at.Chat(id=1, type="private"))
+    return {"SendMessage": msg, "SendRichMessage": msg, "EditMessageText": msg,
+            "GetMe": at.User(id=123456, is_bot=True, first_name="Videl", username="VidelBot", can_manage_bots=True),
+            "CreateInvoiceLink": "https://t.me/$invoice", "GetMyStarBalance": at.StarAmount(amount=4321),
+            "GetStarTransactions": at.StarTransactions(transactions=[])}.get(name, True)
+
+
+def use_botapi(responses=None, fail=None) -> RecordingSession:
+    from core import botapi
+    s = RecordingSession(responses, fail)
+    botapi.install(s, enable=True)
+    return s
+
+
+def no_botapi():
+    from core import botapi
+    botapi.install(None, enable=False)

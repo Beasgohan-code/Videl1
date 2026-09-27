@@ -485,61 +485,6 @@ async def handle_fsub_channel_input(client: Client, message: Message, state: dic
 # URL SHORTENER
 # =============================================================================
 
-@Client.on_callback_query(filters.regex(r"^shortener_(\d+)$"))
-async def shortener_callback(client: Client, query: CallbackQuery):
-    """Show URL shortener settings."""
-    bot_id = _extract_bot_id(r"^shortener_(\d+)$", query.data)
-    bot = await _verify_ownership(query, bot_id)
-    if not bot:
-        return
-
-    _get_state().pop(query.from_user.id, None)
-
-    shortener = bot.get("shortener", {})
-    enabled = shortener.get("enabled", False)
-    domain = shortener.get("domain", "Not set")
-    api_key_enc = shortener.get("api_key_encrypted", "")
-
-    if api_key_enc:
-        try:
-            api_key = decrypt_token(api_key_enc)
-            api_display = mask_api_key(api_key)
-        except Exception:
-            api_display = "⚠️ Error decrypting"
-    else:
-        api_display = "Not set"
-
-    status_icon = "✅" if enabled else "❌"
-    toggle_text = "🔴 Disable" if enabled else "🟢 Enable"
-    provider = shortener.get("provider", "adlinkfly")
-    provider_names = {
-        "adlinkfly": "AdLinkFly / Custom",
-        "bitly": "Bitly",
-        "tinyurl": "TinyURL",
-        "isgd": "is.gd",
-        "vgd": "v.gd",
-    }
-    provider_label = provider_names.get(provider, provider)
-
-    await query.message.edit_text(
-        f"<b>🔗 URL Shortener</b>\n\n"
-        f"<blockquote>"
-        f"◈ <b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
-        f"◈ <b>Provider:</b> <code>{provider_label}</code>\n"
-        f"◈ <b>Domain:</b> <code>{domain}</code>\n"
-        f"◈ <b>API Key:</b> <code>{api_display}</code>"
-        f"</blockquote>",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏷 Provider", callback_data=f"short_provider_{bot_id}")],
-            [InlineKeyboardButton("🔑 Set API Key", callback_data=f"set_short_key_{bot_id}")],
-            [InlineKeyboardButton("🌐 Set Domain", callback_data=f"set_short_domain_{bot_id}")],
-            [InlineKeyboardButton(toggle_text, callback_data=f"toggle_short_{bot_id}")],
-            [InlineKeyboardButton("🔙 Back", callback_data=f"dashboard_{bot_id}")],
-        ]),
-    )
-    await query.answer()
-
-
 @Client.on_callback_query(filters.regex(r"^set_short_key_(\d+)$"))
 async def set_shortener_key_callback(client: Client, query: CallbackQuery):
     """Prompt for shortener API key."""
@@ -614,44 +559,6 @@ async def toggle_shortener_callback(client: Client, query: CallbackQuery):
     status = "enabled" if not current else "disabled"
     await query.answer(f"✅ Shortener {status}!", show_alert=True)
     await shortener_callback(client, query)
-
-
-async def handle_shortener_input(client: Client, message: Message, state: dict, field: str):
-    """Process shortener API key or domain input."""
-    user_id = message.from_user.id
-    bot_id = state["data"]["bot_id"]
-    value = message.text.strip()
-
-    if field == "api_key":
-        if len(value) < 5:
-            await message.reply("<b>❌ API key seems too short.</b>")
-            return
-        encrypted = encrypt_token(value)
-        await main_db.update_shortener(bot_id, "api_key_encrypted", encrypted)
-        display = mask_api_key(value)
-        msg = f"✅ API key set: {display}"
-
-    elif field == "domain":
-        # Basic domain validation
-        domain = value.replace("https://", "").replace("http://", "").strip("/")
-        if "." not in domain:
-            await message.reply("<b>❌ Invalid domain format. Example: <code>example.com</code></b>")
-            return
-        await main_db.update_shortener(bot_id, "domain", domain)
-        msg = f"✅ Domain set: {domain}"
-
-    else:
-        msg = "❌ Unknown field"
-
-    creation_state = _get_state()
-    creation_state.pop(user_id, None)
-
-    await message.reply(
-        f"<b>{msg}</b>",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Back", callback_data=f"shortener_{bot_id}")],
-        ]),
-    )
 
 
 # =============================================================================
@@ -922,7 +829,8 @@ async def set_botphoto_callback(client: Client, query: CallbackQuery):
     bot = await _verify_ownership(query, bot_id)
     if not bot: return
     from filestore.worker_bot.engine import worker_engine
-    if not worker_engine.get_worker(bot_id):
+    from core import botapi
+    if not worker_engine.get_worker(bot_id) and not botapi.enabled():
         return await query.answer("🔴 Start the bot first – the photo is set through the running clone.", show_alert=True)
 
     state = _get_state()
@@ -945,13 +853,22 @@ async def handle_botphoto_input(client: Client, message: Message, state: dict):
     back = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"startcfg_{bot_id}")]])
     from filestore.worker_bot.engine import worker_engine
     from core.profile import download_photo, remove_bot_photo, set_bot_photo
+    from core import botapi
     worker = worker_engine.get_worker(bot_id)
-    if not worker:
+    token = ""
+    if botapi.enabled():  # Bot API with the clone's own token – works even while it's stopped
+        try:
+            from filestore.utils.security import decrypt_token
+            doc = await main_db.get_bot(bot_id)
+            token = decrypt_token(doc["bot_token_encrypted"]) if doc else ""
+        except Exception:
+            token = ""
+    if not worker and not token:
         _get_state().pop(user_id, None)
         return await message.reply("<b>🔴 The bot is not running – start it and try again.</b>", reply_markup=back)
     if message.text and message.text.strip() == "0":
         try:
-            await remove_bot_photo(worker)
+            await remove_bot_photo(worker, token=token)
         except Exception as e:
             return await message.reply(f"<b>❌ Couldn't remove the photo:</b> <code>{str(e)[:150]}</code>", reply_markup=back)
         _get_state().pop(user_id, None)
@@ -961,7 +878,7 @@ async def handle_botphoto_input(client: Client, message: Message, state: dict):
     status = await message.reply("<b>⏳ Updating your bot's profile photo…</b>")
     path = await download_photo(client, message)
     try:
-        await set_bot_photo(worker, path)
+        await set_bot_photo(worker, path, token=token)
     except Exception as e:
         return await status.edit_text(f"<b>❌ Telegram rejected the photo:</b>\n<code>{str(e)[:200]}</code>", reply_markup=back)
     finally:
@@ -1080,8 +997,16 @@ async def shortener_callback(client: Client, query: CallbackQuery):
 
     expire_hrs = verify_expire // 3600
 
-    from filestore.utils.security import mask_api_key
-    masked_key = mask_api_key(api_key)
+    if api_key:
+        try:
+            masked_key = mask_api_key(decrypt_token(api_key))
+        except Exception:  # legacy plain-text key
+            masked_key = mask_api_key(api_key)
+    else:
+        masked_key = "ɴᴏᴛ sᴇᴛ"
+    provider = shortener.get("provider", "adlinkfly")
+    provider_label = {"adlinkfly": "AdLinkFly / Custom", "bitly": "Bitly", "tinyurl": "TinyURL",
+                      "isgd": "is.gd", "vgd": "v.gd"}.get(provider, provider)
 
     status_icon = "✅" if enabled else "❌"
     tut_icon = "✅" if tutorial_enabled else "❌"
@@ -1092,6 +1017,7 @@ async def shortener_callback(client: Client, query: CallbackQuery):
         f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
         f"<blockquote>"
         f"◈ <b>sᴛᴀᴛᴜs:</b> {status_icon}\n"
+        f"◈ <b>ᴘʀᴏᴠɪᴅᴇʀ:</b> {provider_label}\n"
         f"◈ <b>ᴅᴏᴍᴀɪɴ:</b> {domain or 'ɴᴏᴛ sᴇᴛ'}\n"
         f"◈ <b>ᴀᴘɪ ᴋᴇʏ:</b> {masked_key}\n"
         f"◈ <b>ᴠᴇʀɪꜰʏ ᴇxᴘɪʀʏ:</b> {expire_hrs}h\n"
@@ -1105,6 +1031,7 @@ async def shortener_callback(client: Client, query: CallbackQuery):
                     callback_data=f"short_toggle_{bot_id}",
                 ),
             ],
+            [InlineKeyboardButton("🏷 ᴘʀᴏᴠɪᴅᴇʀ", callback_data=f"short_provider_{bot_id}")],
             [
                 InlineKeyboardButton("🌐 ᴅᴏᴍᴀɪɴ", callback_data=f"short_domain_{bot_id}"),
                 InlineKeyboardButton("🔑 ᴀᴘɪ ᴋᴇʏ", callback_data=f"short_api_{bot_id}"),
@@ -1133,7 +1060,11 @@ async def short_toggle_callback(client: Client, query: CallbackQuery):
     if not bot:
         return
 
-    current = bot.get("shortener", {}).get("enabled", False)
+    short = bot.get("shortener", {})
+    current = short.get("enabled", False)
+    if not current and not (short.get("api_key_encrypted") and short.get("domain")):
+        await query.answer("❌ Set the API key and domain first!", show_alert=True)
+        return
     await main_db.update_shortener(bot_id, "enabled", not current)
 
     status = "ᴅɪsᴀʙʟᴇᴅ" if current else "ᴇɴᴀʙʟᴇᴅ"
@@ -1260,11 +1191,12 @@ async def short_tutorial_callback(client: Client, query: CallbackQuery):
     await query.answer()
 
 
-async def handle_shortener_input(client: Client, message: Message, state: dict):
-    """Process shortener setting inputs."""
+async def handle_shortener_input(client: Client, message: Message, state: dict, field: str = None):
+    """Process shortener setting inputs (dashboard actions + the older
+    awaiting_shortener_api_key / awaiting_shortener_domain steps)."""
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
-    action = state["action"]
+    action = {"api_key": "short_api", "domain": "short_domain"}.get(field) or state.get("action", "")
     text = message.text.strip() if message.text else ""
 
     if not text:
@@ -1272,6 +1204,10 @@ async def handle_shortener_input(client: Client, message: Message, state: dict):
         return
 
     if action == "short_domain":
+        text = text.replace("https://", "").replace("http://", "").strip("/")
+        if "." not in text:
+            await message.reply("<b>❌ Invalid domain. Example: <code>example.com</code></b>")
+            return
         await main_db.update_shortener(bot_id, "domain", text)
         await message.reply(
             "<b>✅ ᴅᴏᴍᴀɪɴ ᴜᴘᴅᴀᴛᴇᴅ!</b>",
@@ -1281,7 +1217,11 @@ async def handle_shortener_input(client: Client, message: Message, state: dict):
         )
 
     elif action == "short_api":
-        await main_db.update_shortener(bot_id, "api_key_encrypted", text)
+        if len(text) < 5:
+            await message.reply("<b>❌ API key seems too short.</b>")
+            return
+        # stored encrypted – the worker decrypts it (it used to be saved in plain text)
+        await main_db.update_shortener(bot_id, "api_key_encrypted", encrypt_token(text))
         await message.reply(
             "<b>✅ ᴀᴘɪ ᴋᴇʏ ᴜᴘᴅᴀᴛᴇᴅ!</b>",
             reply_markup=InlineKeyboardMarkup([

@@ -204,8 +204,42 @@ class WorkerDB:
         verified_at = doc.get("verified_at")
         if not verified_at:
             return False
+        if verified_at.tzinfo is None:  # Mongo returns naive UTC datetimes
+            verified_at = verified_at.replace(tzinfo=timezone.utc)
         elapsed = (datetime.now(timezone.utc) - verified_at).total_seconds()
         return elapsed < expire_seconds
+
+    async def new_verify_token(self, user_id: int) -> str:
+        """One-time token for the shortener link (``/start verify_<token>``).
+        Typing ``/start verify`` by hand no longer verifies anyone."""
+        import secrets
+        from datetime import datetime, timezone
+        token = secrets.token_urlsafe(9)
+        await self.verify.update_one(
+            {"_id": user_id},
+            {"$set": {"token": token, "token_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        return token
+
+    async def consume_verify_token(self, user_id: int, token: str, max_age: int = 86400) -> bool:
+        """Mark the user verified if *token* is theirs and fresh (single use)."""
+        import hmac
+        from datetime import datetime, timezone
+        doc = await self.verify.find_one({"_id": user_id})
+        if not doc or not doc.get("token") or not hmac.compare_digest(str(doc["token"]), str(token)):
+            return False
+        made = doc.get("token_at")
+        if made is not None:
+            if made.tzinfo is None:
+                made = made.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - made).total_seconds() > max_age:
+                return False
+        await self.verify.update_one(
+            {"_id": user_id},
+            {"$set": {"verified_at": datetime.now(timezone.utc)}, "$unset": {"token": "", "token_at": ""}},
+        )
+        return True
 
     # =========================================================================
     # DATA TRANSFER — Copy data from another bot

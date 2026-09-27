@@ -22,6 +22,7 @@ USER_COMMANDS = [
     # home
     ("start", "🏠 Home menu"),
     ("help", "❓ Help & guide for every module"),
+    ("guide", "📖 Illustrated guide (rich message)"),
     ("about", "ℹ️ About the bot"),
     ("settings", "⚙️ Settings dashboard"),
     ("commands", "📜 All commands"),
@@ -73,13 +74,12 @@ USER_COMMANDS = [
     ("qr", "🔳 Make a QR code"),
     ("id", "🆔 User / chat IDs"),
     ("info", "👤 User info"),
-    ("json", "🧾 Raw message JSON (reply)"),
     ("ping", "🏓 Latency"),
-    ("source", "📂 Source code"),
 ]
 
 GROUP_COMMANDS = [
     ("help", "❓ Help"),
+    ("guide", "📖 Illustrated guide"),
     ("dl", "🎬 Encode a replied video / file"),
     ("ddl", "🔗 Encode from a direct link"),
     ("batch", "📦 Batch-encode several links"),
@@ -133,8 +133,10 @@ ADMIN_COMMANDS = [
 
 OWNER_COMMANDS = [
     ("refund", "↩️ Refund a Stars payment"),
+    ("botapi", "🛰 Bot API bridge status (aiogram)"),
+    ("giftpremium", "🎁 Gift Telegram Premium: user 3|6|12"),
+    ("gifts", "🎀 Telegram gifts the bot can send"),
     ("setbotpic", "🖼 Set bot profile photo (reply)"),
-    ("delbotpic", "🗑 Remove bot profile photo"),
     ("update", "📥 git pull + restart"),
     ("clonestats", "🤖 Clone platform statistics"),
     ("bots", "📋 All clone bots"),

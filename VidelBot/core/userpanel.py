@@ -69,7 +69,7 @@ async def profile(client, uid: int) -> tuple[str, InlineKeyboardMarkup]:
         f"<b>🆔 ID:</b> <code>{uid}</code>\n<b>🔗 Username:</b> {uname}{extra_tg}\n"
         f"<b>📅 Joined:</b> {_fmt_date(vu.get('joined'))}\n"
         f"<b>🚦 Status:</b> {'🚫 banned' if banned else '✅ ok'}{' · 📵 blocked the bot' if vu.get('blocked') else ''}"
-        f"</blockquote>\n<b>💎 Premium & payments</b>\n<blockquote>"
+        f"</blockquote>\n<b>💎 Premium &amp; payments</b>\n<blockquote>"
         f"<b>Premium:</b> {'✅' if premium else '❌'} · <b>until:</b> {until}\n"
         f"<b>🔁 Subscription:</b> {sub_txt}\n"
         f"<b>⭐ Paid:</b> {len(pays)} order(s) · {stars} Stars\n"

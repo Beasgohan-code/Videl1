@@ -93,7 +93,10 @@ def direct_link_generator(text_url: str):
 
 
 def zippy_share(url: str) -> str:
-    link = re.findall("https:/.(.*?).zippyshare", url)[0]
+    # Zippyshare shut down in March 2023; the original resolver also relied on an
+    # import (js2py.EvalJs) that was commented out and crashed with NameError.
+    raise DirectDownloadLinkException("ERROR: Zippyshare has shut down – this link can't be downloaded")
+    link = re.findall("https:/.(.*?).zippyshare", url)[0]  # noqa: F841 (kept for reference)
     response_content = (requests.get(url)).content
     bs_obj = BeautifulSoup(response_content, "lxml")
 
@@ -109,6 +112,7 @@ def zippy_share(url: str) -> str:
     js_content = re.findall(r'\.href.=."/(.*?)";', str(js_script))
     js_content = 'var x = "/' + js_content[0] + '"'
 
+    from js2py import EvalJs  # unreachable (see above)
     evaljs = EvalJs()
     setattr(evaljs, "x", None)
     evaljs.execute(js_content)

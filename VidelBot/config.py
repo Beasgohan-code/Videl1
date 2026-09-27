@@ -155,6 +155,20 @@ TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "1") or 0)                    # 0 
 # Live "typing" previews (sendMessageDraft) and the "Thinking…" placeholder
 # for slow commands – private chats only, silently skipped where unsupported.
 STREAM_REPLIES = _bool("STREAM_REPLIES", True)
+
+# ==============================
+# aiogram · Bot API 10.3 bridge
+# ==============================
+# Videl receives updates over MTProto (pyrofork). aiogram is used next to it
+# as an *outgoing* Bot API client for everything MTProto layer 220 can't do:
+# coloured buttons, ephemeral group replies, rich messages, managed bots,
+# Stars subscriptions, profile photos … (every call falls back gracefully).
+AIOGRAM_ENABLED = _bool("AIOGRAM_ENABLED", True)
+BOT_API_URL = os.environ.get("BOT_API_URL", "")          # optional self-hosted Bot API server
+COLORED_BUTTONS = _bool("COLORED_BUTTONS", True)         # 🟩 success / 🟥 danger / 🟦 primary buttons
+EPHEMERAL_REPLIES = _bool("EPHEMERAL_REPLIES", True)     # /help /id /ping … in groups → visible only to the caller
+MANAGED_BOTS = _bool("MANAGED_BOTS", True)               # one-tap clone creation (needs Bot Management Mode)
+MANAGED_PAIR_TIMEOUT = int(os.environ.get("MANAGED_PAIR_TIMEOUT", "300") or 300)  # seconds to wait for the new bot
 SUPPORT_ENABLED = _bool("SUPPORT_ENABLED", True)  # /support inbox → owners reply by replying
 
 # ==============================

@@ -452,7 +452,7 @@ def test_new_commands_registered_and_under_limit():
     names = {n for n, _ in cm.USER_COMMANDS}
     assert {"gift", "mysub", "trial", "redeem", "refer", "support"} <= names
     assert {"user", "msg", "export", "gencode", "codes", "delcode"} <= {n for n, _ in cm.ADMIN_COMMANDS}
-    assert {"setbotpic", "delbotpic"} <= {n for n, _ in cm.OWNER_COMMANDS}
+    assert {"setbotpic", "botapi", "giftpremium", "gifts"} <= {n for n, _ in cm.OWNER_COMMANDS}
     total = len({n for g in (cm.USER_COMMANDS, cm.ADMIN_COMMANDS, cm.OWNER_COMMANDS) for n, _ in g})
     assert total <= 100
 

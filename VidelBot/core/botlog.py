@@ -232,6 +232,14 @@ async def collect_totals() -> dict:
     return out
 
 
+async def _botapi_line() -> str:
+    try:
+        from core import botapi
+        return await botapi.status_line()
+    except Exception as e:
+        return f"⚠️ {esc(str(e))[:80]}"
+
+
 async def boot_report(client, me, handlers: int, boot_seconds: float):
     import pyrogram
     t = await collect_totals()
@@ -245,7 +253,8 @@ async def boot_report(client, me, handlers: int, boot_seconds: float):
         f"<b>🤖 Bot:</b> @{me.username} (<code>{me.id}</code>)\n"
         f"<b>🖥 Host:</b> {esc(host_name())}\n"
         f"<b>🐍 Python:</b> {platform.python_version()} · <b>Pyrofork:</b> {pyrogram.__version__}\n"
-        f"<b>🧩 Handlers:</b> {handlers} · <b>⏱ Boot:</b> {boot_seconds:.1f}s</blockquote>\n"
+        f"<b>🧩 Handlers:</b> {handlers} · <b>⏱ Boot:</b> {boot_seconds:.1f}s\n"
+        f"<b>🛰 Bot API:</b> {await _botapi_line()}</blockquote>\n"
         "<blockquote>"
         f"<b>👥 Users:</b> <code>{t['users']}</code> (🚫 {t['banned']} banned)\n"
         f"<b>💎 Premium:</b> <code>{t['premium']}</code> · <b>🔁 Subscriptions:</b> <code>{t['subs']}</code>\n"

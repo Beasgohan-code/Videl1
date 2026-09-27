@@ -57,6 +57,11 @@ async def draft(client, chat_id, text: str = "", draft_id: int = None,
     if not enabled() or not _private(chat_id):
         return None
     draft_id = draft_id or new_draft_id()
+    # 1) documented Bot API method through aiogram (sendMessageDraft)
+    from core import botapi
+    if botapi.enabled() and botapi.is_main(client) and await botapi.draft(chat_id, draft_id % 2**31 or 1, text or ""):
+        return draft_id
+    # 2) MTProto equivalent (messages.setTyping + sendMessageTextDraftAction)
     try:
         message, entities = text or "", []
         if message:

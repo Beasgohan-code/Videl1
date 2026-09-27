@@ -26,6 +26,14 @@ async def _clone_log(client, tag: str, user, bot: dict, extra: str = ""):
         log.warning(f"clone log failed: {e}")
 main_db = MainDB()
 
+
+def _rotate_row(bot: dict):
+    try:
+        from filestore.main_bot.plugins.managed_bots import rotate_row
+        return rotate_row(bot)
+    except Exception:
+        return []
+
 # =============================================================================
 # CALLBACK: My Bots (list all bots)
 # =============================================================================
@@ -177,6 +185,7 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
         [
             InlineKeyboardButton("🛠 ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ", callback_data=f"toggle_maint_{bot_id}"),
         ],
+        *[row for row in [_rotate_row(bot)] if row],
         [
             InlineKeyboardButton("🗑 ᴅᴇʟᴇᴛᴇ", callback_data=f"confirm_delete_{bot_id}"),
         ],
@@ -189,12 +198,9 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
         [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍʏ ʙᴏᴛs", callback_data="my_bots")],
     ])
 
-    from pyrogram.errors import MessageNotModified
-    try:
-        await query.message.edit_text(text, reply_markup=keyboard)
-    except MessageNotModified:
-        pass
-        
+    from core.ui import smart_edit   # coloured buttons through the Bot API when available
+    await smart_edit(query.message, text, keyboard)
+
     try:
         await query.answer()
     except Exception:
@@ -794,7 +800,7 @@ async def backup_bot_callback(client: Client, query: CallbackQuery):
         f"<b>Bot:</b> @{bot.get('bot_username', 'unknown')}\n"
         f"<b>ID:</b> <code>{bot_id}</code>\n\n"
         f"<pre>{json.dumps(backup, indent=2, ensure_ascii=False)[:3500]}</pre>\n\n"
-        f"<i>⚠️ API keys & tokens are NOT included for security.</i>"
+        f"<i>⚠️ API keys &amp; tokens are NOT included for security.</i>"
     )
     await query.message.edit_text(
         text,
@@ -846,7 +852,7 @@ async def clone_settings_callback(client: Client, query: CallbackQuery):
         f"<blockquote>Select the bot whose settings you want to copy "
         f"<b>into</b> @{target.get('bot_username', 'target')}.</blockquote>\n\n"
         f"<i>This copies: auto-delete, protection, permanent link, "
-        f"maintenance, shortener config (without API key), start message & caption.</i>",
+        f"maintenance, shortener config (without API key), start message &amp; caption.</i>",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
     await query.answer()

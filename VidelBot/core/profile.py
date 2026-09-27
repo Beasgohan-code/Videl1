@@ -19,9 +19,42 @@ from config import OWNERS
 log = logging.getLogger("videl.profile")
 
 
-async def set_bot_photo(client: Client, path: str) -> None:
-    """Upload *path* as the profile photo of the bot behind *client*.
-    Raises the Telegram error if both methods are rejected."""
+async def _api_set(path: str, token: str = "") -> bool:
+    """Bot API setMyProfilePhoto through aiogram (token="" → Videl itself)."""
+    from core import botapi
+    b = botapi.worker(token) if token else botapi.bot()
+    if b is None:
+        return False
+    from aiogram.types import FSInputFile, InputProfilePhotoStatic
+    try:
+        ok = await b.set_my_profile_photo(photo=InputProfilePhotoStatic(photo=FSInputFile(path)),
+                                          request_timeout=90)
+        return bool(ok)
+    except Exception as e:
+        log.info(f"Bot API setMyProfilePhoto failed ({e}); falling back to MTProto")
+        return False
+
+
+async def _api_remove(token: str = "") -> bool:
+    from core import botapi
+    b = botapi.worker(token) if token else botapi.bot()
+    if b is None:
+        return False
+    try:
+        return bool(await b.remove_my_profile_photo())
+    except Exception as e:
+        log.info(f"Bot API removeMyProfilePhoto failed ({e}); falling back to MTProto")
+        return False
+
+
+async def set_bot_photo(client: Client, path: str, token: str = "") -> None:
+    """Upload *path* as the profile photo of a bot.
+    1) Bot API ``setMyProfilePhoto`` (aiogram) with *token* (clone) or Videl's own token,
+    2) MTProto through *client*. Raises the Telegram error if everything is rejected."""
+    if await _api_set(path, token):
+        return
+    if client is None:
+        raise RuntimeError("Bot API rejected the photo and the bot is not running")
     try:
         await client.set_profile_photo(photo=path)
         return
@@ -35,8 +68,12 @@ async def set_bot_photo(client: Client, path: str) -> None:
             raise first
 
 
-async def remove_bot_photo(client: Client) -> None:
-    """Remove the current profile photo of the bot behind *client*."""
+async def remove_bot_photo(client: Client, token: str = "") -> None:
+    """Remove the current profile photo (Bot API first, then MTProto)."""
+    if await _api_remove(token):
+        return
+    if client is None:
+        raise RuntimeError("Bot API call failed and the bot is not running")
     await client.invoke(raw.functions.photos.UpdateProfilePhoto(id=raw.types.InputPhotoEmpty()))
 
 

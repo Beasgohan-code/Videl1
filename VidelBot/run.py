@@ -34,7 +34,7 @@ PLUGIN_ROOTS = [
     "VideoEncoder/plugins",
     "filestore/main_bot/plugins",
 ]
-SKIP = {"__init__", "ui", "db", "texts"}
+SKIP = {"__init__", "ui", "db", "texts", "botapi"}
 
 
 def load_plugins(app) -> int:
@@ -192,6 +192,8 @@ async def main():
     await botlog.flush(10)
     await worker_engine.stop_all_workers()
     await keep_alive.stop_server()
+    from core import botapi
+    await botapi.close()
     await app.stop()
 
 

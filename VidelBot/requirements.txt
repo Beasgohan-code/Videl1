@@ -1,5 +1,6 @@
 # ── Telegram ─────────────────────────────────────────
 pyrofork==2.3.69
+aiogram==3.31.0          # Bot API 10.3 bridge (outgoing only – see core/botapi.py)
 TgCrypto
 python-dotenv
 tzdata

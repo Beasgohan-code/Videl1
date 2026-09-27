@@ -19,6 +19,41 @@ Videl is **one** Telegram bot that combines:
 Everything runs in a single process on a single bot token; clone bots are extra
 Pyrogram clients started by the worker engine.
 
+## 🛰 Pyrofork + aiogram (Bot API 10.3)
+Videl uses **both** libraries, each for what it does best:
+
+| | Pyrofork (MTProto, layer 220) | aiogram 3.31 (Bot API 10.3) |
+|---|---|---|
+| Role | receives **all updates**, runs handlers, clone workers, user sessions | **outgoing** Bot API client (`core/botapi.py`) |
+| Used for | 4 GB up/downloads, restricted-content saver, encoder, raw API | 🎨 coloured buttons · 👻 ephemeral group replies · 📖 rich messages · ⚡ managed bots · ⭐ Stars subscriptions/ledger · 🎁 Premium & gifts · 🖼 profile photos · ✍️ drafts |
+
+aiogram never polls (two consumers on one token would split the updates), message IDs are shared so either
+library can edit what the other sent, and **every aiogram call falls back to MTProto** – if the Bot API is
+unreachable (3 network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, Videl behaves exactly as before.
+`/botapi` (owners) shows the bridge status, `getMe` capability flags, latency and a live button-colour demo.
+
+* **Coloured buttons** (`COLORED_BUTTONS`) – every menu sent/edited through `core/ui.py` gets Bot API `style`s:
+  🟩 buy / confirm / create, 🟥 delete / cancel / ban, 🟦 main actions.
+* **Ephemeral replies** (`EPHEMERAL_REPLIES`) – `/help`, `/start`, `/id`, `/info`, `/guide` in groups are
+  visible **only to the caller** (no chat spam); falls back to a normal reply.
+* **Rich `/guide`** – `sendRichMessage` with headings, a plans table, collapsible sections and link buttons
+  (classic HTML help as fallback). Also `t.me/<bot>?start=guide`.
+* **⚡ One-tap clone bots** (`MANAGED_BOTS`) – turn on **Bot Management Mode** for Videl in @BotFather's Mini App.
+  *Create Bot* then shows **⚡ One-tap create**: Telegram opens a pre-filled "new bot" sheet
+  (`t.me/newbot/<Videl>/<random_username>`), the user taps *Create*, and Videl fetches the token itself
+  (`getManagedBotToken`) – no BotFather chat, no copy-paste. The bot belongs to the user. Renamed the username?
+  Send `@name` and press *Start* in the new bot to prove it's yours. Managed clones get **🔁 Rotate token**
+  (`replaceManagedBotToken`) on their dashboard. Without Bot Management Mode the classic token flow is shown.
+* **Stars** – subscription links via `createInvoiceLink(subscription_period)`, cancel/resume via
+  `editUserStarSubscription`, `/stars` shows the live balance (`getMyStarBalance`) and Telegram's own ledger
+  (`getStarTransactions`).
+* **Owner gifts** – `/giftpremium <user> <3|6|12>` (Telegram Premium paid from the bot's Stars: 1000/1500/2500 ⭐),
+  `/gifts` (catalogue) and `/sendgift <user> <gift_id> [text]`.
+* **Profile photos** – `/setbotpic` and the clone dashboard use `setMyProfilePhoto` with the clone's own token, so a
+  clone can get an avatar even while it is stopped.
+* **Drafts** – streaming previews use `sendMessageDraft` first, raw MTProto second.
+* `BOT_API_URL` – optional self-hosted Bot API server.
+
 ### Newer Telegram features used
 * **Stars payments** (`XTR` invoices, pre-checkout validation, refunds)
 * **Message effects** (🔥 on /start, 🎉 on successful payment) and **reactions** on /start
@@ -94,7 +129,7 @@ Admins: `/logtest` (check the setup), `/report` (report now).
 
 ## 📜 Command menus
 All commands are registered in Telegram automatically at every boot (`core/commands.py`):
-users see the user menu (52 commands) in private chats, groups get a group menu, admins additionally see the admin
+users see the user menu (51 commands) in private chats, groups get a group menu, admins additionally see the admin
 commands and owners the owner commands. `/setcommands` re-syncs without restarting (e.g. after a new admin started the bot).
 
 ## ⭐ Stars premium
@@ -112,7 +147,7 @@ Manual UPI / QR payments (`UPI_ID`, `QR_CODE`, `/add_premium`) keep working alon
 pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
-The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel.
+The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, and `tests/test_phase5.py` for the aiogram bridge. Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
 
 ## 🗂 Layout
 
@@ -124,10 +159,11 @@ client.py         the single shared Pyrogram client
 config.py         unified env-based configuration
 core/             home menu & texts, settings hub, middleware, force-sub, Stars payments (plans / subscriptions / gifts),
                   inline, errors, admin, tools, botlog (owner log channel), commands (Telegram menus),
-                  stream (live drafts), profile (bot photo), growth (referrals / codes / trial), support, userpanel
+                  stream (live drafts), profile (bot photo), growth (referrals / codes / trial), support, userpanel,
+                  botapi (aiogram bridge), extras (/guide, /botapi, Premium gifts)
 saver/            restricted-content saver
 VideoEncoder/     encoder (plugins + ffmpeg utils)
-filestore/        clone-bot controller (main_bot/plugins) + worker engine (worker_bot/)
+filestore/        clone-bot controller (main_bot/plugins, incl. managed_bots = one-tap clones) + worker engine (worker_bot/)
 database/         saver database
 tests/            offline test-suite
 ```

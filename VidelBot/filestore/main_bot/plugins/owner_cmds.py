@@ -183,7 +183,7 @@ async def _check_bots(client, message, status):
 
     text = (
         f"<b>🩺 Clone bots health</b>\n\n"
-        f"🟢 Running & reachable: <code>{len(ok)}</code>\n"
+        f"🟢 Running &amp; reachable: <code>{len(ok)}</code>\n"
         f"🔴 Running but not responding: <code>{len(dead)}</code>\n"
         f"⚠️ Active but not running: <code>{len(missing)}</code>\n"
         f"💤 Stopped / hibernated: <code>{len(off)}</code>"
