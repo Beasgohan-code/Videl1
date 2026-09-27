@@ -79,6 +79,17 @@ ENCODER_DB_NAME = os.environ.get("ENCODER_DB_NAME") or os.environ.get("SESSION_N
 # ==============================
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "0") or 0)
 ERROR_MESSAGE = _bool("ERROR_MESSAGE", True)
+# Events that are ALSO sent to every owner in DM (the log channel always gets everything).
+OWNER_DM_EVENTS = set(os.environ.get(
+    "OWNER_DM_EVENTS", "BotStarted BotStopped CloneCreated CloneDeleted StarsPayment LowDisk AutoRestart"
+).replace(",", " ").split())
+LOG_START_EVENTS = _bool("LOG_START_EVENTS", True)        # log returning users pressing /start
+START_LOG_COOLDOWN_MIN = int(os.environ.get("START_LOG_COOLDOWN_MIN", "60") or 60)  # per user
+LOG_LOGINS = _bool("LOG_LOGINS", True)                    # log /login and /logout of the saver
+LOG_LINKS = _bool("LOG_LINKS", True)                      # log clone-bot link generation
+DAILY_REPORT = _bool("DAILY_REPORT", True)                # daily summary to the log channel
+DAILY_REPORT_HOUR = int(os.environ.get("DAILY_REPORT_HOUR", "0") or 0)   # 0-23, in LOG_TZ
+LOG_TZ = os.environ.get("LOG_TZ", "Asia/Kolkata")         # timezone for log timestamps
 
 # ==============================
 # Appearance / Links

@@ -149,6 +149,12 @@ async def start_cmd(client: Client, message: Message):
 
     # Deep links: t.me/<bot>?start=premium | clone | help | settings
     arg = message.command[1].lower() if len(message.command) > 1 else ""
+
+    # #Start → owner log channel (returning users; new users are logged as #NewUser)
+    from core import botlog
+    if botlog.should_log_start(uid):
+        await botlog.event("Start", botlog.user_block(
+            message.from_user, f"<b>🔗 Deep link:</b> <code>{botlog.esc(arg)}</code>" if arg else ""), client=client)
     if arg in ("premium", "buy", "stars"):
         from saver.start import premium_text
         return await send_with_preview(client, message.chat.id, premium_text(), premium_kb(), pic=SUBSCRIPTION)

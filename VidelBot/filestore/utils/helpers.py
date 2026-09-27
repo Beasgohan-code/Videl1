@@ -228,20 +228,16 @@ async def upload_to_telegraph(client: Client, message: Message) -> str | None:
             except:
                 pass
 
-async def send_main_log(client: Client, text: str):
+async def send_main_log(client: Client, text: str, tag: str = "LinkGenerated"):
     """
-    Send a log message to the main log channel using the provided client.
-    Uses asyncio.create_task to be non-blocking.
+    Send a log message to the owner log channel (routed through core.botlog so it is
+    tagged, timestamped, flood-safe and sent by the main bot).
     """
-    from filestore.fs_config import MAIN_LOG_CHANNEL
-    if not MAIN_LOG_CHANNEL:
+    from config import LOG_LINKS
+    if tag == "LinkGenerated" and not LOG_LINKS:
         return
-
-    async def _send():
-        try:
-            bot_to_use = main_bot_client if main_bot_client else client
-            await bot_to_use.send_message(chat_id=MAIN_LOG_CHANNEL, text=text)
-        except Exception as e:
-            log.error(f"Failed to send main log: {e}")
-
-    asyncio.create_task(_send())
+    try:
+        from core import botlog
+        await botlog.raw(text, client=main_bot_client or client, tag=tag)
+    except Exception as e:
+        log.error(f"Failed to send main log: {e}")

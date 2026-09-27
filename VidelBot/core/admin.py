@@ -160,6 +160,11 @@ async def broadcast_cmd(client: Client, message: Message):
             await asyncio.sleep(0.05)
     finally:
         _broadcast_running = False
+    from core import botlog
+    await botlog.event("Broadcast", (
+        f"<b>👮 By:</b> {botlog.esc(message.from_user.first_name)} (<code>{message.from_user.id}</code>)\n"
+        f"<b>⏱ Took:</b> {readable_time(time.time() - started)}\n"
+        f"<b>📊 Total:</b> {done} · ✅ {ok} · 🚫 {blocked} · ❌ {failed}"), client=client)
     await status.edit_text(
         f"<b>✅ Broadcast finished</b> in {readable_time(time.time() - started)}\n\n"
         f"<blockquote>Total: <code>{done}</code>\nSuccess: <code>{ok}</code>\n"
@@ -176,6 +181,10 @@ async def ban_cmd(client: Client, message: Message):
     if uid in ADMINS:
         return await message.reply_text("❌ You can't ban an admin.")
     await vdb.ban(uid, reason)
+    from core import botlog
+    await botlog.event("Ban", f"<b>👤 User:</b> <code>{uid}</code>\n<b>📝 Reason:</b> {botlog.esc(reason) or '—'}\n"
+                              f"<b>👮 By:</b> {botlog.esc(message.from_user.first_name)} (<code>{message.from_user.id}</code>)",
+                       client=client)
     await message.reply_text(f"🚫 Banned <code>{uid}</code>" + (f"\n<b>Reason:</b> {reason}" if reason else ""))
     try:
         await client.send_message(uid, "🚫 <b>You have been banned from using this bot.</b>"
@@ -190,6 +199,10 @@ async def unban_cmd(client: Client, message: Message):
     if not uid:
         return await message.reply_text("<b>Usage:</b> <code>/unban &lt;user_id&gt;</code> (or reply)")
     await vdb.unban(uid)
+    from core import botlog
+    await botlog.event("Unban", f"<b>👤 User:</b> <code>{uid}</code>\n"
+                                f"<b>👮 By:</b> {botlog.esc(message.from_user.first_name)} (<code>{message.from_user.id}</code>)",
+                       client=client)
     await message.reply_text(f"✅ Unbanned <code>{uid}</code>")
     try:
         await client.send_message(uid, "✅ <b>You have been unbanned.</b> Send /start to continue.")
@@ -212,6 +225,10 @@ async def maintenance_cmd(client: Client, message: Message):
     arg = message.command[1].lower() if len(message.command) > 1 else ""
     if arg in ("on", "off"):
         await vdb.set_setting("maintenance", arg == "on")
+        from core import botlog
+        await botlog.event("Maintenance", f"<b>🛠 Maintenance:</b> {'🟢 ON' if arg == 'on' else '🔴 OFF'}\n"
+                                          f"<b>👮 By:</b> {botlog.esc(message.from_user.first_name)} "
+                                          f"(<code>{message.from_user.id}</code>)", client=client)
     state = await vdb.get_setting("maintenance", False)
     await message.reply_text(
         f"🛠 <b>Maintenance mode:</b> {'🟢 ON' if state else '🔴 OFF'}\n"
@@ -251,7 +268,13 @@ async def watchdog_cmd(client: Client, message: Message):
 
 
 # ─────────────────────────── restart / update ───────────────────────────
-async def _restart(client: Client, status: Message):
+async def _restart(client: Client, status: Message, reason: str = "Restart"):
+    from core import botlog
+    by = status.reply_to_message.from_user if status.reply_to_message and status.reply_to_message.from_user else None
+    await botlog.event(reason, f"<b>♻️ {reason} requested</b>" + (f" by {botlog.esc(by.first_name)} (<code>{by.id}</code>)"
+                                                             if by else ""), client=client)
+    await botlog.flush(8)
+    botlog.set_restart_reason(reason + (f" by {by.first_name} ({by.id})" if by else ""))
     with open(RESTART_FILE, "w") as f:
         json.dump({"chat_id": status.chat.id, "message_id": status.id}, f)
     try:
@@ -286,7 +309,7 @@ async def update_cmd(client: Client, message: Message):
     if "Already up to date" in out:
         return await status.edit_text("✅ Already up to date.")
     await status.edit_text(f"<pre>{out}</pre>\n\n♻️ <i>Restarting…</i>")
-    await _restart(client, status)
+    await _restart(client, status, reason="Update")
 
 
 async def announce_restart(client: Client):

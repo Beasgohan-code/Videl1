@@ -1,3 +1,4 @@
+import logging
 
 import asyncio
 from pyrogram import Client, filters
@@ -71,6 +72,28 @@ async def login_start(client: Client, message: Message):
         reply_markup=cancel_keyboard
     )
 
+def _mask_phone(phone: str) -> str:
+    digits = "".join(c for c in str(phone) if c.isdigit())
+    return f"+{digits[:2]}{'•' * max(0, len(digits) - 5)}{digits[-3:]}" if len(digits) > 5 else "—"
+
+
+async def _log_session(tag: str, user_id: int, user, phone: str):
+    """#Login / #Logout → owner log channel (phone number is masked, sessions are never logged)."""
+    from config import LOG_LOGINS
+    if not LOG_LOGINS:
+        return
+    try:
+        from core import botlog
+        body = botlog.user_block(user) if user else f"<b>🆔 User ID:</b> <code>{user_id}</code>"
+        if user and getattr(user, "id", user_id) != user_id:
+            body += f"\n<b>🤖 Bot user ID:</b> <code>{user_id}</code>"
+        if phone:
+            body += f"\n<b>📱 Phone:</b> <code>{_mask_phone(phone)}</code>"
+        await botlog.event(tag, body)
+    except Exception as e:
+        logging.getLogger("videl.session").warning(f"session log failed: {e}")
+
+
 @Client.on_message(filters.private & filters.command("logout"))
 async def logout(client: Client, message: Message):
     user_id = message.from_user.id
@@ -79,6 +102,7 @@ async def logout(client: Client, message: Message):
         del LOGIN_STATE[user_id]
    
     await db.set_session(user_id, session=None)
+    await _log_session("Logout", user_id, message.from_user, "")
     await message.reply(
         "<b>🚪 Logout Successful! 👋</b>\n\n"
         "<i>Your session has been cleared. You can log in again anytime! 🔄</i>",
@@ -280,12 +304,19 @@ async def login_handler(bot: Client, message: Message):
 async def finalize_login(status_msg: Message, temp_client, user_id):
     try:
         session_string = await temp_client.export_session_string()
+        account = None
+        try:
+            account = await temp_client.get_me()
+        except Exception:
+            pass
         await temp_client.disconnect()
        
         await db.set_session(user_id, session=session_string)
+        phone = ((LOGIN_STATE.get(user_id) or {}).get("data") or {}).get("phone", "")
        
         if user_id in LOGIN_STATE:
             del LOGIN_STATE[user_id]
+        await _log_session("Login", user_id, account, phone)
            
         await status_msg.edit(
             "<b>🎉 Login Successful! 🌟</b>\n\n"

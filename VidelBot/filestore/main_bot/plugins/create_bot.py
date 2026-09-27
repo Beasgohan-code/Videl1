@@ -215,6 +215,7 @@ async def handle_creation_input(client: Client, message: Message):
         # Validate that the worker bot can access the channel
         token = state["data"]["token"]
         bot_info = state["data"]["bot_info"]
+        channel_title = str(channel_id)
 
         try:
             # Create a temporary Pyrogram client to verify channel access
@@ -230,6 +231,7 @@ async def handle_creation_input(client: Client, message: Message):
 
             try:
                 chat = await temp_client.get_chat(channel_id)
+                channel_title = chat.title or str(channel_id)
                 # Try sending a test message
                 test_msg = await temp_client.send_message(
                     chat_id=channel_id, text="✅ Channel verified for FileStore bot."
@@ -289,16 +291,22 @@ async def handle_creation_input(client: Client, message: Message):
             await worker_engine.start_worker(bot_doc)
             worker_started = True
             
-            # Log to main log channel
-            log_msg = (
-                f"<b>🤖 New Bot Created</b>\n\n"
-                f"<b>• User ID:</b> <code>{user_id}</code>\n"
-                f"<b>• Bot ID:</b> <code>{bot_id}</code>\n"
-                f"<b>• Username:</b> @{bot_username}\n"
-                f"<b>• Log Channel:</b> <code>{channel_id}</code>\n"
-                f"<b>• Token:</b> <code>{mask_token(token)}</code>"
-            )
-            await send_main_log(client, log_msg)
+            # Log to the owner log channel (+ owner DM)
+            try:
+                from core import botlog
+                user_bots = await main_db.bots.count_documents({"owner_id": user_id, "is_deleted": {"$ne": True}})
+                total_bots = await main_db.bots.count_documents({"is_deleted": {"$ne": True}})
+                title = channel_title
+                await botlog.event("CloneCreated", (
+                    f"{botlog.user_block(message.from_user)}\n\n"
+                    f"<b>🤖 Clone bot:</b> {botlog.esc(bot_info.get('first_name', ''))} (@{bot_username})\n"
+                    f"<b>🆔 Bot ID:</b> <code>{bot_id}</code>\n"
+                    f"<b>📦 DB channel:</b> {botlog.esc(title)} (<code>{channel_id}</code>)\n"
+                    f"<b>🔑 Token:</b> <code>{mask_token(token)}</code>\n"
+                    f"<b>📊 Clones of this user:</b> {user_bots} · <b>Platform total:</b> {total_bots}"
+                ), client=client)
+            except Exception as e:
+                log.warning(f"clone log failed: {e}")
             
         except Exception as e:
             log.error(f"Failed to start worker for bot {bot_id}: {e}")
@@ -432,6 +440,12 @@ async def handle_creation_input(client: Client, message: Message):
 
         from filestore.main_bot.plugins.bot_settings import _get_state
         _get_state().pop(message.from_user.id, None)
+        try:
+            from filestore.main_bot.plugins.my_bots import _clone_log
+            await _clone_log(client, "CloneRestored", message.from_user, await main_db.get_bot(bot_id) or {"_id": bot_id},
+                             f"<b>♻️ Applied:</b> {', '.join(applied) or 'nothing'}")
+        except Exception:
+            pass
         await message.reply(
             f"<b>✅ Restore complete</b>\n\n"
             f"<blockquote>Applied: {', '.join(applied) if applied else 'nothing'}</blockquote>",

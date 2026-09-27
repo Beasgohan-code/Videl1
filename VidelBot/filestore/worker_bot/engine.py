@@ -260,7 +260,7 @@ class WorkerEngine:
                     f"ᴄʜᴀɴɴᴇʟs ʙᴇʟᴏᴡ ᴀɴᴅ ᴛᴀᴘ <b>♻️ ʀᴇʟᴏᴀᴅ</b>.</blockquote>"
                 )
 
-                if force_pic and force_pic.lower() not in ["none", "ɴᴏɴᴇ", "0", "songokue", "ꜱᴏɴ ɢᴏᴋᴜᴇ"]:
+                if force_pic and force_pic.lower() not in ["none", "ɴᴏɴᴇ", "0"]:
                     await message.reply_photo(photo=force_pic, caption=text, reply_markup=fsub_markup)
                 else:
                     await message.reply(text, reply_markup=fsub_markup)
@@ -472,7 +472,7 @@ class WorkerEngine:
                         # If custom message has unknown placeholders, just send it raw
                         pass
 
-                if start_pic and start_pic.lower() not in ["none", "ɴᴏɴᴇ", "0", "songokue", "ꜱᴏɴ ɢᴏᴋᴜᴇ"]:
+                if start_pic and start_pic.lower() not in ["none", "ɴᴏɴᴇ", "0"]:
                     await message.reply_photo(photo=start_pic, caption=start_message)
                 else:
                     await message.reply(start_message)

@@ -180,6 +180,9 @@ async def add_fsub(client: Client, message: Message):
     extra.append(c.id)
     await vdb.set_setting("fsub_channels", extra)
     _ok_cache.clear()
+    from core import botlog
+    await botlog.event("FsubAdded", f"<b>📢 Channel:</b> {botlog.esc(c.title)} (<code>{c.id}</code>)\n"
+                                    f"<b>👮 By:</b> <code>{message.from_user.id}</code>", client=client)
     await message.reply_text(f"✅ Added <b>{c.title}</b> (<code>{c.id}</code>) to force-subscribe.")
 
 
@@ -193,6 +196,9 @@ async def del_fsub(client: Client, message: Message):
         extra.remove(chat)
         await vdb.set_setting("fsub_channels", extra)
         _chat_cache.pop(chat, None)
+        from core import botlog
+        await botlog.event("FsubRemoved", f"<b>📢 Channel:</b> <code>{chat}</code>\n"
+                                          f"<b>👮 By:</b> <code>{message.from_user.id}</code>", client=client)
         return await message.reply_text(f"✅ Removed <code>{chat}</code> from force-subscribe.")
     if chat in FSUB_CHANNELS:
         return await message.reply_text("ℹ️ That channel comes from the FSUB_CHANNELS env var – remove it there.")

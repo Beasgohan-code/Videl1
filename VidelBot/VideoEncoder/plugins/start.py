@@ -67,11 +67,11 @@ For Owner:
     await message.reply(text=msg, disable_web_page_preview=True, reply_markup=start_but)
 
 
+@Client.on_message(filters.command(["stats", "botstats"]))
 async def show_status_count(_, event: Message):
-    c = await check_chat(event, chat='Both')
-    if not c:
-        return
-    await AddUserToDatabase(_, event)
+    # Public server stats (admins get the full Videl /stats from core/admin.py first).
+    if event.from_user:
+        await AddUserToDatabase(_, event)
     text = await show_status(_)
     await event.reply_text(text)
 

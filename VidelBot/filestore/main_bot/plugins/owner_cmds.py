@@ -100,7 +100,7 @@ async def list_all_bots(client: Client, message: Message):
         await message.reply(f"<b>❌ Error:</b> <code>{e}</code>")
 
 
-@Client.on_message(filters.command(["sys", "system", "sysstats"]) & filters.private & filters.user(OWNERS))
+@Client.on_message(filters.command(["sys", "system", "sysstats", "systats"]) & filters.private & filters.user(OWNERS))
 async def system_stats(client: Client, message: Message):
     """Show server resource usage."""
     try:
@@ -129,3 +129,61 @@ async def system_stats(client: Client, message: Message):
         await message.reply(text)
     except Exception as e:
         await message.reply(f"<b>❌ System stats error:</b> <code>{e}</code>")
+
+
+@Client.on_message(filters.command(["check", "checkbots"]) & filters.private & filters.user(OWNERS))
+async def check_bots(client: Client, message: Message):
+    """Health-check every clone bot: running / reachable / should-be-running. `/check fix` restarts the missing ones."""
+    import asyncio
+    from filestore.worker_bot.engine import worker_engine
+
+    status = await message.reply("🩺 <i>Checking every clone bot…</i>")
+    bots = [b for b in await main_db.get_all_bots() if not b.get("is_deleted")]
+    ok, dead, missing, off = [], [], [], []
+    dead_ids = []
+
+    async def probe(bot):
+        bot_id = bot["_id"]
+        worker = worker_engine.get_worker(bot_id)
+        name = f"@{bot.get('bot_username', '?')} (<code>{bot_id}</code>)"
+        if worker:
+            try:
+                await asyncio.wait_for(worker.get_me(), timeout=15)
+                ok.append(name)
+            except Exception as e:
+                dead.append(f"{name} – {str(e)[:60]}")
+                dead_ids.append(bot_id)
+        elif bot.get("is_active"):
+            missing.append(name)
+        else:
+            off.append(name)
+
+    for i in range(0, len(bots), 20):
+        await asyncio.gather(*(probe(b) for b in bots[i:i + 20]))
+
+    fixed = ""
+    if len(message.command) > 1 and message.command[1].lower() == "fix" and (missing or dead):
+        import watchdog
+        dog = watchdog.dog or watchdog.Watchdog(client)
+        for bot_id in dead_ids:  # stop unresponsive ones so they are started fresh
+            await worker_engine.stop_worker(bot_id)
+        healed = await dog.heal_workers()
+        fixed = f"\n\n🔧 <b>Fix:</b> {healed} clone(s) (re)started."
+
+    def block(title, items):
+        if not items:
+            return ""
+        shown = "\n".join(f"• {x}" for x in items[:25])
+        more = f"\n<i>… and {len(items) - 25} more</i>" if len(items) > 25 else ""
+        return f"\n\n<b>{title} ({len(items)})</b>\n<blockquote expandable>{shown}{more}</blockquote>"
+
+    text = (
+        f"<b>🩺 Clone bots health</b>\n\n"
+        f"🟢 Running & reachable: <code>{len(ok)}</code>\n"
+        f"🔴 Running but not responding: <code>{len(dead)}</code>\n"
+        f"⚠️ Active but not running: <code>{len(missing)}</code>\n"
+        f"💤 Stopped / hibernated: <code>{len(off)}</code>"
+        + block("🔴 Not responding", dead) + block("⚠️ Not running", missing)
+        + (fixed or ("\n\n<i>Use /check fix to restart the broken ones.</i>" if (dead or missing) else ""))
+    )
+    await status.edit_text(text[:4096])

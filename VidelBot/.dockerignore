@@ -9,3 +9,4 @@ VideoEncoder/utils/extras/downloads/
 VideoEncoder/utils/extras/encodes/
 .git
 tests/
+.restart_reason

@@ -11,6 +11,7 @@ import importlib
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -81,6 +82,11 @@ async def hibernation_task(app, worker_engine):
                 log.info(f"💤 hibernating idle clone {bot_id}")
                 await worker_engine.stop_worker(bot_id)
                 await main_db.set_bot_active(bot_id, False)
+                from core import botlog
+                await botlog.event("CloneHibernated", (
+                    f"<b>🤖 Clone bot:</b> @{bot.get('bot_username', 'unknown')} (<code>{bot_id}</code>)\n"
+                    f"<b>👤 Owner:</b> <code>{bot.get('owner_id')}</code>\n"
+                    f"<b>💤 Idle for:</b> more than {config.HIBERNATION_HOURS}h"), client=app)
                 try:
                     await app.send_message(
                         bot["owner_id"],
@@ -95,82 +101,27 @@ async def hibernation_task(app, worker_engine):
             log.error(f"hibernation sweep failed: {e}")
 
 
-BOT_COMMANDS = [
-    ("start", "🏠 Home menu"),
-    ("help", "❓ How to use every module"),
-    ("settings", "⚙️ Saver / encoder / clone settings"),
-    ("clone", "🤖 Create & manage your FileStore bots"),
-    ("login", "🔐 Connect account for private channels"),
-    ("logout", "🚪 Disconnect account"),
-    ("myplan", "📊 Your plan & quota"),
-    ("premium", "💎 Premium plans"),
-    ("buy", "⭐ Buy Premium with Telegram Stars"),
-    ("dl", "🎬 Encode a replied video"),
-    ("ddl", "🔗 Encode from a direct link"),
-    ("queue", "📋 Encoder queue"),
-    ("mediainfo", "🔎 Media info of a replied file"),
-    ("rename", "✏️ Rename a replied file"),
-    ("upload", "☁️ Public link for a replied file"),
-    ("short", "✂️ Shorten a URL"),
-    ("qr", "🔳 Make a QR code"),
-    ("id", "🆔 Get IDs"),
-    ("info", "👤 User info"),
-    ("ping", "🏓 Latency"),
-    ("about", "ℹ️ About this bot"),
-    ("cancel", "❌ Cancel current task"),
-]
-
-# Extra commands shown only to owners (BotCommandScopeChat).
-OWNER_COMMANDS = [
-    ("stats", "📊 Bot statistics"),
-    ("broadcast", "📢 Broadcast to all users"),
-    ("ban", "🚫 Ban a user"),
-    ("unban", "✅ Unban a user"),
-    ("add_premium", "💎 Give premium"),
-    ("remove_premium", "➖ Remove premium"),
-    ("premium_users", "👥 Premium users"),
-    ("stars", "⭐ Stars payments"),
-    ("refund", "↩️ Refund a Stars payment"),
-    ("add_fsub", "🔒 Add force-sub channel"),
-    ("del_fsub", "🔓 Remove force-sub channel"),
-    ("fsub_list", "📋 Force-sub channels"),
-    ("clonestats", "🤖 Clone bot statistics"),
-    ("maintenance", "🛠 Toggle maintenance"),
-    ("watchdog", "🐕 Watchdog status / sweep"),
-    ("logs", "📜 Get log file"),
-    ("restart", "♻️ Restart"),
-]
-
-
-async def setup_bot_profile(app):
-    """Menu commands (public + owner scope), description and short about text."""
-    from pyrogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
-
-    public = [BotCommand(c, d) for c, d in BOT_COMMANDS]
-    try:
-        await app.set_bot_commands(public, scope=BotCommandScopeDefault())
-    except Exception as e:
-        log.warning(f"set_bot_commands failed: {e}")
-    owner_cmds = public + [BotCommand(c, d) for c, d in OWNER_COMMANDS]
-    for oid in config.OWNERS:
+async def start_with_retry(app):
+    """Start the client; survive FloodWait / transient network errors at login (from the SRC bot)."""
+    from pyrogram.errors import FloodWait
+    attempt = 0
+    while True:
+        attempt += 1
         try:
-            await app.set_bot_commands(owner_cmds, scope=BotCommandScopeChat(oid))
-        except Exception:
-            pass  # owner hasn't started the bot yet
-    try:
-        await app.set_bot_info(
-            lang_code="",
-            description=(f"✨ {config.BOT_NAME} – all-in-one utility bot\n\n"
-                         "📥 Save restricted posts & media\n🎬 Encode / compress videos\n"
-                         "⚡ Create your own FileStore clone bots\n🧰 Rename · MediaInfo · Upload · QR · Short links\n\n"
-                         "Tap START to begin!"),
-            about=f"{config.BOT_NAME}: save restricted content, encode videos & clone FileStore bots.",
-        )
-    except Exception as e:
-        log.debug(f"set_bot_info skipped: {e}")
+            await app.start()
+            return
+        except FloodWait as e:
+            wait = int(e.value) + 10
+            log.warning(f"FloodWait during login – sleeping {wait}s")
+            await asyncio.sleep(wait)
+        except (ConnectionError, OSError, asyncio.TimeoutError) as e:
+            wait = min(15 * attempt, 120)
+            log.error(f"network error during start ({e}) – retrying in {wait}s")
+            await asyncio.sleep(wait)
 
 
 async def main():
+    t0 = time.time()
     missing = config.missing_required()
     if missing:
         log.error(f"Missing required config: {', '.join(missing)} — see config.env.sample")
@@ -197,14 +148,19 @@ async def main():
 
     from pyrogram import idle
 
-    await app.start()
+    from core import botlog
+    from core.commands import register_commands, set_profile
+
+    await start_with_retry(app)
     me = await app.get_me()
+    botlog.bind(app)
     log.info(f"🤖 {config.BOT_NAME} started as @{me.username}")
 
     import filestore.utils.helpers as fs_helpers
     fs_helpers.main_bot_client = app
 
-    await setup_bot_profile(app)
+    await register_commands(app)
+    await set_profile(app)
 
     from core.admin import announce_restart
     await announce_restart(app)
@@ -219,20 +175,21 @@ async def main():
 
     import watchdog
     watchdog.start(app)
+    if config.DAILY_REPORT:
+        asyncio.create_task(botlog.daily_report_loop(app))
 
-    notify = config.LOG_CHANNEL or config.OWNER_ID
-    try:
-        await app.send_message(
-            notify,
-            f"<b>✅ {config.BOT_NAME} started</b>\n<blockquote>@{me.username}\n"
-            f"Clone bots running: {worker_engine.active_count}</blockquote>",
-        )
-    except Exception as e:
-        log.warning(f"startup notice failed (has the owner started the bot?): {e}")
+    # #BotStarted → log channel + every owner's DM
+    await botlog.boot_report(app, me, handlers=n, boot_seconds=time.time() - t0)
 
     await idle()
 
     log.info("stopping…")
+    started = botlog.now() - timedelta(seconds=time.time() - t0)
+    await botlog.event("BotStopped", (
+        f"<b>❌ {botlog.esc(config.BOT_NAME)} is going offline</b>\n\n<blockquote>"
+        f"<b>🤖 Bot:</b> @{me.username}\n<b>⏱ Was up since:</b> {started.strftime('%d %b %Y · %I:%M %p')}\n"
+        f"<b>🤖 Clone bots stopped:</b> {worker_engine.active_count}</blockquote>"), client=app)
+    await botlog.flush(10)
     await worker_engine.stop_all_workers()
     await keep_alive.stop_server()
     await app.stop()

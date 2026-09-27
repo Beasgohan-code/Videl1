@@ -13,7 +13,7 @@ from pyrogram import Client, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup,
                             LabeledPrice, Message, PreCheckoutQuery)
 
-from config import ADMINS, BOT_NAME, LOG_CHANNEL, OWNERS, STARS_PLANS
+from config import ADMINS, BOT_NAME, OWNERS, STARS_PLANS
 from core.db import vdb
 from core.ui import copy_button, effect
 
@@ -139,16 +139,13 @@ async def successful_payment(client: Client, message: Message):
         )
     except Exception:
         await message.reply_text(f"🎉 Premium activated until {until}. Thank you!")
-    if LOG_CHANNEL:
-        try:
-            await client.send_message(
-                LOG_CHANNEL,
-                f"#StarsPayment\n<b>User:</b> {message.from_user.mention} (<code>{uid}</code>)\n"
-                f"<b>Plan:</b> {_label(days)} · <b>⭐</b> {sp.total_amount}\n"
-                f"<b>Charge:</b> <code>{sp.telegram_payment_charge_id}</code>",
-            )
-        except Exception:
-            pass
+    from core import botlog
+    total_paid = await vdb.db["payments"].count_documents({"user": uid, "refunded": False})
+    await botlog.event("StarsPayment", botlog.user_block(message.from_user, (
+        f"<b>💎 Plan:</b> {_label(days)} · <b>⭐ Stars:</b> {sp.total_amount}\n"
+        f"<b>📅 Premium until:</b> {until}\n"
+        f"<b>🧾 Charge ID:</b> <code>{sp.telegram_payment_charge_id}</code>\n"
+        f"<b>🔁 Payments by this user:</b> {total_paid}")), client=client)
 
 
 # ─────────────────────────── admin ───────────────────────────
@@ -189,6 +186,9 @@ async def refund_cmd(client: Client, message: Message):
     await vdb.db["payments"].update_one({"charge_id": charge}, {"$set": {"refunded": True}})
     from database.db import db as saver_db
     await saver_db.remove_premium(uid)
+    from core import botlog
+    await botlog.event("Refund", f"<b>👤 User:</b> <code>{uid}</code>\n<b>🧾 Charge ID:</b> <code>{charge}</code>\n"
+                                 f"<b>👮 By:</b> <code>{message.from_user.id}</code>", client=client)
     await message.reply_text(f"↩️ Refunded and premium removed for <code>{uid}</code>.")
     try:
         await client.send_message(uid, "↩️ <b>Your Stars payment was refunded.</b> Premium has been removed.")

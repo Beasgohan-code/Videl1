@@ -70,6 +70,7 @@ class FakeMsg(Message):
         self.sender_chat = None
         self.outgoing = False
         self.replies = []      # texts sent in reply / edits
+        self.sent = []         # FakeMsg objects returned by reply_text (for later edits)
         self.edits = []
         self.reactions = []
         self.deleted = False
@@ -77,7 +78,9 @@ class FakeMsg(Message):
 
     async def reply_text(self, text, *a, **k):
         self.replies.append(text)
-        return FakeMsg(text=text, uid=0, chat_id=self.chat.id)
+        sent = FakeMsg(text=text, uid=0, chat_id=self.chat.id)
+        self.sent.append(sent)
+        return sent
 
     reply = reply_text
 
@@ -189,19 +192,24 @@ class FakeClient:
 
 
 async def reset_db():
-    """Fresh in-memory databases for every test."""
+    """Wipe every in-memory database between tests (clients are kept so module-level DB objects stay valid)."""
     import filestore.database.mongo as mongo
     from core.db import vdb
     from database.db import db as saver_db
-    mongo._client = AsyncMongoMockClient()
-    vdb._db = None
+    from VideoEncoder.utils.database.access_db import db as enc_db
+    for client in {id(c): c for c in (mongo.get_motor_client(), saver_db._client, enc_db._client)}.values():
+        for name in await client.list_database_names():
+            await client.drop_database(name)
     vdb._banned.clear()
     vdb._known.clear()
     vdb._settings = {}
     vdb._settings_ts = 0.0
-    saver_db._client = AsyncMongoMockClient()
-    saver_db.db = saver_db._client[saver_db.db.name]
-    saver_db.col = saver_db.db.users
+
+
+def enable_blocking_logs():
+    from core import botlog
+    botlog.BLOCKING = True
+    botlog._start_seen.clear()
 
 
 def load_all():
@@ -216,4 +224,5 @@ def load_all():
             if path.stem in run.SKIP or "__pycache__" in path.parts:
                 continue
             mods.append(importlib.import_module(".".join(path.with_suffix("").parts)))
+    enable_blocking_logs()
     return mods

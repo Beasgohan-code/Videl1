@@ -216,6 +216,8 @@ ADMIN_HELP = """<b>👮 Admin</b>
 /ban &lt;id&gt; [reason] · /unban &lt;id&gt; · /banned
 /maintenance on|off
 /watchdog — cleanup / health report (add <code>run</code> to sweep now)
+/logtest — test the log channel · /report — activity report now
+/setcommands — re-sync the Telegram command menus
 /restart · /update (git pull + restart)
 
 <b>Force subscribe</b>
@@ -227,7 +229,8 @@ ADMIN_HELP = """<b>👮 Admin</b>
 /stars — Stars payments · /refund &lt;user&gt; &lt;charge_id&gt;
 
 <b>Clone bots</b>
-/clonestats — platform stats · /bots — list all clone bots · /sys — system</blockquote>
+/clonestats — platform stats · /bots — list all clone bots · /sys — system
+/check — health-check every clone (<code>/check fix</code> restarts broken ones)</blockquote>
 """
 
 SETTINGS_HUB = """<b>⚙️ Settings Dashboard</b>

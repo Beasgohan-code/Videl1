@@ -10,7 +10,8 @@ Videl is **one** Telegram bot that combines:
 | ⭐ **Stars Premium** (`core/payments.py`) | Users buy Premium in-app with **Telegram Stars** – instant activation, extends an active plan, receipts, `/stars` revenue stats and `/refund` |
 | 🔒 **Force Subscribe** (`core/fsub.py`) | Require joining one or more channels (normal or **join-request** mode), manage with `/add_fsub`, `/del_fsub`, `/fsub_list` |
 | 🧰 **Tools** (`core/`) | `/mediainfo`, `/rename`, `/upload` (public link), `/short`, `/qr`, `/id`, `/info`, `/json`, `/ping`, **inline mode** (`@bot <url or text>` → short links + QR) |
-| 👮 **Admin** (`core/`) | `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/restart`, `/update` |
+| 👮 **Admin** (`core/`) | `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/logtest`, `/report`, `/setcommands`, `/restart`, `/update`; clone owners' panel `/clonestats`, `/bots`, `/check [fix]`, `/sys` |
+| 📝 **Owner log channel** (`core/botlog.py`) | Every event tagged in `LOG_CHANNEL` – who started the bot, who cloned which bot, logins, payments, bans, restarts… – boot/shutdown/clone reports also in the owners' DM, plus a daily activity report |
 | 🐕 **Keep-alive + Watchdog** | Health server + self-ping for free hosts; automatic temp-file cleanup, low-disk rescue, stuck-flow expiry, clone-bot self-healing, hang detection & auto-restart |
 
 Everything runs in a single process on a single bot token; clone bots are extra
@@ -61,6 +62,33 @@ Every `WATCHDOG_INTERVAL` seconds (`/watchdog` shows the report, `/watchdog run`
 | 📡 Hang detection | Telegram checked every sweep; 3 failures in a row → clean process restart (`AUTO_RESTART_ON_HANG`) |
 | 🧠 Memory | caches trimmed, `gc.collect()`, RSS reported |
 
+## 📝 Owner log channel
+Set `LOG_CHANNEL` (bot must be admin). Every message is tagged, so the channel is searchable:
+
+| Tag | When | Owner DM* |
+|---|---|---|
+| `#BotStarted` | boot – host, versions, handlers, users, premium, clones, force-sub, restart reason | ✅ |
+| `#BotStopped` | clean shutdown | ✅ |
+| `#NewUser` | first contact – name, @username, ID, language, where they came from (`/start` payload), total users | |
+| `#Start` | returning user pressed /start (max once per `START_LOG_COOLDOWN_MIN`) + deep link | |
+| `#CloneCreated` | who cloned, clone bot name + @username + ID, DB channel, masked token, clone counts | ✅ |
+| `#CloneDeleted` `#CloneStarted` `#CloneStopped` `#CloneRestarted` `#CloneTransferred` `#CloneRestored` `#CloneSettingsCopied` | clone dashboard actions | Deleted ✅ |
+| `#CloneHibernated` `#CloneHealed` `#CloneFailed` | idle shutdown / watchdog repairs / repeated start failures | |
+| `#LinkGenerated` | clone bots: /genlink /batch /custom_batch /flink (`LOG_LINKS`) | |
+| `#Login` `#Logout` | saver account connected / removed – phone masked, sessions never logged (`LOG_LOGINS`) | |
+| `#StarsPayment` `#Refund` `#PremiumAdded` `#PremiumRemoved` | premium changes | Stars ✅ |
+| `#Ban` `#Unban` `#Broadcast` `#Maintenance` `#FsubAdded` `#FsubRemoved` | admin actions (with who did it) | |
+| `#LowDisk` `#AutoRestart` `#Restart` `#Update` `#Error` | health | LowDisk/AutoRestart ✅ |
+| `#DailyReport` | every day at `DAILY_REPORT_HOUR` (`LOG_TZ`): new users, new clones, Stars, totals, disk/RAM | |
+
+\* configurable with `OWNER_DM_EVENTS`. Without a `LOG_CHANNEL` everything goes to the owners' DM.
+Admins: `/logtest` (check the setup), `/report` (report now).
+
+## 📜 Command menus
+All commands are registered in Telegram automatically at every boot (`core/commands.py`):
+users see the user menu (46 commands) in private chats, groups get a group menu, admins additionally see the admin
+commands and owners the owner commands. `/setcommands` re-syncs without restarting (e.g. after a new admin started the bot).
+
 ## ⭐ Stars premium
 `STARS_PLANS=30:100 90:250 0:500` → 30 days for 100 ⭐, 90 days for 250 ⭐, lifetime (`0`) for 500 ⭐. Buttons appear in **💎 Buy Premium**, `/premium`, `/plan` and `/buy`.
 Buying while premium extends the current expiry. Owners: `/stars` (revenue + last payments with charge IDs), `/refund <user_id> <charge_id>`.
@@ -81,7 +109,8 @@ keep_alive.py     health web server + self-ping
 watchdog.py       auto-cleanup & self-healing
 client.py         the single shared Pyrogram client
 config.py         unified env-based configuration
-core/             home menu & texts, settings hub, middleware, force-sub, Stars payments, inline, errors, admin, tools
+core/             home menu & texts, settings hub, middleware, force-sub, Stars payments, inline, errors, admin, tools,
+                  botlog (owner log channel), commands (Telegram menus)
 saver/            restricted-content saver
 VideoEncoder/     encoder (plugins + ffmpeg utils)
 filestore/        clone-bot controller (main_bot/plugins) + worker engine (worker_bot/)

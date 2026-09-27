@@ -199,13 +199,10 @@ class Watchdog:
         if time.time() - self._last_disk_alert < 3 * 3600:
             return
         self._last_disk_alert = time.time()
-        target = config.LOG_CHANNEL or config.OWNER_ID
-        try:
-            await self.app.send_message(
-                target, f"⚠️ <b>Low disk space:</b> {free_gb:.2f} GB free "
-                        f"(threshold {config.MIN_FREE_DISK_GB} GB). Aggressive cleanup ran.")
-        except Exception:
-            pass
+        from core import botlog
+        await botlog.event("LowDisk", f"⚠️ <b>Low disk space:</b> <code>{free_gb:.2f} GB</code> free "
+                                      f"(threshold {config.MIN_FREE_DISK_GB} GB).\n🧹 Aggressive cleanup ran.",
+                           client=self.app)
 
     # ─────────────── 3. abandoned flows ───────────────
     async def expire_states(self) -> int:
@@ -289,6 +286,7 @@ class Watchdog:
                     await worker_engine.start_worker(doc)
                     healed += 1
                     log.info(f"🐕 restarted disconnected clone {bot_id}")
+                    await self._clone_event("CloneHealed", doc, "🔌 was disconnected → restarted")
                 except Exception as e:
                     log.warning(f"clone {bot_id} restart failed: {e}")
         # b) active in DB but not running (crashed at boot / after an error)
@@ -310,14 +308,25 @@ class Watchdog:
                 self.worker_failures.pop(bot_id, None)
                 healed += 1
                 log.info(f"🐕 started missing clone {bot_id}")
+                await self._clone_event("CloneHealed", doc, "💤 was not running → started")
             except Exception as e:
                 self.worker_failures[bot_id] = fails + 1
                 log.warning(f"clone {bot_id} start failed ({fails + 1}x): {e}")
                 if fails + 1 == 5:
+                    await self._clone_event("CloneFailed", doc, f"❌ failed to start 5× in a row: <code>{str(e)[:150]}</code>")
                     await self._notify(doc.get("owner_id"),
                                        f"⚠️ Your clone bot @{doc.get('bot_username', '?')} keeps failing to start. "
                                        "Was its token revoked? Check it in /clone → 📋 My Bots.")
         return healed
+
+    async def _clone_event(self, tag, doc, what):
+        try:
+            from core import botlog
+            await botlog.event(tag, f"<b>🤖 Clone bot:</b> @{doc.get('bot_username', '?')} (<code>{doc.get('_id')}</code>)\n"
+                                    f"<b>👤 Owner:</b> <code>{doc.get('owner_id')}</code>\n<b>🐕 Watchdog:</b> {what}",
+                               client=self.app)
+        except Exception:
+            pass
 
     # ─────────────── 5. connectivity ───────────────
     async def check_connection(self) -> bool:
@@ -330,6 +339,14 @@ class Watchdog:
             log.warning(f"🐕 Telegram check failed ({self.conn_failures}x): {e}")
             if self.conn_failures >= 3 and config.AUTO_RESTART_ON_HANG:
                 log.error("🐕 Telegram unreachable 3x in a row – restarting process")
+                try:
+                    from core import botlog
+                    await botlog.event("AutoRestart", "🐕 Telegram was unreachable 3 checks in a row – "
+                                                      "the process restarted itself.", client=self.app)
+                    await botlog.flush(5)
+                    botlog.set_restart_reason("🐕 auto-restart: Telegram was unreachable 3 checks in a row")
+                except Exception:
+                    pass
                 try:
                     from filestore.worker_bot.engine import worker_engine
                     await asyncio.wait_for(worker_engine.stop_all_workers(), timeout=20)

@@ -23,6 +23,8 @@ def fresh_db():
     fsub._ok_cache.clear()
     fsub._chat_cache.clear()
     fsub._last_prompt.clear()
+    from core import botlog
+    botlog._start_seen.clear()
     yield
 
 
@@ -508,3 +510,233 @@ def test_inline_share_and_qr(monkeypatch):
     assert len(got[""]) == 1
     assert len(got["https://example.com/<x>"]) == 2
     assert "&lt;x&gt;" in got["https://example.com/<x>"][1].caption
+
+
+# ─────────────────────────── owner log channel ───────────────────────────
+def _logs(c, tag=None, chat=None):
+    out = []
+    for name, a, k in c.calls:
+        if name != "send_message":
+            continue
+        text = a[1] if len(a) > 1 else k.get("text", "")
+        if tag and f"#{tag}" not in text:
+            continue
+        if chat is not None and a[0] != chat:
+            continue
+        out.append((a[0], text))
+    return out
+
+
+def test_log_targets_channel_and_owner_dm():
+    from core import botlog
+    c = FakeClient()
+    run(botlog.event("CloneCreated", "x", client=c))      # in OWNER_DM_EVENTS
+    run(botlog.event("Ban", "y", client=c))               # channel only
+    assert {chat for chat, _ in _logs(c, "CloneCreated")} == {-100123, 111}
+    assert {chat for chat, _ in _logs(c, "Ban")} == {-100123}
+    assert "🕒" in _logs(c, "Ban")[0][1]
+
+
+def test_log_falls_back_to_owner_dm_without_channel(monkeypatch):
+    import config
+    from core import botlog
+    monkeypatch.setattr(config, "LOG_CHANNEL", 0)
+    c = FakeClient()
+    run(botlog.event("Ban", "y", client=c))
+    assert [chat for chat, _ in _logs(c, "Ban")] == [111]
+
+
+def test_log_never_raises_on_send_failure():
+    from core import botlog
+    c = FakeClient()
+    c.fail.add("send_message")
+    run(botlog.event("NewUser", "z", client=c))   # must not raise
+
+
+def test_new_user_log_has_details_and_source():
+    from core.middleware import track_users
+    c = FakeClient()
+    run(track_users(c, FakeMsg("/start ref_abc", uid=88)))
+    (chat, text), = _logs(c, "NewUser")
+    assert chat == -100123
+    assert "<code>88</code>" in text and "@tester" in text and "ref_abc" in text and "Total users" in text
+
+
+def test_start_log_for_returning_users_is_throttled():
+    from core.menus import start_cmd
+    from core.middleware import track_users
+    c = FakeClient()
+    run(track_users(c, FakeMsg("/start", uid=90)))
+    run(start_cmd(c, FakeMsg("/start", uid=90)))       # same visit as #NewUser → no #Start
+    assert not _logs(c, "Start")
+    from core import botlog
+    botlog._start_seen.clear()                          # cooldown passed
+    run(start_cmd(c, FakeMsg("/start clone", uid=90)))
+    run(start_cmd(c, FakeMsg("/start", uid=90)))        # within cooldown
+    starts = _logs(c, "Start")
+    assert len(starts) == 1 and "clone" in starts[0][1]
+
+
+def test_clone_event_helper_and_boot_report():
+    from core import botlog
+    from filestore.main_bot.plugins.my_bots import _clone_log
+    from tests.harness import FakeUser
+    c = FakeClient()
+    run(_clone_log(c, "CloneDeleted", FakeUser(5), {"_id": 77, "bot_username": "my_store_bot"}))
+    logs = _logs(c, "CloneDeleted")
+    assert {x[0] for x in logs} == {-100123, 111} and "@my_store_bot" in logs[0][1]
+    botlog.set_restart_reason("Restart by Owner (111)")
+    run(botlog.boot_report(c, c.me, handlers=170, boot_seconds=3.2))
+    boot = _logs(c, "BotStarted")
+    assert {x[0] for x in boot} == {-100123, 111}
+    assert "@VidelBot" in boot[0][1] and "Restart by Owner" in boot[0][1] and "Handlers" in boot[0][1]
+    assert botlog.pop_restart_reason() == ""
+
+
+def test_daily_report_counts():
+    from core import botlog
+    from core.middleware import track_users
+    c = FakeClient()
+    run(track_users(c, FakeMsg("/start", uid=301)))
+    run(track_users(c, FakeMsg("/start", uid=302)))
+    body = run(botlog.daily_report(c))
+    assert "New users: <code>2</code>" in body
+    assert _logs(c, "DailyReport")
+
+
+def test_login_logout_logged_with_masked_phone():
+    from saver import session
+    from database.db import db
+    c = FakeClient()
+    from core import botlog
+    botlog.bind(c)
+    run(db.add_user(5, "T"))
+    m = FakeMsg("/logout", uid=5)
+    run(session.logout(c, m))
+    assert _logs(c, "Logout")
+    assert session._mask_phone("+919876543210") == "+91•••••••210"
+    run(session._log_session("Login", 5, None, "+919876543210"))
+    (_, text), = _logs(c, "Login")
+    assert "9876543210" not in text and "+91" in text
+
+
+def test_admin_actions_are_logged():
+    from core.admin import ban_cmd, maintenance_cmd, unban_cmd
+    from saver.premium import add_premium_admin, remove_premium_admin
+    c = FakeClient()
+    run(ban_cmd(c, FakeMsg("/ban 55 spam", uid=111)))
+    run(unban_cmd(c, FakeMsg("/unban 55", uid=111)))
+    run(maintenance_cmd(c, FakeMsg("/maintenance on", uid=111)))
+    run(add_premium_admin(c, FakeMsg("/add_premium 55 30", uid=111)))
+    run(remove_premium_admin(c, FakeMsg("/remove_premium 55", uid=111)))
+    for tag in ("Ban", "Unban", "Maintenance", "PremiumAdded", "PremiumRemoved"):
+        assert _logs(c, tag), tag
+
+
+def test_stars_payment_logged_and_dm():
+    from core.payments import successful_payment
+    c = FakeClient()
+    run(successful_payment(c, _payment_msg(30)))
+    logs = _logs(c, "StarsPayment")
+    assert {x[0] for x in logs} == {-100123, 111} and "Charge ID" in logs[0][1]
+
+
+def test_clone_link_logs_are_routed_and_can_be_disabled(monkeypatch):
+    import config
+    from filestore.utils import helpers
+    c = FakeClient()
+    monkeypatch.setattr(helpers, "main_bot_client", None)
+    run(helpers.send_main_log(c, "<b>🔗 Link Generated</b>\n• Bot: @x"))
+    assert _logs(c, "LinkGenerated")
+    monkeypatch.setattr(config, "LOG_LINKS", False)
+    n = len(c.calls)
+    run(helpers.send_main_log(c, "<b>🔗 Link Generated</b>"))
+    assert len(c.calls) == n
+
+
+def test_watchdog_low_disk_alert_logged():
+    import watchdog
+    c = FakeClient()
+    dog = watchdog.Watchdog(c)
+    run(dog._alert_disk(0.5))
+    run(dog._alert_disk(0.4))    # rate-limited
+    assert len([x for x in _logs(c, "LowDisk") if x[0] == -100123]) == 1
+
+
+def test_logtest_command():
+    from core.botlog import logtest_cmd
+    c = FakeClient()
+    m = FakeMsg("/logtest", uid=111)
+    run(logtest_cmd(c, m))
+    assert _logs(c, "LogTest") and "-100123" in m.replies[-1]
+
+
+# ─────────────────────────── command menus ───────────────────────────
+def test_register_commands_all_scopes():
+    from core.commands import ADMIN_COMMANDS, OWNER_COMMANDS, USER_COMMANDS, register_commands
+    c = FakeClient()
+    done = run(register_commands(c))
+    assert set(done) == {"default", "private", "groups", "user:111", "user:222"}
+    by_scope = {type(k["scope"]).__name__ + str(getattr(k["scope"], "chat_id", "")): a[0]
+                for _, a, k in c.called("set_bot_commands")}
+    owner = by_scope["BotCommandScopeChat111"]
+    admin = by_scope["BotCommandScopeChat222"]
+    assert len(owner) == len(USER_COMMANDS) + len(ADMIN_COMMANDS) + len(OWNER_COMMANDS) <= 100
+    assert "refund" in [x.command for x in owner] and "refund" not in [x.command for x in admin]
+    assert "broadcast" in [x.command for x in admin]
+    assert "broadcast" not in [x.command for x in by_scope["BotCommandScopeDefault"]]
+
+
+def test_every_menu_command_has_a_handler():
+    import re
+    from core.commands import ADMIN_COMMANDS, GROUP_COMMANDS, OWNER_COMMANDS, USER_COMMANDS
+    handled = set()
+    for root, _, files in os.walk("."):
+        if "tests" in root:
+            continue
+        for f in files:
+            if f.endswith(".py"):
+                src = open(os.path.join(root, f), encoding="utf-8").read()
+                for m in re.finditer(r"(?<!~)filters\.command\((\[[^\]]*\]|[^)]*)\)", src):
+                    handled |= set(re.findall(r"[\"']([a-z_0-9]+)[\"']", m.group(1)))
+    menu = {c for g in (USER_COMMANDS, GROUP_COMMANDS, ADMIN_COMMANDS, OWNER_COMMANDS) for c, _ in g}
+    assert menu <= handled, menu - handled
+
+
+def test_public_stats_for_non_admins():
+    from VideoEncoder.plugins.start import show_status_count
+    c = FakeClient()
+    m = FakeMsg("/stats", uid=5)
+    run(show_status_count(c, m))
+    assert "CPU" in m.replies[-1] and "Users" in m.replies[-1]
+
+
+def test_check_clone_health(monkeypatch):
+    from filestore.database.main_db import MainDB
+    from filestore.main_bot.plugins.owner_cmds import check_bots
+    from filestore.worker_bot.engine import worker_engine
+
+    class Alive:
+        async def get_me(self):
+            return SimpleNamespace(id=1)
+
+    class Dead:
+        async def get_me(self):
+            raise ConnectionError("gone")
+
+    run(MainDB().bots.insert_one({"_id": 1, "bot_username": "ok_bot", "is_active": True, "owner_id": 5}))
+    run(MainDB().bots.insert_one({"_id": 2, "bot_username": "dead_bot", "is_active": True, "owner_id": 5}))
+    run(MainDB().bots.insert_one({"_id": 3, "bot_username": "gone_bot", "is_active": True, "owner_id": 5}))
+    run(MainDB().bots.insert_one({"_id": 4, "bot_username": "off_bot", "is_active": False, "owner_id": 5}))
+    worker_engine.workers.update({1: Alive(), 2: Dead()})
+    try:
+        c = FakeClient()
+        m = FakeMsg("/check", uid=111)
+        run(check_bots(c, m))
+        report = m.sent[-1].edits[-1]
+        assert "reachable: <code>1</code>" in report and "responding: <code>1</code>" in report
+        assert "not running: <code>1</code>" in report and "hibernated: <code>1</code>" in report
+        assert "dead_bot" in report and "gone_bot" in report and "/check fix" in report
+    finally:
+        worker_engine.workers.pop(1, None)
+        worker_engine.workers.pop(2, None)

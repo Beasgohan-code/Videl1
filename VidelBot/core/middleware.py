@@ -7,11 +7,12 @@ group, lowest group first, so each gate lives in its own group:
   group -2 → force-subscribe gate           (core/fsub.py)
 """
 import logging
+import time
 
 from pyrogram import Client, StopPropagation, filters
 from pyrogram.types import CallbackQuery, Message
 
-from config import ADMINS, LOG_CHANNEL
+from config import ADMINS
 from core.db import vdb
 from core.texts import BANNED_TEXT, MAINT_TEXT
 
@@ -47,16 +48,21 @@ async def track_users(client: Client, message: Message):
             await saver_db.add_user(user.id, user.first_name)
     except Exception as e:
         log.warning(f"saver add_user failed: {e}")
-    if LOG_CHANNEL:
-        try:
-            total = await vdb.total_users()
-            await client.send_message(
-                LOG_CHANNEL,
-                f"#NewUser\n\n<b>👤 User:</b> {user.mention}\n<b>🆔 ID:</b> <code>{user.id}</code>\n"
-                f"<b>🔗 Username:</b> @{user.username or '—'}\n<b>📊 Total users:</b> {total}",
-            )
-        except Exception as e:
-            log.warning(f"new-user log failed: {e}")
+    # #NewUser → owner log channel (who, where from, total)
+    try:
+        from core import botlog
+        botlog._start_seen[user.id] = time.time()   # don't double-log the same /start as #Start
+        total = await vdb.total_users()
+        text = message.text or message.caption or ""
+        source = ""
+        if text.startswith("/start") and len(text.split()) > 1:
+            source = f"\n<b>🔗 Came from:</b> <code>{botlog.esc(text.split(maxsplit=1)[1][:64])}</code>"
+        first = botlog.esc(text[:60]) if text and not text.startswith("/start") else "/start"
+        await botlog.event("NewUser", botlog.user_block(user, (
+            f"<b>💬 First message:</b> <code>{first}</code>{source}\n"
+            f"<b>📊 Total users:</b> <code>{total}</code>")), client=client)
+    except Exception as e:
+        log.warning(f"new-user log failed: {e}")
 
 
 @Client.on_message(filters.incoming & ~filters.channel & ~filters.successful_payment, group=-3)

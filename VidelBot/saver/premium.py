@@ -139,6 +139,15 @@ async def add_premium_admin(client: Client, message: Message):
 
         # Update DB
         await db.add_premium(user_id, expiry_date)
+        from core import botlog
+        await botlog.event("PremiumAdded", (
+            f"<b>👤 User:</b> <a href=\"tg://user?id={user_id}\">{user_id}</a> (<code>{user_id}</code>)\n"
+            f"<b>📅 Duration:</b> {duration_text}\n<b>👮 By:</b> {botlog.esc(message.from_user.first_name)} "
+            f"(<code>{message.from_user.id}</code>)"), client=client)
+        try:
+            await client.send_message(user_id, f"🎉 <b>You received Premium!</b>\n<b>Duration:</b> {duration_text}")
+        except Exception:
+            pass
 
         await message.reply_text(
             f"<b>✅ Premium Added Successfully</b>\n\n"
@@ -162,6 +171,10 @@ async def remove_premium_admin(client: Client, message: Message):
     try:
         user_id = int(message.command[1])
         await db.remove_premium(user_id)
+        from core import botlog
+        await botlog.event("PremiumRemoved", (
+            f"<b>👤 User:</b> <code>{user_id}</code>\n<b>👮 By:</b> {botlog.esc(message.from_user.first_name)} "
+            f"(<code>{message.from_user.id}</code>)"), client=client)
         await message.reply_text(f"✅ Premium removed from <code>{user_id}</code>.")
     except Exception as e:
         await message.reply_text(f"Error: {e}")

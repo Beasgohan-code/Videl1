@@ -11,6 +11,19 @@ from filestore.database.main_db import MainDB
 from filestore.utils.security import mask_token, decrypt_token
 
 log = LOGGER(__name__)
+
+
+async def _clone_log(client, tag: str, user, bot: dict, extra: str = ""):
+    """Report a clone-bot event to the owner log channel."""
+    try:
+        from core import botlog
+        body = (f"{botlog.user_block(user)}\n\n"
+                f"<b>🤖 Clone bot:</b> @{bot.get('bot_username', 'unknown')} (<code>{bot.get('_id')}</code>)")
+        if extra:
+            body += f"\n{extra}"
+        await botlog.event(tag, body, client=client)
+    except Exception as e:
+        log.warning(f"clone log failed: {e}")
 main_db = MainDB()
 
 # =============================================================================
@@ -213,6 +226,7 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
         await query.answer("🔴 sᴛᴏᴘᴘɪɴɢ...", show_alert=False)
         await worker_engine.stop_worker(bot_id)
         await main_db.set_bot_active(bot_id, False)
+        await _clone_log(client, "CloneStopped", query.from_user, bot)
     else:
         # Answer immediately before slow start
         await query.answer("🟢 sᴛᴀʀᴛɪɴɢ...", show_alert=False)
@@ -220,8 +234,10 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
         try:
             await worker_engine.start_worker(bot_doc)
             await main_db.set_bot_active(bot_id, True)
+            await _clone_log(client, "CloneStarted", query.from_user, bot)
         except Exception as e:
             log.error(f"Failed to start bot {bot_id}: {e}")
+            await _clone_log(client, "CloneFailed", query.from_user, bot, f"<b>❌ Error:</b> <code>{str(e)[:200]}</code>")
 
     # Refresh dashboard
     await dashboard_callback(client, query)
@@ -385,14 +401,8 @@ async def delete_bot_callback(client: Client, query: CallbackQuery):
 
     username = bot.get("bot_username", "unknown")
 
-    from filestore.utils.helpers import send_main_log
-    await send_main_log(
-        client,
-        f"<b>🗑 Bot Deleted</b>\n\n"
-        f"<b>• User ID:</b> <code>{query.from_user.id}</code>\n"
-        f"<b>• Bot ID:</b> <code>{bot_id}</code>\n"
-        f"<b>• Username:</b> @{username}"
-    )
+    remaining = await main_db.bots.count_documents({"owner_id": query.from_user.id, "is_deleted": {"$ne": True}})
+    await _clone_log(client, "CloneDeleted", query.from_user, bot, f"<b>📊 User's remaining clones:</b> {remaining}")
 
     await query.message.edit_text(
         f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
@@ -520,6 +530,9 @@ async def do_transfer_callback(client: Client, query: CallbackQuery):
     old_db = WorkerDB(source_bot_id)
     await old_db.drop_all_collections()
     await main_db.purge_bot(source_bot_id)
+    await _clone_log(client, "CloneTransferred", query.from_user, target_bot,
+                     f"<b>📤 From:</b> @{src_username} (<code>{source_bot_id}</code>)\n"
+                     + "\n".join(f"<b>• {k}:</b> {v}" for k, v in stats.items()))
 
     await query.message.edit_text(
         f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
@@ -564,6 +577,7 @@ async def restart_bot_callback(client: Client, query: CallbackQuery):
         
         # Start again
         await worker_engine.start_worker(bot)
+        await _clone_log(client, "CloneRestarted", query.from_user, bot)
         await query.message.edit_text(
             f"<b>✅ Bot restarted successfully!</b>\n\n"
             f"<blockquote>@{bot.get('bot_username', 'unknown')} is now running.</blockquote>",
@@ -886,6 +900,7 @@ async def do_clone_settings_callback(client: Client, query: CallbackQuery):
 
     src_name = source.get("bot_username", "source")
     tgt_name = target.get("bot_username", "target")
+    await _clone_log(client, "CloneSettingsCopied", query.from_user, target, f"<b>📋 Settings from:</b> @{src_name}")
 
     await query.message.edit_text(
         f"<b>✅ Settings Cloned</b>\n\n"
