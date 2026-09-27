@@ -16,7 +16,7 @@ from pyrogram import Client, enums, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup, Message,
                             ReplyKeyboardRemove)
 
-from config import (ADMINS, BOT_NAME, CLONE_ENABLED, GIFTS_ENABLED, OWNERS, REFERRAL_TARGET, STARS_PLANS,
+from config import (ADMINS, BOT_NAME, CLONE_ENABLED, GIFTS_ENABLED, OWNERS, STARS_PLANS,
                     SUBSCRIPTION, SUBSCRIPTION_STARS, SUPPORT_ENABLED, SUPPORT_URL, TRIAL_DAYS, UPDATES_URL)
 from core import stream
 from core import texts
@@ -64,7 +64,7 @@ def channels_text() -> str:
 # Keyboards
 # ════════════════════════════════════════════════════════════════
 def home_kb() -> InlineKeyboardMarkup:
-    last = [Btn("🧰 Tools", callback_data="help_tools")]
+    last = [Btn("✏️ Auto-Rename", callback_data="help_rename"), Btn("🧰 Tools", callback_data="help_tools")]
     if UPDATES_URL or SUPPORT_URL:
         last.append(Btn("📢 Channels", callback_data="channels_info"))
     return InlineKeyboardMarkup([
@@ -87,6 +87,7 @@ def help_kb(user_id: int, close: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows(
         [Btn("📜 Saver Commands", callback_data="cmd_list_btn"), Btn("🎬 Encoder", callback_data="help_enc")],
         [Btn("⚡ Clone Bots", callback_data="clone_help"), Btn("🧰 Tools", callback_data="help_tools")],
+        [Btn("✏️ Auto-Rename", callback_data="help_rename")],
         [Btn("👮 Admin", callback_data="help_admin")] if user_id in ADMINS else [],
         [Btn("❌ Close Menu", callback_data="close_btn")] if close
         else [Btn("⬅️ Back to Home", callback_data="start_btn")],
@@ -120,7 +121,7 @@ def premium_kb() -> InlineKeyboardMarkup:
     if GIFTS_ENABLED and STARS_PLANS:
         gift_trial.append(Btn("🎁 Gift a friend", callback_data="gift_premium"))
     if TRIAL_DAYS > 0:
-        gift_trial.append(Btn(f"🆓 Free trial", callback_data="trial_btn"))
+        gift_trial.append(Btn("🆓 Free trial", callback_data="trial_btn"))
     return InlineKeyboardMarkup(rows(
         *star_rows,
         *extra,
@@ -172,6 +173,7 @@ async def start_cmd(client: Client, message: Message):
     await react(message)
 
     # Deep links: t.me/<bot>?start=premium | clone | help | guide | settings | refer | gift | sub | trial | support
+    #             | rename | tutorial | rnv_<token> (auto-rename verification)
     # (ref_<id> referral links fall through to the normal home screen)
     arg = message.command[1].lower() if len(message.command) > 1 else ""
 
@@ -204,7 +206,17 @@ async def start_cmd(client: Client, message: Message):
     if arg == "trial":
         from core.growth import trial_cmd
         return await trial_cmd(client, message)
-    if arg in ("guide", "tutorial"):
+    if arg.startswith("rnv_"):
+        from renamer.verify import handle_start_token
+        return await handle_start_token(client, message, arg[4:])
+    if arg in ("rename", "autorename"):
+        from renamer.handlers import panel_view
+        text, kb = await panel_view(uid)
+        return await message.reply_text(text, reply_markup=kb)
+    if arg == "tutorial":
+        from renamer.handlers import tutorial_cmd
+        return await tutorial_cmd(client, message)
+    if arg == "guide":
         from core.extras import send_guide
         me = client.me or await client.get_me()
         return await send_guide(client, message.chat.id, me.username)
@@ -283,6 +295,12 @@ async def cancel_cmd(client: Client, message: Message):
     from core import support
     if support._pending.pop(uid, None):
         done.append("support message")
+
+    try:
+        from renamer.handlers import clear_user as clear_rename
+        done.extend(clear_rename(uid))
+    except Exception:
+        pass
 
     from saver.start import batch_temp
     if batch_temp.IS_BATCH.get(uid) is False:

@@ -106,7 +106,7 @@ def guide_blocks(bot_username: str) -> list:
     return blocks
 
 
-@Client.on_message(filters.command(["guide", "tutorial"]))
+@Client.on_message(filters.command(["guide", "illustrated"]))
 async def guide_cmd(client: Client, message: Message):
     me = client.me or await client.get_me()
     if message.chat.id < 0:

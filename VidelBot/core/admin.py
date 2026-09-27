@@ -74,6 +74,14 @@ async def _stats(message: Message, msg):
     except Exception as e:
         log.warning(f"clone stats: {e}")
 
+    renames = renamers = 0
+    try:
+        from renamer import store as rn_store
+        renames = await rn_store.total_renames()
+        renamers = await vdb.db["rename_users"].count_documents({"template": {"$exists": True}})
+    except Exception as e:
+        log.warning(f"rename stats: {e}")
+
     du = shutil.disk_usage(".")
     mem = psutil.virtual_memory()
     text = (
@@ -85,6 +93,8 @@ async def _stats(message: Message, msg):
         "<b>🤖 Clone bots</b>\n"
         f"<blockquote>Registered: <code>{clones}</code> · Active: <code>{active_clones}</code> · "
         f"Running now: <code>{running}</code></blockquote>\n"
+        "<b>✏️ Auto-Rename</b>\n"
+        f"<blockquote>Files renamed: <code>{renames}</code> · Users with a template: <code>{renamers}</code></blockquote>\n"
         "<b>🖥 Server</b>\n"
         f"<blockquote>CPU: <code>{psutil.cpu_percent(interval=0.5)}%</code> · "
         f"RAM: <code>{mem.percent}%</code> ({humanbytes(mem.used)} / {humanbytes(mem.total)})\n"

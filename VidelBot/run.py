@@ -33,6 +33,7 @@ PLUGIN_ROOTS = [
     "saver",
     "VideoEncoder/plugins",
     "filestore/main_bot/plugins",
+    "renamer",
 ]
 SKIP = {"__init__", "ui", "db", "texts", "botapi"}
 
@@ -141,6 +142,10 @@ async def main():
 
     from core.db import vdb
     await vdb.warm_up()
+
+    # DB admins (/add_admin) must be merged before the plugins build their filters
+    from core.admins import load_db_admins
+    await load_db_admins()
 
     from client import app
     n = load_plugins(app)

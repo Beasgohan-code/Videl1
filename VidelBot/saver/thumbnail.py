@@ -40,7 +40,7 @@ async def set_custom_thumbnail(client: Client, message: Message):
 # ======================================================
 # /view_thumb - Preview Current Thumbnail
 # ======================================================
-@Client.on_message(filters.command(["view_thumb", "see_thumb"]) & filters.private)
+@Client.on_message(filters.command(["view_thumb", "see_thumb", "viewthumb"]) & filters.private)
 async def view_custom_thumbnail(client: Client, message: Message):
     user_id = message.from_user.id
     
@@ -73,7 +73,7 @@ async def view_custom_thumbnail(client: Client, message: Message):
 # ======================================================
 # /del_thumb - Remove Custom Thumbnail
 # ======================================================
-@Client.on_message(filters.command(["del_thumb", "delete_thumb"]) & filters.private)
+@Client.on_message(filters.command(["del_thumb", "delete_thumb", "delthumb"]) & filters.private)
 async def delete_custom_thumbnail(client: Client, message: Message):
     user_id = message.from_user.id
     

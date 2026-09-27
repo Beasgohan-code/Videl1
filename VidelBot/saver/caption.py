@@ -41,7 +41,7 @@ async def set_caption(client: Client, message: Message):
 # ======================================================
 # /see_caption - View Current Caption
 # ======================================================
-@Client.on_message(filters.command("see_caption") & filters.private)
+@Client.on_message(filters.command(["see_caption", "view_caption", "viewcaption"]) & filters.private)
 async def see_caption(client: Client, message: Message):
     user_id = message.from_user.id
     

@@ -94,7 +94,7 @@ async def premium_users(client: Client, message: Message):
 
 
 # /premium - Premium Plans Information
-@Client.on_message(filters.command("premium") & filters.private)
+@Client.on_message(filters.command(["premium", "premium_info"]) & filters.private)
 async def premium_info(client: Client, message: Message):
     await show_premium_plans(message)
 

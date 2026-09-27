@@ -36,7 +36,6 @@ USER_COMMANDS = [
     ("myplan", "📊 Your plan & daily quota"),
     ("plan", "💳 Premium plan details"),
     ("premium", "💎 Premium benefits & prices"),
-    ("buy", "⭐ Buy Premium with Telegram Stars"),
     ("mysub", "🔁 Monthly Stars subscription"),
     ("gift", "🎁 Gift Premium to a friend"),
     ("trial", "🆓 Free Premium trial"),
@@ -45,16 +44,16 @@ USER_COMMANDS = [
     ("support", "💬 Message the bot owner"),
     ("setchat", "📤 Set a dump chat for saved files"),
     ("set_caption", "📝 Set a custom caption"),
-    ("see_caption", "👁 View your caption"),
-    ("del_caption", "🗑 Delete your caption"),
     ("set_thumb", "🖼 Set a custom thumbnail (reply to a photo)"),
     ("view_thumb", "👁 View your thumbnail"),
-    ("del_thumb", "🗑 Delete your thumbnail"),
-    ("thumb_mode", "🔁 Toggle thumbnail mode"),
-    ("set_del_word", "✂️ Words to delete from captions"),
-    ("rem_del_word", "➖ Remove delete-words"),
-    ("set_repl_word", "🔄 Add word replacements"),
-    ("rem_repl_word", "➖ Remove word replacements"),
+    # auto-rename
+    ("autorename", "✏️ Auto-rename template & settings"),
+    ("setmedia", "📦 Send renamed files as doc / video / audio"),
+    ("metadata", "🏷 File metadata (title, audio, subs …)"),
+    ("start_sequence", "📋 Collect files for an ordered batch"),
+    ("end_sequence", "✅ Rename & send the sequence in order"),
+    ("leaderboard", "🏆 Top renamers"),
+    ("verify", "🔐 Verification status"),
     # encoder
     ("dl", "🎬 Encode a replied video / file"),
     ("ddl", "🔗 Encode from a direct link"),
@@ -62,8 +61,6 @@ USER_COMMANDS = [
     ("af", "🎧 Rearrange audio tracks (reply)"),
     ("queue", "📋 Encoder queue"),
     ("vset", "🎛 View your encoder settings"),
-    ("reset", "♻️ Reset encoder settings"),
-    ("thumb", "🖼 Encoder thumbnail"),
     ("status", "📈 Server & queue status"),
     ("stats", "📊 Bot statistics"),
     # tools
@@ -73,7 +70,6 @@ USER_COMMANDS = [
     ("short", "✂️ Shorten a URL"),
     ("qr", "🔳 Make a QR code"),
     ("id", "🆔 User / chat IDs"),
-    ("info", "👤 User info"),
     ("ping", "🏓 Latency"),
 ]
 
@@ -89,6 +85,7 @@ GROUP_COMMANDS = [
     ("stats", "📊 Bot statistics"),
     ("settings", "⚙️ Encoder settings"),
     ("mediainfo", "🔎 Media info (reply to a file)"),
+    ("leaderboard", "🏆 Top renamers"),
     ("qr", "🔳 Make a QR code"),
     ("short", "✂️ Shorten a URL"),
     ("id", "🆔 User / chat IDs"),
@@ -112,13 +109,14 @@ ADMIN_COMMANDS = [
     ("add_premium", "💎 Give premium: id days"),
     ("remove_premium", "➖ Remove premium"),
     ("premium_users", "👑 Premium users"),
-    ("set_dump", "📤 Set a user's dump chat"),
     ("stars", "⭐ Stars payments & revenue"),
     ("add_fsub", "🔒 Add force-sub channel"),
     ("del_fsub", "🔓 Remove force-sub channel"),
     ("fsub_list", "📋 Force-sub channels"),
+    ("fsub_mode", "🔁 Join-request mode per channel"),
+    ("renameset", "✏️ Auto-rename admin: NSFW · dump · verify"),
+    ("admins", "👮 Bot admins (owners: add / remove)"),
     ("watchdog", "🐕 Watchdog report / run / clean"),
-    ("logtest", "📝 Test the log channel"),
     ("report", "📊 Activity report now"),
     ("setcommands", "🔄 Re-sync command menus"),
     ("restart", "♻️ Restart the bot"),
@@ -192,8 +190,9 @@ async def set_profile(client):
                          "📥 Save restricted posts & media\n🎬 Encode / compress videos\n"
                          "⚡ Create your own FileStore clone bots\n⭐ Premium with Telegram Stars · gifts · subscriptions\n"
                          "🤝 Refer friends & earn Premium\n"
-                         "🧰 Rename · MediaInfo · Upload · QR · Short links\n\nTap START to begin!"),
-            about=f"{config.BOT_NAME}: save restricted content, encode videos & clone FileStore bots.",
+                         "✏️ Auto-rename files with templates, metadata & sequences\n"
+                         "🧰 MediaInfo · Upload · QR · Short links\n\nTap START to begin!"),
+            about=f"{config.BOT_NAME}: save restricted content, auto-rename & encode videos, clone FileStore bots.",
         )
     except Exception as e:
         log.debug(f"set_bot_info skipped: {e}")

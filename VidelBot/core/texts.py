@@ -43,6 +43,8 @@ HELP_TXT = f"""<b>📚 Comprehensive Help &amp; User Guide</b>
 <blockquote><b>4️⃣ More Modules</b></blockquote>
 • 🎬 Reply <code>/dl</code> to any video to encode it.
 • ⚡ <code>/clone</code> — create your own FileStore bot.
+• ✏️ <code>/autorename {{title}} S{{season}}E{{episode}} [{{quality}}]</code> — then just send files to rename them
+   (<code>/setmedia</code> · <code>/metadata</code> · <code>/start_sequence</code> · <code>/leaderboard</code> · <code>/tutorial</code>)
 • 🧰 <code>/rename</code> · <code>/mediainfo</code> · <code>/upload</code> · <code>/qr</code> · <code>/short</code>
 <blockquote><b>5️⃣ Premium &amp; Rewards</b></blockquote>
 • ⭐ <code>/buy</code> — pay with Telegram Stars · 🔁 <code>/mysub</code> monthly auto-renew
@@ -232,8 +234,16 @@ ADMIN_HELP = """<b>👮 Admin</b>
 /setcommands — re-sync the Telegram command menus
 /restart · /update (git pull + restart)
 
+<b>Admins</b> (owners)
+/add_admin &lt;id&gt; · /deladmin &lt;id&gt; · /admins — runtime admins, no redeploy needed
+
 <b>Force subscribe</b>
 /add_fsub &lt;chat&gt; · /del_fsub &lt;chat&gt; · /fsub_list
+/fsub_mode — join-request mode per channel (a pending request counts as joined)
+
+<b>Auto-Rename</b>
+/renameset — global on/off · anti-NSFW filter · dump channel
+/verify_settings — 2 shorteners, validity hours, bypass detection, daily counts
 
 <b>Saver</b>
 /add_premium &lt;id&gt; &lt;days&gt; · /remove_premium &lt;id&gt; · /premium_users

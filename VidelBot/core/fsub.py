@@ -10,7 +10,7 @@ import time
 
 from pyrogram import Client, StopPropagation, enums, filters
 from pyrogram.errors import UserNotParticipant
-from pyrogram.types import (CallbackQuery, ChatJoinRequest, InlineKeyboardButton as Btn,
+from pyrogram.types import (CallbackQuery, ChatJoinRequest, ChatMemberUpdated, InlineKeyboardButton as Btn,
                             InlineKeyboardMarkup, Message)
 
 from config import ADMINS, FORCE_PIC, FSUB_CHANNELS, FSUB_REQUEST_MODE
@@ -38,23 +38,30 @@ async def all_channels() -> list:
     return out
 
 
+async def request_mode(chat) -> bool:
+    """Join-request mode for one channel (/fsub_mode), defaulting to FSUB_REQUEST_MODE."""
+    modes = await vdb.get_setting("fsub_modes", {}) or {}
+    return bool(modes.get(str(chat), FSUB_REQUEST_MODE))
+
+
 async def _chat_info(client: Client, chat):
+    req = await request_mode(chat)
     hit = _chat_cache.get(chat)
-    if hit and time.time() - hit[2] < CHAT_TTL:
+    if hit and time.time() - hit[2] < CHAT_TTL and (len(hit) < 4 or hit[3] == req):
         return hit[0], hit[1]
     title, link = str(chat), None
     try:
         c = await client.get_chat(chat)
         title = c.title or title
-        if c.username and not FSUB_REQUEST_MODE:
+        if c.username and not req:
             link = f"https://t.me/{c.username}"
         else:
-            inv = await client.create_chat_invite_link(c.id, creates_join_request=FSUB_REQUEST_MODE or None,
+            inv = await client.create_chat_invite_link(c.id, creates_join_request=req or None,
                                                        name="Videl force-sub")
             link = inv.invite_link
     except Exception as e:
         log.warning(f"fsub chat {chat} unavailable (is the bot admin there?): {e}")
-    _chat_cache[chat] = (title, link, time.time())
+    _chat_cache[chat] = (title, link, time.time(), req)
     return title, link
 
 
@@ -80,7 +87,7 @@ async def missing_channels(client: Client, user_id: int) -> list:
             # Misconfigured channel → don't lock everybody out.
             log.warning(f"fsub check failed for {chat}: {e}")
             continue
-        if FSUB_REQUEST_MODE and await vdb.db["fsub_requests"].find_one({"chat": str(chat), "user": user_id}):
+        if await request_mode(chat) and await vdb.db["fsub_requests"].find_one({"chat": str(chat), "user": user_id}):
             continue
         missing.append(chat)
     if not missing:
@@ -155,13 +162,30 @@ async def record_join_request(client: Client, request: ChatJoinRequest):
     _ok_cache.pop(request.from_user.id, None)
 
 
+_GONE = {enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED}
+
+
+@Client.on_chat_member_updated()
+async def fsub_member_left(client: Client, update: ChatMemberUpdated):
+    """A user left / was removed from a force-sub channel → forget their join request and re-check."""
+    new = update.new_chat_member
+    if not new or not new.user or new.status not in _GONE:
+        return
+    keys = {str(update.chat.id)} | ({update.chat.username} if update.chat.username else set())
+    channels = {str(c) for c in await all_channels()}
+    if not keys & channels:
+        return
+    await vdb.db["fsub_requests"].delete_many({"chat": {"$in": list(keys)}, "user": new.user.id})
+    _ok_cache.pop(new.user.id, None)
+
+
 # ─────────────────────────── admin commands ───────────────────────────
 def _parse_chat(arg: str):
     arg = arg.strip()
     return int(arg) if arg.lstrip("-").isdigit() else arg.lstrip("@").replace("https://t.me/", "")
 
 
-@Client.on_message(filters.command(["add_fsub", "add_unsubscribe"]) & filters.user(ADMINS))
+@Client.on_message(filters.command(["add_fsub", "add_unsubscribe", "addchnl"]) & filters.user(ADMINS))
 async def add_fsub(client: Client, message: Message):
     if len(message.command) < 2:
         return await message.reply_text("<b>Usage:</b> <code>/add_fsub -100xxxxxxxxxx</code> or <code>/add_fsub @channel</code>\n"
@@ -186,7 +210,7 @@ async def add_fsub(client: Client, message: Message):
     await message.reply_text(f"✅ Added <b>{c.title}</b> (<code>{c.id}</code>) to force-subscribe.")
 
 
-@Client.on_message(filters.command(["del_fsub", "del_unsubscribe", "rem_fsub"]) & filters.user(ADMINS))
+@Client.on_message(filters.command(["del_fsub", "del_unsubscribe", "rem_fsub", "delchnl"]) & filters.user(ADMINS))
 async def del_fsub(client: Client, message: Message):
     if len(message.command) < 2:
         return await message.reply_text("<b>Usage:</b> <code>/del_fsub -100xxxxxxxxxx</code>")
@@ -205,7 +229,7 @@ async def del_fsub(client: Client, message: Message):
     await message.reply_text("❌ Not in the list. See /fsub_list")
 
 
-@Client.on_message(filters.command(["fsub_list", "fsub"]) & filters.user(ADMINS))
+@Client.on_message(filters.command(["fsub_list", "fsub", "listchnl"]) & filters.user(ADMINS))
 async def fsub_list(client: Client, message: Message):
     channels = await all_channels()
     if not channels:
@@ -214,7 +238,47 @@ async def fsub_list(client: Client, message: Message):
     for c in channels:
         title, link = await _chat_info(client, c)
         src = "env" if c in FSUB_CHANNELS else "db"
-        lines.append(f"• <b>{title}</b> — <code>{c}</code> ({src})" + (f"\n  {link}" if link else " ⚠️ no access"))
-    mode = "join-request" if FSUB_REQUEST_MODE else "join"
-    await message.reply_text(f"<b>🔒 Force-subscribe ({mode} mode)</b>\n\n" + "\n".join(lines),
+        mode = "📨 request" if await request_mode(c) else "➕ join"
+        lines.append(f"• <b>{title}</b> — <code>{c}</code> ({src} · {mode})" + (f"\n  {link}" if link else " ⚠️ no access"))
+    await message.reply_text("<b>🔒 Force-subscribe channels</b>\n\n" + "\n".join(lines) +
+                             "\n\n<i>/fsub_mode – switch join-request mode per channel</i>",
                              disable_web_page_preview=True)
+
+
+# ─────────────────────────── /fsub_mode (per-channel join-request mode) ───────────────────────────
+async def _mode_view(client: Client):
+    channels = await all_channels()
+    kb = []
+    for c in channels:
+        title, _ = await _chat_info(client, c)
+        on = await request_mode(c)
+        kb.append([Btn(f"{'🟢' if on else '🔴'} {title}"[:60], callback_data=f"fsm:t:{c}"[:64])])
+    kb.append([Btn("❌ Close", callback_data="close_btn")])
+    text = ("<b>🔁 Join-request mode</b>\n\n🟢 = users may just <b>request</b> to join (a pending request counts)\n"
+            "🔴 = users must actually <b>join</b>\n\n<i>Tap a channel to switch it.</i>") if channels else \
+        "🔓 No force-sub channels yet. Add one with /add_fsub."
+    return text, InlineKeyboardMarkup(kb)
+
+
+@Client.on_message(filters.command(["fsub_mode", "fsubmode"]) & filters.user(ADMINS))
+async def fsub_mode_cmd(client: Client, message: Message):
+    text, kb = await _mode_view(client)
+    await message.reply_text(text, reply_markup=kb)
+
+
+@Client.on_callback_query(filters.regex(r"^fsm:t:(.+)$"))
+async def fsub_mode_cb(client: Client, query: CallbackQuery):
+    if query.from_user.id not in ADMINS:
+        return await query.answer("👮 Admins only.", show_alert=True)
+    key = query.matches[0].group(1)
+    channels = {str(c): c for c in await all_channels()}
+    if key not in channels:
+        return await query.answer("That channel is no longer in the list.", show_alert=True)
+    modes = dict(await vdb.get_setting("fsub_modes", {}) or {})
+    modes[key] = not await request_mode(channels[key])
+    await vdb.set_setting("fsub_modes", modes)
+    _chat_cache.pop(channels[key], None)
+    _ok_cache.clear()
+    await query.answer(f"Join-request mode {'ON' if modes[key] else 'OFF'}")
+    text, kb = await _mode_view(client)
+    await smart_edit(query.message, text, kb)
