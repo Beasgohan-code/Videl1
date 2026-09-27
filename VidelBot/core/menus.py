@@ -13,10 +13,12 @@ import logging
 import time
 
 from pyrogram import Client, enums, filters
-from pyrogram.types import CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup, Message
+from pyrogram.types import (CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup, Message,
+                            ReplyKeyboardRemove)
 
-from config import (ADMINS, BOT_NAME, CLONE_ENABLED, STARS_PLANS, SUBSCRIPTION, SUPPORT_URL,
-                    UPDATES_URL)
+from config import (ADMINS, BOT_NAME, CLONE_ENABLED, GIFTS_ENABLED, OWNERS, REFERRAL_TARGET, STARS_PLANS,
+                    SUBSCRIPTION, SUBSCRIPTION_STARS, SUPPORT_ENABLED, SUPPORT_URL, TRIAL_DAYS, UPDATES_URL)
+from core import stream
 from core import texts
 from core.ui import (contact_row, edit_with_preview, effect, random_start_pic, react, readable_time,
                      rows, send_with_preview, smart_edit)
@@ -69,8 +71,16 @@ def home_kb() -> InlineKeyboardMarkup:
         [Btn("💎 Buy Premium", callback_data="buy_premium"), Btn("🆘 Help & Guide", callback_data="help_btn")],
         [Btn("⚙️ Settings Panel", callback_data="settings_btn"), Btn("ℹ️ About Bot", callback_data="about_btn")],
         [Btn("⚡ Clone Bot", callback_data="back_menu"), Btn("🎬 Encoder", callback_data="help_enc")],
+        _growth_row(),
         last,
     ])
+
+
+def _growth_row() -> list:
+    row = [Btn("🤝 Refer & Earn", callback_data="refer_btn")]
+    if SUPPORT_ENABLED and OWNERS:
+        row.append(Btn("💬 Support", callback_data="support_btn"))
+    return row
 
 
 def help_kb(user_id: int, close: bool = False) -> InlineKeyboardMarkup:
@@ -103,8 +113,18 @@ def premium_kb() -> InlineKeyboardMarkup:
         label = "Lifetime" if days == 0 else f"{days} days"
         stars.append(Btn(f"⭐ {price} · {label}", callback_data=f"stars_buy:{days}"))
     star_rows = [stars[i:i + 2] for i in range(0, len(stars), 2)]
+    extra = []
+    if SUBSCRIPTION_STARS > 0:
+        extra.append([Btn(f"🔁 ⭐ {SUBSCRIPTION_STARS} / month · auto-renew", callback_data="stars_sub")])
+    gift_trial = []
+    if GIFTS_ENABLED and STARS_PLANS:
+        gift_trial.append(Btn("🎁 Gift a friend", callback_data="gift_premium"))
+    if TRIAL_DAYS > 0:
+        gift_trial.append(Btn(f"🆓 Free trial", callback_data="trial_btn"))
     return InlineKeyboardMarkup(rows(
         *star_rows,
+        *extra,
+        gift_trial,
         contact_row("📸 Send Payment Proof"),
         [Btn("📊 My Plan", callback_data="myplan_back_btn"), Btn("⬅️ Back to Home", callback_data="start_btn")],
     ))
@@ -131,11 +151,12 @@ async def render_settings(query_or_msg, user_id: int, edit: bool = True):
 
 
 def _clear_flows(user_id: int):
+    """Abort any clone-bot wizard. Returns the aborted state (or None)."""
     try:
         from filestore.main_bot.plugins.create_bot import _creation_state
-        _creation_state.pop(user_id, None)
+        return _creation_state.pop(user_id, None)
     except Exception:
-        pass
+        return None
 
 
 # ════════════════════════════════════════════════════════════════
@@ -144,10 +165,14 @@ def _clear_flows(user_id: int):
 @Client.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
     uid = message.from_user.id
-    _clear_flows(uid)
+    old = _clear_flows(uid)
+    if old and old.get("picker"):
+        from filestore.main_bot.plugins.create_bot import remove_channel_picker
+        await remove_channel_picker(client, uid, old, "⌨️ Setup closed.")
     await react(message)
 
-    # Deep links: t.me/<bot>?start=premium | clone | help | settings
+    # Deep links: t.me/<bot>?start=premium | clone | help | settings | refer | gift | sub | trial | support
+    # (ref_<id> referral links fall through to the normal home screen)
     arg = message.command[1].lower() if len(message.command) > 1 else ""
 
     # #Start → owner log channel (returning users; new users are logged as #NewUser)
@@ -166,9 +191,28 @@ async def start_cmd(client: Client, message: Message):
         return await message.reply_text(texts.HELP_TXT, reply_markup=help_kb(uid, close=True), parse_mode=HTML)
     if arg == "settings":
         return await render_settings(message, uid, edit=False)
+    if arg in ("refer", "invite", "earn"):
+        from core.growth import refer_view
+        text, kb = await refer_view(client, uid)
+        return await message.reply_text(text, reply_markup=kb, disable_web_page_preview=True)
+    if arg == "gift":
+        from core.payments import _ask_gift_target
+        return await _ask_gift_target(client, message.chat.id)
+    if arg in ("sub", "subscribe"):
+        from core.payments import _offer_subscription
+        return await _offer_subscription(client, message.chat.id, uid)
+    if arg == "trial":
+        from core.growth import trial_cmd
+        return await trial_cmd(client, message)
+    if arg == "support":
+        from core.support import support_cmd
+        message.command = ["support"]
+        return await support_cmd(client, message)
 
+    text = await start_text(client, message.from_user)
+    await stream.typewriter(client, message.chat.id, text)   # live "typing" preview (sendMessageDraft)
     await send_with_preview(
-        client, message.chat.id, await start_text(client, message.from_user), home_kb(),
+        client, message.chat.id, text, home_kb(),
         pic=await random_start_pic(), reply_to=message.id, effect_id=effect("fire"),
     )
 
@@ -185,6 +229,7 @@ async def start_group(client: Client, message: Message):
 @Client.on_message(filters.command("help"))
 async def help_cmd(client: Client, message: Message):
     uid = message.from_user.id if message.from_user else 0
+    await stream.typewriter(client, message.chat.id, texts.HELP_TXT)
     await message.reply_text(texts.HELP_TXT, reply_markup=help_kb(uid, close=True), parse_mode=HTML,
                              disable_web_page_preview=True)
 
@@ -224,16 +269,23 @@ async def cancel_cmd(client: Client, message: Message):
     if _creation_state.pop(uid, None) is not None:
         done.append("clone-bot setup")
 
+    from core import support
+    if support._pending.pop(uid, None):
+        done.append("support message")
+
     from saver.start import batch_temp
     if batch_temp.IS_BATCH.get(uid) is False:
         batch_temp.IS_BATCH[uid] = True
         done.append("batch / save task")
 
+    # ReplyKeyboardRemove also hides any picker keyboard (📢 channel / 👤 gift)
     if done:
-        await message.reply_text(f"❌ <b>Cancelled Successfully:</b> {', '.join(done)}.")
+        await message.reply_text(f"❌ <b>Cancelled Successfully:</b> {', '.join(done)}.",
+                                 reply_markup=ReplyKeyboardRemove())
     else:
         await message.reply_text("ℹ️ <b>Nothing to cancel.</b>\n"
-                                 "<i>Encodes can be cancelled from their progress message.</i>")
+                                 "<i>Encodes can be cancelled from their progress message.</i>",
+                                 reply_markup=ReplyKeyboardRemove())
 
 
 # ════════════════════════════════════════════════════════════════

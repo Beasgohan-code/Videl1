@@ -34,6 +34,15 @@ class VidelDB:
     # ---------------- lifecycle ----------------
     async def warm_up(self):
         await self.users.create_index("id", unique=True)
+        # phase-4 collections: support inbox routing, redeem codes, Stars subscriptions
+        try:
+            await self.db["support_map"].create_index([("chat", 1), ("msg", 1)])
+            await self.db["support_map"].create_index("date", expireAfterSeconds=60 * 60 * 24 * 30)
+            await self.db["codes"].create_index("code", unique=True)
+            await self.db["subscriptions"].create_index("user")
+            await self.users.create_index("referred_by", sparse=True)
+        except Exception:
+            pass
         self._banned = {d["id"] async for d in self.users.find({"banned": True}, {"id": 1})}
         await self._reload_settings()
 

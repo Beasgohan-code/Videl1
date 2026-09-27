@@ -68,6 +68,8 @@ async def set_channel_callback(client: Client, query: CallbackQuery):
         ]),
     )
     await query.answer()
+    from filestore.main_bot.plugins.create_bot import offer_channel_picker
+    await offer_channel_picker(client, query.from_user.id, state[query.from_user.id])
 
 
 async def handle_log_channel_input(client: Client, message: Message, state: dict):
@@ -294,6 +296,8 @@ async def add_fsub_callback(client: Client, query: CallbackQuery):
             [InlineKeyboardButton("❌ Cancel", callback_data=f"fsub_{bot_id}")],
         ]),
     )
+    from filestore.main_bot.plugins.create_bot import offer_channel_picker
+    await offer_channel_picker(client, query.from_user.id, state[query.from_user.id])
     await query.answer()
 
 
@@ -870,6 +874,7 @@ async def startcfg_callback(client: Client, query: CallbackQuery):
                 InlineKeyboardButton("📝 ᴍᴇssᴀɢᴇ", callback_data=f"set_startmsg_{bot_id}"),
                 InlineKeyboardButton("🖼 ᴘʜᴏᴛᴏ", callback_data=f"set_startpic_{bot_id}"),
             ],
+            [InlineKeyboardButton("🤖 ʙᴏᴛ ᴘʀᴏꜰɪʟᴇ ᴘʜᴏᴛᴏ", callback_data=f"set_botphoto_{bot_id}")],
             [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data=f"dashboard_{bot_id}")],
         ]),
     )
@@ -909,6 +914,64 @@ async def set_startpic_callback(client: Client, query: CallbackQuery):
     )
     await query.answer()
 
+@Client.on_callback_query(filters.regex(r"^set_botphoto_(\d+)$"))
+async def set_botphoto_callback(client: Client, query: CallbackQuery):
+    """Bot API 9.4 setMyProfilePhoto – change the clone's own avatar from here."""
+    bot_id = _extract_bot_id(r"^set_botphoto_(\d+)$", query.data)
+    user_id = query.from_user.id
+    bot = await _verify_ownership(query, bot_id)
+    if not bot: return
+    from filestore.worker_bot.engine import worker_engine
+    if not worker_engine.get_worker(bot_id):
+        return await query.answer("🔴 Start the bot first – the photo is set through the running clone.", show_alert=True)
+
+    state = _get_state()
+    state[user_id] = {"step": "settings", "action": "set_botphoto", "data": {"bot_id": bot_id}}
+
+    await query.message.edit_text(
+        f"<b>🤖 Bot profile photo · @{bot.get('bot_username', '')}</b>\n\n"
+        "<blockquote>Send a <b>photo</b> to use it as your bot's avatar.\n"
+        "Send <code>0</code> to remove the current avatar.</blockquote>\n\n"
+        "<i>No @BotFather needed. Or click Cancel to abort.</i>",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"startcfg_{bot_id}")]])
+    )
+    await query.answer()
+
+
+async def handle_botphoto_input(client: Client, message: Message, state: dict):
+    import os
+    user_id = message.from_user.id
+    bot_id = state["data"]["bot_id"]
+    back = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"startcfg_{bot_id}")]])
+    from filestore.worker_bot.engine import worker_engine
+    from core.profile import download_photo, remove_bot_photo, set_bot_photo
+    worker = worker_engine.get_worker(bot_id)
+    if not worker:
+        _get_state().pop(user_id, None)
+        return await message.reply("<b>🔴 The bot is not running – start it and try again.</b>", reply_markup=back)
+    if message.text and message.text.strip() == "0":
+        try:
+            await remove_bot_photo(worker)
+        except Exception as e:
+            return await message.reply(f"<b>❌ Couldn't remove the photo:</b> <code>{str(e)[:150]}</code>", reply_markup=back)
+        _get_state().pop(user_id, None)
+        return await message.reply("<b>🗑 Bot profile photo removed.</b>", reply_markup=back)
+    if not (message.photo or (message.document and (message.document.mime_type or "").startswith("image/"))):
+        return await message.reply("<b>❌ Please send a photo (or 0 to remove).</b>")
+    status = await message.reply("<b>⏳ Updating your bot's profile photo…</b>")
+    path = await download_photo(client, message)
+    try:
+        await set_bot_photo(worker, path)
+    except Exception as e:
+        return await status.edit_text(f"<b>❌ Telegram rejected the photo:</b>\n<code>{str(e)[:200]}</code>", reply_markup=back)
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
+    _get_state().pop(user_id, None)
+    await status.edit_text("<b>✅ Bot profile photo updated!</b>\n<i>It can take a moment to show everywhere.</i>",
+                           reply_markup=back)
+
+
 @Client.on_callback_query(filters.regex(r"^captioncfg_(\d+)$"))
 async def captioncfg_callback(client: Client, query: CallbackQuery):
     bot_id = _extract_bot_id(r"^captioncfg_(\d+)$", query.data)
@@ -933,6 +996,9 @@ async def handle_startcfg_input(client: Client, message: Message, state: dict):
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
     action = state["action"]
+
+    if action == "set_botphoto":  # no worker restart needed
+        return await handle_botphoto_input(client, message, state)
 
     if action == "set_startmsg":
         new_text = message.text

@@ -36,7 +36,12 @@ def _target_id(message: Message):
 # ─────────────────────────── /stats ───────────────────────────
 @Client.on_message(filters.command("stats") & admin_filter)
 async def stats_cmd(client: Client, message: Message):
-    msg = await message.reply_text("📊 <i>Collecting stats…</i>")
+    from core import stream
+    async with stream.progress(message, "📊 <i>Collecting stats…</i>") as msg:
+        await _stats(message, msg)
+
+
+async def _stats(message: Message, msg):
     videl_users = await vdb.total_users()
     banned = len(vdb._banned)
 
@@ -87,7 +92,7 @@ async def stats_cmd(client: Client, message: Message):
         f"(free {humanbytes(du.free)})\n"
         f"Uptime: <code>{readable_time(time.time() - BOOT_TIME)}</code></blockquote>"
     )
-    await msg.edit_text(text)
+    await msg.finish(text)
 
 
 # ─────────────────────────── /users ───────────────────────────

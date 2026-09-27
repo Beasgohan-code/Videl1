@@ -5,6 +5,7 @@ group, lowest group first, so each gate lives in its own group:
   group -4 → user tracking / new-user log   (never blocks)
   group -3 → ban + maintenance gate         (StopPropagation)
   group -2 → force-subscribe gate           (core/fsub.py)
+  group -1 → reply routers: support inbox, gift picker (core/support.py, core/payments.py)
 """
 import logging
 import time
@@ -63,6 +64,12 @@ async def track_users(client: Client, message: Message):
             f"<b>📊 Total users:</b> <code>{total}</code>")), client=client)
     except Exception as e:
         log.warning(f"new-user log failed: {e}")
+    # 🤝 referral credit (only genuinely new users count)
+    try:
+        from core.growth import on_new_user
+        await on_new_user(client, user, message.text or "")
+    except Exception as e:
+        log.warning(f"referral hook failed: {e}")
 
 
 @Client.on_message(filters.incoming & ~filters.channel & ~filters.successful_payment, group=-3)

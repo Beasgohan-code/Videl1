@@ -39,6 +39,13 @@ COMMANDS_TXT = """<b>📜 Content Saver Commands</b>
 /myplan — Plan & quota
 /premium — Upgrade options</blockquote>
 
+<b>💎 Premium & Rewards</b>
+<blockquote>/buy — Pay with ⭐ Stars · /mysub — monthly auto-renew
+/gift — Gift Premium to a friend
+/trial — Free trial · /redeem CODE — Redeem a code
+/refer — Invite friends & earn Premium
+/support — Message the bot owner</blockquote>
+
 <b>📤 Dump Chat</b>
 <blockquote>/setchat &lt;chat_id&gt; — Forward destination
 /setchat clear — Remove dump chat</blockquote>

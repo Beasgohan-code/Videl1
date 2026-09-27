@@ -7,10 +7,12 @@ Videl is **one** Telegram bot that combines:
 | 📥 **Content Saver** (`saver/`) | Save posts/media from public **and** restricted channels (via `/login`), single links or ranges, custom caption / thumbnail, word delete/replace filters, auto-forward to a dump chat, free & premium plans |
 | 🎬 **Video Encoder** (`VideoEncoder/`) | x264 / x265 encoding with per-user settings (CRF, preset, resolution, audio codec, watermark, hard-subs…), queue, direct-link & batch encodes, Drive upload |
 | 🤖 **Clone Bots** (`filestore/`) | Users create their **own FileStore bot** from inside Videl. Each clone runs as a worker: permanent share links, `/genlink`, `/batch`, `/custom_batch`, `/flink` (quality-grouped links), multi force-sub, join-requests, auto-delete, shorteners + verification, custom start text/pic/caption, backups, transfer, maintenance. Idle clones hibernate automatically. |
-| ⭐ **Stars Premium** (`core/payments.py`) | Users buy Premium in-app with **Telegram Stars** – instant activation, extends an active plan, receipts, `/stars` revenue stats and `/refund` |
+| ⭐ **Stars Premium** (`core/payments.py`) | Users buy Premium in-app with **Telegram Stars** – one-time plans, **monthly auto-renewing subscriptions** (`/mysub` cancel/resume), **gift Premium to a friend** (`/gift`, native user picker), instant activation, receipts, `/stars` (live Stars balance + revenue) and `/refund` |
+| 🤝 **Growth** (`core/growth.py`) | `/refer` invite links (every `REFERRAL_TARGET` new users → `REFERRAL_REWARD_DAYS` Premium), `/redeem` codes (`/gencode`, `/codes`, `/delcode`), one-time `/trial` |
+| 💬 **Support inbox** (`core/support.py`) | `/support` delivers text or media to the owners' DM – owners just **reply** to answer, users reply to follow up |
 | 🔒 **Force Subscribe** (`core/fsub.py`) | Require joining one or more channels (normal or **join-request** mode), manage with `/add_fsub`, `/del_fsub`, `/fsub_list` |
 | 🧰 **Tools** (`core/`) | `/mediainfo`, `/rename`, `/upload` (public link), `/short`, `/qr`, `/id`, `/info`, `/json`, `/ping`, **inline mode** (`@bot <url or text>` → short links + QR) |
-| 👮 **Admin** (`core/`) | `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/logtest`, `/report`, `/setcommands`, `/restart`, `/update`; clone owners' panel `/clonestats`, `/bots`, `/check [fix]`, `/sys` |
+| 👮 **Admin** (`core/`) | `/user <id\|@name>` (full profile + ban / premium buttons), `/msg`, `/export` (CSV), `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/logtest`, `/report`, `/setcommands`, `/restart`, `/update`; clone owners' panel `/clonestats`, `/bots`, `/check [fix]`, `/sys` |
 | 📝 **Owner log channel** (`core/botlog.py`) | Every event tagged in `LOG_CHANNEL` – who started the bot, who cloned which bot, logins, payments, bans, restarts… – boot/shutdown/clone reports also in the owners' DM, plus a daily activity report |
 | 🐕 **Keep-alive + Watchdog** | Health server + self-ping for free hosts; automatic temp-file cleanup, low-disk rescue, stuck-flow expiry, clone-bot self-healing, hang detection & auto-restart |
 
@@ -24,6 +26,10 @@ Pyrogram clients started by the worker engine.
 * **Copy-text buttons** (receipt IDs), **expandable block quotes** in logs
 * **Scoped bot commands** – owners get the admin menu, users the normal one; bot **description / about** set automatically
 * **Join-request** force-subscribe, **inline mode**, global **error handler**
+* **Streaming replies** (Bot API 9.5 `sendMessageDraft`) – /start and /help "type" themselves, slow commands (`/stats`, `/report`, `/check`, `/user`, `/stars`, `/export`) show Telegram's native **“Thinking…”** placeholder (`STREAM_REPLIES`)
+* **Bot profile photo** (Bot API 9.4 `setMyProfilePhoto`) – owners: `/setbotpic` · `/delbotpic`; clone owners: dashboard → 📩 Start cfg → 🤖 Bot profile photo
+* **Stars subscriptions** (30-day auto-renew, cancel / resume) and **Premium gifts**
+* **Native pickers** (`request_chat` / `request_user` keyboard buttons) – 📢 *Select channel* when creating a clone / changing its log or force-sub channel, 👤 *Choose a friend* for gifts
 
 ## 🚀 Deploy
 
@@ -76,7 +82,9 @@ Set `LOG_CHANNEL` (bot must be admin). Every message is tagged, so the channel i
 | `#CloneHibernated` `#CloneHealed` `#CloneFailed` | idle shutdown / watchdog repairs / repeated start failures | |
 | `#LinkGenerated` | clone bots: /genlink /batch /custom_batch /flink (`LOG_LINKS`) | |
 | `#Login` `#Logout` | saver account connected / removed – phone masked, sessions never logged (`LOG_LOGINS`) | |
-| `#StarsPayment` `#Refund` `#PremiumAdded` `#PremiumRemoved` | premium changes | Stars ✅ |
+| `#StarsPayment` `#Refund` `#PremiumAdded` `#PremiumRemoved` | premium changes (payment type: plan / 🔁 subscription + renewal no. / 🎁 gift → friend) | Stars ✅ |
+| `#Subscription` `#Referral` `#Redeem` `#CodesCreated` `#Trial` | auto-renew cancel/resume, referral credit + rewards, code use / creation, trials | |
+| `#Support` `#AdminAction` `#BotPhoto` | support messages (the owners also get them in DM to reply), `/user` panel actions, bot photo changes | |
 | `#Ban` `#Unban` `#Broadcast` `#Maintenance` `#FsubAdded` `#FsubRemoved` | admin actions (with who did it) | |
 | `#LowDisk` `#AutoRestart` `#Restart` `#Update` `#Error` | health | LowDisk/AutoRestart ✅ |
 | `#DailyReport` | every day at `DAILY_REPORT_HOUR` (`LOG_TZ`): new users, new clones, Stars, totals, disk/RAM | |
@@ -86,7 +94,7 @@ Admins: `/logtest` (check the setup), `/report` (report now).
 
 ## 📜 Command menus
 All commands are registered in Telegram automatically at every boot (`core/commands.py`):
-users see the user menu (46 commands) in private chats, groups get a group menu, admins additionally see the admin
+users see the user menu (52 commands) in private chats, groups get a group menu, admins additionally see the admin
 commands and owners the owner commands. `/setcommands` re-syncs without restarting (e.g. after a new admin started the bot).
 
 ## ⭐ Stars premium
@@ -94,12 +102,17 @@ commands and owners the owner commands. `/setcommands` re-syncs without restarti
 Buying while premium extends the current expiry. Owners: `/stars` (revenue + last payments with charge IDs), `/refund <user_id> <charge_id>`.
 Manual UPI / QR payments (`UPI_ID`, `QR_CODE`, `/add_premium`) keep working alongside.
 
+* **Subscription** – `SUBSCRIPTION_STARS=90` adds *🔁 ⭐90 / month · auto-renew*. Telegram charges the user every 30 days and
+  each renewal extends Premium by 30 days automatically. Users manage it with `/mysub` (cancel / resume auto-renew).
+* **Gifts** – `/gift` (or *🎁 Gift a friend*) opens Telegram's user picker; the buyer pays, the friend gets Premium and a notification.
+* **Free Premium** – `/trial` (`TRIAL_DAYS`), `/redeem CODE` (admins create codes with `/gencode 30 5`), referral rewards.
+
 ## 🧪 Tests
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
-The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode.
+The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel.
 
 ## 🗂 Layout
 
@@ -109,8 +122,9 @@ keep_alive.py     health web server + self-ping
 watchdog.py       auto-cleanup & self-healing
 client.py         the single shared Pyrogram client
 config.py         unified env-based configuration
-core/             home menu & texts, settings hub, middleware, force-sub, Stars payments, inline, errors, admin, tools,
-                  botlog (owner log channel), commands (Telegram menus)
+core/             home menu & texts, settings hub, middleware, force-sub, Stars payments (plans / subscriptions / gifts),
+                  inline, errors, admin, tools, botlog (owner log channel), commands (Telegram menus),
+                  stream (live drafts), profile (bot photo), growth (referrals / codes / trial), support, userpanel
 saver/            restricted-content saver
 VideoEncoder/     encoder (plugins + ffmpeg utils)
 filestore/        clone-bot controller (main_bot/plugins) + worker engine (worker_bot/)
@@ -119,7 +133,7 @@ tests/            offline test-suite
 ```
 
 ### Handler order
-`-10` payments (never blocked) → `-4` user tracking → `-3` ban / maintenance → `-2` force-subscribe → `0` modules → `1–2` clone link generators.
+`-10` payments (never blocked) → `-4` user tracking (+ referral credit) → `-3` ban / maintenance → `-2` force-subscribe → `-1` reply routers (support inbox, gift picker) → `0` modules → `1–2` clone link generators.
 
 ## 📜 Licence
 

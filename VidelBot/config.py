@@ -137,6 +137,25 @@ for _pair in os.environ.get("STARS_PLANS", "30:100 90:250 0:500").replace(",", "
 PREMIUM_PRICES = os.environ.get(
     "PREMIUM_PRICES", "1 Month: ₹50 / $1 | 3 Months: ₹120 / $2.5 | Lifetime: ₹200 / $4"
 )
+# Monthly auto-renewing Stars subscription (⭐ per 30 days). 0 disables it.
+SUBSCRIPTION_STARS = int(os.environ.get("SUBSCRIPTION_STARS", "90") or 0)
+# Let users buy Premium for a friend (native Telegram user picker + Stars).
+GIFTS_ENABLED = _bool("GIFTS_ENABLED", True)
+
+# ==============================
+# Growth: referrals · redeem codes · free trial
+# ==============================
+REFERRAL_TARGET = int(os.environ.get("REFERRAL_TARGET", "5") or 0)          # 0 disables rewards
+REFERRAL_REWARD_DAYS = int(os.environ.get("REFERRAL_REWARD_DAYS", "3") or 0)
+TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "1") or 0)                    # 0 disables /trial
+
+# ==============================
+# Modern Bot API UX
+# ==============================
+# Live "typing" previews (sendMessageDraft) and the "Thinking…" placeholder
+# for slow commands – private chats only, silently skipped where unsupported.
+STREAM_REPLIES = _bool("STREAM_REPLIES", True)
+SUPPORT_ENABLED = _bool("SUPPORT_ENABLED", True)  # /support inbox → owners reply by replying
 
 # ==============================
 # Encoder: folders & drive

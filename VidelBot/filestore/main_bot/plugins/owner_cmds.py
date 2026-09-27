@@ -134,10 +134,14 @@ async def system_stats(client: Client, message: Message):
 @Client.on_message(filters.command(["check", "checkbots"]) & filters.private & filters.user(OWNERS))
 async def check_bots(client: Client, message: Message):
     """Health-check every clone bot: running / reachable / should-be-running. `/check fix` restarts the missing ones."""
+    from core import stream
+    async with stream.progress(message, "🩺 <i>Checking every clone bot…</i>") as status:
+        await _check_bots(client, message, status)
+
+
+async def _check_bots(client, message, status):
     import asyncio
     from filestore.worker_bot.engine import worker_engine
-
-    status = await message.reply("🩺 <i>Checking every clone bot…</i>")
     bots = [b for b in await main_db.get_all_bots() if not b.get("is_deleted")]
     ok, dead, missing, off = [], [], [], []
     dead_ids = []
@@ -186,4 +190,4 @@ async def check_bots(client: Client, message: Message):
         + block("🔴 Not responding", dead) + block("⚠️ Not running", missing)
         + (fixed or ("\n\n<i>Use /check fix to restart the broken ones.</i>" if (dead or missing) else ""))
     )
-    await status.edit_text(text[:4096])
+    await status.finish(text[:4096])

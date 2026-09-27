@@ -9,7 +9,8 @@ Events: #BotStarted #BotStopped #NewUser #Start #CloneCreated #CloneDeleted #Clo
 #CloneStopped #CloneRestarted #CloneTransferred #CloneRestored #CloneSettingsCopied
 #CloneHibernated #CloneFailed #CloneHealed #LinkGenerated #Login #Logout #PremiumAdded
 #PremiumRemoved #StarsPayment #Refund #Ban #Unban #Broadcast #Maintenance #FsubAdded
-#FsubRemoved #LowDisk #AutoRestart #Restart #Update #DailyReport #Error
+#FsubRemoved #LowDisk #AutoRestart #Restart #Update #DailyReport #Error #Subscription
+#Referral #Redeem #CodesCreated #Trial #Support #AdminAction #BotPhoto
 """
 import asyncio
 import html
@@ -196,11 +197,12 @@ def host_name() -> str:
 async def collect_totals() -> dict:
     """Numbers shared by the boot message and the daily report."""
     out = {"users": 0, "banned": 0, "premium": 0, "clones": 0, "clones_active": 0, "clones_running": 0,
-           "enc_queue": 0, "fsub": 0}
+           "enc_queue": 0, "fsub": 0, "subs": 0}
     try:
         from core.db import vdb
         out["users"] = await vdb.total_users()
         out["banned"] = len(vdb._banned)
+        out["subs"] = await vdb.db["subscriptions"].count_documents({"active": True, "canceled": {"$ne": True}})
     except Exception:
         pass
     try:
@@ -246,7 +248,7 @@ async def boot_report(client, me, handlers: int, boot_seconds: float):
         f"<b>🧩 Handlers:</b> {handlers} · <b>⏱ Boot:</b> {boot_seconds:.1f}s</blockquote>\n"
         "<blockquote>"
         f"<b>👥 Users:</b> <code>{t['users']}</code> (🚫 {t['banned']} banned)\n"
-        f"<b>💎 Premium:</b> <code>{t['premium']}</code>\n"
+        f"<b>💎 Premium:</b> <code>{t['premium']}</code> · <b>🔁 Subscriptions:</b> <code>{t['subs']}</code>\n"
         f"<b>🤖 Clone bots:</b> <code>{t['clones_running']}</code> running / {t['clones_active']} active / "
         f"{t['clones']} total\n"
         f"<b>🔒 Force-sub channels:</b> {t['fsub']} · <b>🛠 Maintenance:</b> {maint}</blockquote>"
@@ -259,7 +261,7 @@ async def boot_report(client, me, handlers: int, boot_seconds: float):
 async def daily_report(client=None) -> str:
     """Last-24h activity + totals."""
     since = datetime.now(timezone.utc) - timedelta(days=1)
-    new_users = clones_new = payments = stars = 0
+    new_users = clones_new = payments = stars = referrals = gifts = 0
     try:
         from core.db import vdb
         new_users = await vdb.users.count_documents({"joined": {"$gte": since}})
@@ -269,6 +271,8 @@ async def daily_report(client=None) -> str:
         ]).to_list(1)
         if agg:
             payments, stars = agg[0]["n"], agg[0]["s"]
+        referrals = await vdb.users.count_documents({"joined": {"$gte": since}, "referred_by": {"$exists": True}})
+        gifts = await vdb.db["payments"].count_documents({"date": {"$gte": since}, "kind": "gift"})
     except Exception as e:
         log.debug(f"daily report users: {e}")
     try:
@@ -282,9 +286,10 @@ async def daily_report(client=None) -> str:
         "<b>Last 24 hours</b>\n<blockquote>"
         f"👤 New users: <code>{new_users}</code>\n"
         f"🤖 New clone bots: <code>{clones_new}</code>\n"
-        f"⭐ Stars payments: <code>{payments}</code> (<code>{stars}</code> ⭐)</blockquote>\n"
+        f"⭐ Stars payments: <code>{payments}</code> (<code>{stars}</code> ⭐) · 🎁 gifts: <code>{gifts}</code>\n"
+        f"🤝 Joined via referral: <code>{referrals}</code></blockquote>\n"
         "<b>Totals</b>\n<blockquote>"
-        f"👥 Users: <code>{t['users']}</code> · 💎 Premium: <code>{t['premium']}</code>\n"
+        f"👥 Users: <code>{t['users']}</code> · 💎 Premium: <code>{t['premium']}</code> · 🔁 Subs: <code>{t['subs']}</code>\n"
         f"🤖 Clones: <code>{t['clones_running']}</code> running / {t['clones']} total\n"
         f"🎬 Encoder queue: <code>{t['enc_queue']}</code></blockquote>"
     )
@@ -333,5 +338,6 @@ async def logtest_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command(["report", "dailyreport"]) & filters.user(config.ADMINS))
 async def report_cmd(client: Client, message: Message):
-    body = await daily_report(client)
-    await message.reply_text(body)
+    from core import stream
+    async with stream.progress(message, "📝 <i>Building report…</i>") as p:
+        await p.finish(await daily_report(client))

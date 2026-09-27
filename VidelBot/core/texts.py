@@ -23,6 +23,7 @@ START_TXT = """<b>👋 Hello {mention},</b>
 <b>│ ◈ ⚡ Clone your own FileStore bot</b>
 <b>│ ◈ 🧰 Rename · MediaInfo · Upload · QR</b>
 <b>│ ◈ 💎 Premium with Telegram Stars</b>
+<b>│ ◈ 🎁 Gifts · 🔁 Subscriptions · 🤝 Referrals</b>
 <b>╰──────────────────╯</b></blockquote>
 <b>👇 Select an Option Below to Get Started:</b>
 """
@@ -43,6 +44,11 @@ HELP_TXT = f"""<b>📚 Comprehensive Help & User Guide</b>
 • 🎬 Reply <code>/dl</code> to any video to encode it.
 • ⚡ <code>/clone</code> — create your own FileStore bot.
 • 🧰 <code>/rename</code> · <code>/mediainfo</code> · <code>/upload</code> · <code>/qr</code> · <code>/short</code>
+<blockquote><b>5️⃣ Premium & Rewards</b></blockquote>
+• ⭐ <code>/buy</code> — pay with Telegram Stars · 🔁 <code>/mysub</code> monthly auto-renew
+• 🎁 <code>/gift</code> — gift Premium to a friend (pick them from your contacts)
+• 🆓 <code>/trial</code> · 🎟 <code>/redeem CODE</code> · 🤝 <code>/refer</code> — earn Premium free
+• 💬 <code>/support</code> — talk to the bot owner
 <blockquote><b>🛑 Free User Limitations:</b></blockquote>
 • <b>Daily Quota:</b> {FREE_LIMIT_DAILY} Files / 24 Hours
 • <b>File Size Cap:</b> {FREE_LIMIT_SIZE_GB:g}GB Maximum
@@ -98,7 +104,7 @@ CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━
 
 <b>❶</b> ᴛᴀᴘ <b>⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ</b>
 <b>❷</b> sᴇɴᴅ ʏᴏᴜʀ ʙᴏᴛ ᴛᴏᴋᴇɴ (ꜰʀᴏᴍ @BotFather)
-<b>❸</b> sᴇɴᴅ ʏᴏᴜʀ ʟᴏɢ ᴄʜᴀɴɴᴇʟ ɪᴅ
+<b>❸</b> ᴛᴀᴘ <b>📢 sᴇʟᴇᴄᴛ ᴄʜᴀɴɴᴇʟ</b> (ᴏʀ sᴇɴᴅ ɪᴛs ɪᴅ)
 <b>❹</b> ʏᴏᴜʀ ʙᴏᴛ sᴛᴀʀᴛs ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ!</blockquote>
 
 <blockquote expandable><b>🎛 ᴅᴀsʜʙᴏᴀʀᴅ ꜰᴇᴀᴛᴜʀᴇs:</b>
@@ -109,6 +115,7 @@ CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━
 ◈ <b>sᴛᴀᴛɪsᴛɪᴄs</b> — ᴠɪᴇᴡ ᴜsᴀɢᴇ sᴛᴀᴛs
 ◈ <b>ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇ</b> — sᴇᴛ ᴛɪᴍᴇʀ
 ◈ <b>sᴛᴀʀᴛ ᴄᴏɴꜰɪɢ</b> — ᴄᴜsᴛᴏᴍ ᴡᴇʟᴄᴏᴍᴇ
+◈ <b>ʙᴏᴛ ᴘʀᴏꜰɪʟᴇ ᴘʜᴏᴛᴏ</b> — sᴇᴛ ʏᴏᴜʀ ʙᴏᴛ's ᴀᴠᴀᴛᴀʀ (ɴᴏ @BotFather)
 ◈ <b>ᴘʀᴏᴛᴇᴄᴛ · ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ · ʙᴀᴄᴋᴜᴘ · ᴛʀᴀɴsꜰᴇʀ</b></blockquote>
 
 <blockquote expandable><b>📌 ᴡᴏʀᴋᴇʀ ʙᴏᴛ ᴄᴏᴍᴍᴀɴᴅs:</b>
@@ -212,6 +219,8 @@ ADMIN_HELP = """<b>👮 Admin</b>
 <blockquote expandable><b>Bot</b>
 /stats — users, modules & server stats
 /users — user counts
+/user &lt;id | @name&gt; — full profile + ban / premium buttons
+/msg &lt;id&gt; &lt;text&gt; — message a user · /export — users CSV
 /broadcast — reply to a message (add <code>-pin</code> to pin)
 /ban &lt;id&gt; [reason] · /unban &lt;id&gt; · /banned
 /maintenance on|off
@@ -226,7 +235,15 @@ ADMIN_HELP = """<b>👮 Admin</b>
 <b>Saver</b>
 /add_premium &lt;id&gt; &lt;days&gt; · /remove_premium &lt;id&gt; · /premium_users
 /set_dump &lt;chat_id&gt;
-/stars — Stars payments · /refund &lt;user&gt; &lt;charge_id&gt;
+/stars — Stars balance, payments, subscriptions · /refund &lt;user&gt; &lt;charge_id&gt;
+
+<b>Growth</b>
+/gencode &lt;days&gt; [count] [uses] — redeem codes (0 days = lifetime)
+/codes — active codes · /delcode &lt;code&gt;
+Support: users send /support → it lands in your DM → <b>reply</b> to answer.
+
+<b>Owner</b>
+/setbotpic (reply to a photo) · /delbotpic — bot profile photo
 
 <b>Clone bots</b>
 /clonestats — platform stats · /bots — list all clone bots · /sys — system

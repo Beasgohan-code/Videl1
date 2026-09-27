@@ -36,6 +36,12 @@ USER_COMMANDS = [
     ("plan", "💳 Premium plan details"),
     ("premium", "💎 Premium benefits & prices"),
     ("buy", "⭐ Buy Premium with Telegram Stars"),
+    ("mysub", "🔁 Monthly Stars subscription"),
+    ("gift", "🎁 Gift Premium to a friend"),
+    ("trial", "🆓 Free Premium trial"),
+    ("redeem", "🎟 Redeem a premium code"),
+    ("refer", "🤝 Refer friends & earn Premium"),
+    ("support", "💬 Message the bot owner"),
     ("setchat", "📤 Set a dump chat for saved files"),
     ("set_caption", "📝 Set a custom caption"),
     ("see_caption", "👁 View your caption"),
@@ -92,6 +98,12 @@ GROUP_COMMANDS = [
 
 ADMIN_COMMANDS = [
     ("users", "👥 User counts"),
+    ("user", "🔍 User profile & actions: id | @name"),
+    ("msg", "✉️ Message a user: id text"),
+    ("export", "📤 Export users as CSV"),
+    ("gencode", "🎟 Create redeem codes: days count uses"),
+    ("codes", "📋 Active redeem codes"),
+    ("delcode", "🗑 Delete a redeem code"),
     ("broadcast", "📢 Broadcast (reply to a message)"),
     ("ban", "🚫 Ban a user"),
     ("unban", "✅ Unban a user"),
@@ -121,6 +133,8 @@ ADMIN_COMMANDS = [
 
 OWNER_COMMANDS = [
     ("refund", "↩️ Refund a Stars payment"),
+    ("setbotpic", "🖼 Set bot profile photo (reply)"),
+    ("delbotpic", "🗑 Remove bot profile photo"),
     ("update", "📥 git pull + restart"),
     ("clonestats", "🤖 Clone platform statistics"),
     ("bots", "📋 All clone bots"),
@@ -174,7 +188,8 @@ async def set_profile(client):
             lang_code="",
             description=(f"✨ {config.BOT_NAME} – all-in-one utility bot\n\n"
                          "📥 Save restricted posts & media\n🎬 Encode / compress videos\n"
-                         "⚡ Create your own FileStore clone bots\n⭐ Premium with Telegram Stars\n"
+                         "⚡ Create your own FileStore clone bots\n⭐ Premium with Telegram Stars · gifts · subscriptions\n"
+                         "🤝 Refer friends & earn Premium\n"
                          "🧰 Rename · MediaInfo · Upload · QR · Short links\n\nTap START to begin!"),
             about=f"{config.BOT_NAME}: save restricted content, encode videos & clone FileStore bots.",
         )

@@ -36,7 +36,7 @@ def test_all_plugins_import_and_register():
     assert n >= 150
     run(__import__("asyncio").sleep(0.2))
     groups = app.dispatcher.groups
-    assert sorted(k for k in groups if k < 0) == [-10, -4, -3, -2]
+    assert sorted(k for k in groups if k < 0) == [-10, -4, -3, -2, -1]
     assert any(h.callback.__module__ == "core.errors" for h in app.dispatcher.error_handlers)
 
 
@@ -733,7 +733,8 @@ def test_check_clone_health(monkeypatch):
         c = FakeClient()
         m = FakeMsg("/check", uid=111)
         run(check_bots(c, m))
-        report = m.sent[-1].edits[-1]
+        last = m.sent[-1]
+        report = last.edits[-1] if last.edits else last.text
         assert "reachable: <code>1</code>" in report and "responding: <code>1</code>" in report
         assert "not running: <code>1</code>" in report and "hibernated: <code>1</code>" in report
         assert "dead_bot" in report and "gone_bot" in report and "/check fix" in report

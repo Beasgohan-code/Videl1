@@ -8,6 +8,10 @@ from pyrogram.types import (
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    RequestPeerTypeChannel,
 )
 from filestore.fs_config import MAX_BOTS_PER_USER, BOT_CREATION_COOLDOWN, API_ID, API_HASH, LOGGER, CLONE_ENABLED, OWNERS
 from filestore.database.main_db import MainDB
@@ -19,6 +23,49 @@ main_db = MainDB()
 
 # Track users currently in bot creation flow
 _creation_state = {}  # user_id -> {"step": str, "data": dict}
+
+# Native channel picker (KeyboardButtonRequestPeer) used wherever a channel ID
+# is asked for. The shared channel arrives as a service message with
+# ``chats_shared`` and is converted to its -100… ID, so typing the ID still works.
+CHANNEL_PICKER_ID = 11
+CHANNEL_STEPS = ("awaiting_channel", "awaiting_new_log_channel", "awaiting_fsub_channel")
+
+
+def channel_picker_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("📢 Select channel",
+                         request_chat=RequestPeerTypeChannel(button_id=CHANNEL_PICKER_ID))]],
+        resize_keyboard=True, one_time_keyboard=True, placeholder="Pick a channel or type its ID",
+    )
+
+
+async def offer_channel_picker(client, user_id: int, state: dict = None):
+    """Show the 📢 Select channel reply-keyboard (best-effort)."""
+    try:
+        await client.send_message(
+            user_id, "👇 <i>Tap <b>📢 Select channel</b> to pick it from your list – or just type the ID.</i>",
+            reply_markup=channel_picker_kb())
+        if state is not None:
+            state["picker"] = True
+    except Exception as e:
+        log.debug(f"channel picker failed: {e}")
+
+
+async def remove_channel_picker(client, user_id: int, state: dict = None, text: str = None):
+    """Hide the picker keyboard if it was shown for this flow."""
+    if state is not None and not state.pop("picker", False):
+        return
+    try:
+        await client.send_message(user_id, text or "⌨️", reply_markup=ReplyKeyboardRemove())
+    except Exception:
+        pass
+
+
+async def _has_shared_chat(_, __, m: Message) -> bool:
+    return bool(getattr(m, "chats_shared", None))
+
+
+shared_chat_filter = filters.create(_has_shared_chat)
 
 # =============================================================================
 # CALLBACK: Create Bot (entry point)
@@ -79,7 +126,9 @@ async def create_bot_callback(client: Client, query: CallbackQuery):
 async def cancel_creation_callback(client: Client, query: CallbackQuery):
     """Cancel the bot creation flow."""
     user_id = query.from_user.id
-    _creation_state.pop(user_id, None)
+    old = _creation_state.pop(user_id, None)
+    if old and old.get("picker"):
+        await remove_channel_picker(client, user_id, old, "❌ Cancelled.")
 
     await query.message.edit_text(
         text="<b>❌ Bot creation cancelled.</b>",
@@ -103,7 +152,7 @@ creation_state_filter = filters.create(_in_creation_state)
 
 # Only fires while the user is inside a clone-bot creation / settings flow,
 # so it never swallows messages meant for the saver / encoder modules.
-@Client.on_message(filters.private & creation_state_filter & (filters.text | filters.photo | filters.document) & ~filters.regex(r"^/") & ~filters.bot)
+@Client.on_message(filters.private & creation_state_filter & (filters.text | filters.photo | filters.document | shared_chat_filter) & ~filters.regex(r"^/") & ~filters.bot)
 async def handle_creation_input(client: Client, message: Message):
     """Handle text input during bot creation flow."""
     user_id = message.from_user.id
@@ -113,10 +162,25 @@ async def handle_creation_input(client: Client, message: Message):
 
     state = _creation_state[user_id]
     step = state["step"]
-    
+
+    # 📢 Channel shared through the native picker → treat it as a typed ID
+    if getattr(message, "chats_shared", None):
+        from core.payments import shared_ids
+        picked = shared_ids(message)
+        if step not in CHANNEL_STEPS or not picked:
+            await message.reply("<b>❌ Please send valid text.</b>")
+            return
+        channel_id, channel_name = picked[0]
+        message.text = str(channel_id)
+        from core.botlog import esc
+        await remove_channel_picker(client, user_id, state,
+                                    f"📢 Selected: <b>{esc(channel_name)}</b> (<code>{channel_id}</code>)")
+    elif step in CHANNEL_STEPS and message.text:
+        await remove_channel_picker(client, user_id, state, f"📢 Channel: <code>{message.text.strip()[:32]}</code>")
+
     # Global safeguard: enforce text everywhere except when setting a start_pic
     if not message.text:
-        is_pic_step = step == "settings" and state.get("action") == "set_startpic"
+        is_pic_step = step == "settings" and state.get("action") in ("set_startpic", "set_botphoto")
         if not is_pic_step:
             await message.reply("<b>❌ Please send valid text.</b>")
             return
@@ -190,6 +254,7 @@ async def handle_creation_input(client: Client, message: Message):
                 [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
             ]),
         )
+        await offer_channel_picker(client, user_id, state)
 
     # -------------------------------------------------------------------------
     # STEP 2: Awaiting log channel ID
