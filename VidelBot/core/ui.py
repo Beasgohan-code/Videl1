@@ -1,9 +1,35 @@
-"""Small UI helpers shared by every Videl module (no handlers in here)."""
+"""Shared UI helpers for every Videl module (no handlers in here)."""
+import logging
+import random
+
+import aiohttp
+from pyrogram import enums, raw, utils
+from pyrogram.errors import MessageNotModified
 from pyrogram.types import InlineKeyboardButton
 
-from config import CONTACT_URL, SUPPORT_URL, UPDATES_URL
+from config import (CONTACT_URL, MESSAGE_EFFECTS, RANDOM_START_PIC, START_PICS,
+                    START_REACTIONS, SUPPORT_URL, UPDATES_URL)
+
+log = logging.getLogger("videl.ui")
+HTML = enums.ParseMode.HTML
+
+# Reactions every bot may use (the "standard" free reaction set).
+REACTIONS = ["👍", "❤", "🔥", "🥰", "👏", "😁", "🎉", "🤩", "🙏", "👌", "😍", "🐳", "❤‍🔥",
+             "💯", "⚡", "🏆", "🍾", "😎", "👀", "🤗", "🫡", "🆒", "🦄", "😇", "🤝", "✍"]
+
+# Animated message effects (private chats only).
+EFFECTS = {
+    "fire": 5104841245755180586,
+    "like": 5107584321108051014,
+    "heart": 5159385139981059251,
+    "party": 5046509860389126442,
+}
+
+_PIC_APIS = ["https://api.waifu.pics/sfw/waifu", "https://nekos.life/api/v2/img/waifu"]
+_FALLBACK_PICS = ["https://i.postimg.cc/kX9tjGXP/16.png", "https://i.postimg.cc/cC7txyhz/15.png"]
 
 
+# ─────────────────────────── keyboards ───────────────────────────
 def contact_row(label: str = "📞 Contact Admin"):
     """A one-button row linking to CONTACT_URL, or [] when it isn't configured."""
     return [InlineKeyboardButton(label, url=CONTACT_URL)] if CONTACT_URL else []
@@ -24,6 +50,12 @@ def rows(*maybe_rows):
     return [r for r in maybe_rows if r]
 
 
+def copy_button(label: str, text: str) -> InlineKeyboardButton:
+    """Native 'copy to clipboard' button (Bot API 7.11 / layer 193+)."""
+    return InlineKeyboardButton(label, copy_text=text[:256])
+
+
+# ─────────────────────────── formatting ───────────────────────────
 def humanbytes(size) -> str:
     if not size:
         return "0 B"
@@ -35,20 +67,131 @@ def humanbytes(size) -> str:
     return f"{size:.2f} TB"
 
 
+def readable_time(seconds: float) -> str:
+    seconds = int(seconds)
+    parts = []
+    for name, size in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+        if seconds >= size or (name == "s" and not parts):
+            val, seconds = divmod(seconds, size)
+            parts.append(f"{val}{name}")
+    return " ".join(parts)
+
+
+# ─────────────────────────── pictures / effects ───────────────────────────
+async def random_start_pic() -> str:
+    """START_PIC (random if several) or – like the original saver – a random SFW anime pic."""
+    if START_PICS:
+        return random.choice(START_PICS)
+    if not RANDOM_START_PIC:
+        return ""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=6)) as s:
+            async with s.get(random.choice(_PIC_APIS)) as r:
+                if r.status == 200:
+                    url = (await r.json(content_type=None)).get("url")
+                    if url:
+                        return url
+    except Exception as e:
+        log.debug(f"pic api failed: {e}")
+    return random.choice(_FALLBACK_PICS)
+
+
+def effect(name: str = "fire"):
+    return EFFECTS.get(name) if MESSAGE_EFFECTS else None
+
+
+async def react(message, big: bool = True):
+    if not START_REACTIONS:
+        return
+    try:
+        await message.react(emoji=random.choice(REACTIONS), big=big)
+    except Exception:
+        pass
+
+
+# ─────────────────────────── sending / editing ───────────────────────────
+async def send_with_preview(client, chat_id: int, text: str, reply_markup=None, pic: str = "",
+                            reply_to: int = None, effect_id: int = None):
+    """
+    Send `text` with `pic` rendered as a LARGE link preview shown ABOVE the text
+    (link_preview_options: prefer_large_media + show_above_text). Unlike a photo,
+    the result is a text message → up to 4096 chars and every module can edit it.
+    """
+    if pic:
+        try:
+            return await client.send_web_page(
+                chat_id, url=pic, text=text, parse_mode=HTML, large_media=True, invert_media=True,
+                reply_to_message_id=reply_to, message_effect_id=effect_id, reply_markup=reply_markup,
+            )
+        except Exception as e:
+            log.debug(f"send_web_page failed ({e}), falling back to plain text")
+    try:
+        return await client.send_message(
+            chat_id, text, parse_mode=HTML, disable_web_page_preview=True, reply_to_message_id=reply_to,
+            message_effect_id=effect_id, reply_markup=reply_markup,
+        )
+    except Exception:
+        # effects are rejected in groups → retry without
+        return await client.send_message(chat_id, text, parse_mode=HTML, disable_web_page_preview=True,
+                                         reply_to_message_id=reply_to, reply_markup=reply_markup)
+
+
+async def edit_with_preview(client, message, text: str, reply_markup=None, pic: str = ""):
+    """Edit a text message and attach `pic` as a large preview above the text."""
+    if not pic:
+        return await smart_edit(message, text, reply_markup)
+    try:
+        parsed = await utils.parse_text_entities(client, text, HTML, None)
+        await client.invoke(raw.functions.messages.EditMessage(
+            peer=await client.resolve_peer(message.chat.id),
+            id=message.id,
+            message=parsed["message"],
+            entities=parsed["entities"],
+            media=raw.types.InputMediaWebPage(url=pic, force_large_media=True, optional=True),
+            invert_media=True,
+            reply_markup=await reply_markup.write(client) if reply_markup else None,
+        ))
+    except MessageNotModified:
+        pass
+    except Exception as e:
+        log.debug(f"preview edit failed ({e}), falling back")
+        await smart_edit(message, text, reply_markup)
+
+
+async def smart_edit(message, text: str, reply_markup=None, preview: bool = False):
+    """
+    Edit any bot message in place: text messages → edit text; media messages →
+    edit caption when it fits, otherwise replace the message with a text one.
+    """
+    try:
+        if message.text is not None or not message.media:
+            return await message.edit_text(text, reply_markup=reply_markup, parse_mode=HTML,
+                                           disable_web_page_preview=not preview)
+        if len(text) <= 1024:
+            return await message.edit_caption(text, reply_markup=reply_markup, parse_mode=HTML)
+        new = await message.reply_text(text, reply_markup=reply_markup, parse_mode=HTML,
+                                       disable_web_page_preview=not preview, quote=False)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return new
+    except MessageNotModified:
+        return message
+    except Exception as e:
+        log.warning(f"smart_edit failed: {e}")
+
+
+# ─────────────────────────── uploads ───────────────────────────
 async def upload_to_host(path: str):
     """
     Upload a local file and return a public URL (or None).
-    Uses freeimage.host when FREEIMAGE_API_KEY is set (images only),
-    otherwise the anonymous catbox.moe API (≤ 200 MB).
+    freeimage.host when FREEIMAGE_API_KEY is set (images only), else catbox.moe (≤ 200 MB).
     """
-    import logging
     import os
-
-    import aiohttp
 
     from config import FREEIMAGE_API_KEY
 
-    log = logging.getLogger("videl.upload")
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as s:
             if FREEIMAGE_API_KEY and path.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):

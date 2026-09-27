@@ -73,6 +73,26 @@ async def my_plan(client: Client, message: Message):
     await message.reply_text(text, reply_markup=buttons, parse_mode=enums.ParseMode.HTML)
 
 
+@Client.on_message(filters.command(["premium_users", "premiumusers"]) & filters.user(ADMINS))
+async def premium_users(client: Client, message: Message):
+    lines = []
+    async for u in await db.get_premium_users():
+        if not await db._expire_if_needed(u):
+            continue
+        exp = u.get("premium_expiry") or "♾️ lifetime"
+        name = (u.get("name") or "").replace("<", "&lt;")[:25]
+        lines.append(f"• <code>{u['id']}</code> {name} — {exp}")
+    if not lines:
+        return await message.reply_text("👥 No premium users yet.")
+    text = f"<b>👥 Premium users ({len(lines)})</b>\n\n" + "\n".join(lines)
+    if len(text) > 4000:
+        from io import BytesIO
+        f = BytesIO(text.replace("<code>", "").replace("</code>", "").replace("<b>", "").replace("</b>", "").encode())
+        f.name = "premium_users.txt"
+        return await message.reply_document(f, caption=f"👥 {len(lines)} premium users")
+    await message.reply_text(text)
+
+
 # /premium - Premium Plans Information
 @Client.on_message(filters.command("premium") & filters.private)
 async def premium_info(client: Client, message: Message):
@@ -82,10 +102,8 @@ async def premium_info(client: Client, message: Message):
 async def show_premium_plans(message_or_query):
     from saver.start import premium_text
     text = premium_text()
-    buttons = InlineKeyboardMarkup([
-        *([contact_row("💳 Buy Premium Now")] if contact_row() else []),
-        [InlineKeyboardButton("⬅️ Back to My Plan", callback_data="myplan_back_btn")]
-    ])
+    from saver.start import premium_markup
+    buttons = premium_markup("myplan_back_btn")
     if isinstance(message_or_query, Message):
         await message_or_query.reply_text(text, reply_markup=buttons, parse_mode=enums.ParseMode.HTML,
                                           disable_web_page_preview=True)

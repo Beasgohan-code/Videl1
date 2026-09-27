@@ -17,4 +17,6 @@ COPY . .
 RUN chmod +x extract
 
 EXPOSE 8080
+HEALTHCHECK --interval=2m --timeout=10s --start-period=90s --retries=3 \
+  CMD python3 -c "import os,urllib.request;urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('PORT','8080')}/health\",timeout=8)" || exit 1
 CMD ["python3", "run.py"]

@@ -15,24 +15,14 @@ from pyrogram.types import Message
 
 from config import ADMINS, BOT_NAME, OWNERS
 from core.db import vdb
-from core.ui import humanbytes
+from core.menus import BOOT_TIME
+from core.ui import humanbytes, readable_time
 
 log = logging.getLogger("videl.admin")
-BOOT_TIME = time.time()
 RESTART_FILE = ".restart_msg.json"
 
 admin_filter = filters.user(ADMINS)
 owner_filter = filters.user(OWNERS)
-
-
-def readable_time(seconds: float) -> str:
-    seconds = int(seconds)
-    parts = []
-    for name, size in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
-        if seconds >= size or (name == "s" and not parts):
-            val, seconds = divmod(seconds, size)
-            parts.append(f"{val}{name}")
-    return " ".join(parts)
 
 
 def _target_id(message: Message):
@@ -75,7 +65,7 @@ async def stats_cmd(client: Client, message: Message):
         mdb = MainDB()
         clones = len(await mdb.get_all_bots())
         active_clones = len(await mdb.get_all_active_bots())
-        running = worker_engine.active_count()
+        running = worker_engine.active_count
     except Exception as e:
         log.warning(f"clone stats: {e}")
 
@@ -227,6 +217,37 @@ async def maintenance_cmd(client: Client, message: Message):
         f"🛠 <b>Maintenance mode:</b> {'🟢 ON' if state else '🔴 OFF'}\n"
         "<i>Use /maintenance on|off. Admins are never blocked.</i>"
     )
+
+
+# ─────────────────────────── watchdog ───────────────────────────
+@Client.on_message(filters.command("watchdog") & admin_filter)
+async def watchdog_cmd(client: Client, message: Message):
+    import watchdog
+    if not watchdog.dog:
+        return await message.reply_text("🐕 Watchdog is not running.")
+    if len(message.command) > 1 and message.command[1].lower() in ("run", "now", "clean"):
+        status = await message.reply_text("🐕 <i>Running a sweep…</i>")
+        await watchdog.dog.sweep(aggressive=message.command[1].lower() == "clean")
+    else:
+        status = None
+    s = watchdog.dog.summary()
+    last = s["last"] or {}
+    text = (
+        "<b>🐕 Watchdog</b>\n\n<blockquote>"
+        f"Sweeps: <code>{s['sweeps']}</code>\nFiles removed: <code>{s['files_removed']}</code>\n"
+        f"Space freed: <code>{s['freed_mb']} MB</code></blockquote>\n"
+        "<b>Last sweep</b>\n<blockquote>"
+        f"At: <code>{last.get('at', '—')}</code> ({last.get('took_s', 0)}s)\n"
+        f"Files: <code>{last.get('files', 0)}</code> · Freed: <code>{last.get('freed_mb', 0)} MB</code>\n"
+        f"Free disk: <code>{last.get('free_disk_gb', '?')} GB</code> · RAM: <code>{last.get('ram_mb', '?')} MB</code>\n"
+        f"Flows expired: <code>{last.get('states_dropped', 0)}</code> · Clones healed: <code>{last.get('clones_healed', 0)}</code>\n"
+        f"Telegram: {'🟢' if last.get('telegram_ok', True) else '🔴'}</blockquote>\n"
+        "<i>/watchdog run – sweep now · /watchdog clean – aggressive cleanup</i>"
+    )
+    if status:
+        await status.edit_text(text)
+    else:
+        await message.reply_text(text)
 
 
 # ─────────────────────────── restart / update ───────────────────────────

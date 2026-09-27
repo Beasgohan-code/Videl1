@@ -1,5 +1,5 @@
 # ── Telegram ─────────────────────────────────────────
-pyrofork==2.3.45
+pyrofork==2.3.69
 TgCrypto
 python-dotenv
 

@@ -33,7 +33,7 @@ PLUGIN_ROOTS = [
     "VideoEncoder/plugins",
     "filestore/main_bot/plugins",
 ]
-SKIP = {"__init__", "ui", "db"}
+SKIP = {"__init__", "ui", "db", "texts"}
 
 
 def load_plugins(app) -> int:
@@ -60,21 +60,6 @@ def load_plugins(app) -> int:
                         app.add_handler(handler, group)
                         count += 1
     return count
-
-
-async def web_server():
-    from aiohttp import web
-
-    async def health(_):
-        return web.Response(text=f"{config.BOT_NAME} is running ✨")
-
-    web_app = web.Application()
-    web_app.router.add_get("/", health)
-    web_app.router.add_get("/health", health)
-    runner = web.AppRunner(web_app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", config.PORT).start()
-    log.info(f"🌐 health server on :{config.PORT}")
 
 
 async def hibernation_task(app, worker_engine):
@@ -119,6 +104,7 @@ BOT_COMMANDS = [
     ("logout", "🚪 Disconnect account"),
     ("myplan", "📊 Your plan & quota"),
     ("premium", "💎 Premium plans"),
+    ("buy", "⭐ Buy Premium with Telegram Stars"),
     ("dl", "🎬 Encode a replied video"),
     ("ddl", "🔗 Encode from a direct link"),
     ("queue", "📋 Encoder queue"),
@@ -130,8 +116,58 @@ BOT_COMMANDS = [
     ("id", "🆔 Get IDs"),
     ("info", "👤 User info"),
     ("ping", "🏓 Latency"),
+    ("about", "ℹ️ About this bot"),
     ("cancel", "❌ Cancel current task"),
 ]
+
+# Extra commands shown only to owners (BotCommandScopeChat).
+OWNER_COMMANDS = [
+    ("stats", "📊 Bot statistics"),
+    ("broadcast", "📢 Broadcast to all users"),
+    ("ban", "🚫 Ban a user"),
+    ("unban", "✅ Unban a user"),
+    ("add_premium", "💎 Give premium"),
+    ("remove_premium", "➖ Remove premium"),
+    ("premium_users", "👥 Premium users"),
+    ("stars", "⭐ Stars payments"),
+    ("refund", "↩️ Refund a Stars payment"),
+    ("add_fsub", "🔒 Add force-sub channel"),
+    ("del_fsub", "🔓 Remove force-sub channel"),
+    ("fsub_list", "📋 Force-sub channels"),
+    ("clonestats", "🤖 Clone bot statistics"),
+    ("maintenance", "🛠 Toggle maintenance"),
+    ("watchdog", "🐕 Watchdog status / sweep"),
+    ("logs", "📜 Get log file"),
+    ("restart", "♻️ Restart"),
+]
+
+
+async def setup_bot_profile(app):
+    """Menu commands (public + owner scope), description and short about text."""
+    from pyrogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+
+    public = [BotCommand(c, d) for c, d in BOT_COMMANDS]
+    try:
+        await app.set_bot_commands(public, scope=BotCommandScopeDefault())
+    except Exception as e:
+        log.warning(f"set_bot_commands failed: {e}")
+    owner_cmds = public + [BotCommand(c, d) for c, d in OWNER_COMMANDS]
+    for oid in config.OWNERS:
+        try:
+            await app.set_bot_commands(owner_cmds, scope=BotCommandScopeChat(oid))
+        except Exception:
+            pass  # owner hasn't started the bot yet
+    try:
+        await app.set_bot_info(
+            lang_code="",
+            description=(f"✨ {config.BOT_NAME} – all-in-one utility bot\n\n"
+                         "📥 Save restricted posts & media\n🎬 Encode / compress videos\n"
+                         "⚡ Create your own FileStore clone bots\n🧰 Rename · MediaInfo · Upload · QR · Short links\n\n"
+                         "Tap START to begin!"),
+            about=f"{config.BOT_NAME}: save restricted content, encode videos & clone FileStore bots.",
+        )
+    except Exception as e:
+        log.debug(f"set_bot_info skipped: {e}")
 
 
 async def main():
@@ -140,7 +176,9 @@ async def main():
         log.error(f"Missing required config: {', '.join(missing)} — see config.env.sample")
         sys.exit(1)
 
-    asyncio.create_task(web_server())
+    import keep_alive
+    await keep_alive.start_server()
+    asyncio.create_task(keep_alive.self_ping_loop())
 
     from filestore.database.mongo import get_motor_client
     try:
@@ -158,7 +196,6 @@ async def main():
     log.info(f"🧩 registered {n} handlers")
 
     from pyrogram import idle
-    from pyrogram.types import BotCommand
 
     await app.start()
     me = await app.get_me()
@@ -167,10 +204,7 @@ async def main():
     import filestore.utils.helpers as fs_helpers
     fs_helpers.main_bot_client = app
 
-    try:
-        await app.set_bot_commands([BotCommand(c, d) for c, d in BOT_COMMANDS])
-    except Exception as e:
-        log.warning(f"set_bot_commands failed: {e}")
+    await setup_bot_profile(app)
 
     from core.admin import announce_restart
     await announce_restart(app)
@@ -178,17 +212,20 @@ async def main():
     from filestore.worker_bot.engine import worker_engine
     try:
         await worker_engine.start_all_workers()
-        log.info(f"👷 {worker_engine.active_count()} clone bots running")
+        log.info(f"👷 {worker_engine.active_count} clone bots running")
     except Exception as e:
         log.error(f"starting clone bots failed: {e}")
     asyncio.create_task(hibernation_task(app, worker_engine))
+
+    import watchdog
+    watchdog.start(app)
 
     notify = config.LOG_CHANNEL or config.OWNER_ID
     try:
         await app.send_message(
             notify,
             f"<b>✅ {config.BOT_NAME} started</b>\n<blockquote>@{me.username}\n"
-            f"Clone bots running: {worker_engine.active_count()}</blockquote>",
+            f"Clone bots running: {worker_engine.active_count}</blockquote>",
         )
     except Exception as e:
         log.warning(f"startup notice failed (has the owner started the bot?): {e}")
@@ -197,6 +234,7 @@ async def main():
 
     log.info("stopping…")
     await worker_engine.stop_all_workers()
+    await keep_alive.stop_server()
     await app.stop()
 
 

@@ -1,3 +1,4 @@
+import html
 import os
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -8,33 +9,27 @@ from saver.strings import COMMANDS_TXT
 # /settings - Enhanced Professional Settings Menu
 # ======================================================
 def saver_settings_view(user_id: int, is_premium) -> tuple:
-    """Text + keyboard of the Content-Saver settings panel (used by /settings hub)."""
-    premium_badge = "💎 Premium Member" if is_premium else "👤 Free User"
+    """Unified Settings Dashboard (original saver layout + encoder & clone-bot entries)."""
+    from core.texts import SETTINGS_HUB
+    badge = "💎 Premium Member" if is_premium else "👤 Standard User"
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📜 Commands List", callback_data="cmd_list_btn")],
-        [InlineKeyboardButton("📊 My Usage Stats", callback_data="user_stats_btn")],
-        [InlineKeyboardButton("🗑 Dump Chat", callback_data="dump_chat_btn")],
-        [
-            InlineKeyboardButton("🖼 Thumbnail", callback_data="thumb_btn"),
-            InlineKeyboardButton("📝 Caption", callback_data="caption_btn")
-        ],
-        [InlineKeyboardButton("⬅️ Settings Hub", callback_data="v_settings"),
-         InlineKeyboardButton("❌ Close", callback_data="close_btn")]
+        [InlineKeyboardButton("📜 Command List", callback_data="cmd_list_btn")],
+        [InlineKeyboardButton("📊 Usage Stats", callback_data="user_stats_btn")],
+        [InlineKeyboardButton("🗑 Dump Chat Settings", callback_data="dump_chat_btn")],
+        [InlineKeyboardButton("🖼 Manage Thumbnail", callback_data="thumb_btn"),
+         InlineKeyboardButton("📝 Edit Caption", callback_data="caption_btn")],
+        [InlineKeyboardButton("🎬 Encoder Settings", callback_data="hub_enc"),
+         InlineKeyboardButton("⚡ My Clone Bots", callback_data="my_bots")],
+        [InlineKeyboardButton("⬅️ Return to Home", callback_data="start_btn"),
+         InlineKeyboardButton("❌ Close", callback_data="close_btn")],
     ])
-    text = (
-        f"<b>📥 Content Saver Settings</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Account:</b> {premium_badge}\n"
-        f"<b>User ID:</b> <code>{user_id}</code>\n\n"
-        f"<i>Select an option below to customize your experience.</i>"
-    )
-    return text, buttons
+    return SETTINGS_HUB.format(badge=badge, user_id=user_id), buttons
 
 
 # ======================================================
 # /commands - Direct Access to Commands List
 # ======================================================
-@Client.on_message(filters.command("commands") & filters.private)
+@Client.on_message(filters.command(["commands", "cmd"]) & filters.private)
 async def direct_commands(client: Client, message: Message):
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚙️ Open Settings", callback_data="settings_back_btn"), InlineKeyboardButton("❌ Close", callback_data="close_btn")]
@@ -142,10 +137,13 @@ async def settings_callbacks(client: Client, callback_query: CallbackQuery):
     elif data == "caption_btn":
         caption = await db.get_caption(user_id)
         if caption:
-            preview = caption.format(filename="Video_File_2024.mp4", size="1.2 GB")
+            try:
+                preview = caption.format(filename="Video_File_2024.mp4", size="1.2 GB")
+            except (KeyError, IndexError, ValueError):
+                preview = caption
             text = (
                 f"<b>📝 Current Custom Caption</b>\n\n"
-                f"<code>{caption}</code>\n\n"
+                f"<code>{html.escape(caption)}</code>\n\n"
                 f"<b>Preview:</b>\n{preview}\n\n"
                 "<i>Placeholders: {filename}, {size}</i>\n"
                 "<i>/set_caption &lt;text&gt; to change • /del_caption to remove</i>"

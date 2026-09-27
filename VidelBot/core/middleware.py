@@ -1,7 +1,10 @@
 """
-Global middleware (runs before every module):
-  group -2 → ban + maintenance gate (stops propagation)
-  group -1 → user tracking / new-user log
+Global middleware – runs before every module. Pyrogram runs one handler per
+group, lowest group first, so each gate lives in its own group:
+
+  group -4 → user tracking / new-user log   (never blocks)
+  group -3 → ban + maintenance gate         (StopPropagation)
+  group -2 → force-subscribe gate           (core/fsub.py)
 """
 import logging
 
@@ -10,11 +13,9 @@ from pyrogram.types import CallbackQuery, Message
 
 from config import ADMINS, LOG_CHANNEL
 from core.db import vdb
+from core.texts import BANNED_TEXT, MAINT_TEXT
 
 log = logging.getLogger("videl.middleware")
-
-MAINT_TEXT = "🛠 <b>Videl is under maintenance.</b>\n<i>Please try again a little later.</i>"
-BANNED_TEXT = "🚫 <b>You are banned from using this bot.</b>"
 
 
 def _gate_reason(user_id: int):
@@ -27,35 +28,7 @@ def _gate_reason(user_id: int):
     return None
 
 
-@Client.on_message(filters.incoming & ~filters.channel, group=-2)
-async def gate_messages(client: Client, message: Message):
-    if not message.from_user:
-        return
-    reason = _gate_reason(message.from_user.id)
-    if not reason:
-        return
-    # Only answer in private chats and to commands / links to avoid spam.
-    if message.chat.type.value == "private" and (message.text or message.caption):
-        try:
-            await message.reply_text(reason)
-        except Exception:
-            pass
-    raise StopPropagation
-
-
-@Client.on_callback_query(group=-2)
-async def gate_callbacks(client: Client, query: CallbackQuery):
-    reason = _gate_reason(query.from_user.id)
-    if not reason:
-        return
-    try:
-        await query.answer(reason.replace("<b>", "").replace("</b>", "").split("\n")[0], show_alert=True)
-    except Exception:
-        pass
-    raise StopPropagation
-
-
-@Client.on_message(filters.private & filters.incoming, group=-1)
+@Client.on_message(filters.private & filters.incoming, group=-4)
 async def track_users(client: Client, message: Message):
     user = message.from_user
     if not user or user.is_bot:
@@ -84,3 +57,31 @@ async def track_users(client: Client, message: Message):
             )
         except Exception as e:
             log.warning(f"new-user log failed: {e}")
+
+
+@Client.on_message(filters.incoming & ~filters.channel & ~filters.successful_payment, group=-3)
+async def gate_messages(client: Client, message: Message):
+    if not message.from_user:
+        return
+    reason = _gate_reason(message.from_user.id)
+    if not reason:
+        return
+    # Only answer in private chats and to real messages to avoid spam.
+    if message.chat.type.value == "private" and (message.text or message.caption):
+        try:
+            await message.reply_text(reason)
+        except Exception:
+            pass
+    raise StopPropagation
+
+
+@Client.on_callback_query(group=-3)
+async def gate_callbacks(client: Client, query: CallbackQuery):
+    reason = _gate_reason(query.from_user.id)
+    if not reason:
+        return
+    try:
+        await query.answer(reason.replace("<b>", "").replace("</b>", "").split("\n")[0], show_alert=True)
+    except Exception:
+        pass
+    raise StopPropagation

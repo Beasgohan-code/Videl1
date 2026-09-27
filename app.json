@@ -1,0 +1,17 @@
+{
+  "name": "Videl",
+  "description": "All-in-one Telegram utility bot: save restricted content, encode videos, clone FileStore bots.",
+  "keywords": ["telegram", "bot", "pyrogram", "filestore", "encoder"],
+  "stack": "container",
+  "env": {
+    "BOT_TOKEN": {"description": "Bot token from @BotFather", "required": true},
+    "API_ID": {"description": "From my.telegram.org", "required": true},
+    "API_HASH": {"description": "From my.telegram.org", "required": true},
+    "DB_URI": {"description": "MongoDB connection string", "required": true},
+    "OWNER_ID": {"description": "Your Telegram user id", "required": true},
+    "LOG_CHANNEL": {"description": "Log channel id (-100…), bot must be admin", "required": false},
+    "ENCRYPTION_KEY": {"description": "Fernet key for clone-bot tokens", "required": false},
+    "BOT_NAME": {"description": "Bot display name", "value": "Videl", "required": false}
+  },
+  "formation": {"web": {"quantity": 1, "size": "basic"}}
+}

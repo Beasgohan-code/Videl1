@@ -7,11 +7,22 @@ Videl is **one** Telegram bot that combines:
 | 📥 **Content Saver** (`saver/`) | Save posts/media from public **and** restricted channels (via `/login`), single links or ranges, custom caption / thumbnail, word delete/replace filters, auto-forward to a dump chat, free & premium plans |
 | 🎬 **Video Encoder** (`VideoEncoder/`) | x264 / x265 encoding with per-user settings (CRF, preset, resolution, audio codec, watermark, hard-subs…), queue, direct-link & batch encodes, Drive upload |
 | 🤖 **Clone Bots** (`filestore/`) | Users create their **own FileStore bot** from inside Videl. Each clone runs as a worker: permanent share links, `/genlink`, `/batch`, `/custom_batch`, `/flink` (quality-grouped links), multi force-sub, join-requests, auto-delete, shorteners + verification, custom start text/pic/caption, backups, transfer, maintenance. Idle clones hibernate automatically. |
-| 🧰 **Tools** (`core/`) | `/mediainfo`, `/rename`, `/upload` (public link), `/short`, `/qr`, `/id`, `/info`, `/json`, `/ping` |
-| 👮 **Admin** (`core/`) | `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/restart`, `/update` |
+| ⭐ **Stars Premium** (`core/payments.py`) | Users buy Premium in-app with **Telegram Stars** – instant activation, extends an active plan, receipts, `/stars` revenue stats and `/refund` |
+| 🔒 **Force Subscribe** (`core/fsub.py`) | Require joining one or more channels (normal or **join-request** mode), manage with `/add_fsub`, `/del_fsub`, `/fsub_list` |
+| 🧰 **Tools** (`core/`) | `/mediainfo`, `/rename`, `/upload` (public link), `/short`, `/qr`, `/id`, `/info`, `/json`, `/ping`, **inline mode** (`@bot <url or text>` → short links + QR) |
+| 👮 **Admin** (`core/`) | `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/restart`, `/update` |
+| 🐕 **Keep-alive + Watchdog** | Health server + self-ping for free hosts; automatic temp-file cleanup, low-disk rescue, stuck-flow expiry, clone-bot self-healing, hang detection & auto-restart |
 
 Everything runs in a single process on a single bot token; clone bots are extra
 Pyrogram clients started by the worker engine.
+
+### Newer Telegram features used
+* **Stars payments** (`XTR` invoices, pre-checkout validation, refunds)
+* **Message effects** (🔥 on /start, 🎉 on successful payment) and **reactions** on /start
+* **Large link-preview banners above the text** (`invert_media`) – the SRC-style picture start message that every menu can edit in place
+* **Copy-text buttons** (receipt IDs), **expandable block quotes** in logs
+* **Scoped bot commands** – owners get the admin menu, users the normal one; bot **description / about** set automatically
+* **Join-request** force-subscribe, **inline mode**, global **error handler**
 
 ## 🚀 Deploy
 
@@ -28,22 +39,58 @@ Pyrogram clients started by the worker engine.
    # or bare metal (needs ffmpeg + ffprobe in PATH)
    pip install -r requirements.txt && python3 run.py
    ```
-   A health endpoint is served on `PORT` (default 8080) for Render / Koyeb / Railway.
+4. Optional: in @BotFather enable **/setinline** (inline QR / short links) and, for Stars, nothing else is needed – Stars work out of the box.
+
+**One-click configs** in the repository root: `render.yaml` (Render blueprint), `heroku.yml` + `app.json` (Heroku container stack). `Procfile` works on Koyeb / Railway / Heroku.
 
 > Keep the **ENCRYPTION_KEY** safe – if you lose it, existing clone bots can't be decrypted and their owners must re-add them.
+
+### Keep-alive (`keep_alive.py`)
+Serves `GET /` and `GET /health` (JSON: uptime, running clones, encoder queue, last watchdog sweep) on `0.0.0.0:$PORT`.
+On Render / Koyeb / Railway / Heroku the public URL is auto-detected and pinged every `KEEP_ALIVE_INTERVAL` seconds so free instances don't sleep. Set `KEEP_ALIVE_URL` manually elsewhere (leave empty on a VPS). The Docker image has a `HEALTHCHECK` on `/health`.
+
+### Watchdog (`watchdog.py`)
+Every `WATCHDOG_INTERVAL` seconds (`/watchdog` shows the report, `/watchdog run` sweeps now, `/watchdog clean` forces an aggressive sweep):
+
+| Job | Details |
+|---|---|
+| 🧹 Temp cleanup | `downloads/`, encoder download/encode dirs and stray progress files older than `CLEANUP_AFTER_HOURS`; folders with a file written recently are never touched; encoder dirs are skipped while the queue is busy |
+| 💽 Low disk | below `MIN_FREE_DISK_GB` → aggressive cleanup (30 min) + alert to `LOG_CHANNEL`/owner (max every 3 h) |
+| ⏳ Stuck flows | `/login` and clone-setup conversations idle for `STATE_TIMEOUT_MIN` are dropped, the temp client disconnected and the user told |
+| 🤖 Clone healing | disconnected clones are restarted; active clones that aren't running are started again (back-off after 3 failures, owner notified after 5) |
+| 📡 Hang detection | Telegram checked every sweep; 3 failures in a row → clean process restart (`AUTO_RESTART_ON_HANG`) |
+| 🧠 Memory | caches trimmed, `gc.collect()`, RSS reported |
+
+## ⭐ Stars premium
+`STARS_PLANS=30:100 90:250 0:500` → 30 days for 100 ⭐, 90 days for 250 ⭐, lifetime (`0`) for 500 ⭐. Buttons appear in **💎 Buy Premium**, `/premium`, `/plan` and `/buy`.
+Buying while premium extends the current expiry. Owners: `/stars` (revenue + last payments with charge IDs), `/refund <user_id> <charge_id>`.
+Manual UPI / QR payments (`UPI_ID`, `QR_CODE`, `/add_premium`) keep working alongside.
+
+## 🧪 Tests
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests -q
+```
+The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode.
 
 ## 🗂 Layout
 
 ```
-run.py            entry point: loads plugins, starts clones, hibernation, health server
+run.py            entry point: loads plugins, bot profile/commands, clones, hibernation, keep-alive, watchdog
+keep_alive.py     health web server + self-ping
+watchdog.py       auto-cleanup & self-healing
 client.py         the single shared Pyrogram client
 config.py         unified env-based configuration
-core/             home menu, settings hub, middleware (bans/maintenance/users), admin, tools
+core/             home menu & texts, settings hub, middleware, force-sub, Stars payments, inline, errors, admin, tools
 saver/            restricted-content saver
 VideoEncoder/     encoder (plugins + ffmpeg utils)
 filestore/        clone-bot controller (main_bot/plugins) + worker engine (worker_bot/)
 database/         saver database
+tests/            offline test-suite
 ```
+
+### Handler order
+`-10` payments (never blocked) → `-4` user tracking → `-3` ban / maintenance → `-2` force-subscribe → `0` modules → `1–2` clone link generators.
 
 ## 📜 Licence
 

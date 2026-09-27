@@ -94,7 +94,11 @@ async def send_banner(client: Client, chat_id: int, text: str, markup=None):
 
 
 def premium_markup(back_cb: str = None):
+    from config import STARS_PLANS
+    stars = [InlineKeyboardButton(f"⭐ {price} · {'Lifetime' if days == 0 else f'{days} days'}",
+                                  callback_data=f"stars_buy:{days}") for days, price in STARS_PLANS[:4]]
     kb = rows(
+        *[stars[i:i + 2] for i in range(0, len(stars), 2)],
         contact_row("📸 Send Payment Proof"),
         [InlineKeyboardButton("⬅️ Back", callback_data=back_cb)] if back_cb else [],
         [InlineKeyboardButton("❌ Close", callback_data="close_btn")],

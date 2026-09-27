@@ -1,0 +1,5 @@
+build:
+  docker:
+    web: VidelBot/Dockerfile
+run:
+  web: python3 run.py

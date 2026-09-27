@@ -1,0 +1,26 @@
+# One-click Render deploy (Docker web service – the keep-alive server answers health checks).
+services:
+  - type: web
+    name: videl
+    runtime: docker
+    rootDir: VidelBot
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: DB_URI
+        sync: false
+      - key: OWNER_ID
+        sync: false
+      - key: LOG_CHANNEL
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: BOT_NAME
+        value: Videl
