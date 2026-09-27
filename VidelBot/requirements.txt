@@ -1,0 +1,38 @@
+# ── Telegram ─────────────────────────────────────────
+pyrofork==2.3.45
+TgCrypto
+python-dotenv
+
+# ── Networking ───────────────────────────────────────
+aiohttp
+requests
+httpx
+
+# ── Database ─────────────────────────────────────────
+motor
+dnspython
+
+# ── Security / tools ────────────────────────────────
+cryptography
+qrcode[pil]
+
+# ── Encoder: media / downloads ───────────────────────
+hachoir
+beautifulsoup4
+lxml
+pySmartDL
+psutil
+js2py
+cloudscraper
+lk21
+speedtest-cli
+
+# ── Encoder: Google Drive upload (optional feature) ──
+google-api-core
+google-auth
+oauth2client<4.0.0
+google~=3.0.0
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+httplib2

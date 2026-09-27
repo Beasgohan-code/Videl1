@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.session
+*.session-journal
+config.env
+.env
+logs/
+downloads/
+VideoEncoder/utils/extras/downloads/
+VideoEncoder/utils/extras/encodes/
+VideoEncoder/utils/extras/*.txt
+.restart_msg.json
+token.pickle
+credentials.json
