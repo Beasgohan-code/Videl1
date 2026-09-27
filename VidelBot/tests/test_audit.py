@@ -262,9 +262,41 @@ def test_railway_and_app_json_parse():
 def test_dockerfiles_run_videl():
     root = open(os.path.join(REPO, "Dockerfile")).read()
     inner = open(os.path.join(ROOT, "Dockerfile")).read()
-    for df in (root, inner):
-        assert "python:3.11" in df and "ffmpeg" in df and 'CMD ["python3", "run.py"]' in df
-    assert "COPY VidelBot/" in root
+    assert root == inner          # one universal file – works from any build context
+    assert "python:3.11" in root and "ffmpeg" in root and 'CMD ["python3", "run.py"]' in root
+    assert "COPY VidelBot/" not in root   # would fail when the context is VidelBot/
+
+
+def test_requirements_copies_match():
+    def pkgs(path):
+        return [l.strip() for l in open(path) if l.strip() and not l.lstrip().startswith("#")]
+    assert pkgs(os.path.join(REPO, "requirements.txt")) == pkgs(os.path.join(ROOT, "requirements.txt"))
+    assert not any(l.startswith("-r") for l in pkgs(os.path.join(REPO, "requirements.txt")))
+
+
+@pytest.mark.parametrize("layout", ["root-context", "videlbot-context"])
+def test_dockerfile_copy_step_finds_the_bot(tmp_path, layout):
+    """Run the Dockerfile's copy RUN step in a shell against both build contexts."""
+    import re
+    import shutil
+    import subprocess
+    df = open(os.path.join(REPO, "Dockerfile")).read()
+    step = re.search(r"COPY \. /tmp/src\nRUN (set -eu;.*?mkdir -p /app/downloads /app/logs)\n", df, re.S).group(1)
+    step = step.replace("\\\n", "\n").replace("/tmp/src", str(tmp_path / "src")).replace("/app", str(tmp_path / "app"))
+    src = tmp_path / "src"
+    bot = src / "VidelBot" if layout == "root-context" else src
+    bot.mkdir(parents=True)
+    (bot / "run.py").write_text("print('videl')")
+    (bot / "extract").write_text("#!/bin/sh")
+    if layout == "root-context":
+        (src / "config.py").write_text("OLD_PROTOTYPE = True")   # must NOT end up in the image
+    (tmp_path / "app").mkdir()
+    subprocess.run(["sh", "-c", step], check=True)
+    app = tmp_path / "app"
+    assert (app / "run.py").exists() and (app / "downloads").is_dir()
+    assert not (app / "config.py").exists() and not (app / "VidelBot").exists()
+    assert not src.exists()
+    shutil.rmtree(app)
 
 
 # ───────────────────────── encoder ─────────────────────────

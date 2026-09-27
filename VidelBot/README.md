@@ -92,7 +92,7 @@ All platforms build the **root `Dockerfile`** (Python 3.11 + ffmpeg/ffprobe, med
 | **Koyeb / Northflank / Fly.io** | Create a service from the GitHub repo with the **Dockerfile** builder, port `8080`, health check path `/health`. |
 | **VPS with Docker** | `cp VidelBot/config.env.sample VidelBot/config.env` → edit → `docker compose up -d --build` (logs: `docker compose logs -f`). |
 | **VPS without Docker** | `sudo apt install ffmpeg mediainfo mkvtoolnix p7zip-full` → `cd VidelBot && python3.11 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt` → create `config.env` → `python3 run.py` (systemd unit below). |
-| **Platform root dir = `VidelBot/`** | `VidelBot/Dockerfile` and `VidelBot/Procfile` are the same build for that layout. |
+| **Any Dockerfile path / root dir** | `Dockerfile` and `VidelBot/Dockerfile` are the **same universal file**: it works with the repo root *or* `VidelBot/` as build context, so either Dockerfile path is fine. |
 
 > ⚠️ Run **exactly one** instance per bot token (keep replicas at 1). Two copies would steal each other's updates.
 
