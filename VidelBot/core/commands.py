@@ -73,6 +73,24 @@ USER_COMMANDS = [
     ("ping", "🏓 Latency"),
 ]
 
+# /commands screen: USER_COMMANDS split into titled sections (emoji, title, first command of the section)
+USER_SECTIONS = [
+    ("🏠", "Home", "start"),
+    ("🤖", "Clone bots", "clone"),
+    ("📥", "Content saver & premium", "login"),
+    ("✏️", "Auto-rename", "autorename"),
+    ("🎬", "Encoder", "dl"),
+    ("🧰", "Tools", "mediainfo"),
+]
+
+
+def user_sections() -> list:
+    """[(emoji, title, [(command, description), …]), …] covering every USER_COMMANDS entry once."""
+    names = [c for c, _ in USER_COMMANDS]
+    starts = [names.index(first) for _, _, first in USER_SECTIONS] + [len(USER_COMMANDS)]
+    return [(e, t, USER_COMMANDS[starts[i]:starts[i + 1]]) for i, (e, t, _) in enumerate(USER_SECTIONS)]
+
+
 GROUP_COMMANDS = [
     ("help", "❓ Help"),
     ("guide", "📖 Illustrated guide"),

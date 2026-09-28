@@ -121,7 +121,8 @@ def test_panel_shows_mode_clean_words_and_queue():
     from renamer import engine, handlers, store
     run(store.update(5, template="{title}", clean=True, words=[["HQ", ""]]))
     text, kb = run(handlers.panel_view(5))
-    assert "🤖 Auto" in text and "Clean tags:</b> ✅" in text and "Word rules:</b> 1" in text
+    from core.style import sc
+    assert "🤖 Auto" in text and sc("🧹 Clean tags") + ":</b> ✅" in text and sc("🔁 Word rules") + ":</b> 1" in text
     assert {"rn:mode", "rn:clean", "rn:words", "rn:hist"} <= set(_cbs(kb)) and "rn:cq" not in _cbs(kb)
     engine._pending[5] = 2
     text, kb = run(handlers.panel_view(5))
@@ -171,7 +172,8 @@ def test_testrename_uses_clean_and_rules():
     run(store.update(5, template="{title} E{episode}", clean=True, words=[["HQ", ""]]))
     m = FakeMsg("/testrename www.Site.com - Show S01E04 HQ.mp4")
     run(handlers.testrename_cmd(FakeClient(), m))
-    assert "Show E04.mkv" in m.replies[-1] and "cleaned" in m.replies[-1]
+    from core.style import sc
+    assert "Show E04.mkv" in m.replies[-1] and sc("Cleaned") in m.replies[-1]
 
 
 # ───────────────────────── manual mode ─────────────────────────

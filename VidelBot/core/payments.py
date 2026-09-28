@@ -243,6 +243,29 @@ def _sub_text(sub: dict | None, expiry) -> str:
             f"<b>💎 Premium until:</b> {until_text(expiry) if expiry is not False else '—'}</blockquote>")
 
 
+def _sub_doc(sub: dict | None, expiry):
+    """Rich screen for /mysub (status table · perks)."""
+    from core.rich import Doc
+    if not sub:
+        doc = Doc("🔁", "My subscription", "you have no Stars subscription yet")
+        if SUBSCRIPTION_STARS > 0:
+            doc.table([("⭐ Price", f"{SUBSCRIPTION_STARS} Stars / 30 days"), ("🔁 Renewal", "Automatic, cancel anytime"),
+                       ("💎 Includes", "Everything in Premium")], header=("Monthly plan", ""))
+            doc.footer("Subscribe once and never lose Premium.")
+        return doc
+    since = sub.get("since")
+    since = since.strftime("%d %b %Y") if isinstance(since, datetime) else "—"
+    doc = Doc("🔁", "My subscription")
+    doc.table([
+        ("📶 Status", "❌ Canceled – ends at the period end" if sub.get("canceled") else "✅ Active · auto-renew on"),
+        ("⭐ Price", f"{sub.get('stars', SUBSCRIPTION_STARS)} Stars / 30 days"),
+        ("📅 Since", since),
+        ("🔁 Renewals", sub.get("renewals", 0)),
+        ("💎 Premium until", until_text(expiry) if expiry is not False else "—"),
+    ], header=("Item", "Value"))
+    return doc
+
+
 def _sub_kb(sub: dict | None) -> InlineKeyboardMarkup:
     if not sub:
         rows_ = [[Btn(f"🔁 Subscribe · ⭐{SUBSCRIPTION_STARS}/month", callback_data="stars_sub")]] if SUBSCRIPTION_STARS > 0 else []
@@ -263,7 +286,8 @@ async def _current_expiry(user_id: int):
 @Client.on_message(filters.command(["mysub", "subscription"]) & filters.private)
 async def mysub_cmd(client: Client, message: Message):
     sub = await vdb.db["subscriptions"].find_one({"user": message.from_user.id, "active": True})
-    await message.reply_text(_sub_text(sub, await _current_expiry(message.from_user.id)), reply_markup=_sub_kb(sub))
+    from core import rich
+    await rich.reply(message, _sub_doc(sub, await _current_expiry(message.from_user.id)), reply_markup=_sub_kb(sub))
 
 
 @Client.on_callback_query(filters.regex(r"^sub_toggle:(cancel|resume)$"))
@@ -287,7 +311,8 @@ async def sub_toggle_cb(client: Client, query: CallbackQuery):
     await query.answer("🔁 Auto-renew resumed." if restore else "❌ Auto-renew canceled – Premium stays until the period ends.",
                        show_alert=True)
     try:
-        await query.message.edit_text(_sub_text(sub, await _current_expiry(uid)), reply_markup=_sub_kb(sub))
+        from core import rich
+        await rich.edit(query.message, _sub_doc(sub, await _current_expiry(uid)), reply_markup=_sub_kb(sub))
     except Exception:
         pass
     from core import botlog

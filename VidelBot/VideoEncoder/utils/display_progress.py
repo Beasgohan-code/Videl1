@@ -96,4 +96,4 @@ def TimeFormatter(seconds: float) -> str:
         ((str(hours) + "h, ") if hours else "") + \
         ((str(minutes) + "m, ") if minutes else "") + \
         ((str(seconds) + "s, ") if seconds else "")
-    return tmp[:-2]
+    return tmp[:-2] or "0s"

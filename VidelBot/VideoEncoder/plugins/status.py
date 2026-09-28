@@ -49,84 +49,66 @@ def get_task_info(task_msg):
 
     return f"{task_type}: {filename}\n   └ User: <a href='tg://user?id={user_id}'>{user}</a>"
 
+def status_doc():
+    """System status + active encodes as a rich screen."""
+    from core.rich import Doc, Raw
+    count = len(data)
+    net = net_io_counters()
+    doc = Doc("📈", "Server status")
+    doc.table([
+        ("⚙️ CPU", f"{cpu_percent()} %"),
+        ("🧠 RAM", f"{virtual_memory().percent} %"),
+        ("💽 Free disk", get_readable_file_size(disk_usage(download_dir).free)),
+        ("📤 Up / 📥 Down", f"{humanbytes(net.bytes_sent)} / {humanbytes(net.bytes_recv)}"),
+        ("⏱ Uptime", get_readable_time(time() - botStartTime)),
+    ], header=("System", "Value"))
+    doc.h("🎬", f"Active tasks ({count})")
+    if count:
+        rows = []
+        for i, task_msg in enumerate(data, 1):
+            kind, name, user = task_parts(task_msg)
+            rows.append((i, kind, name, Raw(user)))
+        doc.table(rows, header=("#", "Task", "File", "User"), compact=True)
+    else:
+        doc.text("<i>🥱 No active encodes.</i>")
+    return doc
+
+
+def task_parts(task_msg):
+    """(task type, file name, user link html) for one queued message."""
+    import html as _h
+    info = get_task_info(task_msg)
+    head, _, user_line = info.partition("\n")
+    kind, _, name = head.partition(": ")
+    user = user_line.replace("└ User:", "").strip()
+    return kind, name, user or _h.escape("Unknown User")
+
+
+def _status_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="status ref")]])
+
+
 @Client.on_message(filters.command("status"))
 async def mirror_status(client, message: Message):
     c = await check_chat(message, chat='Both')
     if not c:
         return
-
-    count = len(data)
-
-    # System Stats
-    cpu = cpu_percent()
-    mem = virtual_memory().percent
-    disk = disk_usage(download_dir).free
-    upload_speed = humanbytes(net_io_counters().bytes_sent)
-    download_speed = humanbytes(net_io_counters().bytes_recv)
-    uptime = get_readable_time(time() - botStartTime)
-
-    msg = (
-        f'<b>System Status</b>\n'
-        f'<b>CPU:</b> {cpu}% | <b>RAM:</b> {mem}%\n'
-        f'<b>FREE:</b> {get_readable_file_size(disk)}\n'
-        f'<b>UP:</b> {upload_speed} | <b>DL:</b> {download_speed}\n'
-        f'<b>Uptime:</b> {uptime}\n\n'
-    )
-
-    if count:
-        msg += f"<b>Active Tasks:</b> {count}\n"
-        for i, task_msg in enumerate(data):
-             info = get_task_info(task_msg)
-             msg += f"{i+1}. {info}\n"
-    else:
-        msg += "No Active Downloads!\n"
-
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Refresh", callback_data="status ref")]
-    ])
-
-    await message.reply(msg, reply_markup=buttons)
+    if message.chat.id < 0:     # groups: a normal public message, so everyone can use 🔄 Refresh
+        return await message.reply_text(status_doc().classic(), reply_markup=_status_kb())
+    from core import rich
+    await rich.reply(message, status_doc(), reply_markup=_status_kb())
 
 
 @Client.on_callback_query(filters.regex('^status'))
 async def status_pages(client, query: CallbackQuery):
     data_split = query.data.split()
-    cmd = data_split[1]
-
+    cmd = data_split[1] if len(data_split) > 1 else ""
     if cmd == 'ref':
-        count = len(data)
-
-        cpu = cpu_percent()
-        mem = virtual_memory().percent
-        disk = disk_usage(download_dir).free
-        upload_speed = humanbytes(net_io_counters().bytes_sent)
-        download_speed = humanbytes(net_io_counters().bytes_recv)
-        uptime = get_readable_time(time() - botStartTime)
-
-        msg = (
-            f'<b>System Status</b>\n'
-            f'<b>CPU:</b> {cpu}% | <b>RAM:</b> {mem}%\n'
-            f'<b>FREE:</b> {get_readable_file_size(disk)}\n'
-            f'<b>UP:</b> {upload_speed} | <b>DL:</b> {download_speed}\n'
-            f'<b>Uptime:</b> {uptime}\n\n'
-        )
-
-        if count:
-            msg += f"<b>Active Tasks:</b> {count}\n"
-            for i, task_msg in enumerate(data):
-                 info = get_task_info(task_msg)
-                 msg += f"{i+1}. {info}\n"
-        else:
-            msg += "No Active Downloads!\n"
-
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Refresh", callback_data="status ref")]
-        ])
-
+        from core import rich
         try:
-            await query.message.edit(text=msg, reply_markup=buttons)
+            await rich.edit(query.message, status_doc(), reply_markup=_status_kb())
             await query.answer("Refreshed!")
         except Exception as e:
-            await query.answer(f"Error: {e}")
+            await query.answer(f"Error: {e}"[:190])
     else:
         await query.answer("Unknown command")

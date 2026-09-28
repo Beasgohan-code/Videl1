@@ -341,6 +341,39 @@ async def send_rich(chat_id: int, blocks: list, reply_markup=None) -> bool:
     return res is not None
 
 
+async def send_rich_html(chat_id: int, rich_html: str, reply_markup=None, reply_to: int = None):
+    """sendRichMessage in HTML mode (headings, tables, details …). Returns the message id or None."""
+    if not enabled():
+        return None
+    kb = convert_markup(reply_markup) if reply_markup is not None else None
+    if reply_markup is not None and kb is None:
+        return None
+    kwargs = dict(chat_id=chat_id, rich_message=at.InputRichMessage(html=rich_html),
+                  reply_markup=kb)
+    if reply_to:
+        kwargs["reply_parameters"] = at.ReplyParameters(message_id=reply_to, allow_sending_without_reply=True)
+    res = await try_call(lambda b: b.send_rich_message(**kwargs))
+    return getattr(res, "message_id", None) if res is not None else None
+
+
+async def edit_rich_html(chat_id: int, message_id: int, rich_html: str, reply_markup=None) -> bool:
+    """editMessageText with rich_message – turns a text *or* rich message into a rich screen."""
+    if not enabled():
+        return False
+    kb = convert_markup(reply_markup) if reply_markup is not None else None
+    if reply_markup is not None and kb is None:
+        return False
+    try:
+        await call(lambda b: b.edit_message_text(
+            chat_id=chat_id, message_id=message_id, reply_markup=kb,
+            # explicit None → aiogram drops its HTML / link-preview defaults (text-only fields)
+            parse_mode=None, link_preview_options=None, disable_web_page_preview=None,
+            rich_message=at.InputRichMessage(html=rich_html)))
+        return True
+    except Exception as e:
+        return "not modified" in str(e).lower()
+
+
 async def status_line() -> str:
     """One-line health summary for the boot report / /botapi."""
     if not HAVE_AIOGRAM:

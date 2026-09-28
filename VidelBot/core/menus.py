@@ -20,6 +20,8 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton as Btn, InlineKe
 
 from config import (ADMINS, BOT_NAME, CLONE_ENABLED, FREE_LIMIT_DAILY, GIFTS_ENABLED, OWNERS, STARS_PLANS,
                     SUBSCRIPTION, SUBSCRIPTION_STARS, SUPPORT_ENABLED, SUPPORT_URL, TRIAL_DAYS, UPDATES_URL)
+from core import rich
+from core.rich import Doc, Raw, link
 from core import stream
 from core import texts
 from core.ui import (background, contact_row, edit_with_preview, effect, random_start_pic, react, readable_time,
@@ -67,14 +69,91 @@ async def start_text(client, user, plan: str = None) -> str:
 
 
 async def about_text(client) -> str:
+    return (await about_doc(client)).classic()
+
+
+def help_doc():
+    """/help as a rich screen: sections with how-to tables, limits comparison, tips in <details>."""
+    from config import FREE_LIMIT_DAILY, FREE_LIMIT_SIZE_GB
+    doc = Doc("📚", "Help & user guide", "everything this bot can do – tap a button below for details")
+    doc.h("📥", "Save restricted content")
+    doc.table([
+        ("🌐 Public channels", "Send or forward the post link – no login needed"),
+        ("🔐 Private channels", Raw("/login once, then send the <code>t.me/c/…</code> link")),
+        ("📚 Batch mode", Raw("Send a range: <code>t.me/channel/100-120</code> · /cancel stops")),
+    ], header=("Source", "How to use"))
+    doc.h("🧩", "Modules")
+    doc.table([
+        ("🎬 Encoder", "Reply /dl to a video to encode it"),
+        ("⚡ Clone bot", "/clone – create your own FileStore bot"),
+        ("✏️ Auto-rename", Raw("/autorename <code>{title} S{season}E{episode} [{quality}]</code>, then send files")),
+        ("🧰 Tools", "/rename · /mediainfo · /upload · /qr · /short"),
+    ], header=("Module", "Start with"))
+    doc.h("💎", "Premium & rewards")
+    doc.table([
+        ("⭐ Buy", "/buy – pay with Telegram Stars · /mysub for auto-renew"),
+        ("🎁 Gift", "/gift – gift Premium to a friend"),
+        ("🆓 Free Premium", "/trial · /redeem CODE · /refer"),
+        ("💬 Support", "/support – talk to the bot owner"),
+    ], header=("Action", "Command"))
+    doc.h("📊", "Limits")
+    doc.table([
+        ("📥 Daily saves", f"{FREE_LIMIT_DAILY} / 24 h", "♾️ Unlimited"),
+        ("📦 File size", f"{FREE_LIMIT_SIZE_GB:g} GB", "4 GB+"),
+        ("🛂 Support", "Standard", "Priority"),
+    ], header=("", "Free", "Premium"), align=("left", "center", "center"))
+    doc.details("✏️ Auto-rename extras", Doc().items([
+        Raw("/setmedia · /metadata · /start_sequence · /leaderboard"),
+        Raw("/tutorial – full guide with every placeholder"),
+    ]))
+    doc.footer("Tip: /commands lists every command you can use.")
+    return doc
+
+
+def tools_doc(username: str):
+    doc = Doc("🧰", "Tools", "handy utilities – reply to a file or send text")
+    doc.table([
+        ("/mediainfo", "Reply to a file: codecs, resolution, bitrate, tracks"),
+        ("/rename", "Reply to a file with a new name to re-upload it"),
+        ("/upload", "Reply to a file (≤ 200 MB) for a public download link"),
+        ("/short", "Shorten a long link"),
+        ("/qr", "Make a QR code from any text"),
+        ("/id", "Chat / user / forwarded IDs"),
+        ("/info", "User info (reply / id / username)"),
+        ("/json", "Raw JSON of a message (reply)"),
+        ("/ping", "Bot latency"),
+        ("/guide", "Illustrated guide with plans & FAQ"),
+    ], header=("Command", "What it does"))
+    doc.details("💡 Tips", Doc().items([
+        "In groups, /help /id /info /guide answer only you (ephemeral messages).",
+        Raw(f"Inline: type <code>@{html.escape(username)} text</code> in any chat to share a QR / short link."),
+    ]), open_=True)
+    return doc
+
+
+async def about_doc(client):
     b = await _bot(client)
     try:
         import aiogram
         api = aiogram.__api_version__
     except Exception:
         api = "—"
-    return texts.ABOUT_TXT.format(username=b["username"], first_name=b["first_name"], api=api,
-                                  uptime=readable_time(time.time() - BOOT_TIME))
+    doc = Doc("ℹ️", f"About {b['first_name']}")
+    doc.table([
+        ("🤖 Bot", link(f"@{b['username']}", f"https://t.me/{b['username']}")),
+        ("🧩 Modules", "Saver · Encoder · Auto-Rename · Clone · Tools"),
+        ("📡 Protocol", f"MTProto (Pyrofork) + Bot API {api}"),
+        ("🐍 Language", link("Python 3.11", "https://www.python.org/")),
+        ("🗄 Database", link("MongoDB", "https://www.mongodb.com/")),
+        ("🎞 Engine", link("FFmpeg", "https://ffmpeg.org/")),
+        ("⏱ Uptime", readable_time(time.time() - BOOT_TIME)),
+    ], header=("Overview", ""))
+    doc.details("🔒 Privacy", Doc().items([
+        "/logout removes your saved login session at any time.",
+        "Temporary downloads are cleaned up automatically after upload.",
+        "/cancel stops any running task · /settings controls your preferences.",
+    ]))
+    return doc
 
 
 def clone_help_text() -> str:
@@ -227,13 +306,13 @@ async def start_cmd(client: Client, message: Message):
                                        texts.CLONE_START_MSG.format(mention=message.from_user.mention),
                                        clone_hub_kb(), pic=await random_start_pic())
     if arg == "help":
-        return await message.reply_text(texts.HELP_TXT, reply_markup=help_kb(uid, close=True), parse_mode=HTML)
+        return await rich.reply(message, help_doc(), reply_markup=help_kb(uid, close=True))
     if arg == "settings":
         return await render_settings(message, uid, edit=False)
     if arg in ("refer", "invite", "earn"):
-        from core.growth import refer_view
-        text, kb = await refer_view(client, uid)
-        return await message.reply_text(text, reply_markup=kb, disable_web_page_preview=True)
+        from core.growth import refer_doc
+        doc, kb = await refer_doc(client, uid)
+        return await rich.reply(message, doc, reply_markup=kb)
     if arg == "gift":
         from core.payments import _ask_gift_target
         return await _ask_gift_target(client, message.chat.id)
@@ -288,15 +367,13 @@ async def help_cmd(client: Client, message: Message):
         from core.ui import group_reply
         me = client.me or await client.get_me()
         kb = InlineKeyboardMarkup([[Btn("🚀 Open full menu", url=f"https://t.me/{me.username}?start=help")]])
-        return await group_reply(message, texts.HELP_TXT, kb)
-    await message.reply_text(texts.HELP_TXT, reply_markup=help_kb(uid, close=True), parse_mode=HTML,
-                             disable_web_page_preview=True)
+        return await group_reply(message, help_doc().classic(), kb)
+    await rich.reply(message, help_doc(), reply_markup=help_kb(uid, close=True))
 
 
 @Client.on_message(filters.command("about") & filters.private)
 async def about_cmd(client: Client, message: Message):
-    await message.reply_text(await about_text(client), reply_markup=back_home_kb(), parse_mode=HTML,
-                             disable_web_page_preview=True)
+    await rich.reply(message, await about_doc(client), reply_markup=back_home_kb())
 
 
 @Client.on_message(filters.command(["clone", "mybots", "create"]) & filters.private)
@@ -373,10 +450,10 @@ async def menu_callbacks(client: Client, query: CallbackQuery):
         await render_home(client, query)
 
     elif data in ("help_btn", "help_saver"):
-        await smart_edit(msg, texts.HELP_TXT, help_kb(uid))
+        await rich.edit(msg, help_doc(), help_kb(uid))
 
     elif data == "about_btn":
-        await smart_edit(msg, await about_text(client), back_home_kb())
+        await rich.edit(msg, await about_doc(client), back_home_kb())
 
     elif data in ("settings_btn", "v_settings", "hub_save"):
         await render_settings(query, uid)
@@ -404,8 +481,7 @@ async def menu_callbacks(client: Client, query: CallbackQuery):
             Btn("📊 Stats", callback_data="stats"), Btn("⚙️ Settings", callback_data="hub_enc")]))
 
     elif data == "help_tools":
-        b = await _bot(client)
-        await smart_edit(msg, texts.TOOLS_HELP.format(username=b["username"]), back_home_kb("help_btn"))
+        await rich.edit(msg, tools_doc((await _bot(client))["username"]), back_home_kb("help_btn"))
 
     elif data == "help_admin":
         if uid not in ADMINS:

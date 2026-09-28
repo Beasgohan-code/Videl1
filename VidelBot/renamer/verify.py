@@ -138,8 +138,15 @@ async def verify_cmd(client: Client, message: Message):
     until = await store.verified_until(uid, int(cfg.get("hours") or 24))
     if until:
         left = int((until - store.utcnow()).total_seconds())
-        return await message.reply_text(f"✅ <b>You are verified!</b>\n⏰ Time left: {left // 3600}h {left % 3600 // 60}m",
-                                        reply_markup=InlineKeyboardMarkup([_plans_row()]))
+        from core import rich
+        from core.rich import Doc
+        doc = Doc("✅", "You are verified!").table([
+            ("📶 Status", "🟢 Verified"),
+            ("⏰ Time left", f"{left // 3600}h {left % 3600 // 60}m"),
+            ("🔁 Valid for", f"{int(cfg.get('hours') or 24)} h per verification"),
+        ], header=("Item", "Value"))
+        doc.footer("Premium users never need to verify.")
+        return await rich.reply(message, doc, reply_markup=InlineKeyboardMarkup([_plans_row()]))
     await send_prompt(client, message)
 
 

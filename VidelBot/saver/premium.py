@@ -17,60 +17,90 @@ logger = LOGGER(__name__)
 # USER COMMANDS - Professional & Informative
 # ======================================================
 
-async def plan_view(user_id: int, first_name: str = ""):
-    """Return (text, keyboard) describing the user's saver plan."""
+async def plan_doc(user_id: int, first_name: str = ""):
+    """Rich screen + keyboard for the user's saver plan (table: plan · expiry · quota · size · saves)."""
+    from core.rich import Doc, code
     if not await db.is_user_exist(user_id):
         await db.add_user(user_id, first_name)
-    user_data = await db.col.find_one({'id': user_id}) or {}
-
-    is_premium = user_data.get('is_premium', False)
-    expiry = user_data.get('premium_expiry')
-    daily_usage = user_data.get('daily_usage', 0)
-    total_saves = user_data.get('total_saves', 0)
-
+    u = await db.col.find_one({'id': user_id}) or {}
+    is_premium, expiry = u.get('is_premium', False), u.get('premium_expiry')
+    used, total_saves = u.get('daily_usage', 0), u.get('total_saves', 0)
     if is_premium:
+        exp = "♾️ Lifetime"
         if expiry:
             try:
-                exp_date = expiry if isinstance(expiry, (date, datetime)) else date.fromisoformat(str(expiry))
-                if isinstance(exp_date, datetime):
-                    exp_date = exp_date.date()
-                days_left = (exp_date - date.today()).days
-                expiry_text = f"<code>{exp_date}</code> ({days_left} days left)"
+                d = expiry if isinstance(expiry, (date, datetime)) else date.fromisoformat(str(expiry))
+                d = d.date() if isinstance(d, datetime) else d
+                exp = f"{d} ({(d - date.today()).days} days left)"
             except Exception:
-                expiry_text = "<code>Active</code>"
-        else:
-            expiry_text = "<code>Permanent</code>"
-        plan_text = (
-            f"<b>👑 Premium Status: Active</b>\n\n"
-            f"<b>📅 Expiry:</b> {expiry_text}\n\n"
-            f"<b>♾️ Daily Saves:</b> Unlimited\n"
-            f"<b>♾️ Batch Limit:</b> Unlimited\n"
-            f"<b>📊 Total Lifetime Saves:</b> <code>{total_saves}</code>\n\n"
-            "<i>Thank you for supporting the bot! 🎉</i>"
-        )
+                exp = "Active"
+        rows = [("👑 Plan", "Premium · active"), ("📅 Expires", exp), ("♾️ Daily saves", "Unlimited"),
+                ("📦 File size", "4 GB+"), ("📊 Lifetime saves", code(total_saves))]
+        doc = Doc("👑", "My plan", "thank you for supporting the bot 🎉")
     else:
-        tokens_left = max(0, FREE_LIMIT_DAILY - daily_usage)
-        plan_text = (
-            f"<b>👤 Plan: Free Tier</b>\n\n"
-            f"<b>🎫 Daily Saves:</b> <code>{tokens_left} / {FREE_LIMIT_DAILY}</code>\n"
-            f"<b>📦 File Size Limit:</b> <code>{FREE_LIMIT_SIZE_GB:g} GB</code>\n"
-            f"<b>📊 Total Lifetime Saves:</b> <code>{total_saves}</code>\n\n"
-            "<i>Upgrade to Premium for unlimited access! 🚀</i>"
-        )
-
+        left = max(0, FREE_LIMIT_DAILY - used)
+        rows = [("👤 Plan", "Free tier"), ("🎫 Saves left today", code(f"{left} / {FREE_LIMIT_DAILY}")),
+                ("📦 File size", f"{FREE_LIMIT_SIZE_GB:g} GB"), ("📊 Lifetime saves", code(total_saves))]
+        doc = Doc("📊", "My plan", "upgrade to Premium for unlimited access 🚀")
+    doc.table(rows, header=("Item", "Value"))
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 View Premium Plans", callback_data="premium_plans_btn")],
         *([contact_row()] if contact_row() else []),
         [InlineKeyboardButton("🏠 Home", callback_data="start_btn")],
     ])
-    return plan_text, buttons
+    return doc, buttons
+
+
+def premium_doc():
+    """Free vs Premium comparison + Stars / other prices."""
+    from config import STARS_PLANS, SUBSCRIPTION_STARS, PREMIUM_PRICES, UPI_ID, QR_CODE
+    from core.rich import Doc, code, link
+    doc = Doc("💎", "Premium membership", "unlock unlimited access & advanced features")
+    doc.table([
+        ("📥 Daily saves", f"{FREE_LIMIT_DAILY}", "♾️ Unlimited"),
+        ("📦 File size", f"{FREE_LIMIT_SIZE_GB:g} GB", "4 GB+"),
+        ("📚 Batch saving", "Limited", "♾️ Unlimited"),
+        ("⚡ Processing", "Normal", "Instant"),
+        ("🖼 Thumbnail & caption", "✅", "✅"),
+        ("🛂 Priority support", "—", "✅"),
+    ], header=("Feature", "Free", "Premium"), align=("left", "center", "center"))
+    plans = [("Lifetime" if d == 0 else f"{d} days", f"⭐ {st}") for d, st in STARS_PLANS]
+    if SUBSCRIPTION_STARS > 0:
+        plans.append(("Monthly · auto-renew", f"⭐ {SUBSCRIPTION_STARS} / month"))
+    if plans:
+        doc.h("⭐", "Pay with Telegram Stars")
+        doc.table(plans, header=("Plan", "Price"), align=("left", "right"),
+                  caption="Instant activation – tap a plan below")
+    other = [p.strip() for p in (PREMIUM_PRICES or "").split("|") if p.strip()]
+    if other or UPI_ID or QR_CODE:
+        more = Doc()
+        if other:
+            more.table([tuple(x.strip() for x in p.split(":", 1)) if ":" in p else (p, "") for p in other],
+                       header=("Plan", "Price"))
+        pay = []
+        if UPI_ID:
+            pay.append(("💸 UPI ID", code(UPI_ID)))
+        if QR_CODE:
+            pay.append(("📸 QR code", link("Scan to pay", QR_CODE)))
+        if pay:
+            more.table(pay)
+        more.text("<i>After paying, send the screenshot to the admin for activation.</i>")
+        doc.details("💳 Other payment options", more)
+    return doc
+
+
+async def plan_view(user_id: int, first_name: str = ""):
+    """Return (text, keyboard) describing the user's saver plan (classic rendering of plan_doc)."""
+    doc, buttons = await plan_doc(user_id, first_name)
+    return doc.classic(), buttons
 
 
 # /myplan - Detailed Plan & Quota Overview
 @Client.on_message(filters.command("myplan") & filters.private)
 async def my_plan(client: Client, message: Message):
-    text, buttons = await plan_view(message.from_user.id, message.from_user.first_name)
-    await message.reply_text(text, reply_markup=buttons, parse_mode=enums.ParseMode.HTML)
+    from core import rich
+    doc, buttons = await plan_doc(message.from_user.id, message.from_user.first_name)
+    await rich.reply(message, doc, reply_markup=buttons)
 
 
 @Client.on_message(filters.command(["premium_users", "premiumusers"]) & filters.user(ADMINS))
@@ -100,16 +130,17 @@ async def premium_info(client: Client, message: Message):
 
 
 async def show_premium_plans(message_or_query):
-    from saver.start import premium_text
-    text = premium_text()
+    from core import rich
     from saver.start import premium_markup
     buttons = premium_markup("myplan_back_btn")
     if isinstance(message_or_query, Message):
-        await message_or_query.reply_text(text, reply_markup=buttons, parse_mode=enums.ParseMode.HTML,
-                                          disable_web_page_preview=True)
+        await rich.reply(message_or_query, premium_doc(), reply_markup=buttons)
     else:
-        await message_or_query.edit_message_text(text, reply_markup=buttons, parse_mode=enums.ParseMode.HTML,
-                                                 disable_web_page_preview=True)
+        await rich.edit(message_or_query.message, premium_doc(), reply_markup=buttons)
+        try:
+            await message_or_query.answer()
+        except Exception:
+            pass
 
 
 # ======================================================
@@ -189,8 +220,10 @@ async def premium_plans_callback(client: Client, callback_query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex("^myplan_back_btn$"))
 async def myplan_back_callback(client: Client, callback_query: CallbackQuery):
-    text, buttons = await plan_view(callback_query.from_user.id, callback_query.from_user.first_name)
+    from core import rich
+    doc, buttons = await plan_doc(callback_query.from_user.id, callback_query.from_user.first_name)
     try:
-        await callback_query.edit_message_text(text, reply_markup=buttons, parse_mode=enums.ParseMode.HTML)
+        await rich.edit(callback_query.message, doc, reply_markup=buttons)
+        await callback_query.answer()
     except Exception:
         pass

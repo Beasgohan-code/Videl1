@@ -199,8 +199,18 @@ async def send_with_preview(client, chat_id: int, text: str, reply_markup=None, 
 
 async def edit_with_preview(client, message, text: str, reply_markup=None, pic: str = ""):
     """Edit a text message and attach `pic` as a large preview above the text."""
-    from core import botapi
+    from core import botapi, rich
     if botapi.is_main(client) and await botapi.edit_text(message.chat.id, message.id, text, reply_markup, pic=pic):
+        rich.mark(message.chat.id, message.id, False)
+        return
+    if rich.is_rich(message.chat.id, message.id):
+        # Telegram refused to turn our rich screen back into a text one → replace the message
+        rich.mark(message.chat.id, message.id, False)
+        await send_with_preview(client, message.chat.id, text, reply_markup, pic=pic)
+        try:
+            await message.delete()
+        except Exception:
+            pass
         return
     if not pic:
         return await smart_edit(message, text, reply_markup)
@@ -229,10 +239,20 @@ async def smart_edit(message, text: str, reply_markup=None, preview: bool = Fals
     """
     try:
         if message.text is not None or not message.media:
-            from core import botapi
+            from core import botapi, rich
             if botapi.is_main(getattr(message, "_client", None)) and \
                     await botapi.edit_text(message.chat.id, message.id, text, reply_markup, preview=preview):
+                rich.mark(message.chat.id, message.id, False)
                 return message
+            if rich.is_rich(message.chat.id, message.id):
+                rich.mark(message.chat.id, message.id, False)
+                new = await message.reply_text(text, reply_markup=reply_markup, parse_mode=HTML,
+                                               disable_web_page_preview=not preview, quote=False)
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                return new
             return await message.edit_text(text, reply_markup=reply_markup, parse_mode=HTML,
                                            disable_web_page_preview=not preview)
         if len(text) <= 1024:

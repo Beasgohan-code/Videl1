@@ -14,6 +14,8 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import SOURCE_URL
+from core import rich
+from core.rich import Doc
 from core.ui import humanbytes, upload_to_host
 
 log = logging.getLogger("videl.tools")
@@ -43,30 +45,36 @@ def _progress_cb(status: Message, action: str):
 async def ping_cmd(client: Client, message: Message):
     t = time.perf_counter()
     m = await message.reply_text("🏓 Pinging…")
-    await m.edit_text(f"🏓 <b>Pong!</b> <code>{(time.perf_counter() - t) * 1000:.0f} ms</code>")
+    ms = (time.perf_counter() - t) * 1000
+    doc = Doc("🏓", "Pong!").table([
+        ("Round trip", rich.code(f"{ms:.0f} ms")),
+        ("Speed", "⚡ Excellent" if ms < 300 else "👍 Good" if ms < 800 else "🐢 Slow"),
+    ])
+    if message.chat.id < 0:
+        return await m.edit_text(doc.classic())
+    await rich.edit(m, doc)
 
 
 # ─────────────────────────── /id ───────────────────────────
 @Client.on_message(filters.command("id"))
 async def id_cmd(client: Client, message: Message):
-    lines = [f"<b>💬 Chat ID:</b> <code>{message.chat.id}</code>"]
+    rows_ = [("💬 Chat ID", rich.code(message.chat.id))]
     if message.from_user:
-        lines.append(f"<b>👤 Your ID:</b> <code>{message.from_user.id}</code>")
+        rows_.append(("👤 Your ID", rich.code(message.from_user.id)))
     r = message.reply_to_message
     if r:
         if r.from_user:
-            lines.append(f"<b>↩️ Replied user:</b> <code>{r.from_user.id}</code>")
+            rows_.append(("↩️ Replied user", rich.code(r.from_user.id)))
         if r.forward_from:
-            lines.append(f"<b>⏩ Forwarded from user:</b> <code>{r.forward_from.id}</code>")
+            rows_.append(("⏩ Forwarded from user", rich.code(r.forward_from.id)))
         if r.forward_from_chat:
-            lines.append(f"<b>⏩ Forwarded from chat:</b> <code>{r.forward_from_chat.id}</code>")
+            rows_.append(("⏩ Forwarded from chat", rich.code(r.forward_from_chat.id)))
         if r.sender_chat:
-            lines.append(f"<b>📢 Sender chat:</b> <code>{r.sender_chat.id}</code>")
+            rows_.append(("📢 Sender chat", rich.code(r.sender_chat.id)))
         m = _media(r)
         if m and getattr(m, "file_id", None):
-            lines.append(f"<b>📎 File ID:</b> <code>{m.file_id}</code>")
-    from core.ui import group_reply
-    await group_reply(message, "\n".join(lines))
+            rows_.append(("📎 File ID", rich.code(m.file_id)))
+    await rich.reply(message, Doc("🆔", "IDs").table(rows_, header=("Item", "ID")))
 
 
 # ─────────────────────────── /info ───────────────────────────
@@ -85,19 +93,16 @@ async def info_cmd(client: Client, message: Message):
     except Exception as e:
         return await message.reply_text(f"❌ Couldn't find that user: <code>{e}</code>")
     status = getattr(u.status, "name", str(u.status or "")).replace("_", " ").title() if u.status else "Hidden"
-    text = (
-        "<b>👤 User Info</b>\n\n<blockquote>"
-        f"<b>Name:</b> {u.mention}\n"
-        f"<b>ID:</b> <code>{u.id}</code>\n"
-        f"<b>Username:</b> @{u.username or '—'}\n"
-        f"<b>DC:</b> {u.dc_id or '?'}\n"
-        f"<b>Premium:</b> {'Yes' if u.is_premium else 'No'}\n"
-        f"<b>Bot:</b> {'Yes' if u.is_bot else 'No'}\n"
-        f"<b>Last seen:</b> {status}"
-        "</blockquote>"
-    )
-    from core.ui import group_reply
-    await group_reply(message, text)
+    doc = Doc("👤", "User info").table([
+        ("Name", rich.Raw(u.mention)),
+        ("ID", rich.code(u.id)),
+        ("Username", f"@{u.username}" if u.username else "—"),
+        ("DC", u.dc_id or "?"),
+        ("Premium", "⭐ Yes" if u.is_premium else "No"),
+        ("Bot", "🤖 Yes" if u.is_bot else "No"),
+        ("Last seen", status),
+    ], header=("Field", "Value"))
+    await rich.reply(message, doc)
 
 
 # ─────────────────────────── /json ───────────────────────────
@@ -159,7 +164,19 @@ async def qr_cmd(client: Client, message: Message):
 
 
 # ─────────────────────────── /mediainfo ───────────────────────────
-def _fmt_stream(st: dict) -> str:
+_STREAM_ICON = {"video": "🎞", "audio": "🎧", "subtitle": "💬", "attachment": "📎", "data": "📦"}
+
+
+def _stream_row(i: int, st: dict) -> tuple:
+    """One ffprobe stream → (#, type, codec, details, language / title) for the streams table."""
+    t = st.get("codec_type", "?")
+    tags = st.get("tags") or {}
+    details = _fmt_stream(st, details_only=True)
+    lang = " · ".join(x for x in (tags.get("language", ""), tags.get("title", "")) if x) or "—"
+    return (i, f"{_STREAM_ICON.get(t, '•')} {t.title()}", rich.code(st.get("codec_name", "?")), details or "—", lang)
+
+
+def _fmt_stream(st: dict, details_only: bool = False) -> str:
     t = st.get("codec_type", "?")
     codec = st.get("codec_name", "?")
     lang = (st.get("tags") or {}).get("language", "")
@@ -179,7 +196,10 @@ def _fmt_stream(st: dict) -> str:
         extra = f"{st.get('channels', '?')}ch · {st.get('sample_rate', '?')} Hz"
     else:
         extra = ""
-    bits = [f"<b>{t.title()}</b>: <code>{codec}</code>", extra, lang, title]
+    if details_only:
+        return extra
+    bits = [f"<b>{t.title()}</b>: <code>{html.escape(str(codec))}</code>", extra,
+            html.escape(str(lang)), html.escape(str(title))]
     return " · ".join(b for b in bits if b)
 
 
@@ -209,15 +229,21 @@ async def mediainfo_cmd(client: Client, message: Message):
         name = getattr(media, "file_name", None) or "file"
         size = getattr(media, "file_size", 0)
         duration = float(fmt.get("duration") or getattr(media, "duration", 0) or 0)
-        header = (
-            f"<b>📄 {name}</b>\n\n<blockquote>"
-            f"<b>Size:</b> {humanbytes(size)}\n"
-            f"<b>Container:</b> {fmt.get('format_long_name') or fmt.get('format_name', '?')}\n"
-            f"<b>Duration:</b> {time.strftime('%H:%M:%S', time.gmtime(duration)) if duration else '?'}\n"
-            f"<b>Mime:</b> {getattr(media, 'mime_type', '?')}</blockquote>\n"
-        )
-        body = "\n".join(f"• {_fmt_stream(s)}" for s in streams) or "<i>No streams detected in header.</i>"
-        await status.edit_text((header + "<b>Streams</b>\n" + body)[:4000])
+        doc = Doc("🔎", "Media info", name)
+        doc.table([
+            ("📦 Size", humanbytes(size)),
+            ("🗂 Container", fmt.get("format_long_name") or fmt.get("format_name", "?")),
+            ("⏱ Duration", time.strftime("%H:%M:%S", time.gmtime(duration)) if duration else "?"),
+            ("🧾 Mime", getattr(media, "mime_type", None) or "?"),
+            ("📶 Bitrate", f"{int(fmt['bit_rate']) // 1000} kb/s" if str(fmt.get("bit_rate", "")).isdigit() else "?"),
+        ], header=("General", "Value"))
+        doc.h("🎛", f"Streams ({len(streams)})")
+        if streams:
+            doc.table([_stream_row(i, st) for i, st in enumerate(streams, 1)],
+                      header=("#", "Type", "Codec", "Details", "Language / title"), compact=True)
+        else:
+            doc.text("<i>No streams detected in the header.</i>")
+        await rich.edit(status, doc)
     except Exception as e:
         await status.edit_text(f"❌ mediainfo failed: <code>{e}</code>")
     finally:

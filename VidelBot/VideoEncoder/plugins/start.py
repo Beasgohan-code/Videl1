@@ -72,53 +72,41 @@ async def show_status_count(_, event: Message):
     # Public server stats (admins get the full Videl /stats from core/admin.py first).
     if event.from_user:
         await AddUserToDatabase(_, event)
-    text = await show_status(_)
-    await event.reply_text(text)
+    from core import rich
+    await rich.reply(event, await stats_doc(_))
+
+
+async def stats_doc(_):
+    """Public server statistics as a rich screen (tables for uptime, CPU, RAM, disk, network)."""
+    from core.rich import Doc
+    total, used, free, disk = disk_usage('/')
+    net = net_io_counters()
+    swap = swap_memory()
+    memory = virtual_memory()
+    total_users = await db.total_users_count()
+    doc = Doc("📊", "Bot statistics", "live server numbers")
+    doc.table([
+        ("🤖 Bot uptime", TimeFormatter(time() - botStartTime)),
+        ("🖥 OS uptime", TimeFormatter(time() - boot_time())),
+        ("👥 Users", total_users),
+    ], header=("Overview", "Value"))
+    doc.h("⚙️", "CPU & memory")
+    doc.table([
+        ("CPU", f"{cpu_percent(interval=0.5)} %", f"{cpu_count(logical=False)} physical · {cpu_count(logical=True)} total cores"),
+        ("RAM", f"{memory.percent} %", f"{humanbytes(memory.used)} used · {humanbytes(memory.available)} free of {humanbytes(memory.total)}"),
+        ("Swap", f"{swap.percent} %", humanbytes(swap.total) if swap.total else "—"),
+    ], header=("Resource", "Load", "Details"), align=("left", "right", "left"))
+    doc.h("💾", "Disk & network")
+    doc.table([
+        ("💽 Disk", f"{disk} %", f"{humanbytes(used)} used · {humanbytes(free)} free of {humanbytes(total)}"),
+        ("📤 Uploaded", humanbytes(net.bytes_sent), "since boot"),
+        ("📥 Downloaded", humanbytes(net.bytes_recv), "since boot"),
+    ], header=("Item", "Amount", "Details"), align=("left", "right", "left"))
+    return doc
 
 
 async def show_status(_):
-    currentTime = TimeFormatter(time() - botStartTime)
-    osUptime = TimeFormatter(time() - boot_time())
-    total, used, free, disk = disk_usage('/')
-    total = humanbytes(total)
-    used = humanbytes(used)
-    free = humanbytes(free)
-    sent = humanbytes(net_io_counters().bytes_sent)
-    recv = humanbytes(net_io_counters().bytes_recv)
-    cpuUsage = cpu_percent(interval=0.5)
-    p_core = cpu_count(logical=False)
-    t_core = cpu_count(logical=True)
-    swap = swap_memory()
-    swap_p = swap.percent
-    memory = virtual_memory()
-    mem_t = humanbytes(memory.total)
-    mem_a = humanbytes(memory.available)
-    mem_u = humanbytes(memory.used)
-    total_users = await db.total_users_count()
-    text = f"""<b>Uptime of</b>:
-- <b>Bot:</b> {currentTime}
-- <b>OS:</b> {osUptime}
-
-<b>Disk</b>:
-<b>- Total:</b> {total}
-<b>- Used:</b> {used}
-<b>- Free:</b> {free}
-
-<b>UL:</b> {sent} | <b>DL:</b> {recv}
-<b>CPU:</b> {cpuUsage}%
-
-<b>Cores:</b>
-<b>- Physical:</b> {p_core}
-<b>- Total:</b> {t_core}
-<b>- Used:</b> {swap_p}%
-
-<b>RAM:</b> 
-- <b>Total:</b> {mem_t}
-- <b>Free:</b> {mem_a}
-- <b>Used:</b> {mem_u}
-
-Users: {total_users}"""
-    return text
+    return (await stats_doc(_)).classic()
 
 
 async def showw_status(_):

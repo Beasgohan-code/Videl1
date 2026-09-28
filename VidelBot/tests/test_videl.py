@@ -269,7 +269,7 @@ def test_start_variants(arg):
     assert c.calls or m.replies
     if not arg:
         (_, a, k), = c.called("send_web_page")
-        assert k["large_media"] and k["invert_media"] and "Uptime" in k["text"] or "uptime" in k["text"].lower()
+        assert k["large_media"] and k["invert_media"] and "ᴜᴘᴛɪᴍᴇ" in k["text"]
         assert m.reactions  # random reaction like the original saver
 
 
@@ -305,7 +305,7 @@ def test_plan_and_premium_views():
     c = FakeClient()
     m = FakeMsg("/myplan", uid=5)
     run(my_plan(c, m))
-    assert "Free Tier" in m.replies[-1]
+    assert "Free tier" in m.replies[-1] and "ꜱᴀᴠᴇꜱ ʟᴇꜰᴛ ᴛᴏᴅᴀʏ" in m.replies[-1]
     m = FakeMsg("/premium", uid=5)
     run(premium_info(c, m))
     assert m.replies
@@ -708,7 +708,7 @@ def test_public_stats_for_non_admins():
     c = FakeClient()
     m = FakeMsg("/stats", uid=5)
     run(show_status_count(c, m))
-    assert "CPU" in m.replies[-1] and "Users" in m.replies[-1]
+    assert "CPU" in m.replies[-1] and "ᴜꜱᴇʀꜱ" in m.replies[-1] and "RAM" in m.replies[-1]
 
 
 def test_check_clone_health(monkeypatch):

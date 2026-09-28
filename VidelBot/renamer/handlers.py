@@ -201,24 +201,28 @@ async def panel_view(uid: int):
     words = s.get("words") or []
     busy = engine.pending(uid)
     mode_line = "✍️ Manual – I ask for a name for every file" if manual else "🤖 Auto – renamed with your template"
-    text = (
-        "<b>✏️ Auto-Rename</b>\n\n"
-        f"<b>Status:</b> {status}\n"
-        f"<b>Mode:</b> {mode_line}\n"
-        f"<b>Template:</b> <code>{esc(tpl) if tpl else 'not set – tap ✏️ Set template'}</code>\n"
-        f"<b>Send as:</b> {_media_label(s.get('media'))}\n"
-        f"<b>MP4 → MKV:</b> {'✅' if s.get('mkv', True) else '❌'} · <b>Metadata:</b> {'✅' if meta_on else '❌'}\n"
-        f"<b>Clean tags:</b> {'✅' if s.get('clean') else '❌'} · <b>Word rules:</b> {len(words)}\n"
-        f"<b>Renamed so far:</b> {s.get('count', 0)}\n"
-    )
+    from core.style import hdr, quote, rows as srows, sc
+    yes = lambda on: "✅" if on else "❌"   # noqa: E731
+    info = [
+        ("📶 Status", status),
+        ("🎛 Mode", mode_line),
+        ("🧩 Template", f"<code>{esc(tpl)}</code>" if tpl else "<i>not set – tap ✏️ Set template</i>"),
+        ("📦 Send as", _media_label(s.get("media"))),
+        ("🎞 MP4 → MKV", yes(s.get("mkv", True))),
+        ("🏷 Metadata", yes(meta_on)),
+        ("🧹 Clean tags", yes(s.get("clean"))),
+        ("🔁 Word rules", len(words)),
+        ("📊 Renamed so far", s.get("count", 0)),
+    ]
     if busy:
-        text += f"<b>Queue:</b> ⏳ {busy} file(s) in progress\n"
+        info.append(("⏳ Queue", f"{busy} file(s) in progress"))
+    text = hdr("✏️", "Auto-Rename") + "\n\n" + quote(srows(info)) + "\n"
     if tpl:
-        text += f"\n<b>👁 Example:</b>\n<code>{esc(SAMPLE)}</code>\n➜ <code>{esc(preview_name(s))}</code>"
+        text += (f"\n<b>👁 {sc('Example')}</b>\n" + quote(f"<code>{esc(SAMPLE)}</code>\n➜ <code>{esc(preview_name(s))}</code>"))
     elif manual:
-        text += "\n<i>Send any file and I'll ask what to call it. Set a template to get a 💡 one-tap suggestion.</i>"
+        text += "\n<i>" + sc("Send any file and I'll ask what to call it. Set a template to get a 💡 one-tap suggestion.") + "</i>"
     else:
-        text += "\n<i>Example:</i> <code>/autorename {title} S{season}E{episode} [{quality}] [{audio}]</code>"
+        text += "\n<i>" + sc("Example") + ":</i> <code>/autorename {title} S{season}E{episode} [{quality}] [{audio}]</code>"
     pause = []
     if tpl or manual:
         pause.append(Btn("⏸ Pause" if s.get("auto", True) else "▶️ Resume", callback_data="rn:auto"))
@@ -381,6 +385,33 @@ SEQ_HELP = ("<b>📋 Sequence mode</b>\n\nSend a whole season in any order and g
             "/cancel – drop the sequence</blockquote>")
 
 
+async def leaderboard_doc(period: str, uid: int):
+    """Top-10 renamers as a ranked table (rich) + period keyboard."""
+    from core.botlog import now as local_now
+    from core.rich import Doc
+    period = period if period in store.PERIODS else "all"
+    rows, rank, mine = await store.leaderboard(period, uid)
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    doc = Doc("🏆", f"{store.PERIODS[period]} top renamers")
+    if rows:
+        doc.table([(medals.get(i, f"{i}."), (name or "Anonymous")[:32], f"@{username}" if username else "—", n)
+                   for i, (u, n, name, username) in enumerate(rows, 1)],
+                  header=("#", "Name", "Username", "Renames"), align=("center", "left", "left", "right"))
+    else:
+        doc.text("<i>No renames in this period yet.</i>")
+    if rank:
+        doc.table([("📍 Your rank", f"#{rank}"), ("✏️ Your renames", mine)])
+    doc.footer(f"Updated {local_now().strftime('%d %b %Y · %I:%M %p')}")
+    return doc, _leaderboard_kb(period)
+
+
+def _leaderboard_kb(period: str):
+    btns = [Btn(("• " if p == period else "") + label, callback_data=f"rnlb:{p}")
+            for p, label in (("today", "Today"), ("week", "Week"), ("month", "Month"), ("year", "Year"),
+                             ("all", "All-time"))]
+    return InlineKeyboardMarkup([btns[:3], btns[3:]])
+
+
 async def leaderboard_view(period: str, uid: int):
     period = period if period in store.PERIODS else "all"
     rows, rank, mine = await store.leaderboard(period, uid)
@@ -396,10 +427,7 @@ async def leaderboard_view(period: str, uid: int):
         lines.append(f"\n<b>Your rank:</b> #{rank} with {mine} renames")
     from core.botlog import now as local_now
     lines.append(f"\n<i>Updated {local_now().strftime('%d %b %Y · %I:%M %p')}</i>")
-    btns = [Btn(("• " if p == period else "") + label, callback_data=f"rnlb:{p}")
-            for p, label in (("today", "Today"), ("week", "Week"), ("month", "Month"), ("year", "Year"),
-                             ("all", "All-time"))]
-    return "\n".join(lines), InlineKeyboardMarkup([btns[:3], btns[3:]])
+    return "\n".join(lines), _leaderboard_kb(period)
 
 
 async def admin_view():
@@ -542,13 +570,21 @@ async def testrename_cmd(client: Client, message: Message):
     src = extract.prepare_source(name, s.get("clean", False), s.get("words"))
     info = extract.parse(src)
     new = preview_name(s, name)
+    from core import rich
+    from core.rich import Doc, code
     labels = {"episode_end": "last episode"}
-    detected = "\n".join(f"• {labels.get(k, k)}: <code>{esc(v)}</code>" for k, v in info.items()
-                         if v not in (None, ""))
-    if src != name:
-        detected = f"• cleaned: <code>{esc(src)}</code>\n" + detected
-    await message.reply_text(f"<b>👁 Rename preview</b>\n\n<code>{esc(name)}</code>\n➜ <code>{esc(new)}</code>\n\n"
-                             f"<b>Detected</b>\n{detected or '—'}")
+    doc = Doc("👁", "Rename preview")
+    doc.table([("📄 Original", code(name)), *([("🧹 Cleaned", code(src))] if src != name else []),
+               ("✏️ Renamed", code(new))], header=("File", "Name"))
+    detected = [(labels.get(k, k).replace("_", " ").capitalize(), code(v)) for k, v in info.items()
+                if v not in (None, "")]
+    doc.h("🔎", "Detected")
+    if detected:
+        doc.table(detected, header=("Field", "Value"), compact=True)
+    else:
+        doc.text("<i>Nothing detected – only {filename} placeholders will change.</i>")
+    doc.footer("Preview only – nothing was uploaded.")
+    await rich.reply(message, doc)
 
 
 @Client.on_message(filters.command("tutorial") & filters.private)
@@ -560,6 +596,10 @@ async def tutorial_cmd(client: Client, message: Message):
 @Client.on_message(filters.command(["leaderboard", "top"]))
 async def leaderboard_cmd(client: Client, message: Message):
     uid = message.from_user.id if message.from_user else 0
+    if message.chat.type == enums.ChatType.PRIVATE and not LEADERBOARD_PIC:
+        from core import rich
+        doc, kb = await leaderboard_doc("all", uid)
+        return await rich.reply(message, doc, reply_markup=kb)
     text, kb = await leaderboard_view("all", uid)
     if LEADERBOARD_PIC:
         try:
@@ -942,9 +982,15 @@ async def help_rename_cb(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^rnlb:(\w+)$"))
 async def leaderboard_cb(client: Client, query: CallbackQuery):
-    text, kb = await leaderboard_view(query.matches[0].group(1), query.from_user.id)
+    period = query.data.split(":", 1)[1]
     await query.answer()
-    await smart_edit(query.message, text, kb)
+    msg = query.message
+    if msg.chat.type == enums.ChatType.PRIVATE and not getattr(msg, "photo", None):
+        from core import rich
+        doc, kb = await leaderboard_doc(period, query.from_user.id)
+        return await rich.edit(msg, doc, kb)
+    text, kb = await leaderboard_view(period, query.from_user.id)
+    await smart_edit(msg, text, kb)
 
 
 @Client.on_callback_query(filters.regex(r"^rnx:(\d+)$"))

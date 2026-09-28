@@ -6,24 +6,27 @@ Video Encoder, Son-Goku FileStore) – rebranded to Videl, with the developer
 credits removed and the Videl modules added.
 """
 from config import BOT_NAME, FREE_LIMIT_DAILY, FREE_LIMIT_SIZE_GB, MAX_BOTS_PER_USER
+from core.style import hdr, quote, rows, sc
 
 # ════════════════════════════════════════════════════════════════
 # Home (Save-Restricted-Content layout)
 # ════════════════════════════════════════════════════════════════
-START_TXT = """<b>👋 Hello {mention},</b>
-<b>I'm <a href=https://t.me/{username}>{first_name}</a> — your all-in-one Telegram workspace.</b>
-<i>Save, encode, rename and share files, all from one chat.</i>
-<blockquote><b>🟢 Online</b>  ·  <b>⏱ Uptime:</b> {uptime}
-<b>👤 Your plan:</b> {plan}</blockquote>
-<blockquote expandable><b>✦ What I can do</b>
-📥 <b>Save</b> — posts from restricted channels &amp; groups
-🎬 <b>Encode</b> — shrink videos with x264 / x265
-✏️ <b>Auto-Rename</b> — clean names, metadata &amp; thumbnails
-⚡ <b>Clone</b> — launch your own FileStore bot
-🧰 <b>Tools</b> — MediaInfo, uploads, QR codes, short links
-💎 <b>Premium</b> — Telegram Stars, gifts &amp; referrals</blockquote>
-<b>Choose an option below to get started 👇</b>
-"""
+START_TXT = (
+    hdr("👋", "Welcome") + "\n\n"
+    + quote(sc("Hello") + " {mention}!\n"
+            + sc("I'm") + " <b><a href=https://t.me/{username}>{first_name}</a></b> — "
+            + sc("your all-in-one Telegram workspace. Save, encode, rename and share files, all from one chat."))
+    + "\n" + quote(rows([("🟢 Status", "Online"), ("⏱ Uptime", "{uptime}"), ("👤 Your plan", "{plan}")]))
+    + "\n" + quote("<b>✦ " + sc("What I can do") + " ✦</b>\n" + "\n".join(
+        f"◈ {e} <b>{sc(t)}</b> — {sc(d)}" for e, t, d in (
+            ("📥", "Save", "posts from restricted channels &amp; groups"),
+            ("🎬", "Encode", "shrink videos with x264 / x265"),
+            ("✏️", "Auto-Rename", "clean names, metadata &amp; thumbnails"),
+            ("⚡", "Clone", "launch your own FileStore bot"),
+            ("🧰", "Tools", "MediaInfo, uploads, QR codes, short links"),
+            ("💎", "Premium", "Telegram Stars, gifts &amp; referrals"))), expandable=True)
+    + "\n<b>" + sc("Choose an option below to get started") + " 👇</b>"
+)
 
 HELP_TXT = f"""<b>📚 Comprehensive Help &amp; User Guide</b>
 <blockquote><b>1️⃣ Public Channels (No Login Required)</b></blockquote>
@@ -177,40 +180,28 @@ FORCE_MSG = """<b>━━━━━━━━━━━━━━━━━━━━�
 # Encoder (Video Encoder layout)
 # ════════════════════════════════════════════════════════════════
 ENC_START = (
-    "<b>🎬 Video Encoder</b>\n\n"
-    "Hi {mention}! I'm the VideoEncoder module which will do magic with your file.\n"
-    "<blockquote>Reply <code>/dl</code> to any video or document to start.</blockquote>"
+    hdr("🎬", "Video Encoder") + "\n\n"
+    + quote(sc("Hi") + " {mention}! " + sc("I'm the encoder module – I shrink and convert your videos.")
+            + "\n◈ " + sc("Reply") + " <code>/dl</code> " + sc("to any video or document to start."))
 )
 
-ENC_HELP = """<b>📕 Commands List</b>:
-
-<blockquote expandable>- Reply /dl to a Telegram file to encode it
-- /ddl - encode through DDL
-- /batch - encode in batch
-- /af - pick / reorder audio tracks, then encode
-- /queue - check queue
-- /status - live system status
-- /settings - settings (🎬 Video Encoder)
-- /vset - view settings
-- /reset - reset settings
-- /thumb - custom thumbnail for encodes</blockquote>
-
-<b>For Sudo:</b>
-<blockquote expandable>- /vupload - video upload
-- /dupload - doc upload
-- /gupload - drive upload
-- /clean - clean junk
-- /clear - clean queue
-- /logs - view logs
-- /speedtest - server speed
-- /restart - restart bot
-- /update - git pull</blockquote>
-
-<b>For Owner:</b>
-<blockquote>- /addchat and /addsudo
-- /rmsudo and /rmchat
-- /exec - Execute Python · /sh - Execute Shell</blockquote>
-"""
+ENC_HELP = (
+    "<b>📕 " + sc("Commands") + "</b>\n"
+    + quote("\n".join(f"◈ {c} — {sc(d)}" for c, d in (
+        ("/dl", "reply to a Telegram file to encode it"), ("/ddl", "encode through a direct link"),
+        ("/batch", "encode in batch"), ("/af", "pick / reorder audio tracks, then encode"),
+        ("/queue", "check the queue"), ("/status", "live system status"),
+        ("/settings", "settings (🎬 Video Encoder)"), ("/vset", "view settings"), ("/reset", "reset settings"),
+        ("/thumb", "custom thumbnail for encodes"))), expandable=True)
+    + "\n\n<b>🛡 " + sc("For sudo") + "</b>\n"
+    + quote("\n".join(f"◈ {c} — {sc(d)}" for c, d in (
+        ("/vupload", "video upload"), ("/dupload", "document upload"), ("/gupload", "drive upload"),
+        ("/clean", "clean junk"), ("/clear", "clean queue"), ("/logs", "view logs"),
+        ("/speedtest", "server speed"), ("/restart", "restart bot"), ("/update", "git pull"))), expandable=True)
+    + "\n\n<b>👑 " + sc("For owner") + "</b>\n"
+    + quote("◈ /addchat · /addsudo · /rmsudo · /rmchat\n◈ /exec — " + sc("execute Python") + " · /sh — "
+            + sc("execute shell"))
+)
 
 # ════════════════════════════════════════════════════════════════
 # Tools & admin (Videl additions)
@@ -280,12 +271,11 @@ Support: users send /support → it lands in your DM → <b>reply</b> to answer.
 /check — health-check every clone (<code>/check fix</code> restarts broken ones)</blockquote>
 """
 
-SETTINGS_HUB = """<b>⚙️ Settings Dashboard</b>
-
-<b>Account:</b> {badge}
-<b>User ID:</b> <code>{user_id}</code>
-
-<i>Customize and manage your bot preferences below for an optimized experience:</i>"""
+SETTINGS_HUB = (
+    hdr("⚙️", "Settings") + "\n\n"
+    + quote(rows([("Account", "{badge}"), ("User ID", "<code>{user_id}</code>")]))
+    + "\n<i>" + sc("Customize and manage your preferences below 👇") + "</i>"
+)
 
 MAINT_TEXT = f"🛠 <b>{BOT_NAME} is under maintenance.</b>\n<i>Please try again a little later.</i>"
 BANNED_TEXT = "🚫 <b>You are banned from using this bot.</b>"

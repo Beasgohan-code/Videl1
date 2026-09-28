@@ -199,7 +199,7 @@ def test_home_text_is_honest_and_shows_the_plan():
     assert "High-Speed Server" not in texts.ABOUT_TXT
     c = FakeClient()
     text = run(start_text(c, FakeMsg(uid=5).from_user))
-    assert "Free" in text and "Uptime" in text
+    assert "Free" in text and "ᴜᴘᴛɪᴍᴇ" in text
 
 
 def test_home_keyboard_keeps_every_callback():
@@ -224,7 +224,7 @@ def test_start_sends_one_draft_and_no_typewriter_delay():
 def test_about_shows_api_version_and_uptime():
     from core.menus import about_text
     text = run(about_text(FakeClient()))
-    assert "Bot API 10." in text and "Uptime" in text
+    assert "Bot API 10." in text and "ᴜᴘᴛɪᴍᴇ" in text
 
 
 def test_clone_help_mentions_the_idle_rule(monkeypatch):

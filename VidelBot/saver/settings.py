@@ -5,6 +5,7 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 from database.db import db
 from config import FREE_LIMIT_DAILY
 from saver.strings import COMMANDS_TXT
+from core.ui import smart_edit
 # ======================================================
 # /settings - Enhanced Professional Settings Menu
 # ======================================================
@@ -34,12 +35,22 @@ async def direct_commands(client: Client, message: Message):
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚙️ Open Settings", callback_data="settings_back_btn"), InlineKeyboardButton("❌ Close", callback_data="close_btn")]
     ])
-    await message.reply_text(
-        COMMANDS_TXT,
-        reply_markup=buttons,
-        parse_mode=enums.ParseMode.HTML,
-        disable_web_page_preview=True
-    )
+    from core import rich
+    await rich.reply(message, commands_doc(), reply_markup=buttons)
+
+
+def commands_doc():
+    """Every private-chat command, one table per section (rich) / ◈ rows (classic)."""
+    import re as _re
+    from core.commands import USER_COMMANDS, user_sections
+    from core.rich import Doc
+    doc = Doc("📜", "All commands", f"{len(USER_COMMANDS)} commands · tap one to use it")
+    for emoji, title, cmds in user_sections():
+        doc.h(emoji, title)
+        # descriptions start with their own emoji – the section heading already has one
+        doc.table([(f"/{c}", _re.sub(r"^\W+\s*", "", d) or d) for c, d in cmds], header=("Command", "What it does"))
+    doc.footer("Admins get their extra commands in the bot menu.")
+    return doc
 # ======================================================
 # /setchat - Set or Clear Dump Chat
 # ======================================================
@@ -90,12 +101,7 @@ async def settings_callbacks(client: Client, callback_query: CallbackQuery):
     # Common back/close buttons
     back_close = [[InlineKeyboardButton("⬅️ Back", callback_data="settings_back_btn"), InlineKeyboardButton("❌ Close", callback_data="close_btn")]]
     if data == "cmd_list_btn":
-        await callback_query.edit_message_text(
-            COMMANDS_TXT,
-            reply_markup=InlineKeyboardMarkup(back_close),
-            parse_mode=enums.ParseMode.HTML,
-            disable_web_page_preview=True
-        )
+        await smart_edit(callback_query.message, COMMANDS_TXT, InlineKeyboardMarkup(back_close))
     elif data == "dump_chat_btn":
         current = await db.get_dump_chat(user_id)
         if current:
@@ -107,7 +113,7 @@ async def settings_callbacks(client: Client, callback_query: CallbackQuery):
             text = (
                 f"<b>🗑 Current Dump Chat</b>\n\n"
                 f"<b>Chat ID:</b> <code>{current}</code>\n"
-                f"<b>Title:</b> {title}\n\n"
+                f"<b>Title:</b> {html.escape(title)}\n\n"
                 "<i>All saved files are forwarded here.</i>\n"
                 "<i>Use /setchat to change or clear.</i>"
             )
@@ -117,7 +123,7 @@ async def settings_callbacks(client: Client, callback_query: CallbackQuery):
                 "<i>Saved files appear only in this chat.</i>\n"
                 "<i>Use /setchat &lt;chat_id&gt; to enable forwarding.</i>"
             )
-        await callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(back_close), parse_mode=enums.ParseMode.HTML)
+        await smart_edit(callback_query.message, text, InlineKeyboardMarkup(back_close))
     elif data == "thumb_btn":
         thumb = await db.get_thumbnail(user_id)
         if thumb:
@@ -128,12 +134,8 @@ async def settings_callbacks(client: Client, callback_query: CallbackQuery):
             )
             await callback_query.answer("Thumbnail preview sent below 👇")
         else:
-            await callback_query.edit_message_text(
-                "<b>🖼 No Custom Thumbnail Set</b>\n\n"
-                "<i>Reply to a photo with /set_thumb to set a default thumbnail.</i>",
-                reply_markup=InlineKeyboardMarkup(back_close),
-                parse_mode=enums.ParseMode.HTML
-            )
+            await smart_edit(callback_query.message, "<b>🖼 No Custom Thumbnail Set</b>\n\n"
+                "<i>Reply to a photo with /set_thumb to set a default thumbnail.</i>", InlineKeyboardMarkup(back_close))
     elif data == "caption_btn":
         caption = await db.get_caption(user_id)
         if caption:
@@ -154,7 +156,7 @@ async def settings_callbacks(client: Client, callback_query: CallbackQuery):
                 "<i>Use /set_caption &lt;text&gt; to set one.</i>\n"
                 "<i>Supports {filename} and {size} placeholders.</i>"
             )
-        await callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(back_close), parse_mode=enums.ParseMode.HTML)
+        await smart_edit(callback_query.message, text, InlineKeyboardMarkup(back_close))
     elif data == "user_stats_btn":
         # Fetch real stats from DB
         is_premium = await db.check_premium(user_id)
@@ -176,11 +178,11 @@ async def settings_callbacks(client: Client, callback_query: CallbackQuery):
             f"<b>Today's Usage:</b> <code>{usage_text}</code>\n\n"
             f"<i>Upgrade to Premium for unlimited downloads!</i>"
         )
-        await callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(back_close), parse_mode=enums.ParseMode.HTML)
+        await smart_edit(callback_query.message, text, InlineKeyboardMarkup(back_close))
     elif data == "settings_back_btn":
         is_premium = await db.check_premium(user_id)
         text, buttons = saver_settings_view(user_id, is_premium)
-        await callback_query.edit_message_text(text, reply_markup=buttons, parse_mode=enums.ParseMode.HTML)
+        await smart_edit(callback_query.message, text, buttons)
     elif data == "close_btn":
         await callback_query.message.delete()
     await callback_query.answer()

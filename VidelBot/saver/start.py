@@ -25,6 +25,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from config import (
     API_HASH, API_ID, FREE_LIMIT_DAILY, FREE_LIMIT_SIZE_GB, QR_CODE, SUBSCRIPTION, UPI_ID, PREMIUM_PRICES,
 )
+from core.style import hdr, quote, row, sc
 from core.ui import contact_row, rows
 from database.db import db
 from logger import LOGGER
@@ -35,20 +36,14 @@ FREE_LIMIT_SIZE = int(FREE_LIMIT_SIZE_GB * 1024 * 1024 * 1024)
 
 
 class script(object):
-    PREMIUM_TEXT = """<b>💎 Premium Membership Plans</b>
-<b>Unlock Unlimited Access & Advanced Features!</b>
-<blockquote><b>✨ Key Benefits:</b>
-<b>♾️ Unlimited Daily Saves</b>
-<b>📂 Support for 4GB+ File Sizes</b>
-<b>⚡ Instant Processing (Zero Delay)</b>
-<b>🖼 Customizable Thumbnails</b>
-<b>📝 Personalized Captions</b>
-<b>🛂 Priority Support</b></blockquote>
-<blockquote><b>💳 Pricing Options:</b></blockquote>
-{prices}
-{payment}
-<i>After payment, send the screenshot to the admin for activation.</i>
-"""
+    PREMIUM_TEXT = (
+        hdr("💎", "Premium Plans", "unlock unlimited access & advanced features") + "\n\n"
+        + quote("<b>✨ " + sc("Key benefits") + "</b>\n" + "\n".join(f"◈ {e} {sc(t)}" for e, t in (
+            ("♾️", "Unlimited daily saves"), ("📂", "4GB+ file sizes"), ("⚡", "Instant processing"),
+            ("🖼", "Custom thumbnails & captions"), ("🛂", "Priority support"))))
+        + "\n<b>💳 " + sc("Pricing") + "</b>\n{prices}\n{payment}\n"
+        + "<i>" + sc("After payment, send the screenshot to the admin for activation.") + "</i>"
+    )
     PROGRESS_BAR = """\
 <b>{title}</b>
 <blockquote>
@@ -72,12 +67,12 @@ Save files up to 4GB and beyond with no limits!
 
 
 def premium_text() -> str:
-    prices = "\n".join(f"• <b>{p.strip()}</b>" for p in PREMIUM_PRICES.split("|") if p.strip())
+    prices = "\n".join(f"◈ <b>{html.escape(p.strip(), quote=False)}</b>" for p in PREMIUM_PRICES.split("|") if p.strip())
     pay = []
     if UPI_ID:
-        pay.append(f"<b>💸 UPI ID:</b> <code>{UPI_ID}</code>")
+        pay.append(row("💸 UPI ID", f"<code>{html.escape(UPI_ID, quote=False)}</code>"))
     if QR_CODE:
-        pay.append(f"<b>📸 QR Code:</b> <a href='{QR_CODE}'>Scan to Pay</a>")
+        pay.append(row("📸 QR code", f"<a href=\"{html.escape(QR_CODE)}\">Scan to pay</a>"))
     return script.PREMIUM_TEXT.format(prices=prices, payment="\n".join(pay))
 
 

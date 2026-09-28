@@ -214,7 +214,7 @@ def test_testrename_preview():
     run(store.set_template(5, "{title} S{season}E{episode}"))
     m = FakeMsg("/testrename Some.Show.S03E07.1080p.mp4")
     run(testrename_cmd(FakeClient(), m))
-    assert "Some Show S03E07.mkv" in m.replies[-1] and "quality" in m.replies[-1]
+    assert "Some Show S03E07.mkv" in m.replies[-1] and "1080p" in m.replies[-1]
 
 
 # ───────────────────────── engine pipeline ─────────────────────────

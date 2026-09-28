@@ -233,12 +233,39 @@ Manual UPI / QR payments (`UPI_ID`, `QR_CODE`, `/add_premium`) keep working alon
 
 MP4 → MKV / metadata use stream copy (no re-encode); if a file can't be remuxed it's sent with its original container and a note. Files are processed `RENAME_CONCURRENCY` at a time, each user may queue `RENAME_QUEUE_LIMIT` files, and `/cancel` stops everything.
 
+## 🎨 FileStore-style UI + rich messages
+
+User-facing screens share the look of the clone bots: `━━━` header bars with a 𝗕𝗢𝗟𝗗 title,
+ꜱᴍᴀʟʟ-ᴄᴀᴘꜱ labels and `◈` rows, while values (file names, numbers, templates, links) stay in
+normal letters so they remain readable and copyable. Admin, owner and log messages are unchanged.
+
+- `core/style.py` – `sc()` small caps (keeps HTML tags, entities, `{placeholders}`, `/commands`,
+  `@mentions`, links, `<code>` and ACRONYMS; escapes bare `& < >`), `hdr()`, `sec()`, `row()`, `quote()`.
+- `core/rich.py` – `Doc` builds a screen once (`.h()`, `.table()`, `.items()`, `.details()`, `.footer()`)
+  and renders it two ways:
+  - **native rich message** (Bot API 10.1+ `sendRichMessage` / `editMessageText(rich_message=…)`): `<h1>`
+    title, small-caps `<h3>` sections, bordered + striped `<table>`s, `<details>` and a `<footer>`;
+  - **classic HTML** (FileStore look): 2-column tables become `◈ ʟᴀʙᴇʟ: value` rows in a quote, wider
+    tables become `◈ a · b · c` rows, `<details>` becomes an expandable quote.
+
+  The rich form is used in private chats of the main bot whenever the aiogram bridge is on. Because
+  pyrofork can't read rich messages, a rich screen only carries buttons whose handlers edit through the
+  Bot API (`rich.SAFE_CALLBACKS`); any other keyboard automatically gets the classic rendering. Groups
+  get the classic form as an ephemeral reply, and if Telegram refuses to turn a rich screen back into a
+  text one, the helpers send the new screen and delete the old message.
+
+Rich screens: `/help`, `/about`, `/commands` (one table per section), `/stats`, `/status`, `/mediainfo`
+(streams table), `/id`, `/info`, `/ping`, `/myplan`, `/premium` (Free vs Premium table + Stars prices),
+`/mysub`, `/refer`, `/verify`, `/testrename`, `/leaderboard` and the 🧰 Tools help. Restyled
+classic screens (photo / preview based): home, settings hub, encoder help, premium banner and the
+Auto-Rename panel.
+
 ## 🧪 Tests
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
-The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes, and `tests/test_phase8.py` for the clone extras (smart-link limits / passwords / expiry, Stars checkout + delivery, premium, index + search, requests, anti-flood, broadcasts & schedules, export, the ✨ Extras panel and ownership transfer), and `tests/test_phase9.py` for the performance work (live progress, saver cancel / visible upload errors, encoder throttle, parallel force-sub, instant start pics, indexes, cache trimming), and `tests/test_phase10.py` for the clone lifecycle (warning → deactivation → reactivation, owner-only buttons), disabled buttons and the new home screen, and `tests/test_phase12.py` for the Auto-Rename upgrade (source / group / ranges / movie-aware templates, tag cleaning, word rules, presets, manual mode prompts, caption placeholders, probing + frame thumbnails, history, queue cancel, `/rename` on the engine). Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
+The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes, and `tests/test_phase8.py` for the clone extras (smart-link limits / passwords / expiry, Stars checkout + delivery, premium, index + search, requests, anti-flood, broadcasts & schedules, export, the ✨ Extras panel and ownership transfer), and `tests/test_phase9.py` for the performance work (live progress, saver cancel / visible upload errors, encoder throttle, parallel force-sub, instant start pics, indexes, cache trimming), and `tests/test_phase10.py` for the clone lifecycle (warning → deactivation → reactivation, owner-only buttons), disabled buttons and the new home screen, and `tests/test_phase12.py` for the Auto-Rename upgrade (source / group / ranges / movie-aware templates, tag cleaning, word rules, presets, manual mode prompts, caption placeholders, probing + frame thumbnails, history, queue cancel, `/rename` on the engine), and `tests/test_phase13.py` for the rich UI (small caps keep tokens and escape HTML, every screen valid in both renderings, rich HTML tag whitelist, rich-safe keyboards and their handlers, `SendRichMessage` / rich edits on the wire, classic fallback, group rendering, replacing refused rich edits). Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
 
 ## 🗂 Layout
 

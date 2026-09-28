@@ -95,6 +95,31 @@ def _progress(count: int) -> str:
     return "🟩" * done + "⬜" * (REFERRAL_TARGET - done) + f"  {done}/{REFERRAL_TARGET}"
 
 
+async def refer_doc(client, user_id: int):
+    """Refer & Earn as a rich screen (+ share / copy keyboard)."""
+    from core.rich import Doc, code
+    link = referral_link(await _username(client), user_id)
+    doc = await vdb.get_user(user_id) or {}
+    count, rewards = doc.get("referrals", 0), doc.get("referral_rewards", 0)
+    d = Doc("🤝", "Refer & earn", "invite friends – earn free Premium")
+    rows_ = []
+    if REFERRAL_TARGET > 0 and REFERRAL_REWARD_DAYS > 0:
+        rows_.append(("🎁 Reward", f"+{_label(REFERRAL_REWARD_DAYS)} Premium every {REFERRAL_TARGET} friends"))
+    rows_ += [("👥 Your referrals", count), ("🏆 Rewards earned", rewards)]
+    if _progress(count):
+        rows_.append(("📈 Next reward", _progress(count)))
+    d.table(rows_, header=("Item", "Value"))
+    d.h("🔗", "Your link")
+    d.text(code(link).html)
+    d.footer("A friend counts once they start the bot with your link.")
+    share = f"https://t.me/share/url?url={quote(link)}&text={quote(f'Try {BOT_NAME} – save restricted content, encode videos & more!')}"
+    kb = InlineKeyboardMarkup([
+        [Btn("📤 Share link", url=share), copy_button("📋 Copy link", link)],
+        [Btn("🏠 Home", callback_data="start_btn")],
+    ])
+    return d, kb
+
+
 async def refer_view(client, user_id: int):
     link = referral_link(await _username(client), user_id)
     doc = await vdb.get_user(user_id) or {}
@@ -114,15 +139,16 @@ async def refer_view(client, user_id: int):
 
 @Client.on_message(filters.command(["refer", "referral", "invite"]) & filters.private)
 async def refer_cmd(client: Client, message: Message):
-    text, kb = await refer_view(client, message.from_user.id)
-    await message.reply_text(text, reply_markup=kb, disable_web_page_preview=True)
+    from core import rich
+    doc, kb = await refer_doc(client, message.from_user.id)
+    await rich.reply(message, doc, reply_markup=kb)
 
 
 @Client.on_callback_query(filters.regex(r"^refer_btn$"))
 async def refer_btn(client: Client, query: CallbackQuery):
-    from core.ui import smart_edit
-    text, kb = await refer_view(client, query.from_user.id)
-    await smart_edit(query.message, text, kb)
+    from core import rich
+    doc, kb = await refer_doc(client, query.from_user.id)
+    await rich.edit(query.message, doc, kb)
     await query.answer()
 
 
