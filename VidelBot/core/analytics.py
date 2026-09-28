@@ -185,8 +185,9 @@ def chart_png(data: dict, keys, title: str, *, bars: str | None = None, width: i
     keys = [k for k in keys if k in data]
     series_ = [data[k] for k in keys] + ([data[bars]] if bars else [])
     peak = max([max(s) for s in series_ if s] + [1])
-    step = 10 ** max(0, len(str(int(peak))) - 1)
-    top_val = ((peak // step) + 1) * step
+    mag = 10 ** max(0, len(str(int(peak))) - 1)
+    tick = next(m * mag for m in (0.25, 0.5, 1, 2, 2.5, 5, 10) if m * mag * 4 >= peak and m * mag >= 1)
+    top_val = tick * 4                                        # 4 round grid steps (0 · 25 · 50 · 75 · 100)
     d.text((left, 22), title, font=f_title, fill=fg)
     for i in range(5):                                        # grid + y labels
         y = top + ph - ph * i / 4
