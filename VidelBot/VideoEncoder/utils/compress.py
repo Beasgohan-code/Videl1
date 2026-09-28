@@ -21,9 +21,22 @@ LEVELS = {"light": ("🟢", "Light"), "balanced": ("🟡", "Balanced"), "strong"
 CRF = {"h264": {"light": 23, "balanced": 26, "strong": 30}, "hevc": {"light": 25, "balanced": 28, "strong": 32}}
 PRESET = {"h264": "vf", "hevc": "sf"}
 AUDIO = ["128", "96", "64", "copy"]                    # AAC kbps (stereo) · copy = keep the original track(s)
-TARGETS = [0, 25, 50, 100, 200, 500, 1000]             # MB · 0 = off (quality mode)
+TARGETS = [0, 10, 25, 50, 100, 200, 500, 1000]         # MB · 0 = off (quality mode)
 FORMATS = ["MP4", "MKV"]
 DEFAULT = {"res": "720", "codec": "h264", "level": "balanced", "audio": "128", "target": 0, "fmt": "MP4"}
+
+# One-tap presets (row under the quality buttons).
+QUICK = {
+    "mobile": ("📱", "Mobile", {"res": "480", "codec": "h264", "level": "strong", "audio": "64", "target": 0, "fmt": "MP4"}),
+    "10": ("💬", "10 MB", {"res": "360", "codec": "h264", "level": "balanced", "audio": "64", "target": 10, "fmt": "MP4"}),
+    "25": ("📧", "25 MB", {"res": "480", "codec": "h264", "level": "balanced", "audio": "96", "target": 25, "fmt": "MP4"}),
+}
+MIN_VIDEO_KBPS = 150            # ffcmd.target_video_kbps never goes lower – below it a target can't be met
+LIGHT_KBPS = {1080: 1500, 720: 800, 480: 420, 360: 260, 240: 160}   # sources under this are already lean
+# Size watch: stop an encode that is heading for a file bigger than the source.
+WATCH_FROM = 0.15               # judge only after 15 % of the video (the first seconds are noisy)
+WATCH_MARGIN = 1.15             # …and only when it's clearly bigger (projected ≥ 115 % of the source)
+WATCH_TICKS = 2                 # two progress ticks in a row
 
 # Typical H.264 veryfast video bitrate at "balanced" (kbps) – only for the rough size estimate on the card.
 _BASE_KBPS = {1080: 2400, 720: 1200, 480: 620, 360: 380, 240: 230}
@@ -70,7 +83,9 @@ def parse_args(text: str) -> dict:
     out: dict = {}
     for w in (text or "").split()[1:]:
         lw = w.lower().strip(",")
-        if _ARG_RES.match(lw):
+        if lw in ("mobile", "phone"):
+            out.update(QUICK["mobile"][2])
+        elif _ARG_RES.match(lw):
             out["res"] = _ARG_RES.match(lw).group(1)
         elif lw in LEVELS:
             out["level"] = lw
@@ -138,20 +153,112 @@ def audio_kbps(opts: dict) -> int:
     return 160 if opts["audio"] == "copy" else int(opts["audio"])
 
 
-def estimate(opts: dict, meta: dict) -> int | None:
-    """Rough output size in bytes (None when Telegram gave no duration)."""
+def raw_estimate(opts: dict, meta: dict) -> int | None:
+    """Rough output size in bytes from typical bitrates, *not* capped at the source size."""
     opts = normalize(opts)
     dur = int((meta or {}).get("duration") or 0)
-    if opts["target"]:
-        return opts["target"] * 1024 * 1024
     if not dur:
         return None
     kbps = _BASE_KBPS.get(out_class(opts, meta), 700) * _LEVEL_X[opts["level"]]
     if opts["codec"] == "hevc":
         kbps *= _HEVC_X
-    total = (kbps + audio_kbps(opts)) * 1000 / 8 * dur
+    return int((kbps + audio_kbps(opts)) * 1000 / 8 * dur)
+
+
+def estimate(opts: dict, meta: dict) -> int | None:
+    """Rough output size in bytes (None when Telegram gave no duration)."""
+    opts = normalize(opts)
+    if opts["target"]:
+        return opts["target"] * 1024 * 1024
+    total = raw_estimate(opts, meta)
+    if total is None:
+        return None
     size = int((meta or {}).get("size") or 0)
     return int(min(total, size)) if size else int(total)
+
+
+def source_kbps(meta: dict) -> int:
+    meta = meta or {}
+    dur, size = int(meta.get("duration") or 0), int(meta.get("size") or 0)
+    return int(size * 8 / 1000 / dur) if dur and size else 0
+
+
+def min_target_mb(duration: float, a_kbps: int) -> int:
+    """Smallest target the encoder can actually hit for this length (its video bitrate floor + audio)."""
+    if not duration:
+        return 0
+    return int((MIN_VIDEO_KBPS + a_kbps) * duration / 8 / 1024 / 0.97) + 1
+
+
+def warnings(opts: dict, meta: dict) -> list:
+    """Problems worth knowing *before* spending minutes on an encode."""
+    opts = normalize(opts)
+    meta = meta or {}
+    out = []
+    dur = int(meta.get("duration") or 0)
+    if opts["target"] and dur:
+        need = min_target_mb(dur, audio_kbps(opts))
+        if opts["target"] < need:
+            out.append(f"{opts['target']} MB is too small for {_dur(dur)} – the smallest this can get is ≈ {need} MB")
+    if opts["target"] and meta.get("size") and opts["target"] * 1024 * 1024 >= meta["size"] * 0.97:
+        out.append(f"the file is already under {opts['target']} MB – quality mode will be used")
+    kbps, cls = source_kbps(meta), src_class(meta)
+    if not opts["target"] and kbps and cls and kbps < LIGHT_KBPS.get(cls, 0):
+        out.append(f"already light ({kbps} kbps) – pick 🔴 Strong or a lower quality to save much")
+    return out
+
+
+def apply_quick(opts: dict, name: str, meta: dict) -> tuple[dict, str]:
+    if name not in QUICK:
+        return normalize(opts), ""
+    ico, title, preset = QUICK[name]
+    o = normalize({**normalize(opts), **preset})
+    if not can_pick(o["res"], meta):
+        for r in RES:
+            if can_pick(r, meta):
+                o["res"] = r
+                break
+    return o, f"{ico} {title}"
+
+
+# ─────────────────────────── speed history / size watch ───────────────────────────
+def speed_key(opts: dict, height: int) -> str:
+    opts = normalize(opts)
+    return f"{opts['codec']}:{min(int(opts['res']), size_class(height) or int(opts['res']))}"
+
+
+def eta_seconds(opts: dict, meta: dict, speeds: dict | None) -> int | None:
+    """Encode time from this server's own history (× realtime per codec + output size)."""
+    dur = int((meta or {}).get("duration") or 0)
+    factor = (speeds or {}).get(speed_key(opts, src_class(meta)))
+    try:
+        factor = float(factor)
+    except (TypeError, ValueError):
+        return None
+    return int(dur / factor) if dur and factor > 0 else None
+
+
+def learn(speeds: dict, key: str, realtime: float, weight: float = 0.3) -> dict:
+    """Exponential average, so one odd file doesn't swing the estimate."""
+    out = dict(speeds or {})
+    if realtime and realtime > 0:
+        old = out.get(key)
+        out[key] = round(realtime if not old else old * (1 - weight) + realtime * weight, 3)
+    return out
+
+
+def projected_size(size_now: int, done_s: float, total_s: float) -> int | None:
+    if not size_now or not done_s or not total_s or done_s <= 0:
+        return None
+    return int(size_now * total_s / done_s)
+
+
+def watch_verdict(size_now: int, done_s: float, total_s: float, limit: int) -> bool:
+    """True when this tick says "will end up clearly bigger than the source"."""
+    if not limit or not total_s or done_s < total_s * WATCH_FROM:
+        return False
+    proj = projected_size(size_now, done_s, total_s)
+    return bool(proj and proj >= limit * WATCH_MARGIN)
 
 
 # ─────────────────────────── encoder override ───────────────────────────
@@ -206,7 +313,7 @@ def _dur(sec: int) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def panel_text(opts: dict, meta: dict) -> str:
+def panel_text(opts: dict, meta: dict, speeds: dict | None = None) -> str:
     opts = normalize(opts)
     meta = meta or {}
     facts = [f"📄 <code>{html.escape(str(meta.get('name') or 'video'))[:70]}</code>"]
@@ -239,8 +346,23 @@ def panel_text(opts: dict, meta: dict) -> str:
         src = int(meta.get("size") or 0)
         pct = f" <b>(−{(1 - est / src) * 100:.0f}%)</b>" if src and est < src else ""
         lines += ["", f"📉 <b>{sc('Estimate')}:</b> ≈ {_size(est)}{pct}"]
+        eta = eta_seconds(opts, meta, speeds)
+        if eta:
+            lines.append(f"⏱ <b>{sc('Encode time')}:</b> ≈ {_eta(eta)} <i>({sc('from this server')})</i>")
         lines.append(hint("a rough guess – busy, grainy scenes need more bits"))
+    warn = warnings(opts, meta)
+    if warn:
+        lines += [""] + [f"⚠️ <i>{html.escape(w)}</i>" for w in warn]
     return "\n".join(lines)
+
+
+def _eta(sec: int) -> str:
+    sec = max(1, int(sec))
+    if sec < 90:
+        return f"{sec} s"
+    if sec < 5400:
+        return f"{round(sec / 60)} min"
+    return f"{sec / 3600:.1f} h"
 
 
 def _mark(on: bool, text: str) -> str:
@@ -265,9 +387,16 @@ def keyboard(opts: dict, meta: dict):
     extra_row = [Btn(f"🔊 {audio}", callback_data="cmp:audio"),
                  Btn(f"🎞 {opts['fmt']}", callback_data="cmp:fmt"),
                  Btn(f"🎯 {target}", callback_data="cmp:target")]
-    return InlineKeyboardMarkup([res_row, codec_row, level_row, extra_row,
+    quick_row = [Btn(_mark(_is_quick(opts, k), f"{v[0]} {sc(v[1])}"), callback_data=f"cmp:quick:{k}")
+                 for k, v in QUICK.items()]
+    return InlineKeyboardMarkup([res_row, quick_row, codec_row, level_row, extra_row,
                                  [Btn(f"🚀 {sc('Start')}", callback_data="cmp:go"),
                                   Btn(f"✖️ {sc('Close')}", callback_data="cmp:close")]])
+
+
+def _is_quick(opts: dict, name: str) -> bool:
+    preset = QUICK[name][2]
+    return all(opts.get(k) == v for k, v in preset.items() if k != "res")
 
 
 def apply(opts: dict, action: str, value: str = "") -> tuple[dict, str]:
@@ -297,8 +426,10 @@ def apply(opts: dict, action: str, value: str = "") -> tuple[dict, str]:
 
 def queued_text(opts: dict, meta: dict) -> str:
     opts = normalize(opts)
-    return "\n".join([hdr("🗜", "Compressing", label(opts, int((meta or {}).get("height") or 0))),
-                      hint("getting your file ready…")])
+    lines = [hdr("🗜", "Compressing", label(opts, int((meta or {}).get("height") or 0))),
+             hint("getting your file ready…")]
+    lines += [f"⚠️ <i>{html.escape(w)}</i>" for w in warnings(opts, meta)]
+    return "\n".join(lines)
 
 
 def working_text(opts: dict, info: dict, notes: list) -> str:
@@ -330,7 +461,8 @@ def done_text(name: str, opts: dict, info: dict, old: int, new: int, elapsed: fl
     return "\n".join(lines)
 
 
-def bigger_text(opts: dict, old: int, new: int) -> str:
+def bigger_text(opts: dict, old: int, new: int, stopped_at: float | None = None) -> str:
+    """stopped_at: fraction done when the size watch stopped the encode early (new = projected size)."""
     opts = normalize(opts)
     tips = []
     if opts["level"] != "strong" and not opts["target"]:
@@ -339,8 +471,12 @@ def bigger_text(opts: dict, old: int, new: int) -> str:
         tips.append(f"a lower resolution than {opts['res']}p")
     if opts["codec"] == "h264":
         tips.append("📦 H.265")
-    return "\n".join([hdr("🟰", "Already compact"), "",
-                      row("Source", _size(old)), row("Result", f"{_size(new)} – {sc('not smaller')}"), "",
+    result = (f"≈ {_size(new)} – {sc('heading bigger')}" if stopped_at is not None
+              else f"{_size(new)} – {sc('not smaller')}")
+    rows_ = [row("Source", _size(old)), row("Result", result)]
+    if stopped_at is not None:
+        rows_.append(row("Stopped at", f"{stopped_at * 100:.0f}% – {sc('the rest of the time was saved')}"))
+    return "\n".join([hdr("🟰", "Already compact"), ""] + rows_ + ["",
                       hint("the file is already well compressed, so nothing was sent.")
                       + ("\n" + hint("try: ") + html.escape(" · ".join(tips)) if tips else "")])
 
@@ -353,6 +489,7 @@ def usage_text() -> str:
             f"2️⃣ {sc('Pick')} <b>1080p · 720p · 480p · 360p</b>, {sc('codec, level, audio, target')}",
             f"3️⃣ {sc('Tap')} 🚀 {sc('Start')}"])), "",
         f"<b>⚡ {sc('One-shot')}</b> <i>({sc('skips the buttons')})</i>",
-        "<code>/compress 480</code>\n<code>/compress 720 strong hevc</code>\n<code>/compress 360 50mb</code>", "",
+        "<code>/compress 480</code>\n<code>/compress 720 strong hevc</code>\n<code>/compress 360 50mb</code>\n"
+        "<code>/compress mobile</code>", "",
         hint("your last choice is remembered for next time."),
     ])

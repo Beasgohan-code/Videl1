@@ -256,7 +256,8 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
             jobs.attach(msg.id, proc)
             try:
                 await handle_progress(proc, msg, message, filepath, progress_file=progress, total_time=total,
-                                      settings=settings, info=info, stage=f"{stage} · {where}")
+                                      settings=settings, info=info, stage=f"{stage} · {where}",
+                                      watch=None if pass_no == 1 or sample else opts.get("watch"))
                 await proc.wait()
             except BaseException:
                 if proc.returncode is None:
@@ -616,14 +617,20 @@ def progress_text(name, elapsed_media, total_time, speed, fps, size_now, wall, s
     return "\n".join(lines)
 
 
+SIZE_WATCH: dict = {}          # msg id → (projected bytes, fraction done) when the size watch stopped an encode
+
+
 async def handle_progress(proc, msg, message, filepath, progress_file=None, total_time=None, settings=None,
-                          info=None, stage="Encoding"):
+                          info=None, stage="Encoding", watch: int | None = None):
+    """watch: byte limit – if the output is clearly heading past it (utils.compress.watch_verdict on two ticks
+    in a row), ffmpeg is stopped early and SIZE_WATCH[msg.id] says why. Saves the rest of a pointless encode."""
     name = os.path.basename(filepath)
     started = time.time()
     progress_file = progress_file or (download_dir + 'process.txt')
     LOGGER.info("ffmpeg_process: " + str(getattr(proc, "pid", "?")))
     last_stats = None
     probed = total_time is not None
+    strikes = 0
     # One waiter for the whole encode: a tick ends early the moment ffmpeg exits, instead of the next
     # stage starting up to 5 s late (twice for 2-pass). Test doubles without wait() fall back to sleep.
     waiter = asyncio.ensure_future(proc.wait()) if asyncio.iscoroutinefunction(getattr(proc, "wait", None)) else None
@@ -643,6 +650,21 @@ async def handle_progress(proc, msg, message, filepath, progress_file=None, tota
             state = re.findall(r"progress=(\w+)", text)
             if state and state[-1] == "end":
                 break
+            if watch and total_time:
+                from .compress import WATCH_TICKS, projected_size, watch_verdict
+                done = (_last(r"out_time_(?:ms|us)=(\d+)", text, int) or 0) / 1000000
+                size_now = _last(r"total_size=(\d+)", text, int) or 0
+                strikes = strikes + 1 if watch_verdict(size_now, done, total_time, watch) else 0
+                if strikes >= WATCH_TICKS:
+                    SIZE_WATCH[getattr(msg, "id", None)] = (projected_size(size_now, done, total_time),
+                                                            done / total_time)
+                    LOGGER.info(f"size watch: {name} heading for {SIZE_WATCH[getattr(msg, 'id', None)][0]} bytes "
+                                f"> {watch} – stopped at {done / total_time:.0%}")
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    break
             stats = await _progress_stats(text, name, total_time, probed, filepath, started, settings, stage)
             if stats is None:
                 continue

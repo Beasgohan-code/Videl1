@@ -214,7 +214,7 @@ def test_apply_cycles():
     o, t = C.apply(o, "res", "360")
     assert o["res"] == "360" and "360p" in t
     o, _ = C.apply(o, "target")
-    assert o["target"] == 25
+    assert o["target"] == 10                                              # Phase 20 added a 10 MB step
     o, _ = C.apply(o, "level", "strong")
     assert o["level"] == "strong" and o["target"] == 0                   # a level switches target mode off
     seen = []
@@ -313,7 +313,7 @@ def test_panel_flow_select_and_start(cmp, monkeypatch):
     assert q.answers[-1][1] and "720p" in q.answers[-1][0]              # upscale refused with an alert
     _tap("cmp:codec:hevc", panel)
     _tap("cmp:target", panel)
-    assert P._panels[key]["opts"]["codec"] == "hevc" and P._panels[key]["opts"]["target"] == 25
+    assert P._panels[key]["opts"]["codec"] == "hevc" and P._panels[key]["opts"]["target"] == 10
     q = _tap("cmp:go", panel)
     assert key not in P._panels and len(spawned) == 1
     run(spawned[0])

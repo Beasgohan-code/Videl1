@@ -5,6 +5,11 @@
                             audio, MP4 / MKV, target size → 🚀 Start
   /compress 480 strong      one-shot: starts right away, no buttons
   /compress 360 50mb hevc
+  quick row: 📱 Mobile · 💬 10 MB · 📧 25 MB (one tap)
+
+Before starting, the card warns when a target can't be reached for the video's length or the file is already lean,
+and shows an encode-time estimate learned from this server's own past compressions. During the encode a size
+watch stops it early if it's heading for a file bigger than the source (utils.compress.watch_verdict).
 
 The panel turns into the task's live status card (no extra messages). The last choice is remembered per user.
 Resolutions above the source are locked (an upscale is bigger, never better).
@@ -83,10 +88,12 @@ async def compress_cmd(app, message):
         return await _enqueue(message, "compress", opts, card=card)
     opts = _fit(opts, meta)
     _prune()
-    panel = await message.reply(C.panel_text(opts, meta), reply_markup=C.keyboard(opts, meta))
+    from ..utils.tasks import compress_speeds
+    speeds = await compress_speeds()
+    panel = await message.reply(C.panel_text(opts, meta, speeds), reply_markup=C.keyboard(opts, meta))
     if panel is not None:
         _panels[(message.chat.id, panel.id)] = {"uid": uid, "cmd": message, "opts": opts, "meta": meta,
-                                                "ts": time.time()}
+                                                "speeds": speeds, "ts": time.time()}
 
 
 @Client.on_callback_query(filters.regex(r"^cmp:"))
@@ -125,7 +132,10 @@ async def compress_cb(app, query: CallbackQuery):
         spawn(_enqueue(st["cmd"], "compress", opts, card=query.message), name="compress")
         return None
 
-    opts, toast = C.apply(st["opts"], action, value)
+    if action == "quick":
+        opts, toast = C.apply_quick(st["opts"], value, st["meta"])
+    else:
+        opts, toast = C.apply(st["opts"], action, value)
     if action == "res" and not C.can_pick(opts["res"], st["meta"]):
         return await query.answer("🔒 That would be an upscale.", show_alert=True)
     changed = opts != st["opts"]
@@ -133,6 +143,7 @@ async def compress_cb(app, query: CallbackQuery):
     await query.answer(toast or None)
     if changed:
         try:
-            await query.message.edit(C.panel_text(opts, st["meta"]), reply_markup=C.keyboard(opts, st["meta"]))
+            await query.message.edit(C.panel_text(opts, st["meta"], st.get("speeds")),
+                                     reply_markup=C.keyboard(opts, st["meta"]))
         except MessageNotModified:
             pass

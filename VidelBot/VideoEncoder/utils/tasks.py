@@ -722,7 +722,7 @@ async def leech_task(message, msg):
 async def compress_task(message, msg):
     """/compress – download (or source-cache hit) → one fast encode with the chosen quality → upload."""
     from . import compress, scheduler
-    from .encoding import LAST_ERROR, Encoded, encode, probe
+    from .encoding import LAST_ERROR, SIZE_WATCH, Encoded, encode, probe
     from .helper import _done_markup, _remove, _safe_edit
     from .uploads import upload_worker
     opts = compress.normalize(scheduler.extra_of(message))
@@ -737,7 +737,14 @@ async def compress_task(message, msg):
     src_size = os.path.getsize(src)
     override, notes = compress.override(opts, info, src_size)
     await _safe_edit(msg, compress.working_text(opts, info, notes))
-    result = await encode(src, message, msg, opts={"override": override, "info": info})
+    result = await encode(src, message, msg, opts={"override": override, "info": info, "watch": src_size})
+    watched = SIZE_WATCH.pop(msg.id, None)
+    if watched and not result:                        # stopped early: it was heading for a bigger file
+        LAST_ERROR.pop(msg.id, None)
+        await _safe_edit(msg, compress.bigger_text(opts, src_size, watched[0] or src_size, stopped_at=watched[1]),
+                         _done_markup(None))
+        _remove(src)
+        return
     if not result:
         from . import jobs
         if not (jobs.is_cancelled(msg.id) or getattr(msg, "_videl_cancelled", False)):
@@ -776,6 +783,9 @@ async def compress_task(message, msg):
         return
     await _safe_edit(msg, compress.done_text(os.path.basename(final), opts, info, src_size, new_size,
                                              result.elapsed or 0.0, notes), _done_markup(link))
+    if info.get("duration") and result.elapsed:
+        await compress_learn(compress.speed_key(opts, int(info.get("height") or 0)),
+                             float(info["duration"]) / float(result.elapsed))
     try:
         await db.add_encode_stat(message.from_user.id, src_size, new_size, result.elapsed)
         from core.analytics import bump_later
@@ -783,3 +793,26 @@ async def compress_task(message, msg):
     except Exception:
         pass
     _remove(result, src)
+
+
+CMP_SPEED_ID = "cmp_speed"
+
+
+async def compress_speeds() -> dict:
+    """This server's measured /compress speed (× realtime) per codec + output size – for the panel's ETA."""
+    try:
+        from core.db import vdb
+        doc = await vdb.db["runtime"].find_one({"_id": CMP_SPEED_ID}) or {}
+        return dict(doc.get("speeds") or {})
+    except Exception:
+        return {}
+
+
+async def compress_learn(key: str, realtime: float):
+    try:
+        from core.db import vdb
+        from . import compress
+        speeds = compress.learn(await compress_speeds(), key, realtime)
+        await vdb.db["runtime"].update_one({"_id": CMP_SPEED_ID}, {"$set": {"speeds": speeds}}, upsert=True)
+    except Exception as e:
+        LOGGER.debug(f"compress speed not saved: {e}")
