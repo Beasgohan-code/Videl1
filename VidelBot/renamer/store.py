@@ -1,8 +1,9 @@
 """
 Auto-Rename storage (lives in the core Videl database).
 
-  rename_users      {_id: uid, template, auto, media, mkv, meta_on, meta{…}, count, first_name, username, last_ts}
-  rename_log        {user, ts}                    – one row per rename (time-based leaderboards)
+  rename_users      {_id: uid, template, auto, mode, clean, words[[old, new]…], media, mkv, meta_on, meta{…},
+                     count, first_name, username, last_ts}
+  rename_log        {user, ts, name, old}         – one row per rename (leaderboards + recent history)
   rename_verify     {_id: uid, token, token_at, shortener, verified_at}
   rename_verify_log {user, ts, shortener}         – verification statistics
 
@@ -18,6 +19,16 @@ META_FIELDS = ("title", "author", "artist", "audio", "subtitle", "video", "encod
 META_LABELS = {"title": "Title", "author": "Author", "artist": "Artist", "audio": "Audio",
                "subtitle": "Subtitle", "video": "Video", "encoded_by": "Encoded by", "custom_tag": "Custom tag"}
 MEDIA_TYPES = ("document", "video", "audio")
+MODES = ("auto", "manual")       # auto = template, manual = ask for a name per file
+MAX_WORD_RULES = 30
+
+# One-tap template presets (key → (label, template, turn tag-cleaning on))
+PRESETS = {
+    "anime": ("🎌 Anime", "[S{season}-E{episode}] {title} [{quality}] [{audio}]", False),
+    "series": ("📺 Series", "{title} S{season}E{episode} {quality} {source}", False),
+    "movie": ("🎬 Movie", "{title} ({year}) {quality} {source} {audio}", False),
+    "clean": ("🧹 Keep name, strip tags", "{filename}", True),
+}
 
 _cache: dict[int, tuple[float, dict]] = {}
 CACHE_TTL = 60
@@ -104,15 +115,27 @@ async def set_meta(uid: int, field: str, value):
         await unset(uid, f"meta.{field}")
 
 
-async def record_rename(user, new_name: str = ""):
+async def record_rename(user, new_name: str = "", old_name: str = ""):
     now = naive_now()
     await _users().update_one(
         {"_id": user.id},
         {"$inc": {"count": 1}, "$set": {"last_ts": now, "first_name": (user.first_name or "")[:64],
                                         "username": user.username or ""}},
         upsert=True)
-    await _log().insert_one({"user": user.id, "ts": now})
+    row = {"user": user.id, "ts": now}
+    if new_name:
+        row.update(name=new_name[:200], old=(old_name or "")[:200])
+    await _log().insert_one(row)
     _cache.pop(user.id, None)
+
+
+async def recent(uid: int, limit: int = 10) -> list:
+    """Latest renames of one user (newest first) – rows written before names were logged are skipped."""
+    try:
+        cur = _log().find({"user": uid, "name": {"$exists": True}}).sort("ts", -1).limit(limit)
+        return await cur.to_list(limit)
+    except Exception:
+        return []
 
 
 async def total_renames() -> int:

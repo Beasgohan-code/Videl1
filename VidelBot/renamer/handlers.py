@@ -2,7 +2,9 @@
 ✏️ Auto-Rename (full feature set of the Auto-Rename bot, rebuilt for Videl):
 
   /autorename <template>   save a template → every file you send is renamed automatically
-  /autorename              settings panel (pause · media type · MP4→MKV · metadata · thumbnail …)
+  /autorename              settings panel (mode · pause · clean tags · word rules · media type · MP4→MKV ·
+                           metadata · thumbnail · history · queue)
+  ✍️ Manual mode            every file asks for a new name (💡 suggestion / 📄 keep name / send-as buttons)
   /setmedia                send as document / video / audio / auto
   /metadata  /settitle …   ffmpeg metadata (title, author, artist, audio, subtitle, video, encoded_by, custom_tag)
   /start_sequence  /end_sequence   collect files → sent back sorted by season / episode / quality
@@ -11,7 +13,8 @@
   /tutorial                placeholders & examples
   /renameset (admins)      global switch · anti-NSFW · dump channel · verification
 
-Captions and thumbnails are shared with the saver (/set_caption {filename} {filesize} {duration}, /set_thumb).
+Captions and thumbnails are shared with the saver (/set_caption {filename} {size} {duration} {title}
+{episode} {quality} … , /set_thumb).
 Ban / maintenance / force-sub are enforced by the core middleware (groups -3 / -2).
 """
 import asyncio
@@ -39,6 +42,8 @@ SAMPLE = "[SubsPlease] Solo Leveling S02E05 (1080p) [Dual Audio Hindi Jap] x265.
 _state: dict[int, dict] = {}                 # uid -> {"kind": template|meta|thumb|dump, "field": …, "ts": …}
 _sequences: dict[int, list] = {}             # uid -> [Message, …]
 _seq_notes: dict[int, list] = {}             # uid -> reply ids to clean up
+_prompts: dict[int, dict] = {}               # uid -> {file msg id: {"msg", "ts", "send_as", "sugg", "prompt"}}
+MAX_PROMPTS = 20
 _indexes_ready = False
 
 
@@ -58,9 +63,30 @@ def _get_state(uid: int):
     return st
 
 
+def _live_prompts(uid: int) -> dict:
+    """Pending manual-mode name prompts of one user (expired ones dropped)."""
+    box = _prompts.get(uid)
+    if not box:
+        return {}
+    ttl = _state_ttl() * 2
+    for pid in [p for p, e in box.items() if time.time() - e["ts"] > ttl]:
+        box.pop(pid, None)
+    if not box:
+        _prompts.pop(uid, None)
+    return box or {}
+
+
+def prune_prompts():
+    """Watchdog hook: forget expired prompts of every user."""
+    for uid in list(_prompts):
+        _live_prompts(uid)
+
+
 def clear_user(uid: int) -> list:
     """Used by /cancel – returns what was cancelled."""
     done = []
+    if _prompts.pop(uid, None):
+        done.append("rename prompts")
     if _state.pop(uid, None) or verify._input.pop(uid, None):
         done.append("rename input")
     if _sequences.pop(uid, None) is not None:
@@ -102,10 +128,33 @@ async def _auto_filter(_, __, message: Message) -> bool:
     if not await _enabled():
         return False
     s = await store.get(uid)
-    return bool(s.get("template")) and s.get("auto", True)
+    if not s.get("auto", True):
+        return False
+    return s.get("mode") == "manual" or bool(s.get("template"))
 
 
 auto_filter = filters.create(_auto_filter)
+
+
+_LINKISH = ("http://", "https://", "t.me/", "telegram.me/", "tg://")
+
+
+def _prompt_for(message: Message):
+    """The manual-mode prompt a text message answers: a reply to it, or the only one pending."""
+    user = message.from_user
+    box = _live_prompts(user.id) if user else {}
+    text = (message.text or "").strip()
+    if not box or not text or text.startswith("/"):
+        return None
+    reply = getattr(message, "reply_to_message", None)
+    rid = getattr(reply, "id", None) if reply else None
+    if rid is not None:
+        for key, entry in box.items():
+            if rid == key or rid == getattr(entry.get("prompt"), "id", None):
+                return key
+    if len(box) == 1 and "\n" not in text and not any(k in text.lower() for k in _LINKISH):
+        return next(iter(box))
+    return None
 
 
 def _input_filter_fn(_, __, message: Message) -> bool:
@@ -114,7 +163,7 @@ def _input_filter_fn(_, __, message: Message) -> bool:
         return False
     if (message.text or "").startswith("/"):
         return False
-    return bool(_get_state(user.id)) or user.id in verify._input
+    return bool(_get_state(user.id)) or user.id in verify._input or _prompt_for(message) is not None
 
 
 input_filter = filters.create(_input_filter_fn)
@@ -125,40 +174,121 @@ def _media_label(pref) -> str:
     return {"document": "📄 Document", "video": "🎥 Video", "audio": "🎵 Audio"}.get(pref, "🤖 Auto")
 
 
+def _mode_label(mode) -> str:
+    return "✍️ Manual" if mode == "manual" else "🤖 Auto"
+
+
+def preview_name(s: dict, name: str = SAMPLE) -> str:
+    """What the user's current settings turn `name` into (template, clean tags, word rules, MKV)."""
+    tpl = s.get("template")
+    if tpl:
+        return extract.new_filename(tpl, name, s.get("mkv", True), clean=s.get("clean", False),
+                                    words=s.get("words"))
+    return extract.prepare_source(name, s.get("clean", False), s.get("words"))
+
+
 async def panel_view(uid: int):
     s = await store.get(uid)
     tpl = s.get("template")
-    if not tpl:
+    manual = s.get("mode") == "manual"
+    if not tpl and not manual:
         status = "⚪ Not set up"
     elif not await _enabled():
         status = "⛔ Disabled by the admin"
     else:
         status = "🟢 Active" if s.get("auto", True) else "⏸ Paused"
     meta_on = s.get("meta_on", False)
+    words = s.get("words") or []
+    busy = engine.pending(uid)
+    mode_line = "✍️ Manual – I ask for a name for every file" if manual else "🤖 Auto – renamed with your template"
     text = (
         "<b>✏️ Auto-Rename</b>\n\n"
         f"<b>Status:</b> {status}\n"
+        f"<b>Mode:</b> {mode_line}\n"
         f"<b>Template:</b> <code>{esc(tpl) if tpl else 'not set – tap ✏️ Set template'}</code>\n"
         f"<b>Send as:</b> {_media_label(s.get('media'))}\n"
         f"<b>MP4 → MKV:</b> {'✅' if s.get('mkv', True) else '❌'} · <b>Metadata:</b> {'✅' if meta_on else '❌'}\n"
+        f"<b>Clean tags:</b> {'✅' if s.get('clean') else '❌'} · <b>Word rules:</b> {len(words)}\n"
         f"<b>Renamed so far:</b> {s.get('count', 0)}\n"
     )
+    if busy:
+        text += f"<b>Queue:</b> ⏳ {busy} file(s) in progress\n"
     if tpl:
-        text += f"\n<b>👁 Example:</b>\n<code>{esc(SAMPLE)}</code>\n➜ <code>{esc(extract.new_filename(tpl, SAMPLE, s.get('mkv', True)))}</code>"
+        text += f"\n<b>👁 Example:</b>\n<code>{esc(SAMPLE)}</code>\n➜ <code>{esc(preview_name(s))}</code>"
+    elif manual:
+        text += "\n<i>Send any file and I'll ask what to call it. Set a template to get a 💡 one-tap suggestion.</i>"
     else:
         text += "\n<i>Example:</i> <code>/autorename {title} S{season}E{episode} [{quality}] [{audio}]</code>"
-    pause = [Btn("⏸ Pause" if s.get("auto", True) else "▶️ Resume", callback_data="rn:auto"),
-             Btn("🗑 Delete template", callback_data="rn:del")] if tpl else []
+    pause = []
+    if tpl or manual:
+        pause.append(Btn("⏸ Pause" if s.get("auto", True) else "▶️ Resume", callback_data="rn:auto"))
+    if tpl:
+        pause.append(Btn("🗑 Delete template", callback_data="rn:del"))
     kb = [
         [Btn("✏️ Set template", callback_data="rn:tpl"), Btn("📖 Placeholders", callback_data="rn:help")],
         pause,
+        [Btn(f"Mode: {_mode_label(s.get('mode'))}", callback_data="rn:mode"),
+         Btn(f"🧹 Clean tags {'✅' if s.get('clean') else '❌'}", callback_data="rn:clean")],
+        [Btn(f"🔁 Word rules ({len(words)})", callback_data="rn:words"), Btn("🕘 History", callback_data="rn:hist")],
         [Btn(f"📦 {_media_label(s.get('media'))}", callback_data="rn:media"),
          Btn(f"🎞 MP4→MKV {'✅' if s.get('mkv', True) else '❌'}", callback_data="rn:mkv")],
         [Btn("🏷 Metadata", callback_data="rn:meta"), Btn("🖼 Thumbnail & caption", callback_data="rn:thumb")],
         [Btn("📋 Sequence", callback_data="rn:seq"), Btn("🏆 Leaderboard", callback_data="rnlb:all")],
+        [Btn(f"⏹ Cancel queue ({busy})", callback_data="rn:cq")] if busy else [],
         [Btn("❌ Close", callback_data="close_btn")],
     ]
     return text, InlineKeyboardMarkup([r for r in kb if r])
+
+
+def template_prompt():
+    presets = [Btn(label, callback_data=f"rn:pre:{key}") for key, (label, _t, _c) in store.PRESETS.items()]
+    text = ("<b>✏️ Send your new template</b>\n\nExample:\n"
+            "<code>{title} S{season}E{episode} [{quality}] [{audio}]</code>\n\n"
+            "<b>Or pick a preset:</b>\n<blockquote>"
+            + "\n".join(f"{label} – <code>{esc(t)}</code>" for label, t, _c in store.PRESETS.values())
+            + "</blockquote>\n<i>/cancel to abort</i>")
+    kb = [presets[:2], presets[2:], [Btn("📖 Placeholders", callback_data="rn:help"),
+                                     Btn("‹ Back", callback_data="rn:home")]]
+    return text, InlineKeyboardMarkup(kb)
+
+
+async def words_view(uid: int):
+    s = await store.get(uid)
+    rules = s.get("words") or []
+    lines = ["<b>🔁 Word rules</b>\n",
+             "<i>Applied to the original name before renaming – remove spam words or fix spellings.</i>\n"]
+    if rules:
+        body = "\n".join(f"• <code>{esc(o)}</code> ➜ " + (f"<code>{esc(n)}</code>" if n else "<i>removed</i>")
+                         for o, n in rules)
+        lines.append(f"<blockquote expandable>{body}</blockquote>")
+    else:
+        lines.append("<i>No rules yet.</i>")
+    lines.append(f"\n<b>👁 Example:</b>\n<code>{esc(SAMPLE)}</code>\n➜ <code>{esc(preview_name(s))}</code>")
+    kb = [[Btn("✏️ Set rules", callback_data="rn:wset")] +
+          ([Btn("🗑 Clear all", callback_data="rn:wclr")] if rules else []),
+          [Btn("‹ Back", callback_data="rn:home")]]
+    return "\n".join(lines), InlineKeyboardMarkup(kb)
+
+
+WORDS_HELP = ("<b>🔁 Send your word rules</b> – one per line:\n\n"
+              "<blockquote><code>HQ</code> – remove the word\n"
+              "<code>[ESub] =&gt; ESubs</code> – replace\n"
+              "<code>Tamil Dubbed | Tamil</code> – replace</blockquote>\n"
+              f"<i>Up to {store.MAX_WORD_RULES} rules, not case-sensitive. The new list replaces the old one. "
+              "/cancel to abort</i>")
+
+
+async def history_view(uid: int):
+    rows = await store.recent(uid, 10)
+    lines = ["<b>🕘 Your last renames</b>\n"]
+    if not rows:
+        lines.append("<i>Nothing yet – renamed files will show up here.</i>")
+    for r in rows:
+        ts = store.aware(r.get("ts"))
+        when = ts.strftime("%d %b · %H:%M UTC") if ts else ""
+        lines.append(f"• <code>{esc(r.get('name'))}</code>\n   <i>{esc(when)} · from</i> "
+                     f"<code>{esc((r.get('old') or '—')[:80])}</code>")
+    return "\n".join(lines), InlineKeyboardMarkup([[Btn("‹ Back", callback_data="rn:home")]])
 
 
 TUTORIAL = (
@@ -166,12 +296,19 @@ TUTORIAL = (
     "1️⃣ Save a template:\n<code>/autorename {title} S{season}E{episode} [{quality}] [{audio}]</code>\n"
     "2️⃣ Send (or forward) your files – they come back renamed.\n\n"
     "<b>Placeholders</b> (read from the original file name):\n"
-    "<blockquote>{title} – series / movie name\n{season} – 01, 02 …\n{episode} – 01, 02 …\n"
-    "{quality} – 480p · 720p · 1080p · 4K · WEB-DL …\n{audio} – Dual · Multi · Hindi · Jap · AAC …\n"
-    "{year} – 2024\n{codec} – x264 · x265 · HEVC\n{filename} – the original name</blockquote>\n"
+    "<blockquote>{title} – series / movie name\n{season} – 01, 02 …\n{episode} – 01, 02 … (01-03 for multi-episode files)\n"
+    "{quality} – 480p · 720p · 1080p · 4K …\n{source} – WEB-DL · BluRay · HDRip …\n"
+    "{audio} – Dual · Multi · Hindi · Jap · AAC …\n{year} – 2024\n{codec} – x264 · x265 · HEVC\n"
+    "{group} – release group (SubsPlease, YTS …)\n{size} – file size\n{filename} – the original name</blockquote>\n"
+    "<b>Movie-aware:</b> files without a season and episode drop the S··E·· part automatically.\n"
     "<b>Classic style also works:</b>\n<code>[SSeason] [EPEpisode] [Quality] [Audio] Your Channel</code>\n\n"
-    "<b>Extras</b>\n<blockquote>/setmedia – document · video · audio\n/metadata – title, author, audio / subtitle titles …\n"
-    "/set_caption – {filename} {filesize} {duration}\n/set_thumb – reply to a photo\n"
+    "<b>Modes</b>\n<blockquote>🤖 Auto – every file is renamed with your template\n"
+    "✍️ Manual – I ask for a name for each file (💡 suggestion · 📄 keep name)\n"
+    "/rename New Name – reply to any file for a one-off rename</blockquote>\n"
+    "<b>Extras</b>\n<blockquote>🧹 Clean tags – strips @channels, links &amp; site names\n"
+    "🔁 Word rules – remove / replace words\n/setmedia – document · video · audio\n"
+    "/metadata – title, author, audio / subtitle titles …\n"
+    "/set_caption – {filename} {size} {duration} {title} {episode} {quality} …\n/set_thumb – reply to a photo\n"
     "/start_sequence → send files → /end_sequence – sorted episodes\n/testrename name.mkv – preview only\n"
     "/leaderboard – top renamers · /cancel – stop the queue</blockquote>"
 )
@@ -217,7 +354,8 @@ async def thumb_view(uid: int):
     text = ("<b>🖼 Thumbnail &amp; caption</b>\n\n"
             f"<b>Thumbnail:</b> {'🟢 custom' if thumb else '⚪ the file’s own'}\n"
             f"<b>Caption:</b> <code>{esc(caption) if caption else 'default (new file name)'}</code>\n\n"
-            "<i>Caption placeholders: {filename} {filesize} {duration}\n"
+            "<i>Caption placeholders: {filename} {size} {duration} {title} {season} {episode} {quality} "
+            "{audio} {year} {source} {original}\nNo thumbnail? Videos get a frame from the file automatically.\n"
             "Set a caption with</i> <code>/set_caption 📁 {filename} | 💾 {filesize}</code>")
     kb = [[Btn("🖼 Set thumbnail", callback_data="rn:tset")]]
     if thumb:
@@ -294,7 +432,7 @@ async def autorename_cmd(client: Client, message: Message):
     if message.command[0].lower() in ("autorename", "auto_rename") and len(parts) > 1 and parts[1].strip():
         template = parts[1].strip()[:200]
         await store.set_template(uid, template)
-        preview = extract.new_filename(template, SAMPLE, (await store.get(uid)).get("mkv", True))
+        preview = preview_name(await store.get(uid))
         return await message.reply_text(
             "🌟 <b>Template saved – you're ready to auto-rename!</b>\n\n"
             f"<b>Template:</b> <code>{esc(template)}</code>\n\n<b>👁 Example:</b>\n<code>{esc(SAMPLE)}</code>\n"
@@ -401,9 +539,14 @@ async def testrename_cmd(client: Client, message: Message):
     if not name:
         return await message.reply_text("<b>Usage:</b> <code>/testrename Some.Show.S01E02.1080p.mkv</code>\n"
                                         "<i>or reply to a file with /testrename</i>")
-    info = extract.parse(name)
-    new = extract.new_filename(tpl, name, s.get("mkv", True))
-    detected = "\n".join(f"• {k}: <code>{esc(v)}</code>" for k, v in info.items() if v not in (None, ""))
+    src = extract.prepare_source(name, s.get("clean", False), s.get("words"))
+    info = extract.parse(src)
+    new = preview_name(s, name)
+    labels = {"episode_end": "last episode"}
+    detected = "\n".join(f"• {labels.get(k, k)}: <code>{esc(v)}</code>" for k, v in info.items()
+                         if v not in (None, ""))
+    if src != name:
+        detected = f"• cleaned: <code>{esc(src)}</code>\n" + detected
     await message.reply_text(f"<b>👁 Rename preview</b>\n\n<code>{esc(name)}</code>\n➜ <code>{esc(new)}</code>\n\n"
                              f"<b>Detected</b>\n{detected or '—'}")
 
@@ -461,12 +604,73 @@ async def incoming_file(client: Client, message: Message):
         return
     if not await verify.gate(client, message):
         return
-    pos = await engine.submit(client, message)
+    s = await store.get(uid)
+    if s.get("mode") == "manual":
+        return await ask_name(message, s)
+    await _queue(client, message)
+
+
+async def _queue(client, message: Message, name: str = "", send_as: str = "", user=None):
+    extra = {k: v for k, v in (("name", name), ("send_as", send_as), ("user", user)) if v}
+    pos = await engine.submit(client, message, **extra)
     if not pos:
         return await message.reply_text(f"⏳ Your queue is full ({engine.QUEUE_LIMIT} files). "
                                         "Wait for it to finish or /cancel.", quote=True)
     if pos > 1:
         await message.reply_text(f"🕒 Queued – position <b>#{pos}</b>.", quote=True)
+    return pos
+
+
+# ─────────────────────────── manual mode ───────────────────────────
+def _prompt_kb(pid: int, entry: dict) -> InlineKeyboardMarkup:
+    cur = entry.get("send_as") or ""
+    types = [Btn(label + (" ✅" if cur == key else ""), callback_data=f"rnm:t:{pid}:{key}")
+             for key, label in (("document", "📄 Doc"), ("video", "🎥 Video"), ("audio", "🎵 Audio"))]
+    row = [Btn("💡 Use suggestion", callback_data=f"rnm:use:{pid}")] if entry.get("sugg") else []
+    row.append(Btn("↩️ Keep name", callback_data=f"rnm:keep:{pid}"))
+    return InlineKeyboardMarkup([row, types, [Btn("❌ Skip", callback_data=f"rnm:x:{pid}")]])
+
+
+def _prompt_text(entry: dict) -> str:
+    old = engine.original_name(entry["msg"])
+    text = f"✍️ <b>Send the new name for:</b>\n<code>{esc(old)}</code>\n"
+    if entry.get("sugg"):
+        text += f"\n💡 <b>Suggestion:</b>\n<code>{esc(entry['sugg'])}</code>\n"
+    send_as = entry.get("send_as")
+    text += (f"\n<b>Send as:</b> {_media_label(send_as) if send_as else 'your default'}\n"
+             "<i>Reply to this message with the name – the extension is kept automatically.</i>")
+    return text
+
+
+async def ask_name(message: Message, s: dict):
+    uid = message.from_user.id
+    box = _live_prompts(uid)
+    if len(box) >= MAX_PROMPTS:
+        return await message.reply_text(f"⏳ {MAX_PROMPTS} files are already waiting for a name – answer those first "
+                                        "or /cancel.", quote=True)
+    old = engine.original_name(message)
+    sugg = preview_name(s, old) if (s.get("template") or s.get("clean") or s.get("words")) else ""
+    if sugg == old:
+        sugg = ""
+    entry = {"msg": message, "ts": time.time(), "send_as": "", "sugg": sugg}
+    _prompts.setdefault(uid, {})[message.id] = entry
+    entry["prompt"] = await message.reply_text(_prompt_text(entry), quote=True,
+                                               reply_markup=_prompt_kb(message.id, entry))
+
+
+async def _finish_prompt(client, uid: int, pid: int, name: str, user=None):
+    entry = _live_prompts(uid).pop(pid, None)
+    if not entry:
+        return None
+    if not _prompts.get(uid):
+        _prompts.pop(uid, None)
+    prompt = entry.get("prompt")
+    if prompt:
+        try:
+            await prompt.delete()
+        except Exception:
+            pass
+    return await _queue(client, entry["msg"], name=name, send_as=entry.get("send_as", ""), user=user)
 
 
 # ─────────────────────────── text / photo input (group -1) ───────────────────────────
@@ -479,7 +683,11 @@ async def rename_input(client: Client, message: Message):
         return
     st = _get_state(uid)
     if not st:
-        return
+        pid = _prompt_for(message)
+        if pid is None:
+            return
+        await _finish_prompt(client, uid, pid, (message.text or "").strip()[:200], user=message.from_user)
+        raise StopPropagation
     kind = st["kind"]
     text = (message.text or "").strip()
     if kind == "thumb":
@@ -507,6 +715,12 @@ async def rename_input(client: Client, message: Message):
         await store.set_meta(uid, st["field"], text[:120])
         view, kb = await meta_view(uid)
         await message.reply_text(f"✅ <b>{store.META_LABELS[st['field']]}</b> saved.\n\n" + view, reply_markup=kb)
+    elif kind == "words":
+        _state.pop(uid, None)
+        rules = extract.parse_word_rules(text, store.MAX_WORD_RULES)
+        await store.update(uid, words=rules)
+        view, kb = await words_view(uid)
+        await message.reply_text(f"✅ <b>{len(rules)} word rule(s) saved.</b>\n\n" + view, reply_markup=kb)
     elif kind == "dump":
         await _set_dump(client, message, text)
     raise StopPropagation
@@ -561,9 +775,46 @@ async def rename_cb(client: Client, query: CallbackQuery):
     if action == "tpl":
         _state[uid] = {"kind": "template", "ts": time.time()}
         await query.answer()
-        return await show(("<b>✏️ Send your new template</b>\n\nExample:\n"
-                           "<code>{title} S{season}E{episode} [{quality}] [{audio}]</code>\n\n<i>/cancel to abort</i>",
-                           InlineKeyboardMarkup([[Btn("📖 Placeholders", callback_data="rn:help")]])))
+        return await show(template_prompt())
+    if action == "pre" and len(parts) > 2 and parts[2] in store.PRESETS:
+        label, tpl, clean = store.PRESETS[parts[2]]
+        _state.pop(uid, None)
+        await store.set_template(uid, tpl)
+        if clean:
+            await store.update(uid, clean=True)
+        await query.answer(f"✅ {label} template saved")
+        return await show(await panel_view(uid))
+    if action == "mode":
+        s = await store.get(uid)
+        new = "auto" if s.get("mode") == "manual" else "manual"
+        await store.update(uid, mode=new, auto=True)
+        await query.answer("✍️ Manual: I'll ask for a name for every file" if new == "manual"
+                           else ("🤖 Auto: files use your template" if s.get("template")
+                                 else "🤖 Auto – set a template to start"), show_alert=new == "manual")
+        return await show(await panel_view(uid))
+    if action == "clean":
+        s = await store.get(uid)
+        await store.update(uid, clean=not s.get("clean", False))
+        await query.answer("🧹 Clean tags " + ("off" if s.get("clean") else "on"))
+        return await show(await panel_view(uid))
+    if action == "words":
+        await query.answer()
+        return await show(await words_view(uid))
+    if action == "wset":
+        _state[uid] = {"kind": "words", "ts": time.time()}
+        await query.answer()
+        return await show((WORDS_HELP, InlineKeyboardMarkup([[Btn("‹ Back", callback_data="rn:words")]])))
+    if action == "wclr":
+        await store.unset(uid, "words")
+        await query.answer("🗑 Word rules cleared")
+        return await show(await words_view(uid))
+    if action == "hist":
+        await query.answer()
+        return await show(await history_view(uid))
+    if action == "cq":
+        n = engine.cancel_user(uid)
+        await query.answer(f"⏹ Cancelled {n} job(s)" if n else "Nothing to cancel.")
+        return await show(await panel_view(uid))
     if action == "auto":
         s = await store.get(uid)
         await store.update(uid, auto=not s.get("auto", True))
@@ -640,6 +891,44 @@ async def rename_cb(client: Client, query: CallbackQuery):
     if action == "seq":
         await query.answer()
         return await show((SEQ_HELP, InlineKeyboardMarkup([[Btn("‹ Back", callback_data="rn:home")]])))
+    await query.answer()
+
+
+@Client.on_callback_query(filters.regex(r"^rnm:"))
+async def manual_prompt_cb(client: Client, query: CallbackQuery):
+    uid = query.from_user.id
+    parts = query.data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    try:
+        pid = int(parts[2])
+    except (IndexError, ValueError):
+        return await query.answer()
+    entry = _live_prompts(uid).get(pid)
+    if not entry:
+        await query.answer("This prompt expired – send the file again.", show_alert=True)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return
+    if action == "t" and len(parts) > 3 and parts[3] in store.MEDIA_TYPES:
+        entry["send_as"] = "" if entry.get("send_as") == parts[3] else parts[3]
+        entry["ts"] = time.time()
+        await query.answer(f"Send as: {_media_label(entry['send_as'])}" if entry["send_as"] else "Send as: default")
+        return await smart_edit(query.message, _prompt_text(entry), _prompt_kb(pid, entry))
+    if action == "x":
+        _live_prompts(uid).pop(pid, None)
+        await query.answer("Skipped")
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return
+    if action in ("use", "keep"):
+        name = entry.get("sugg") if action == "use" else engine.original_name(entry["msg"])
+        await query.answer("✅ Renaming…" if action == "use" else "✅ Keeping the name…")
+        await _finish_prompt(client, uid, pid, name or engine.original_name(entry["msg"]), user=query.from_user)
+        return
     await query.answer()
 
 

@@ -198,16 +198,34 @@ Manual UPI / QR payments (`UPI_ID`, `QR_CODE`, `/add_premium`) keep working alon
 
 ## ✏️ Auto-Rename
 
-1. `/autorename` → set a template, e.g. `{title} S{season}E{episode} [{quality}] [{audio}]` (or the classic `[SSeason] [EPEpisode] [Quality]`). Keywords: `{title} {season} {episode} {quality} {audio} {year} {codec} {filename}`.
-2. Send / forward files – each is downloaded, renamed, optionally converted to MKV + tagged, and sent back with your caption & thumbnail (saver `/set_caption`, `/set_thumb`; caption keywords `{filename} {filesize} {duration}`).
+1. `/autorename` → set a template, e.g. `{title} S{season}E{episode} [{quality}] [{audio}]` (or the classic `[SSeason] [EPEpisode] [Quality]`), or tap a preset (🎌 Anime · 📺 Series · 🎬 Movie · 🧹 Keep name, strip tags). Keywords: `{title} {season} {episode} {quality} {source} {audio} {year} {codec} {group} {size} {filename}`.
+2. Send / forward files – each is downloaded, renamed, optionally converted to MKV + tagged, and sent back with your caption & thumbnail (saver `/set_caption`, `/set_thumb`; caption keywords `{filename} {size} {duration} {title} {season} {episode} {quality} {audio} {year} {codec} {source} {group} {original}` – unknown `{words}` are left as typed).
+
+**Smart names**
+* **Movie-aware** – a file with no season *and* no episode drops the `S··E··` part (no fake "S01E01"); a season pack keeps `S02`; an episode without a season still gets `S01`.
+* **Multi-episode files** – `S01E01-E03`, `S01E01-02`, `E01E02`, `Episode 1-3` → `{episode}` = `01-03`.
+* Anime `Show - 12 [1080p]` beats numbers inside the title (`Kaiju No. 8 - 12` → episode 12), `2x05` is season 2 episode 5, resolutions like `1920x1080` are ignored.
+* `{source}` = WEB-DL / WEBRip / BluRay / HDRip / HDTV …, `{group}` = leading `[SubsPlease]` or trailing scene tag (`…x264-RARBG`).
+
+**Modes & clean-up** (all in the `/autorename` panel)
+* 🤖 **Auto** – every file uses your template. ✍️ **Manual** – every file gets a prompt: reply with a name (extension kept automatically), or tap 💡 *Use suggestion* (your template's result) / ↩️ *Keep name* / ❌ *Skip*, with a one-off 📄 Doc · 🎥 Video · 🎵 Audio choice. With a single pending prompt plain text works too; links and commands are never captured. Up to 20 prompts wait at once and expire after 2 × `STATE_TIMEOUT_MIN`.
+* 🧹 **Clean tags** – strips `@channels`, `t.me` / `http` links and site names (`www.1TamilMV.com`, `Site.net` …) from the *incoming* name – the text of your own template (e.g. your `@MyChannel`) is never touched.
+* 🔁 **Word rules** – up to 30 lines: `HQ` removes, `[ESub] => ESubs` or `Tamil Dubbed | Tamil` replaces (case-insensitive, whole words for plain words). Applied after tag cleaning.
+* 🕘 **History** – your last 10 renames (new ← original name). ⏹ **Cancel queue** appears while files are processing.
+* `/rename New Name` (reply to a document / video / audio) now uses the same pipeline – queue, progress + cancel, MKV / metadata settings, thumbnail, caption placeholders, history, leaderboard and dump channel. It also works on a file the bot itself sent.
+
+**Output**
+* Videos without a custom or embedded thumbnail get a frame from the file (10 % in, ffmpeg).
+* Duration / width / height are probed with ffprobe when Telegram didn't provide them, so files sent as video show the right size and length.
 
 | Command | Does |
 |---|---|
-| `/autorename` | panel: template, auto on/off, MKV, output type, metadata, thumbnail, sequence, help |
+| `/autorename` | panel: template + presets, mode (auto / manual), pause, clean tags, word rules, history, MKV, output type, metadata, thumbnail, sequence, queue, help |
 | `/setmedia` | document / video / audio / auto |
 | `/metadata` · `/settitle` `/setauthor` `/setartist` `/setaudio` `/setsubtitle` `/setvideo` `/setencoded_by` `/setcustom_tag` | metadata (empty value = clear) |
 | `/start_sequence` → files → `/end_sequence` | sorted delivery by season → episode → quality |
-| `/testrename <name>` | preview what a file would become |
+| `/testrename <name>` | preview what a file would become (shows the cleaned source name and everything detected) |
+| `/rename <name>` (reply) | one-off rename through the same pipeline |
 | `/leaderboard` (`/top`) | rankings; auto-deleted in groups after `LEADERBOARD_DELETE_TIMER` s |
 | `/verify` | free users verify through a shortener (if enabled) – Premium & admins skip it |
 | `/renameset` (admin) | global on/off, anti-NSFW, dump channel |
@@ -220,7 +238,7 @@ MP4 → MKV / metadata use stream copy (no re-encode); if a file can't be remuxe
 pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
-The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes, and `tests/test_phase8.py` for the clone extras (smart-link limits / passwords / expiry, Stars checkout + delivery, premium, index + search, requests, anti-flood, broadcasts & schedules, export, the ✨ Extras panel and ownership transfer), and `tests/test_phase9.py` for the performance work (live progress, saver cancel / visible upload errors, encoder throttle, parallel force-sub, instant start pics, indexes, cache trimming), and `tests/test_phase10.py` for the clone lifecycle (warning → deactivation → reactivation, owner-only buttons), disabled buttons and the new home screen. Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
+The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes, and `tests/test_phase8.py` for the clone extras (smart-link limits / passwords / expiry, Stars checkout + delivery, premium, index + search, requests, anti-flood, broadcasts & schedules, export, the ✨ Extras panel and ownership transfer), and `tests/test_phase9.py` for the performance work (live progress, saver cancel / visible upload errors, encoder throttle, parallel force-sub, instant start pics, indexes, cache trimming), and `tests/test_phase10.py` for the clone lifecycle (warning → deactivation → reactivation, owner-only buttons), disabled buttons and the new home screen, and `tests/test_phase12.py` for the Auto-Rename upgrade (source / group / ranges / movie-aware templates, tag cleaning, word rules, presets, manual mode prompts, caption placeholders, probing + frame thumbnails, history, queue cancel, `/rename` on the engine). Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
 
 ## 🗂 Layout
 

@@ -1,5 +1,6 @@
 """Everyday utility commands added by Videl."""
 import asyncio
+import html
 import io
 import json
 import logging
@@ -268,6 +269,17 @@ async def rename_cmd(client: Client, message: Message):
     if not media or len(message.command) < 2:
         return await message.reply_text("<b>Usage:</b> reply to a file with <code>/rename New Name.mkv</code>")
     new_name = message.text.split(None, 1)[1].strip().replace("/", "_")[:200]
+    if any(getattr(r, k, None) for k in ("document", "video", "audio")):
+        # Full rename pipeline: queue + progress/cancel, MKV & metadata settings, thumbnail
+        # (custom or a frame), caption placeholders, history, leaderboard and dump channel.
+        from renamer import engine as rn_engine
+        pos = await rn_engine.submit(client, r, name=new_name, user=message.from_user)
+        if not pos:
+            return await message.reply_text(f"⏳ Your rename queue is full ({rn_engine.QUEUE_LIMIT} files). "
+                                            "Wait for it to finish or /cancel.")
+        if pos > 1:
+            await message.reply_text(f"🕒 Queued – position <b>#{pos}</b>.")
+        return
     old_name = getattr(media, "file_name", None) or ""
     if "." not in new_name and "." in old_name:
         new_name += "." + old_name.rsplit(".", 1)[1]
@@ -282,7 +294,7 @@ async def rename_cmd(client: Client, message: Message):
         path = await client.download_media(r, file_name=f"{workdir}/{new_name}",
                                            progress=_progress_cb(status, "📥 Downloading…"))
         # Re-use the user's saver thumbnail / caption if they set one.
-        caption = f"<code>{new_name}</code>"
+        caption = f"<code>{html.escape(new_name, quote=False)}</code>"
         try:
             from database.db import db as saver_db
             thumb_id = await saver_db.get_thumbnail(uid)
@@ -291,7 +303,8 @@ async def rename_cmd(client: Client, message: Message):
             custom = await saver_db.get_caption(uid)
             if custom:
                 try:
-                    caption = custom.format(filename=new_name, size=humanbytes(os.path.getsize(path)))
+                    caption = custom.format(filename=html.escape(new_name, quote=False),
+                                            size=humanbytes(os.path.getsize(path)))
                 except Exception:
                     caption = custom
         except Exception:

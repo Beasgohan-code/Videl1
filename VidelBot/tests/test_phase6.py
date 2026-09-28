@@ -69,8 +69,10 @@ def test_render_classic_and_brace_templates():
     assert new_filename("[SSeason] [EPEpisode] [Quality] [Audio] @Chan", name, to_mkv=True) == \
         "[S02] [EP15] [720p] [Hindi] @Chan.mkv"
     assert new_filename("{title} S{season}E{episode} {quality}", name) == "Naruto S02E15 720p.mp4"
-    # missing values → default 01 / empty brackets removed; bad filename chars stripped
-    assert render("{title} S{season}E{episode} [{audio}] a/b:c", "Movie.mkv") == "Movie S01E01 a b c"
+    # movie (no season / episode) → S··E·· dropped (Phase 12); empty brackets removed; bad chars stripped
+    assert render("{title} S{season}E{episode} [{audio}] a/b:c", "Movie.mkv") == "Movie a b c"
+    # an episode without a season still defaults the season to 01
+    assert render("{title} S{season}E{episode}", "Show - 07.mkv") == "Show S01E07"
     # keyword replacement never touches inserted values
     assert render("{title} - Audio", "The Audio Show S01E02 AAC.mkv") == "The Audio Show - AAC"
 

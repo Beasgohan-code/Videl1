@@ -397,6 +397,11 @@ class Watchdog:
         except Exception:
             pass
         try:
+            from renamer import handlers as rn_ui
+            rn_ui.prune_prompts()
+        except Exception:
+            pass
+        try:
             from core import botlog, errors, support
             drop_old(botlog._start_seen, 86400)
             drop_old(errors._last_sent, 86400)

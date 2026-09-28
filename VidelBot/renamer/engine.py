@@ -1,6 +1,7 @@
 """
 Auto-Rename pipeline: download → (MP4→MKV) → metadata → thumbnail/caption → upload → dump.
 
+• template jobs (auto mode) and named jobs (manual mode / reply /rename) share one pipeline
 • one job at a time per user (FIFO), RENAME_CONCURRENCY jobs globally
 • live progress with ⏹ Cancel (StopTransmission), /cancel drops the whole queue
 • every ffmpeg step is stream-copy only and falls back gracefully instead of failing
@@ -56,6 +57,9 @@ class Job:
     cancelled: bool = False
     status: Message = None
     label: str = ""                 # escaped new file name, shown in the progress message
+    name: str = ""                  # explicit new name (manual mode / /rename) – skips the template
+    send_as: str = ""               # one-off upload type override ("document" / "video" / "audio")
+    user: object = None             # who asked (defaults to the file's sender)
 
 
 def media_of(message: Message):
@@ -92,6 +96,16 @@ def pick_type(pref: str, filename: str) -> str:
 
 def pending(uid: int) -> int:
     return _pending.get(uid, 0)
+
+
+def running(uid: int) -> list:
+    """Live jobs of one user, oldest first (the first one is being processed)."""
+    return sorted((j for j in _jobs.values() if j.uid == uid and not j.cancelled), key=lambda j: j.id)
+
+
+def global_load() -> tuple[int, int]:
+    """(jobs queued or running across all users, concurrency slots)."""
+    return sum(_pending.values()), CONCURRENCY
 
 
 def is_duplicate(unique_id: str) -> bool:
@@ -202,22 +216,44 @@ async def remux(path: str, out: str, meta: dict, to_mkv: bool) -> str:
     return ""
 
 
-async def probe_duration(path: str) -> int:
+async def probe_media(path: str) -> tuple[int, int, int]:
+    """(duration s, width, height) via ffprobe – zeros when unavailable."""
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
-        return 0
+        return 0, 0, 0
     proc = await asyncio.create_subprocess_exec(ffprobe, "-v", "quiet", "-print_format", "json", "-show_format",
-                                                path, stdout=asyncio.subprocess.PIPE,
+                                                "-show_streams", path, stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.PIPE)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), 60)
-        return int(float(json.loads(out or b"{}").get("format", {}).get("duration", 0) or 0))
+        data = json.loads(out or b"{}")
+        duration = int(float(data.get("format", {}).get("duration", 0) or 0))
+        video = next((st for st in data.get("streams", []) if st.get("codec_type") == "video"
+                      and not (st.get("disposition") or {}).get("attached_pic")), {})
+        return duration, int(video.get("width") or 0), int(video.get("height") or 0)
     except Exception:
         try:
             proc.kill()
         except Exception:
             pass
-        return 0
+        return 0, 0, 0
+
+
+async def probe_duration(path: str) -> int:
+    return (await probe_media(path))[0]
+
+
+async def frame_thumbnail(path: str, dst: str, duration: int = 0) -> str:
+    """Grab one frame (10 % in, max 60 s) as a 320 px JPEG – for videos without any thumbnail."""
+    if not shutil.which("ffmpeg"):
+        return ""
+    at = min(max(duration * 0.1, 1), 60) if duration else 1
+    code, err = await _run([shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{at:.1f}",
+                            "-i", path, "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "3", dst], timeout=90)
+    if code == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0:
+        return dst
+    log.debug(f"frame thumbnail failed: {err.strip()[:120]}")
+    return ""
 
 
 def make_jpeg(src: str, dst: str) -> str:
@@ -233,16 +269,40 @@ def make_jpeg(src: str, dst: str) -> str:
         return ""
 
 
-def build_caption(template: str, new_name: str, size: int, duration: int) -> str:
-    dur = readable_time(duration) if duration else "N/A"
-    new_name = html.escape(new_name, quote=False)
+CAPTION_KEYS = ("filename", "filesize", "size", "duration", "title", "season", "episode", "quality", "audio",
+                "year", "codec", "source", "group", "original")
+
+
+class _KeepMissing(dict):
+    def __missing__(self, key):          # unknown {placeholders} stay as typed
+        return "{" + key + "}"
+
+
+def caption_values(new_name: str, size: int, duration: int, old_name: str = "") -> dict:
+    info = extract.parse(new_name)
+    ep = info.get("episode")
+    values = {
+        "filename": new_name, "filesize": humanbytes(size), "size": humanbytes(size),
+        "duration": readable_time(duration) if duration else "N/A",
+        "title": info.get("title") or "", "season": f"{info['season']:02d}" if info.get("season") else "",
+        "episode": (f"{ep:02d}" + (f"-{info['episode_end']:02d}" if info.get("episode_end") else "")) if ep else "",
+        "quality": info.get("quality") or "", "audio": info.get("audio") or "", "year": info.get("year") or "",
+        "codec": info.get("codec") or "", "source": info.get("source") or "", "group": info.get("group") or "",
+        "original": old_name or new_name,
+    }
+    return {k: html.escape(str(v), quote=False) for k, v in values.items()}
+
+
+def build_caption(template: str, new_name: str, size: int, duration: int, old_name: str = "") -> str:
+    """Saver /set_caption template with {filename} {size} {duration} {title} {season} {episode} {quality}
+    {audio} {year} {codec} {source} {group} {original}; default = the file name in monospace."""
+    values = caption_values(new_name, size, duration, old_name)
     if template:
         try:
-            return template.format(filename=new_name, filesize=humanbytes(size), size=humanbytes(size),
-                                   duration=dur)[:1024]
+            return template.format_map(_KeepMissing(values))[:1024]
         except Exception:
             return template[:1024]
-    return f"<code>{new_name}</code>"[:1024]
+    return f"<code>{values['filename']}</code>"[:1024]
 
 
 async def dump_chat() -> int:
@@ -251,12 +311,16 @@ async def dump_chat() -> int:
 
 
 # ─────────────────────────── queue ───────────────────────────
-async def submit(client, message: Message) -> int:
-    """Queue a file. Returns its position (1 = running now), 0 if the queue is full."""
-    uid = message.from_user.id
+async def submit(client, message: Message, name: str = "", send_as: str = "", user=None) -> int:
+    """Queue a file. Returns its position (1 = running now), 0 if the queue is full.
+    `name` renames to exactly that (manual mode / /rename) instead of using the template;
+    `user` is who asked when that isn't the file's sender (a reply to a file the bot sent)."""
+    user = user or message.from_user
+    uid = user.id
     if pending(uid) >= QUEUE_LIMIT:
         return 0
-    job = Job(uid=uid, message=message)
+    job = Job(uid=uid, message=message, name=name or "", user=user,
+              send_as=send_as if send_as in store.MEDIA_TYPES else "")
     _pending[uid] = pending(uid) + 1
     _jobs[job.id] = job
     asyncio.create_task(_worker(client, job))
@@ -285,18 +349,22 @@ async def _worker(client, job: Job):
 
 async def process(client, job: Job):
     message = job.message
-    user = message.from_user
+    user = job.user or message.from_user
     uid = user.id
     kind, media = media_of(message)
     old_name = original_name(message)
     settings = await store.get(uid)
     template = settings.get("template")
-    if not template or not media:
+    if not media or not (template or job.name):
         return
     to_mkv = settings.get("mkv", True)
-    new_name = extract.new_filename(template, old_name, to_mkv=to_mkv)
-    job.label = html.escape(new_name[:80], quote=False)
     size = getattr(media, "file_size", 0) or 0
+    if job.name:
+        new_name = extract.manual_filename(job.name, old_name, to_mkv=to_mkv)
+    else:
+        new_name = extract.new_filename(template, old_name, to_mkv=to_mkv, clean=settings.get("clean", False),
+                                        words=settings.get("words"), size=humanbytes(size) if size else "")
+    job.label = html.escape(new_name[:80], quote=False)
 
     async def reply(text):
         try:
@@ -364,24 +432,31 @@ async def process(client, job: Job):
         os.replace(path, final)
         size = os.path.getsize(final)
 
-        # 3. duration, thumbnail, caption
-        duration = int(getattr(media, "duration", 0) or 0) or await probe_duration(final)
+        # 3. duration / size, thumbnail, caption
+        send_as = job.send_as or pick_type(settings.get("media"), new_name)
+        is_video = new_name.lower().endswith(VIDEO_EXT)
+        duration = int(getattr(media, "duration", 0) or 0)
+        width = getattr(media, "width", 0) or 0
+        height = getattr(media, "height", 0) or 0
+        if (not duration and (is_video or send_as != "document")) or (send_as == "video" and not (width and height)):
+            p_dur, p_w, p_h = await probe_media(final)
+            duration = duration or p_dur
+            width, height = (width, height) if width and height else (p_w, p_h)
         thumb = await _thumbnail(client, uid, media, workdir)
+        if not thumb and is_video and send_as != "audio":
+            thumb = await frame_thumbnail(final, os.path.join(workdir, "frame.jpg"), duration)
         caption_tpl = ""
         try:
             from database.db import db as saver_db
             caption_tpl = await saver_db.get_caption(uid) or ""
         except Exception:
             pass
-        caption = build_caption(caption_tpl, new_name, size, duration)
+        caption = build_caption(caption_tpl, new_name, size, duration, old_name)
 
         # 4. upload
-        send_as = pick_type(settings.get("media"), new_name)
         up = progress_cb(job, "📤 Uploading…")
         common = dict(caption=caption, reply_to_message_id=message.id, progress=up)
         if send_as == "video":
-            width = getattr(media, "width", 0) or 0
-            height = getattr(media, "height", 0) or 0
             sent = await client.send_video(message.chat.id, final, file_name=new_name, duration=duration,
                                            width=width, height=height, thumb=thumb or None,
                                            supports_streaming=True, **common)
@@ -396,7 +471,7 @@ async def process(client, job: Job):
             raise Cancelled
 
         # 5. stats + dump channel
-        await store.record_rename(user, new_name)
+        await store.record_rename(user, new_name, old_name)
         await _dump(client, sent, user, old_name, new_name, size)
         if note:
             await job.status.edit_text(f"✅ <b>Done:</b> <code>{html.escape(new_name, quote=False)}</code>{note}")
