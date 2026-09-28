@@ -201,6 +201,14 @@ async def panel_view(uid: int):
     words = s.get("words") or []
     busy = engine.pending(uid)
     mode_line = "✍️ Manual – I ask for a name for every file" if manual else "🤖 Auto – renamed with your template"
+    from renamer.verify import is_exempt
+    premium = await is_exempt(uid)
+    if not await vdb.get_setting("rn_nsfw", True):
+        adult_line = "✅ Allowed (filter off)"
+    elif premium and await vdb.get_setting("rn_nsfw_premium", True):
+        adult_line = "✅ Allowed · 18+ confirmed" if s.get("adult_ok") else "🔒 Blocked · tap 🔞 to allow"
+    else:
+        adult_line = "💎 Premium only"
     from core.style import hdr, quote, rows as srows, sc
     yes = lambda on: "✅" if on else "❌"   # noqa: E731
     info = [
@@ -212,6 +220,7 @@ async def panel_view(uid: int):
         ("🏷 Metadata", yes(meta_on)),
         ("🧹 Clean tags", yes(s.get("clean"))),
         ("🔁 Word rules", len(words)),
+        ("🔞 Adult files", adult_line),
         ("📊 Renamed so far", s.get("count", 0)),
     ]
     if busy:
@@ -238,6 +247,8 @@ async def panel_view(uid: int):
          Btn(f"🎞 MP4→MKV {'✅' if s.get('mkv', True) else '❌'}", callback_data="rn:mkv")],
         [Btn("🏷 Metadata", callback_data="rn:meta"), Btn("🖼 Thumbnail & caption", callback_data="rn:thumb")],
         [Btn("📋 Sequence", callback_data="rn:seq"), Btn("🏆 Leaderboard", callback_data="rnlb:all")],
+        [Btn(f"🔞 Adult files {'✅' if s.get('adult_ok') else '❌'}", callback_data="rn:adultt")]
+        if premium and adult_line.startswith(("✅ Allowed ·", "🔒")) else [],
         [Btn(f"⏹ Cancel queue ({busy})", callback_data="rn:cq")] if busy else [],
         [Btn("❌ Close", callback_data="close_btn")],
     ]
@@ -430,21 +441,70 @@ async def leaderboard_view(period: str, uid: int):
     return "\n".join(lines), _leaderboard_kb(period)
 
 
+async def _adult_cb(client, query: CallbackQuery, parts: list, show):
+    """🔞 18+ consent for Premium users (rn:adult:yes|no) and the panel toggle (rn:adultt)."""
+    from renamer.verify import is_exempt
+    uid = query.from_user.id
+    if parts[1] == "adultt":
+        s = await store.get(uid)
+        if s.get("adult_ok"):
+            await store.update(uid, adult_ok=False)
+            await query.answer("🔞 Adult files are blocked again.")
+            return await show(await panel_view(uid))
+        if not await is_exempt(uid):
+            return await query.answer("💎 Renaming adult files is a Premium feature – see /premium.", show_alert=True)
+        await query.answer()
+        return await smart_edit(query.message, "🔞 <b>Allow adult files?</b>\n\n<blockquote>Confirm you are <b>18 or older</b> "
+                                "and that you have the right to share the files you rename.</blockquote>\n"
+                                "<i>Content involving minors or non-consent is always blocked.</i>", engine.adult_kb())
+    choice = parts[2] if len(parts) > 2 else "no"
+    if choice != "yes":
+        dropped = len(engine.take_adult(uid))
+        await query.answer("Okay – adult files stay blocked.")
+        try:
+            await query.message.edit_text("❌ <b>Skipped.</b>" + (f" {dropped} file(s) were not renamed." if dropped else ""))
+        except Exception:
+            pass
+        return
+    if not await is_exempt(uid):
+        return await query.answer("💎 Your Premium has ended – adult files can't be renamed.", show_alert=True)
+    await store.update(uid, adult_ok=True, adult_at=store.naive_now())
+    waiting = engine.take_adult(uid)
+    await query.answer("✅ Adult files allowed" + (f" – renaming {len(waiting)} file(s)" if waiting else ""))
+    for _ts, message, name, send_as, user in waiting:
+        extra = {k: v for k, v in (("name", name), ("send_as", send_as), ("user", user)) if v}
+        try:
+            await engine.submit(client, message, **extra)
+        except Exception:
+            pass
+    try:
+        await query.message.edit_text("✅ <b>18+ confirmed.</b> Adult files will be renamed for you while your Premium "
+                                      "is active.\n<i>Turn it off anytime in /autorename.</i>")
+    except Exception:
+        pass
+    from core import botlog
+    await botlog.event("AdultConsent", botlog.user_block(query.from_user), client=client)
+
+
 async def admin_view():
     enabled = await _enabled()
     nsfw = await vdb.get_setting("rn_nsfw", True)
+    nsfw_premium = await vdb.get_setting("rn_nsfw_premium", True)
     dump = await engine.dump_chat()
     cfg = await store.verify_settings()
     active = len(store.active_shorteners(cfg))
     text = ("<b>⚙️ Auto-Rename – admin</b>\n\n"
             f"<b>Auto-Rename:</b> {'🟢 enabled' if enabled else '🔴 disabled'}\n"
             f"<b>Anti-NSFW filter:</b> {'🟢 on' if nsfw else '🔴 off'}\n"
+            f"<b>Premium 18+ renaming:</b> {'🟢 allowed (after age confirm)' if nsfw_premium else '🔴 blocked'}\n"
+            "<i>Minors / non-consent keywords are always blocked.</i>\n"
             f"<b>Dump channel:</b> {f'<code>{dump}</code>' if dump else 'off'}\n"
             f"<b>Verification:</b> {f'🟢 {active} shortener(s)' if active else '🔴 off'}\n"
             f"<b>Concurrency:</b> {engine.CONCURRENCY} jobs · queue limit {engine.QUEUE_LIMIT}/user\n"
             f"<b>Total renames:</b> {await store.total_renames()}")
     kb = [[Btn(("🟢" if enabled else "🔴") + " Auto-Rename", callback_data="rna:en"),
            Btn(("🟢" if nsfw else "🔴") + " Anti-NSFW", callback_data="rna:nsfw")],
+          [Btn(("🟢" if nsfw_premium else "🔴") + " 💎 Premium may rename 18+", callback_data="rna:nsfwp")],
           [Btn("📤 Set dump channel", callback_data="rna:dump")] +
           ([Btn("🗑 Clear dump", callback_data="rna:undump")] if dump else []),
           [Btn("🔐 Verification", callback_data="rnv:home"), Btn("❌ Close", callback_data="close_btn")]]
@@ -809,6 +869,8 @@ async def rename_cb(client: Client, query: CallbackQuery):
     if action == "home":
         await query.answer()
         return await show(await panel_view(uid))
+    if action in ("adult", "adultt"):
+        return await _adult_cb(client, query, parts, show)
     if action == "help":
         await query.answer()
         return await show((TUTORIAL, InlineKeyboardMarkup([[Btn("‹ Back", callback_data="rn:home")]])))
@@ -1010,6 +1072,8 @@ async def rename_admin_cb(client: Client, query: CallbackQuery):
         await vdb.set_setting("rn_enabled", not await _enabled())
     elif action == "nsfw":
         await vdb.set_setting("rn_nsfw", not await vdb.get_setting("rn_nsfw", True))
+    elif action == "nsfwp":
+        await vdb.set_setting("rn_nsfw_premium", not await vdb.get_setting("rn_nsfw_premium", True))
     elif action == "undump":
         await vdb.set_setting("rn_dump", 0)
     elif action == "dump":

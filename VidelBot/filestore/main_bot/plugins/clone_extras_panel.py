@@ -6,7 +6,7 @@ from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb, Message
 
 from filestore.database.main_db import MainDB
-from filestore.fs_config import LOGGER, MAX_BOTS_PER_USER, OWNERS
+from filestore.fs_config import LOGGER, OWNERS
 from core.ui import smart_edit
 from filestore.worker_bot.extras import TOGGLE_KEYS, analytics_text, setting, settings_panel
 
@@ -166,8 +166,10 @@ async def transfer_owner_confirm_cb(client: Client, query: CallbackQuery):
     bot = await _owned(query, bot_id)
     if not bot:
         return
-    if target not in OWNERS and await main_db.count_user_bots(target) >= MAX_BOTS_PER_USER:
-        return await query.answer(f"❌ That user already has {MAX_BOTS_PER_USER} bot(s) – the maximum.",
+    from core.plans import clone_limit
+    target_limit = await clone_limit(target)
+    if target not in OWNERS and await main_db.count_user_bots(target) >= target_limit:
+        return await query.answer(f"❌ That user already has {target_limit} bot(s) – their maximum.",
                                   show_alert=True)
     await main_db.transfer_owner(bot_id, target)
     bot["owner_id"] = target

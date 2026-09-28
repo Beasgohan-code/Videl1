@@ -250,6 +250,42 @@ FREEIMAGE_API_KEY = os.environ.get("FREEIMAGE_API_KEY", "")  # empty → catbox.
 CLONE_ENABLED = _bool("CLONE_ENABLED", True)
 TG_BOT_WORKERS = env_int("TG_BOT_WORKERS", 16)
 
+# ==============================
+# Paid plans (Telegram Stars) – on top of the saver Premium
+# ==============================
+# 🎬 Encoder Pro: priority queue, more queued tasks, AV1, 2-pass, logo watermark, bigger /leech.
+ENC_PRO_STARS = env_int("ENC_PRO_STARS", 75, empty=0)            # ⭐ per 30 days · 0 = not sold
+# 🤖 Clone Plus / 🚀 Clone Pro: more clone bots, longer / no idle auto-off.
+CLONE_PLUS_STARS = env_int("CLONE_PLUS_STARS", 100, empty=0)
+CLONE_PRO_STARS = env_int("CLONE_PRO_STARS", 250, empty=0)
+CLONE_PLUS_BOTS = env_int("CLONE_PLUS_BOTS", 3)
+CLONE_PRO_BOTS = env_int("CLONE_PRO_BOTS", 10)
+CLONE_PLUS_IDLE_DAYS = env_int("CLONE_PLUS_IDLE_DAYS", 30)       # Clone Pro clones never auto-off
+PLAN_DAYS = env_int("PLAN_DAYS", 30)
+
+# ==============================
+# Encoder engine (Phase 15)
+# ==============================
+ENCODER_WORKERS = max(1, env_int("ENCODER_WORKERS", 1))          # encodes running at the same time
+ENC_MAX_TASKS_FREE = max(1, env_int("ENC_MAX_TASKS_FREE", 3))    # queued + running tasks per user
+ENC_MAX_TASKS_PRO = max(1, env_int("ENC_MAX_TASKS_PRO", 10))
+HW_ENCODER = os.environ.get("HW_ENCODER", "auto").strip().lower()  # auto | nvenc | qsv | vaapi | off
+VAAPI_DEVICE = os.environ.get("VAAPI_DEVICE", "/dev/dri/renderD128")
+SPLIT_SIZE_MB = env_int("SPLIT_SIZE_MB", 1950)                   # uploads above this are split into parts
+LEECH_FREE_GB = env_float("LEECH_FREE_GB", 2)
+LEECH_PRO_GB = env_float("LEECH_PRO_GB", 8)
+QUEUE_PERSIST = _bool("QUEUE_PERSIST", True)                    # encoder queue survives restarts
+
+# ==============================
+# Owner tools: web dashboard · backups · analytics
+# ==============================
+ADMIN_WEB_TOKEN = os.environ.get("ADMIN_WEB_TOKEN", "")          # empty → /admin dashboard disabled
+BACKUP_ENABLED = _bool("BACKUP_ENABLED", True)                  # daily gzip JSON backup → owner DM
+BACKUP_HOUR = env_int("BACKUP_HOUR", 4)
+BACKUP_CHAT = env_int("BACKUP_CHAT", 0)                         # 0 → first owner
+BACKUP_INCLUDE_SECRETS = _bool("BACKUP_INCLUDE_SECRETS", False)  # login sessions / tokens are skipped by default
+DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "en").strip().lower() or "en"
+
 # Source code link returned by the (unlisted) /source command – required by the
 # AGPL-3.0 licence of the bundled code when you run a modified copy publicly.
 SOURCE_URL = os.environ.get("SOURCE_URL", "https://github.com/Beasgohan-code/Videl1")

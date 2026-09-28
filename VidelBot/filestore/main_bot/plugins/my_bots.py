@@ -6,7 +6,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from filestore.fs_config import LOGGER, BACKEND_API_SECRET, BACKEND_API_URL, MAX_BOTS_PER_USER
+from filestore.fs_config import LOGGER, BACKEND_API_SECRET, BACKEND_API_URL
 from filestore.database.main_db import MainDB
 from filestore.utils.security import mask_token, decrypt_token
 
@@ -73,11 +73,14 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
         counts[emoji] += 1
         buttons.append([InlineKeyboardButton(f"{emoji} @{bot.get('bot_username', 'unknown')}",
                                              callback_data=f"dashboard_{bot_id}")])
-    if len(bots) < MAX_BOTS_PER_USER:
+    from core.plans import clone_limit
+    max_bots = await clone_limit(query.from_user.id)
+    if len(bots) < max_bots:
         buttons.append([InlineKeyboardButton("⚡ ᴄʀᴇᴀᴛᴇ ᴀɴᴏᴛʜᴇʀ", callback_data="create_bot")])
     else:   # Bot API 10.3 disabled button – a status chip, not an action
-        buttons.append([InlineKeyboardButton(f"🔒 ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ · {len(bots)}/{MAX_BOTS_PER_USER}",
+        buttons.append([InlineKeyboardButton(f"🔒 ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ · {len(bots)}/{max_bots}",
                                              callback_data="noop:limit")])
+        buttons.append([InlineKeyboardButton("💳 ᴍᴏʀᴇ ʙᴏᴛs · ᴘʟᴀɴs", callback_data="vx_home")])
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍᴇɴᴜ", callback_data="back_menu")])
 
     summary = " · ".join(f"{k} {v}" for k, v in counts.items() if v)
@@ -88,7 +91,7 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
     await smart_edit(
         query.message,
         f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 𝗠𝗬 𝗕𝗢𝗧𝗦  [{len(bots)}/{MAX_BOTS_PER_USER}]\n"
+        f"📋 𝗠𝗬 𝗕𝗢𝗧𝗦  [{len(bots)}/{max_bots if max_bots < 999 else '∞'}]\n"
         f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
         f"<blockquote>{summary}\nsᴇʟᴇᴄᴛ ᴀ ʙᴏᴛ ᴛᴏ ᴏᴘᴇɴ ɪᴛs ᴅᴀsʜʙᴏᴀʀᴅ:</blockquote>{note}",
         InlineKeyboardMarkup(buttons),

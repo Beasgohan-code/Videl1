@@ -56,15 +56,25 @@ def status_of(bot: dict, is_live: bool) -> tuple[str, str]:
 async def sweep(app, worker_engine, now: datetime = None) -> dict:
     """One pass over all active clones. Returns {"warned": [ids], "deactivated": [ids]}."""
     done = {"warned": [], "deactivated": []}
-    limit = period()
-    if not limit:
+    base = period()
+    if not base:
         return done
     now = now or datetime.now(timezone.utc)
-    days = limit.days or 1
+    owner_days: dict = {}                    # owner → idle days allowed by their plan (0 = never)
     for bot in await main_db.get_all_active_bots():
         if bot.get("is_deleted"):
             continue
         bot_id, owner = bot["_id"], bot.get("owner_id")
+        if owner not in owner_days:
+            try:
+                from core.plans import clone_idle_days
+                owner_days[owner] = await clone_idle_days(owner)
+            except Exception:
+                owner_days[owner] = base.days
+        if not owner_days[owner]:
+            continue                         # 🚀 Clone Pro: never auto-off
+        limit = base if owner_days[owner] == base.days else timedelta(days=owner_days[owner])
+        days = limit.days or 1
         name = bot.get("bot_username", "unknown")
         idle = now - last_activity(bot, now)
         try:

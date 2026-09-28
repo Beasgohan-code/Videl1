@@ -13,7 +13,7 @@ from pyrogram.types import (
     ReplyKeyboardRemove,
     RequestPeerTypeChannel,
 )
-from filestore.fs_config import MAX_BOTS_PER_USER, BOT_CREATION_COOLDOWN, API_ID, API_HASH, LOGGER, CLONE_ENABLED, OWNERS
+from filestore.fs_config import BOT_CREATION_COOLDOWN, API_ID, API_HASH, LOGGER, CLONE_ENABLED, OWNERS
 from filestore.database.main_db import MainDB
 from filestore.utils.helpers import validate_bot_token, send_main_log
 from filestore.utils.security import encrypt_token, mask_token
@@ -143,9 +143,12 @@ async def create_bot_callback(client: Client, query: CallbackQuery):
 
     # Check bot limit
     bot_count = await main_db.count_user_bots(user_id)
-    if bot_count >= MAX_BOTS_PER_USER:
+    from core.plans import clone_limit
+    limit = await clone_limit(user_id)
+    if bot_count >= limit:
         await query.answer(
-            f"❌ You've reached the limit of {MAX_BOTS_PER_USER} bots!",
+            f"❌ You've reached the limit of {limit} bot{'s' if limit != 1 else ''}! "
+            "Upgrade with /plans (🤖 Clone Plus / 🚀 Clone Pro) for more.",
             show_alert=True,
         )
         return

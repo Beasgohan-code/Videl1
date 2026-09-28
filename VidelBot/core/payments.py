@@ -62,6 +62,13 @@ def decode_payload(payload) -> dict:
         return {"kind": "plan" if tag == "vp" else "sub", "days": days, "payer": uid, "target": uid}
     if tag == "vg" and len(parts) == 5:
         return {"kind": "gift", "days": int(parts[1]), "payer": int(parts[2]), "target": int(parts[3])}
+    if tag == "vx" and len(parts) == 4:
+        from core.plans import PRODUCTS
+        from config import PLAN_DAYS
+        if parts[1] not in PRODUCTS:
+            raise ValueError("unknown product")
+        uid = int(parts[2])
+        return {"kind": "product", "product": parts[1], "days": PLAN_DAYS, "payer": uid, "target": uid}
     raise ValueError("foreign payload")
 
 
@@ -79,6 +86,10 @@ def expected_amount(info: dict):
         return SUBSCRIPTION_STARS if SUBSCRIPTION_STARS > 0 and info["days"] == SUB_DAYS else None
     if info["kind"] == "gift" and (not GIFTS_ENABLED or info["target"] == info["payer"]):
         return None
+    if info["kind"] == "product":
+        from core.plans import PRODUCTS
+        stars = PRODUCTS[info["product"]]["stars"]
+        return stars if stars > 0 else None
     return PLANS.get(info["days"])
 
 
@@ -464,6 +475,33 @@ async def _record_subscription(uid: int, sp, expiry) -> tuple[bool, int]:
     return False, 0
 
 
+async def _product_paid(client, message, info, buyer_name=""):
+    """🎬 Encoder Pro / 🤖 Clone Plus / 🚀 Clone Pro purchase."""
+    from core import plans
+    sp = message.successful_payment
+    product, payer = info["product"], info["payer"]
+    new_until = await plans.grant(payer, product, info["days"])
+    await vdb.db["payments"].insert_one({
+        "user": payer, "target": payer, "kind": "product", "product": product, "days": info["days"],
+        "stars": sp.total_amount, "currency": sp.currency, "charge_id": sp.telegram_payment_charge_id,
+        "expiry": new_until.date().isoformat(), "date": datetime.now(timezone.utc), "refunded": False,
+    })
+    p = plans.PRODUCTS[product]
+    perks = "\n".join(p["perks"])
+    text = (f"<b>🎉 {p['label']} active – thank you!</b>\n\n<blockquote><b>📅 Valid until:</b> {new_until:%d %b %Y}\n"
+            f"<b>⭐ Paid:</b> {sp.total_amount} Stars</blockquote>\n<blockquote expandable>{perks}</blockquote>")
+    kb = InlineKeyboardMarkup([[Btn("💳 My plans", callback_data="vx_home")],
+                               [copy_button("📋 Copy receipt ID", sp.telegram_payment_charge_id)]])
+    try:
+        await client.send_message(message.chat.id, text, message_effect_id=effect("party"), reply_markup=kb)
+    except Exception:
+        await message.reply_text(f"🎉 {p['label']} active until {new_until:%d %b %Y}. Thank you!")
+    from core import botlog
+    await botlog.event("StarsPayment", botlog.user_block(message.from_user,
+                       f"<b>📦 Plan:</b> {p['label']}\n<b>⭐ Stars:</b> {sp.total_amount}\n"
+                       f"<b>📅 Until:</b> {new_until:%d %b %Y}"), client=client)
+
+
 # group -10 → runs before every gate so a payment is never swallowed
 @Client.on_message(filters.successful_payment, group=-10)
 async def successful_payment(client: Client, message: Message):
@@ -474,6 +512,8 @@ async def successful_payment(client: Client, message: Message):
         return
     kind, days, payer, target = info["kind"], info["days"], info["payer"], info["target"]
     buyer_name = message.from_user.first_name if message.from_user else ""
+    if kind == "product":
+        return await _product_paid(client, message, info, buyer_name)
     expiry = await grant_premium(target, days, buyer_name if target == payer else "")
     renewal, renewals = False, 0
     if kind == "sub":
@@ -627,8 +667,22 @@ async def refund_cmd(client: Client, message: Message):
     await vdb.db["subscriptions"].update_many(
         {"user": uid, "$or": [{"charge_id": charge}, {"last_charge": charge}]},
         {"$set": {"active": False, "canceled": True}})
-    from database.db import db as saver_db
     premium_user = pay.get("target", uid)
+    if pay.get("kind") == "product":
+        from core.plans import revoke
+        await revoke(premium_user, pay.get("product", ""))
+        from core import botlog
+        await botlog.event("Refund", f"<b>👤 User:</b> <code>{uid}</code>\n<b>🧾 Charge ID:</b> <code>{charge}</code>\n"
+                                     f"<b>📦 Plan:</b> {pay.get('product')}\n<b>👮 By:</b> <code>{message.from_user.id}</code>",
+                           client=client)
+        await message.reply_text(f"↩️ Refunded and plan <code>{pay.get('product')}</code> removed for "
+                                 f"<code>{premium_user}</code>.")
+        try:
+            await client.send_message(uid, "↩️ <b>Your Stars payment was refunded.</b> The plan has been removed.")
+        except Exception:
+            pass
+        return
+    from database.db import db as saver_db
     await saver_db.remove_premium(premium_user)
     from core import botlog
     await botlog.event("Refund", f"<b>👤 User:</b> <code>{uid}</code>\n<b>🧾 Charge ID:</b> <code>{charge}</code>\n"

@@ -425,19 +425,44 @@ NSFW_WORDS = {
 EXCEPTIONS = ("nxivm", "classroom", "assassination", "geass", "sussex", "essex", "middlesex")
 
 
+# Never allowed – not for Premium, not even when an admin turns the NSFW filter off:
+# anything that points at minors in a sexual context, or at non-consensual content.
+FORBIDDEN_WORDS = {
+    "pedo", "paedo", "pedophile", "paedophile", "pedophilia", "loli", "lolicon", "shota", "shotacon",
+    "jailbait", "underage", "under age", "preteen", "pre-teen", "child porn", "childporn", "kiddie porn",
+    "kiddy porn", "cp video", "cp videos", "toddlercon", "minor sex", "teen rape", "rape", "raped", "raping",
+    "noncon", "non-con", "non consent", "non-consensual", "nonconsensual", "forced sex", "drugged sex",
+    "hidden cam sex", "spycam sex", "revenge porn",
+}
+NSFW_WORDS |= FORBIDDEN_WORDS
+
 _NSFW_ORDER = sorted(NSFW_WORDS, key=lambda w: (-len(w), w))   # deterministic, most specific first
+_FORBIDDEN_ORDER = sorted(FORBIDDEN_WORDS, key=lambda w: (-len(w), w))
+
+
+def _normalise(name: str) -> str:
+    low = name.lower()
+    for ok in EXCEPTIONS:
+        low = low.replace(ok, " ")
+    return " " + re.sub(r"[^a-z0-9+\-]+", " ", low.replace("_", " ").replace(".", " ")) + " "
+
+
+def _match(words, names) -> str:
+    for name in names:
+        if not name:
+            continue
+        text = _normalise(name)
+        for word in words:
+            if f" {word} " in text:
+                return word
+    return ""
 
 
 def is_nsfw(*names: str) -> str:
     """Return the matched keyword ('' if clean)."""
-    for name in names:
-        if not name:
-            continue
-        low = name.lower()
-        for ok in EXCEPTIONS:
-            low = low.replace(ok, " ")
-        text = " " + re.sub(r"[^a-z0-9+\-]+", " ", low.replace("_", " ").replace(".", " ")) + " "
-        for word in _NSFW_ORDER:
-            if f" {word} " in text:
-                return word
-    return ""
+    return _match(_NSFW_ORDER, names)
+
+
+def is_forbidden(*names: str) -> str:
+    """Keyword of content that is blocked for everyone ('' if none)."""
+    return _match(_FORBIDDEN_ORDER, names)

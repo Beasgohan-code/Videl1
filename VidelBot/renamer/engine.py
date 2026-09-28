@@ -60,6 +60,7 @@ class Job:
     name: str = ""                  # explicit new name (manual mode / /rename) – skips the template
     send_as: str = ""               # one-off upload type override ("document" / "video" / "audio")
     user: object = None             # who asked (defaults to the file's sender)
+    adult: bool = False             # 18+ file allowed for a Premium user (never sent to the dump channel)
 
 
 def media_of(message: Message):
@@ -305,6 +306,67 @@ def build_caption(template: str, new_name: str, size: int, duration: int, old_na
     return f"<code>{values['filename']}</code>"[:1024]
 
 
+# ─────────────────────────── 18+ files (Premium) ───────────────────────────
+_adult_wait: dict[int, list] = {}              # uid -> [(ts, message, name, send_as, user)] waiting for 18+ consent
+ADULT_WAIT_TTL = 15 * 60
+
+
+async def nsfw_decision(uid: int, settings: dict, old_name: str, new_name: str) -> tuple[str, str]:
+    """("ok" | "adult" | "confirm" | "premium" | "forbidden", matched word).
+
+    • forbidden → minors / non-consent keywords: blocked for everyone, always
+    • filter off (admin) → everything else is allowed
+    • adult keyword + Premium/admin + 18+ confirmed → "adult" (renamed, kept out of the dump channel)
+    • adult keyword + Premium/admin, not confirmed yet → "confirm"
+    • adult keyword + free user → "premium"
+    """
+    bad = extract.is_forbidden(old_name, new_name)
+    if bad:
+        return "forbidden", bad
+    from core.db import vdb
+    if not await vdb.get_setting("rn_nsfw", True):
+        return "ok", ""
+    word = extract.is_nsfw(old_name, new_name)
+    if not word:
+        return "ok", ""
+    if not await vdb.get_setting("rn_nsfw_premium", True):
+        return "premium", word
+    from renamer.verify import is_exempt
+    if not await is_exempt(uid):
+        return "premium", word
+    if not settings.get("adult_ok"):
+        return "confirm", word
+    return "adult", word
+
+
+def remember_adult(uid: int, job: "Job"):
+    now = time.time()
+    items = [x for x in _adult_wait.get(uid, []) if now - x[0] < ADULT_WAIT_TTL][-9:]
+    items.append((now, job.message, job.name, job.send_as, job.user))
+    _adult_wait[uid] = items
+
+
+def take_adult(uid: int) -> list:
+    now = time.time()
+    return [x for x in _adult_wait.pop(uid, []) if now - x[0] < ADULT_WAIT_TTL]
+
+
+def adult_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[Btn("✅ I'm 18+ – allow adult files", callback_data="rn:adult:yes")],
+                                 [Btn("❌ No, skip them", callback_data="rn:adult:no")]])
+
+
+async def ask_adult_confirm(message):
+    try:
+        await message.reply_text(
+            "🔞 <b>Adult content detected</b>\n\n<blockquote>As a 💎 Premium user you can rename 18+ files.\n"
+            "Please confirm you are <b>18 or older</b> and that you have the right to share this file.</blockquote>\n"
+            "<i>Adult files are never copied to the dump channel. You can turn this off in /autorename.</i>",
+            reply_markup=adult_kb(), quote=True)
+    except Exception:
+        pass
+
+
 async def dump_chat() -> int:
     from core.db import vdb
     return int(await vdb.get_setting("rn_dump", 0) or 0) or DUMP_CHANNEL
@@ -372,12 +434,21 @@ async def process(client, job: Job):
         except Exception:
             return None
 
-    from core.db import vdb
-    if await vdb.get_setting("rn_nsfw", True):
-        bad = extract.is_nsfw(old_name, new_name)
-        if bad:
-            await reply("🔞 <b>NSFW content detected</b> – file rejected.")
-            return
+    verdict, word = await nsfw_decision(uid, settings, old_name, new_name)
+    if verdict == "forbidden":
+        await reply("⛔ <b>This file can't be renamed.</b>\n<i>Content involving minors or non-consent is blocked "
+                    "for everyone, Premium included.</i>")
+        log.warning(f"forbidden rename blocked for {uid}: {word!r}")
+        return
+    if verdict == "premium":
+        await reply("🔞 <b>NSFW / adult content detected</b> – file rejected.\n\n<blockquote>💎 <b>Premium</b> users can rename "
+                    "18+ files after confirming their age once.</blockquote>\n<i>See /premium or /plans.</i>")
+        return
+    if verdict == "confirm":
+        remember_adult(uid, job)
+        await ask_adult_confirm(message)
+        return
+    job.adult = verdict == "adult"
     if size > TG_LIMIT:
         await reply(f"❌ <b>Too big:</b> {humanbytes(size)}. Bots can upload up to 2 GB.")
         return
@@ -472,7 +543,8 @@ async def process(client, job: Job):
 
         # 5. stats + dump channel
         await store.record_rename(user, new_name, old_name)
-        await _dump(client, sent, user, old_name, new_name, size)
+        if not job.adult:                      # 18+ files stay private – never copied to the dump channel
+            await _dump(client, sent, user, old_name, new_name, size)
         if note:
             await job.status.edit_text(f"✅ <b>Done:</b> <code>{html.escape(new_name, quote=False)}</code>{note}")
         else:
