@@ -23,11 +23,15 @@ def _done(task: asyncio.Task):
                   exc_info=(type(exc), exc, exc.__traceback__))
 
 
-def spawn(coro, name: str | None = None) -> asyncio.Task:
-    task = asyncio.get_event_loop().create_task(coro, name=name)
+def track(task: asyncio.Task) -> asyncio.Task:
+    """Hold + watch a task that was created elsewhere (e.g. on an explicit loop)."""
     _TASKS.add(task)
     task.add_done_callback(_done)
     return task
+
+
+def spawn(coro, name: str | None = None) -> asyncio.Task:
+    return track(asyncio.get_event_loop().create_task(coro, name=name))
 
 
 def running() -> int:

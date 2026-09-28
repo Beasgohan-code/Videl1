@@ -233,8 +233,9 @@ async def self_ping_loop():
 def keep_alive(loop: asyncio.AbstractEventLoop = None):
     """Start server + pinger as background tasks on the running loop."""
     loop = loop or asyncio.get_event_loop()
-    loop.create_task(start_server())
-    loop.create_task(self_ping_loop())
+    from core.bg import track
+    track(loop.create_task(start_server(), name="web-server"))
+    track(loop.create_task(self_ping_loop(), name="keepalive-ping"))
 
 
 async def stop_server():

@@ -60,7 +60,9 @@ async def bump(event: str, n: int = 1):
 def bump_later(event: str, n: int = 1):
     """Fire-and-forget bump from sync code / hot paths."""
     try:
-        asyncio.get_running_loop().create_task(bump(event, n))
+        asyncio.get_running_loop()
+        from core.bg import spawn
+        spawn(bump(event, n), name="analytics-bump")
     except RuntimeError:
         pass
 
@@ -324,4 +326,5 @@ async def prune_loop(keep_days: int = 120):
 
 
 def start(app):
-    asyncio.get_running_loop().create_task(prune_loop())
+    from core.bg import spawn
+    spawn(prune_loop(), name="analytics-prune")

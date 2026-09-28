@@ -172,7 +172,8 @@ async def backup_loop(app):
 
 def start(app):
     if config.BACKUP_ENABLED and _target():
-        asyncio.get_running_loop().create_task(backup_loop(app))
+        from core.bg import spawn
+        spawn(backup_loop(app), name="daily-backup")
         log.info(f"💾 daily backup at {config.BACKUP_HOUR:02d}:00 {config.LOG_TZ} → {_target()}")
 
 
