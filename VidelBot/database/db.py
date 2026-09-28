@@ -173,6 +173,11 @@ class Database:
         """
         user = await self.col.find_one({'id': int(id)}) or {}
         await self.col.update_one({'id': int(id)}, {'$inc': {'total_saves': 1}})
+        try:
+            from core.analytics import bump_later
+            bump_later("save")
+        except Exception:
+            pass
         if user.get('is_premium'):
             return
         now = datetime.datetime.now()

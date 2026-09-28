@@ -61,6 +61,8 @@ async def track_users(client: Client, message: Message):
     user = message.from_user
     if not user or user.is_bot:
         return
+    from core.analytics import touch
+    await touch(user.id)
     try:
         is_new = await vdb.track(user)
     except Exception as e:

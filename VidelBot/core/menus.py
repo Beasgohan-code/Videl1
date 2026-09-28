@@ -60,11 +60,14 @@ def plan_label(until) -> str:
     return "💎 Premium · Lifetime"
 
 
-async def start_text(client, user, plan: str = None) -> str:
+async def start_text(client, user, plan: str = None, lang: str = None) -> str:
+    from core.i18n import get_lang, start_template
     b = await _bot(client)
     if plan is None:
         plan = plan_label(await premium_until(user.id))
-    return texts.START_TXT.format(mention=user.mention, username=b["username"], first_name=b["first_name"],
+    if lang is None:
+        lang = await get_lang(user)
+    return start_template(lang).format(mention=user.mention, username=b["username"], first_name=b["first_name"],
                                   uptime=readable_time(time.time() - BOOT_TIME), plan=plan)
 
 
@@ -178,18 +181,21 @@ def channels_text() -> str:
 # ════════════════════════════════════════════════════════════════
 # Keyboards
 # ════════════════════════════════════════════════════════════════
-def home_kb() -> InlineKeyboardMarkup:
-    """Features first, then account, then info – same callbacks as the original SRC grid."""
-    info = [Btn("ℹ️ About", callback_data="about_btn")]
+def home_kb(lang: str = "en") -> InlineKeyboardMarkup:
+    """Features first, then account, then info – same callbacks as the original SRC grid (+ 🌐 language)."""
+    from core.i18n import t
+    info = [Btn(t("b.about", lang), callback_data="about_btn")]
     if SUPPORT_ENABLED and OWNERS:
-        info.append(Btn("💬 Support", callback_data="support_btn"))
+        info.append(Btn(t("b.support", lang), callback_data="support_btn"))
     if UPDATES_URL or SUPPORT_URL:
-        info.append(Btn("📢 Channels", callback_data="channels_info"))
+        info.append(Btn(t("b.channels", lang), callback_data="channels_info"))
+    info.append(Btn(t("b.language", lang).split(" ", 1)[0] if len(info) >= 3 else t("b.language", lang),
+                    callback_data="lang_menu"))
     return InlineKeyboardMarkup([
-        [Btn("⚡ Clone Bot", callback_data="back_menu"), Btn("🎬 Encoder", callback_data="help_enc")],
-        [Btn("✏️ Auto-Rename", callback_data="help_rename"), Btn("🧰 Tools", callback_data="help_tools")],
-        [Btn("⚙️ Settings", callback_data="settings_btn"), Btn("🆘 Help & Guide", callback_data="help_btn")],
-        [Btn("💎 Premium", callback_data="buy_premium"), Btn("🤝 Refer & Earn", callback_data="refer_btn")],
+        [Btn(t("b.clone", lang), callback_data="back_menu"), Btn(t("b.encoder", lang), callback_data="help_enc")],
+        [Btn(t("b.rename", lang), callback_data="help_rename"), Btn(t("b.tools", lang), callback_data="help_tools")],
+        [Btn(t("b.settings", lang), callback_data="settings_btn"), Btn(t("b.help", lang), callback_data="help_btn")],
+        [Btn(t("b.premium", lang), callback_data="buy_premium"), Btn(t("b.refer", lang), callback_data="refer_btn")],
         info,
     ])
 
@@ -250,8 +256,10 @@ def premium_kb(until=None) -> InlineKeyboardMarkup:
 # Shared renderers (also used by other modules)
 # ════════════════════════════════════════════════════════════════
 async def render_home(client: Client, query: CallbackQuery):
-    text, pic = await asyncio.gather(start_text(client, query.from_user), random_start_pic())
-    await edit_with_preview(client, query.message, text, home_kb(), pic=pic)
+    from core.i18n import get_lang
+    lang = await get_lang(query.from_user)
+    text, pic = await asyncio.gather(start_text(client, query.from_user, lang=lang), random_start_pic())
+    await edit_with_preview(client, query.message, text, home_kb(lang), pic=pic)
 
 
 async def render_settings(query_or_msg, user_id: int, edit: bool = True):
@@ -343,9 +351,11 @@ async def start_cmd(client: Client, message: Message):
 
     # one live draft (sendMessageDraft) shown *while* the text is built – it hides latency instead of adding it
     greeting = f"<b>👋 Hello {html.escape(message.from_user.first_name or '')},</b>"
+    from core.i18n import get_lang
+    lang = await get_lang(message.from_user)
     _, text, pic = await asyncio.gather(stream.draft(client, message.chat.id, greeting),
-                                        start_text(client, message.from_user), random_start_pic())
-    await send_with_preview(client, message.chat.id, text, home_kb(), pic=pic, reply_to=message.id,
+                                        start_text(client, message.from_user, lang=lang), random_start_pic())
+    await send_with_preview(client, message.chat.id, text, home_kb(lang), pic=pic, reply_to=message.id,
                             effect_id=effect("fire"))
 
 

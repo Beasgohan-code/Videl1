@@ -27,6 +27,7 @@ USER_COMMANDS = [
     ("settings", "⚙️ Settings dashboard"),
     ("commands", "📜 All commands"),
     ("cancel", "❌ Cancel the current task / flow"),
+    ("lang", "🌐 Language"),
     # clone bots
     ("clone", "🤖 Create your own FileStore bot"),
     ("mybots", "📋 Manage your clone bots"),
@@ -34,7 +35,7 @@ USER_COMMANDS = [
     ("login", "🔐 Login to save from private channels"),
     ("logout", "🚪 Logout your account"),
     ("myplan", "📊 Your plan & daily quota"),
-    ("plan", "💳 Premium plan details"),
+    ("plans", "🎬 Encoder Pro & clone plans"),
     ("premium", "💎 Premium benefits & prices"),
     ("mysub", "🔁 Monthly Stars subscription"),
     ("gift", "🎁 Gift Premium to a friend"),
@@ -45,7 +46,6 @@ USER_COMMANDS = [
     ("setchat", "📤 Set a dump chat for saved files"),
     ("set_caption", "📝 Set a custom caption"),
     ("set_thumb", "🖼 Set a custom thumbnail (reply to a photo)"),
-    ("view_thumb", "👁 View your thumbnail"),
     # auto-rename
     ("autorename", "✏️ Auto-rename template & settings"),
     ("setmedia", "📦 Send renamed files as doc / video / audio"),
@@ -62,6 +62,11 @@ USER_COMMANDS = [
     ("sample", "🧪 30 s test encode with your settings"),
     ("trim", "✂️ Cut part of a video (lossless)"),
     ("screens", "📸 Screenshots from a video"),
+    ("mux", "🧩 Add a subtitle / audio track (reply)"),
+    ("merge", "🔗 Merge several videos into one"),
+    ("convert", "🔄 Video → MP3 / M4A / FLAC / GIF (reply)"),
+    ("watermark", "©️ Your text / logo watermark"),
+    ("leech", "🌐 Mega / Drive / direct link → Telegram"),
     ("queue", "📋 Encoder queue"),
     ("vset", "🎛 View your encoder settings"),
     ("status", "📈 Server & queue status"),
@@ -101,6 +106,9 @@ GROUP_COMMANDS = [
     ("ddl", "🔗 Encode from a direct link"),
     ("batch", "📦 Batch-encode several links"),
     ("af", "🎧 Rearrange audio tracks (reply)"),
+    ("mux", "🧩 Add a subtitle / audio track (reply)"),
+    ("convert", "🔄 Video → MP3 / GIF (reply)"),
+    ("leech", "🌐 Mega / Drive / direct link → Telegram"),
     ("queue", "📋 Encoder queue"),
     ("status", "📈 Server & queue status"),
     ("stats", "📊 Bot statistics"),
@@ -115,6 +123,7 @@ GROUP_COMMANDS = [
 ]
 
 ADMIN_COMMANDS = [
+    ("analytics", "📊 Charts: users, jobs, revenue"),
     ("users", "👥 User counts"),
     ("user", "🔍 User profile & actions: id | @name"),
     ("msg", "✉️ Message a user: id text"),
@@ -125,7 +134,6 @@ ADMIN_COMMANDS = [
     ("broadcast", "📢 Broadcast (reply to a message)"),
     ("ban", "🚫 Ban a user"),
     ("unban", "✅ Unban a user"),
-    ("banned", "📋 Banned users"),
     ("maintenance", "🛠 Maintenance on / off"),
     ("add_premium", "💎 Give premium: id days"),
     ("remove_premium", "➖ Remove premium"),
@@ -133,7 +141,6 @@ ADMIN_COMMANDS = [
     ("stars", "⭐ Stars payments & revenue"),
     ("add_fsub", "🔒 Add force-sub channel"),
     ("del_fsub", "🔓 Remove force-sub channel"),
-    ("fsub_list", "📋 Force-sub channels"),
     ("fsub_mode", "🔁 Join-request mode per channel"),
     ("renameset", "✏️ Auto-rename admin: NSFW · dump · verify"),
     ("admins", "👮 Bot admins (owners: add / remove)"),
@@ -143,14 +150,12 @@ ADMIN_COMMANDS = [
     ("restart", "♻️ Restart the bot"),
     ("clean", "🧹 Delete encoder junk files"),
     ("clear", "🗑 Clear the encoder queue"),
-    ("vupload", "🎞 Upload a file as video"),
-    ("dupload", "📄 Upload a file as document"),
-    ("gupload", "☁️ Upload to Google Drive"),
     ("logs", "📜 Get the log file"),
     ("speedtest", "🚀 Server speed test"),
 ]
 
 OWNER_COMMANDS = [
+    ("backup", "💾 Backup now · reply to a backup = restore"),
     ("refund", "↩️ Refund a Stars payment"),
     ("botapi", "🛰 Bot API bridge status (aiogram)"),
     ("giftpremium", "🎁 Gift Telegram Premium: user 3|6|12"),

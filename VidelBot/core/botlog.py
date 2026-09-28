@@ -127,6 +127,12 @@ async def _deliver(client, chat_id, text, reply_markup=None):
 async def event(tag: str, body: str, client=None, reply_markup=None, dm: bool = None):
     """Send `#tag` + body (+ timestamp) to the log channel / owners. Never raises."""
     client = client or _client
+    try:
+        from core.analytics import EVENT_TAGS, bump_later
+        if tag in EVENT_TAGS:
+            bump_later(EVENT_TAGS[tag])
+    except Exception:
+        pass
     if client is None:
         log.info(f"[{tag}] {body}")
         return

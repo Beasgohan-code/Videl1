@@ -129,6 +129,8 @@ async def handle_encode(filepath, message, msg, audio_map=None, opts=None):
             if not getattr(new_file, "sample", None):
                 try:
                     await db.add_encode_stat(uid, (new_file.info or {}).get("size", 0), new_size, new_file.elapsed)
+                    from core.analytics import bump_later
+                    bump_later("encode")
                 except Exception:
                     pass
         _remove(new_file, filepath)

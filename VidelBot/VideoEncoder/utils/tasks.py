@@ -244,6 +244,8 @@ async def trim_task(message, msg):
                                row("Size", humanbytes(size)),
                                row("Mode", "Lossless (stream copy, cut at keyframes)")]),
                    reply_markup=_done_markup(link), disable_web_page_preview=True)
+    from core.analytics import bump_later
+    bump_later("tool")
 
 
 async def screens_task(message, msg):
@@ -477,6 +479,8 @@ async def _finish_card(message, msg, out, title, rows_):
     lines = [hdr("✅", title), f"<code>{html.escape(os.path.basename(out))[:80]}</code>", "",
              row("Size", humanbytes(size))] + [row(k, v) for k, v in rows_]
     await msg.edit("\n".join(lines), reply_markup=_done_markup(link), disable_web_page_preview=True)
+    from core.analytics import bump_later
+    bump_later("tool")
 
 
 async def mux_task(message, msg):
@@ -597,6 +601,8 @@ async def convert_task(message, msg):
         await message.reply_animation(out, caption=f"🎞 <code>{html.escape(base)[:60]}</code> · "
                                                    f"{ffcmd.fmt_ts(start)} +{length:g}s · {humanbytes(os.path.getsize(out))}")
         await msg.edit(f"✅ <b>GIF ready</b> – {humanbytes(os.path.getsize(out))}")
+        from core.analytics import bump_later
+        bump_later("tool")
         return
     if not info.get("audio") and info.get("ok"):
         await msg.edit("❌ <b>This file has no audio track.</b>")
@@ -615,6 +621,8 @@ async def convert_task(message, msg):
                               duration=dur, title=base[:60], performer="Videl", progress=progress_for_pyrogram,
                               progress_args=("Uploading…", msg, time.time()))
     await msg.edit(f"✅ <b>Audio ready</b> – {fmt.upper()} · {humanbytes(os.path.getsize(out))}")
+    from core.analytics import bump_later
+    bump_later("tool")
 
 
 async def leech_task(message, msg):
@@ -661,3 +669,5 @@ async def leech_task(message, msg):
                               "", row("Size", humanbytes(size)), row("Source", leech.kind_of(url).replace(
                                   "gdrive", "Google Drive").replace("mega", "Mega").replace("direct", "Direct link"))]),
                    reply_markup=_done_markup(link), disable_web_page_preview=True)
+    from core.analytics import bump_later
+    bump_later("leech")

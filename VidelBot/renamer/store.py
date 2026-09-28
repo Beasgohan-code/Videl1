@@ -117,6 +117,11 @@ async def set_meta(uid: int, field: str, value):
 
 async def record_rename(user, new_name: str = "", old_name: str = ""):
     now = naive_now()
+    try:
+        from core.analytics import bump_later
+        bump_later("rename")
+    except Exception:
+        pass
     await _users().update_one(
         {"_id": user.id},
         {"$inc": {"count": 1}, "$set": {"last_ts": now, "first_name": (user.first_name or "")[:64],
