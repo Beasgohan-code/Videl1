@@ -13,14 +13,14 @@ def saver_settings_view(user_id: int, is_premium) -> tuple:
     from core.texts import SETTINGS_HUB
     badge = "💎 Premium Member" if is_premium else "👤 Standard User"
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📜 Command List", callback_data="cmd_list_btn")],
-        [InlineKeyboardButton("📊 Usage Stats", callback_data="user_stats_btn")],
-        [InlineKeyboardButton("🗑 Dump Chat Settings", callback_data="dump_chat_btn")],
-        [InlineKeyboardButton("🖼 Manage Thumbnail", callback_data="thumb_btn"),
-         InlineKeyboardButton("📝 Edit Caption", callback_data="caption_btn")],
-        [InlineKeyboardButton("🎬 Encoder Settings", callback_data="hub_enc"),
-         InlineKeyboardButton("⚡ My Clone Bots", callback_data="my_bots")],
-        [InlineKeyboardButton("⬅️ Return to Home", callback_data="start_btn"),
+        [InlineKeyboardButton("📜 Commands", callback_data="cmd_list_btn"),
+         InlineKeyboardButton("📊 Usage", callback_data="user_stats_btn")],
+        [InlineKeyboardButton("🖼 Thumbnail", callback_data="thumb_btn"),
+         InlineKeyboardButton("📝 Caption", callback_data="caption_btn")],
+        [InlineKeyboardButton("🗑 Dump chat", callback_data="dump_chat_btn"),
+         InlineKeyboardButton("🎬 Encoder", callback_data="hub_enc")],
+        [InlineKeyboardButton("⚡ My Clone Bots", callback_data="my_bots")],
+        [InlineKeyboardButton("🏠 Home", callback_data="start_btn"),
          InlineKeyboardButton("❌ Close", callback_data="close_btn")],
     ])
     return SETTINGS_HUB.format(badge=badge, user_id=user_id), buttons

@@ -28,6 +28,7 @@ async def plan_view(user_id: int, first_name: str = ""):
     daily_usage = user_data.get('daily_usage', 0)
     total_saves = user_data.get('total_saves', 0)
 
+    from core.design import bar, card, footer, heading, kv, page, section
     if is_premium:
         if expiry:
             try:
@@ -40,22 +41,23 @@ async def plan_view(user_id: int, first_name: str = ""):
                 expiry_text = "<code>Active</code>"
         else:
             expiry_text = "<code>Permanent</code>"
-        plan_text = (
-            f"<b>👑 Premium Status: Active</b>\n\n"
-            f"<b>📅 Expiry:</b> {expiry_text}\n\n"
-            f"<b>♾️ Daily Saves:</b> Unlimited\n"
-            f"<b>♾️ Batch Limit:</b> Unlimited\n"
-            f"<b>📊 Total Lifetime Saves:</b> <code>{total_saves}</code>\n\n"
-            "<i>Thank you for supporting the bot! 🎉</i>"
+        plan_text = page(
+            heading("👑", "Premium Status: Active", "Thank you for supporting the bot! 🎉"),
+            card(kv("Expiry", expiry_text, "📅"),
+                 kv("Daily saves", "Unlimited", "♾️"),
+                 kv("Batch limit", "Unlimited", "♾️")),
+            section("📊", "Your usage", kv("Total lifetime saves", f"<code>{total_saves}</code>")),
         )
     else:
         tokens_left = max(0, FREE_LIMIT_DAILY - daily_usage)
-        plan_text = (
-            f"<b>👤 Plan: Free Tier</b>\n\n"
-            f"<b>🎫 Daily Saves:</b> <code>{tokens_left} / {FREE_LIMIT_DAILY}</code>\n"
-            f"<b>📦 File Size Limit:</b> <code>{FREE_LIMIT_SIZE_GB:g} GB</code>\n"
-            f"<b>📊 Total Lifetime Saves:</b> <code>{total_saves}</code>\n\n"
-            "<i>Upgrade to Premium for unlimited access! 🚀</i>"
+        plan_text = page(
+            heading("👤", "Plan: Free Tier", "Resets 24 hours after your first save."),
+            card(kv("Daily saves", f"<code>{tokens_left} / {FREE_LIMIT_DAILY}</code> left", "🎫"),
+                 f"{bar(tokens_left, FREE_LIMIT_DAILY)}",
+                 kv("File size limit", f"<code>{FREE_LIMIT_SIZE_GB:g} GB</code>", "📦"),
+                 kv("Batch", "5 posts", "📚")),
+            section("📊", "Your usage", kv("Total lifetime saves", f"<code>{total_saves}</code>")),
+            footer("Upgrade to Premium for unlimited access 🚀"),
         )
 
     buttons = InlineKeyboardMarkup([

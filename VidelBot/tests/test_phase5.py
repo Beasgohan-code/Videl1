@@ -170,8 +170,9 @@ def test_rich_guide_blocks_and_fallback():
     rich = _j(s.last("SendRichMessage")["rich_message"])
     types_ = [b["type"] for b in rich["blocks"]]
     assert types_[0] == "heading" and "table" in types_ and "details" in types_ and types_[-1] == "footer"
-    table = next(b for b in rich["blocks"] if b["type"] == "table")
-    assert table["cells"][0][0]["is_header"] and "⭐ 100" in json.dumps(table, ensure_ascii=False)
+    tables = [b for b in rich["blocks"] if b["type"] == "table"]
+    assert all(t["cells"][0][0]["is_header"] for t in tables)
+    assert any("⭐ 100" in json.dumps(t, ensure_ascii=False) for t in tables)
     no_botapi()
     c2 = FakeClient()
     run(guide_cmd(c2, FakeMsg("/guide", uid=5)))

@@ -47,16 +47,17 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
 
     bots = await main_db.get_user_bots(user_id)
 
+    from core.design import card, footer, heading, kv, page
+    from core.ui import smart_edit
     if not bots:
-        await query.message.edit_text(
-            "<b>━━━━━━━━━━━━━━━━━━━━━\n"
-            "📋 𝗠𝗬 𝗕𝗢𝗧𝗦\n"
-            "━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-            "<blockquote>ʏᴏᴜ ʜᴀᴠᴇɴ'ᴛ ᴄʀᴇᴀᴛᴇᴅ ᴀɴʏ ʙᴏᴛs ʏᴇᴛ.\n"
-            "ᴛᴀᴘ <b>⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ</b> ᴛᴏ ɢᴇᴛ sᴛᴀʀᴛᴇᴅ!</blockquote>",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ", callback_data="create_bot")],
-                [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_menu")],
+        await smart_edit(
+            query.message,
+            page(heading("📋", "My bots", "You haven't created a bot yet."),
+                 card("Tap <b>⚡ Create Bot</b> — it takes about two minutes."),
+                 footer("You'll need a token from @BotFather and a channel for your files.")),
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚡ Create Bot", callback_data="create_bot")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="back_menu")],
             ]),
         )
         await query.answer()
@@ -74,23 +75,21 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
         buttons.append([InlineKeyboardButton(f"{emoji} @{bot.get('bot_username', 'unknown')}",
                                              callback_data=f"dashboard_{bot_id}")])
     if len(bots) < MAX_BOTS_PER_USER:
-        buttons.append([InlineKeyboardButton("⚡ ᴄʀᴇᴀᴛᴇ ᴀɴᴏᴛʜᴇʀ", callback_data="create_bot")])
+        buttons.append([InlineKeyboardButton("⚡ Create another", callback_data="create_bot")])
     else:   # Bot API 10.3 disabled button – a status chip, not an action
-        buttons.append([InlineKeyboardButton(f"🔒 ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ · {len(bots)}/{MAX_BOTS_PER_USER}",
+        buttons.append([InlineKeyboardButton(f"🔒 Limit reached · {len(bots)}/{MAX_BOTS_PER_USER}",
                                              callback_data="noop:limit")])
-    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍᴇɴᴜ", callback_data="back_menu")])
+    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="back_menu")])
 
-    summary = " · ".join(f"{k} {v}" for k, v in counts.items() if v)
+    names = {"🟢": "running", "💤": "asleep", "🔴": "stopped"}
+    summary = " · ".join(f"{k} {v} {names[k]}" for k, v in counts.items() if v)
     limit = period()
-    note = (f"\n<i>💤 Clones unused for {limit.days} days switch off automatically – tap one to turn it back on.</i>"
-            if limit else "")
-    from core.ui import smart_edit
     await smart_edit(
         query.message,
-        f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 𝗠𝗬 𝗕𝗢𝗧𝗦  [{len(bots)}/{MAX_BOTS_PER_USER}]\n"
-        f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-        f"<blockquote>{summary}\nsᴇʟᴇᴄᴛ ᴀ ʙᴏᴛ ᴛᴏ ᴏᴘᴇɴ ɪᴛs ᴅᴀsʜʙᴏᴀʀᴅ:</blockquote>{note}",
+        page(heading("📋", f"My bots  {len(bots)}/{MAX_BOTS_PER_USER}", "Tap a bot to open its dashboard."),
+             card(kv("Status", summary, "📡")),
+             footer(f"💤 Clones unused for {limit.days} days switch off automatically — open one to turn it "
+                    "back on.") if limit else ""),
         InlineKeyboardMarkup(buttons),
     )
     await query.answer()
@@ -130,12 +129,10 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
     now = datetime.now(timezone.utc)
     idle = now - last_activity(bot, now)
     limit = period()
+    auto_off = ""
     if is_live and limit:
         left = limit - idle
         auto_off = f"in {ago(left).replace(' ago', '')}" if left.total_seconds() > 0 else "soon"
-        activity_line = f"◈ <b>ʟᴀsᴛ ᴜsᴇᴅ:</b> {ago(idle)} · <i>ᴀᴜᴛᴏ-ᴏꜰꜰ {auto_off}</i>\n"
-    else:
-        activity_line = f"◈ <b>ʟᴀsᴛ ᴜsᴇᴅ:</b> {ago(idle)}\n"
     username = bot.get("bot_username", "unknown")
     channel = bot.get("log_channel_id", "Not set")
 
@@ -143,27 +140,20 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
     settings = bot.get("settings", {})
     shortener = bot.get("shortener", {})
     auto_del = settings.get("auto_delete_time", 0)
-    auto_del_text = f"{auto_del}s" if auto_del > 0 else "ᴅɪsᴀʙʟᴇᴅ"
-    shortener_status = "✅" if shortener.get("enabled") else "❌"
-    protect_status = "✅ ᴏɴ" if settings.get("protect_content") else "❌ ᴏꜰꜰ"
-    perm_link_status = "✅ ᴏɴ" if settings.get("permanent_link") else "❌ ᴏꜰꜰ"
-    maint_status = "🛠 ᴏɴ" if settings.get("maintenance_mode") else "❌ ᴏꜰꜰ"
-
-    text = (
-        f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚙️ 𝗕𝗢𝗧 𝗗𝗔𝗦𝗛𝗕𝗢𝗔𝗥𝗗\n"
-        f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-        f"<blockquote>"
-        f"◈ <b>ʙᴏᴛ:</b> @{username}\n"
-        f"◈ <b>sᴛᴀᴛᴜs:</b> {status}\n"
-        f"{activity_line}"
-        f"◈ <b>ᴄʜᴀɴɴᴇʟ:</b> <code>{channel}</code>\n"
-        f"◈ <b>ᴀᴜᴛᴏ-ᴅᴇʟ:</b> {auto_del_text}\n"
-        f"◈ <b>sʜᴏʀᴛᴇɴᴇʀ:</b> {shortener_status}\n"
-        f"◈ <b>ᴘʀᴏᴛᴇᴄᴛɪᴏɴ:</b> {protect_status}\n"
-        f"◈ <b>ᴘᴇʀᴍ ʟɪɴᴋ:</b> {perm_link_status}\n"
-        f"◈ <b>ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ:</b> {maint_status}"
-        f"</blockquote>"
+    on, off = "✅ On", "❌ Off"
+    from core.design import card, footer, heading, kv, page, section
+    text = page(
+        heading("⚙️", "Bot dashboard", f"@{username}"),
+        card(kv("Status", status, "📡"),
+             kv("Last used", ago(idle) + (f" · <i>auto-off {auto_off}</i>" if auto_off else ""), "🕒"),
+             kv("Channel", f"<code>{channel}</code>", "📢")),
+        section("🎛", "Settings",
+                kv("Auto-delete", f"{auto_del}s" if auto_del > 0 else "Disabled", "⏱"),
+                kv("Shortener", on if shortener.get("enabled") else off, "🔗"),
+                kv("Protection", on if settings.get("protect_content") else off, "🛡"),
+                kv("Permanent link", on if settings.get("permanent_link") else off, "♾"),
+                kv("Maintenance", "🛠 On" if settings.get("maintenance_mode") else off, "🛠")),
+        footer("Tap a button below to change a setting 👇"),
     )
 
     keyboard = InlineKeyboardMarkup([

@@ -43,55 +43,78 @@ async def _resolve_user(client, arg: str):
 
 # ─────────────────────────── /guide (rich message) ───────────────────────────
 def guide_blocks(bot_username: str) -> list:
-    """Rich-message layout for /guide (Bot API sendRichMessage)."""
+    """Rich-message layout for /guide (Bot API sendRichMessage) – the reference look of the Videl UI."""
     from aiogram import types as at
+    from config import CLONE_INACTIVE_DAYS, FREE_LIMIT_DAILY, FREE_LIMIT_SIZE_GB
     P = lambda *t: at.InputRichBlockParagraph(text=list(t) if len(t) > 1 else t[0])  # noqa: E731
     B = lambda t: at.RichTextBold(text=t)  # noqa: E731
+    I = lambda t: at.RichTextItalic(text=t)  # noqa: E731,E741
 
     def cell(text, header=False, align="left"):
-        return at.RichBlockTableCell(text=text, is_header=header or None, align=align, valign="middle")
+        return at.RichBlockTableCell(text=text or None, is_header=header or None, align=align, valign="middle")
 
     def bullets(*items):
-        return at.InputRichBlockList(items=[at.InputRichBlockListItem(blocks=[P(i)]) for i in items])
+        return at.InputRichBlockList(items=[at.InputRichBlockListItem(blocks=[P(i)]) for i in items if i])
 
-    plan_rows = [[cell("Plan", True), cell("Price", True, "right")]]
-    plan_rows += [[cell(_label(d)), cell(f"⭐ {s}", align="right")] for d, s in STARS_PLANS]
+    def table(header, rows, caption=None, compact=False):
+        cells = [[cell(h, True, "left" if i == 0 else "center") for i, h in enumerate(header)]]
+        cells += [[cell(r[0])] + [cell(v, align="center") for v in r[1:]] for r in rows]
+        return at.InputRichBlockTable(cells=cells, is_bordered=True, is_striped=True, caption=caption,
+                                      is_compact=compact or None)
+
+    plan_rows = [(_label(d), f"⭐ {s}") for d, s in STARS_PLANS]
     if SUBSCRIPTION_STARS > 0:
-        plan_rows.append([cell("Monthly (auto-renew)"), cell(f"⭐ {SUBSCRIPTION_STARS}/mo", align="right")])
+        plan_rows.append(("Monthly (auto-renew)", f"⭐ {SUBSCRIPTION_STARS}/mo"))
 
     link = f"https://t.me/{bot_username}"
     blocks = [
         at.InputRichBlockSectionHeading(text=f"📖 {BOT_NAME} · Guide", size=1),
-        P("One bot for ", B("saving restricted content"), ", ", B("encoding videos"),
-          " and running your own ", B("FileStore clone bots"), "."),
+        P("One bot for ", B("saving restricted content"), ", ", B("encoding videos"), ", ",
+          B("renaming files"), " and running your own ", B("FileStore clone bots"), "."),
+        at.InputRichBlockPullQuotation(text="Send a link. Get the file. That's it.", credit=I(BOT_NAME)),
         at.InputRichBlockDivider(),
         at.InputRichBlockSectionHeading(text="🚀 Quick start", size=2),
         bullets("/login – connect your account for private channels",
-                "Send any t.me link – Videl saves the post (or /batch for many)",
-                "Send a video – pick an encoder preset",
+                "Send any t.me link – Videl saves the post (or a range like /100-120)",
+                "Reply /dl to a video – pick an encoder preset",
+                "/autorename once – every file you send comes back renamed",
                 "/clone – create your own FileStore bot"),
         at.InputRichBlockDetails(summary="📥 Saving content", blocks=[
-            bullets("/batch · /cancel – bulk save with progress",
-                    "/settings – caption, thumbnail, rename, chat & word filters",
+            bullets("/batch · /cancel – bulk save with live progress",
+                    "/settings – caption, thumbnail, dump chat, word filters",
                     "/dl · /ddl – download direct links, 30+ hosts supported")]),
         at.InputRichBlockDetails(summary="🎞 Video encoder", blocks=[
             bullets("/vset – codec, CRF, preset, resolution, audio",
                     "/queue · /status – live queue & progress",
-                    "Hardsub, watermark, audio-track picker")]),
+                    "Hardsub, watermark, audio-track picker (/af)")]),
+        at.InputRichBlockDetails(summary="✏️ Auto-Rename", blocks=[
+            bullets("/autorename {title} S{season}E{episode} [{quality}] – your template",
+                    "/setmedia · /metadata · custom thumbnails",
+                    "/start_sequence – rename a whole season in order · /leaderboard")]),
         at.InputRichBlockDetails(summary="🤖 FileStore clone bots", blocks=[
             bullets("⚡ One-tap creation (no BotFather) when available",
                     "Force-sub, auto-delete, shortener, custom start & caption",
-                    "Backup / restore, maintenance mode, transfer ownership")]),
+                    "Smart links – expiring, limited, password or sold for ⭐ Stars",
+                    f"Unused for {CLONE_INACTIVE_DAYS} days → switched off, one tap wakes it"
+                    if CLONE_INACTIVE_DAYS > 0 else "")]),
+        at.InputRichBlockDetails(summary="🧰 Tools", blocks=[
+            bullets("/mediainfo · /rename · /upload",
+                    "/qr · /short · /id · /info · /json")]),
+        at.InputRichBlockSectionHeading(text="📊 Free vs Premium", size=2),
+        table(["", "Free", "Premium"], [
+            ("Daily saves", str(FREE_LIMIT_DAILY), "Unlimited"),
+            ("File size", f"{FREE_LIMIT_SIZE_GB:g} GB", "No cap"),
+            ("Batch", "5 posts", "Unlimited"),
+        ], compact=True),
     ]
-    if len(plan_rows) > 1:
+    if plan_rows:
         blocks += [
             at.InputRichBlockSectionHeading(text="💎 Premium plans", size=2),
-            at.InputRichBlockTable(cells=plan_rows, is_bordered=True, is_striped=True,
-                                   caption="Paid securely with Telegram Stars"),
+            table(["Plan", "Price"], plan_rows, caption="Paid securely with Telegram Stars"),
         ]
     faq = [bullets("Premium removes daily limits and unlocks bigger files",
                    "Cancel a subscription anytime with /mysub",
-                   "Gift Premium to a friend with /gift")]
+                   "Gift Premium to a friend with /gift · earn it free with /refer")]
     if TRIAL_DAYS:
         faq.append(P(f"New here? /trial gives {TRIAL_DAYS} day(s) free."))
     blocks += [
@@ -100,6 +123,11 @@ def guide_blocks(bot_username: str) -> list:
             at.RichMessageButton(text="💎 Premium", url=f"{link}?start=premium", style="success"),
             at.RichMessageButton(text="🤖 Clone bot", url=f"{link}?start=clone", style="primary"),
             at.RichMessageButton(text="🆘 Help", url=f"{link}?start=help"),
+        ]),
+        at.InputRichBlockButtons(buttons=[
+            at.RichMessageButton(text="🤝 Refer & Earn", url=f"{link}?start=refer"),
+            at.RichMessageButton(text="⚙️ Settings", url=f"{link}?start=settings"),
+            at.RichMessageButton(text="✏️ Auto-Rename", url=f"{link}?start=rename"),
         ]),
         at.InputRichBlockFooter(text=f"{BOT_NAME} · /help for every command"),
     ]
@@ -113,6 +141,17 @@ async def guide_cmd(client: Client, message: Message):
         kb = InlineKeyboardMarkup([[Btn("📖 Open the guide", url=f"https://t.me/{me.username}?start=guide")]])
         return await group_reply(message, f"📖 The <b>{BOT_NAME}</b> guide opens in private.", kb)
     await send_guide(client, message.chat.id, me.username)
+
+
+@Client.on_callback_query(filters.regex(r"^guide_btn$"))
+async def guide_btn(client, query):
+    """📖 Illustrated guide (Help menu) – sends the rich guide as a new message."""
+    me = client.me or await client.get_me()
+    rich = await send_guide(client, query.message.chat.id, me.username)
+    try:
+        await query.answer("📖 Guide sent below" if rich else "📖 Sent below")
+    except Exception:
+        pass
 
 
 async def send_guide(client, chat_id: int, bot_username: str):

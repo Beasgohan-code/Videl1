@@ -72,13 +72,33 @@ Save files up to 4GB and beyond with no limits!
 
 
 def premium_text() -> str:
-    prices = "\n".join(f"• <b>{p.strip()}</b>" for p in PREMIUM_PRICES.split("|") if p.strip())
+    """Premium screen – benefits card, ⭐ plans table and (optional) manual payment details."""
+    from config import STARS_PLANS, SUBSCRIPTION_STARS
+    from core.design import DOT, bullets, card, details, footer, heading, page, section, table
+    star_rows = [("Lifetime" if d == 0 else f"{d} days", f"⭐ {p}") for d, p in STARS_PLANS]
+    if SUBSCRIPTION_STARS > 0:
+        star_rows.append(("Monthly · auto-renew", f"⭐ {SUBSCRIPTION_STARS}/mo"))
+    manual = [p.strip() for p in PREMIUM_PRICES.split("|") if p.strip()]
     pay = []
     if UPI_ID:
-        pay.append(f"<b>💸 UPI ID:</b> <code>{UPI_ID}</code>")
+        pay.append(f"<b>💸 UPI ID:</b> <code>{html.escape(UPI_ID)}</code>")
     if QR_CODE:
-        pay.append(f"<b>📸 QR Code:</b> <a href='{QR_CODE}'>Scan to Pay</a>")
-    return script.PREMIUM_TEXT.format(prices=prices, payment="\n".join(pay))
+        pay.append(f"<b>📸 QR Code:</b> <a href='{html.escape(QR_CODE, quote=True)}'>Scan to pay</a>")
+    manual_part = ""
+    if pay:     # manual prices only make sense when a manual payment method exists
+        manual_part = details("💳", "Other payment", "\n".join(f"▸ {html.escape(m)}" for m in manual), *pay,
+                              "<i>Send the payment screenshot to the admin for activation.</i>")
+    return page(
+        heading("💎", "Premium", "Unlimited saving, bigger files, zero waiting."),
+        card(bullets("<b>Unlimited</b> daily saves and batches",
+                     f"<b>No size cap</b> (free: {FREE_LIMIT_SIZE_GB:g} GB per file)",
+                     "<b>Instant</b> processing — no cooldowns",
+                     "Custom <b>thumbnails</b> &amp; <b>captions</b>" + DOT + "<b>priority</b> support")),
+        section("⭐", "Plans", table(star_rows, header=("Plan", "Price"))) if star_rows else "",
+        manual_part,
+        footer("Paid securely with Telegram Stars — Premium activates instantly." if star_rows
+               else "Contact the admin to upgrade."),
+    )
 
 
 async def send_banner(client: Client, chat_id: int, text: str, markup=None):

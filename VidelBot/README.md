@@ -220,7 +220,7 @@ MP4 → MKV / metadata use stream copy (no re-encode); if a file can't be remuxe
 pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
-The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes, and `tests/test_phase8.py` for the clone extras (smart-link limits / passwords / expiry, Stars checkout + delivery, premium, index + search, requests, anti-flood, broadcasts & schedules, export, the ✨ Extras panel and ownership transfer), and `tests/test_phase9.py` for the performance work (live progress, saver cancel / visible upload errors, encoder throttle, parallel force-sub, instant start pics, indexes, cache trimming), and `tests/test_phase10.py` for the clone lifecycle (warning → deactivation → reactivation, owner-only buttons), disabled buttons and the new home screen. Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
+The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes, and `tests/test_phase8.py` for the clone extras (smart-link limits / passwords / expiry, Stars checkout + delivery, premium, index + search, requests, anti-flood, broadcasts & schedules, export, the ✨ Extras panel and ownership transfer), and `tests/test_phase9.py` for the performance work (live progress, saver cancel / visible upload errors, encoder throttle, parallel force-sub, instant start pics, indexes, cache trimming), and `tests/test_phase10.py` for the clone lifecycle (warning → deactivation → reactivation, owner-only buttons), disabled buttons and the new home screen, and `tests/test_phase11.py` for the design system (sans-bold, cards, tables, message length limits, template placeholders, the richer /guide). Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
 
 ## 🗂 Layout
 
@@ -230,7 +230,7 @@ keep_alive.py     health web server + self-ping
 watchdog.py       auto-cleanup & self-healing
 client.py         the single shared Pyrogram client
 config.py         unified env-based configuration
-core/             home menu & texts, settings hub, middleware, force-sub, Stars payments (plans / subscriptions / gifts),
+core/             design system (design.py), home menu & texts, settings hub, middleware, force-sub, Stars payments (plans / subscriptions / gifts),
                   inline, errors, admin, tools, botlog (owner log channel), commands (Telegram menus),
                   stream (live drafts), profile (bot photo), growth (referrals / codes / trial), support, userpanel,
                   botapi (aiogram bridge), extras (/guide, /botapi, Premium gifts), admins (runtime admins)
@@ -242,6 +242,25 @@ filestore/        clone-bot controller (main_bot/plugins, incl. managed_bots = o
 database/         saver database
 tests/            offline test-suite
 ```
+
+### 🎨 Design system (`core/design.py`)
+Every main-bot screen uses the look of the rich **/guide**, rebuilt in Bot API HTML so menus can still be
+edited in place and their buttons keep working over MTProto:
+
+| /guide rich block | HTML helper | Looks like |
+|---|---|---|
+| section heading | `heading(emoji, title, sub)` | **🚀 𝗤𝘂𝗶𝗰𝗸 𝘀𝘁𝗮𝗿𝘁** + italic subtitle |
+| block quotation | `card(*lines)` | `<blockquote>` card |
+| details | `details(emoji, title, *lines)` | collapsible `<blockquote expandable>` |
+| table | `table(rows, header)` | `▸ 30 days · ⭐ 100` rows |
+| footer | `footer(text)` | small italic line |
+
+Sans-bold (`sans()`) is only used for headings: it's decorative Unicode, so commands, numbers and
+labels people search for stay plain text. Restyled: home, help, about, premium (⭐ plans table), my plan
+(quota bar ▰▰▱▱), settings, refer, force-join, maintenance/ban notices, clone hub / guide / about,
+My Bots, clone dashboard, encoder, tools, admin, Auto-Rename tutorial and the saver `/commands`.
+**📖 Illustrated guide** in Help sends the real rich message, which now also has Auto-Rename and Tools
+sections, a Free-vs-Premium table, a pull quote and a second button row.
 
 ### ⚡ Performance notes
 * **Live progress** (`core/progress.py`) – saver, Auto-Rename and tools edit the status message in place (no status files,

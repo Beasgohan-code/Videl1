@@ -47,10 +47,10 @@ def ago(delta: timedelta) -> str:
 def status_of(bot: dict, is_live: bool) -> tuple[str, str]:
     """(emoji, label) for lists and the dashboard."""
     if is_live:
-        return "🟢", "ʀᴜɴɴɪɴɢ"
+        return "🟢", "Running"
     if bot.get("deactivated_reason") == "inactive":
-        return "💤", "ᴅᴇᴀᴄᴛɪᴠᴀᴛᴇᴅ (ɪᴅʟᴇ)"
-    return "🔴", "sᴛᴏᴘᴘᴇᴅ"
+        return "💤", "Deactivated (idle)"
+    return "🔴", "Stopped"
 
 
 async def sweep(app, worker_engine, now: datetime = None) -> dict:
