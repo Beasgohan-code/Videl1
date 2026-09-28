@@ -22,7 +22,7 @@ def get_codec(filepath, channel='v:0'):
     try:
         output = subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', channel,
                                           '-show_entries', 'stream=codec_name,codec_tag_string', '-of',
-                                          'default=nokey=1:noprint_wrappers=1', filepath])
+                                          'default=nokey=1:noprint_wrappers=1', filepath], timeout=120)
         return output.decode('utf-8').split()
     except subprocess.CalledProcessError as e:
         LOGGER.error(f"ffprobe failed for {filepath}: {e}")
@@ -34,7 +34,7 @@ def get_codec(filepath, channel='v:0'):
 def get_media_streams(filepath):
     try:
         cmd = ['ffprobe', '-hide_banner', '-print_format', 'json', '-show_streams', filepath]
-        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=120)
         return json.loads(output.decode('utf-8')).get('streams', [])
     except Exception as e:
         LOGGER.error(f"Failed to get media streams: {e}")
@@ -58,11 +58,11 @@ async def extract_subs(filepath, msg, user_id):
 def _extract_subs_sync(filepath, output):
     """ffmpeg / mkvextract / font install – blocking, so it runs in a worker thread."""
     try:
-        subprocess.call(['ffmpeg', '-y', '-i', filepath, '-map', 's:0', output])
+        subprocess.call(['ffmpeg', '-nostdin', '-y', '-i', filepath, '-map', 's:0', output], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=900)
         # mkvextract might not be in PATH on Windows, handle gracefully
         try:
             subprocess.call(['mkvextract', 'attachments', filepath, '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16',
-                            '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40'])
+                            '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=900)
         except FileNotFoundError:
             LOGGER.warning("mkvextract not found, skipping attachments extraction.")
         except Exception as e:
@@ -498,7 +498,7 @@ def get_thumbnail(in_filename, path, ttl):
             '-vf', 'scale=320:320:force_original_aspect_ratio=decrease', '-q:v', '4',
             '-y', out_filename
         ]
-        subprocess.run(command, check=True, capture_output=True)
+        subprocess.run(command, check=True, capture_output=True, timeout=120)
         if os.path.isfile(out_filename):
             return out_filename
         else:
@@ -520,7 +520,7 @@ def get_duration(filepath):
             'format=duration', '-of',
             'default=noprint_wrappers=1:nokey=1', filepath
         ]
-        output = subprocess.check_output(cmd).decode('utf-8').strip()
+        output = subprocess.check_output(cmd, timeout=120).decode('utf-8').strip()
         return int(float(output))
     except Exception as e:
         LOGGER.warning(f"ffprobe duration failed: {e}, falling back to hachoir")
@@ -541,7 +541,7 @@ def get_width_height(filepath):
             '-show_entries', 'stream=width,height', '-of',
             'csv=s=x:p=0', filepath
         ]
-        output = subprocess.check_output(cmd).decode('utf-8').strip()
+        output = subprocess.check_output(cmd, timeout=120).decode('utf-8').strip()
         width, height = map(int, output.split('x'))
         return width, height
     except Exception as e:

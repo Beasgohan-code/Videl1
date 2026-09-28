@@ -38,7 +38,7 @@ FREE_LIMIT_SIZE = int(FREE_LIMIT_SIZE_GB * 1024 * 1024 * 1024)
 class script(object):
     PREMIUM_TEXT = (
         hdr("💎", "Premium Plans", "unlock unlimited access & advanced features") + "\n\n"
-        + quote("<b>✨ " + sc("Key benefits") + "</b>\n" + "\n".join(f"◈ {e} {sc(t)}" for e, t in (
+        + quote("<b>✨ " + sc("Key benefits") + "</b>\n" + "\n".join(f"◈ {html.escape(str(e))} {sc(t)}" for e, t in (
             ("♾️", "Unlimited daily saves"), ("📂", "4GB+ file sizes"), ("⚡", "Instant processing"),
             ("🖼", "Custom thumbnails & captions"), ("🛂", "Priority support"))))
         + "\n<b>💳 " + sc("Pricing") + "</b>\n{prices}\n{payment}\n"
@@ -294,7 +294,7 @@ async def save(client: Client, message: Message):
                     return await message.reply(
                         "<b>❌ Authentication Failed</b>\n\n"
                         "<i>Your session may have expired. Please /logout and /login again.</i>\n"
-                        f"<code>{e}</code>",
+                        f"<code>{html.escape(str(e))}</code>",
                         parse_mode=enums.ParseMode.HTML,
                     )
 

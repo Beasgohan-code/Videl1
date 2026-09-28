@@ -32,3 +32,21 @@ def spawn(coro, name: str | None = None) -> asyncio.Task:
 
 def running() -> int:
     return len(_TASKS)
+
+
+def trim(d: dict, limit: int, removable=None) -> int:
+    """Keep a per-user in-memory dict from growing forever on a long-running server.
+
+    When `d` holds more than `limit` keys, the oldest-inserted ones are dropped until it is back to half of
+    `limit`. `removable(key, value)` can veto dropping an entry that is still in use. Returns how many were dropped.
+    """
+    if len(d) <= limit:
+        return 0
+    target, dropped = limit // 2, 0
+    for k in list(d):
+        if len(d) <= target:
+            break
+        if removable is None or removable(k, d[k]):
+            d.pop(k, None)
+            dropped += 1
+    return dropped

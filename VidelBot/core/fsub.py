@@ -5,6 +5,7 @@ and the saver's /add_unsubscribe · /del_unsubscribe stubs – now fully impleme
 Channels = FSUB_CHANNELS env + channels added at runtime with /add_fsub.
 Supports normal join and join-request mode (a pending request counts as joined).
 """
+import html
 import asyncio
 import logging
 import time
@@ -124,6 +125,8 @@ async def fsub_gate_messages(client: Client, message: Message):
     if time.time() - _last_prompt.get(uid, 0) < 20 and not (message.text or "").startswith("/start"):
         raise StopPropagation
     _last_prompt[uid] = time.time()
+    from core.bg import trim
+    trim(_last_prompt, 20000)
     await send_with_preview(client, message.chat.id, FORCE_MSG.format(mention=message.from_user.mention),
                             await force_markup(client, missing), pic=FORCE_PIC, reply_to=message.id)
     raise StopPropagation
@@ -204,7 +207,7 @@ async def add_fsub(client: Client, message: Message):
         if me.status not in (enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER):
             return await message.reply_text("❌ Make me an admin in that channel first.")
     except Exception as e:
-        return await message.reply_text(f"❌ Can't access that chat: <code>{e}</code>")
+        return await message.reply_text(f"❌ Can't access that chat: <code>{html.escape(str(e))}</code>")
     extra = await vdb.get_setting("fsub_channels", []) or []
     if c.id in extra or c.id in FSUB_CHANNELS:
         return await message.reply_text("ℹ️ Already in the force-sub list.")
@@ -214,7 +217,7 @@ async def add_fsub(client: Client, message: Message):
     from core import botlog
     await botlog.event("FsubAdded", f"<b>📢 Channel:</b> {botlog.esc(c.title)} (<code>{c.id}</code>)\n"
                                     f"<b>👮 By:</b> <code>{message.from_user.id}</code>", client=client)
-    await message.reply_text(f"✅ Added <b>{c.title}</b> (<code>{c.id}</code>) to force-subscribe.")
+    await message.reply_text(f"✅ Added <b>{html.escape(c.title or '')}</b> (<code>{c.id}</code>) to force-subscribe.")
 
 
 @Client.on_message(filters.command(["del_fsub", "del_unsubscribe", "rem_fsub", "delchnl"]) & filters.user(ADMINS))

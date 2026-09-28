@@ -129,7 +129,7 @@ class Downloader(DriveAPI):
                         TimeFormatter(eta),
                         humanbytes(speed),
                         humanbytes(f_size),)
-        except:
+        except Exception:
             pass
         else:
             self._completed += 1

@@ -32,6 +32,8 @@ async def on_error(client: Client, update, error: Exception):
     if now - _last_sent.get(key, 0) < REPORT_EVERY:
         return
     _last_sent[key] = now
+    from core.bg import trim
+    trim(_last_sent, 2000)
     who = ""
     user = getattr(update, "from_user", None)
     if user:

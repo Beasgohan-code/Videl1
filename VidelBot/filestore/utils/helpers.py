@@ -78,7 +78,7 @@ async def validate_bot_token(token: str) -> dict | None:
     """
     url = f"https://api.telegram.org/bot{token}/getMe"
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -225,7 +225,7 @@ async def upload_to_telegraph(client: Client, message: Message) -> str | None:
         if 'file_path' in locals() and file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
-            except:
+            except Exception:
                 pass
 
 async def send_main_log(client: Client, text: str, tag: str = "LinkGenerated"):

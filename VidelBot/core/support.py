@@ -11,6 +11,7 @@ Every delivered message is mapped (chat, message_id → peer) in the
 ``support_map`` collection; the reply router only fires for replies to mapped
 messages, so it never interferes with any other owner / user flow.
 """
+import html
 import logging
 import time
 from datetime import datetime, timezone
@@ -160,7 +161,7 @@ async def support_reply_router(client: Client, message: Message):
             await _remember(peer, c.id, TO_OWNERS)
             await message.reply_text("✅ Reply delivered.", quote=True)
         except Exception as e:
-            await message.reply_text(f"❌ Couldn't deliver: <code>{e}</code>", quote=True)
+            await message.reply_text(f"❌ Couldn't deliver: <code>{html.escape(str(e))}</code>", quote=True)
     elif peer == TO_OWNERS:        # user follow-up → owners
         await _submit(client, message, message)
     raise StopPropagation

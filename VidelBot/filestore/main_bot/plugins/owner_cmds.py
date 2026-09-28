@@ -5,6 +5,7 @@ Owner commands for the Videl clone (FileStore) platform
 /sys    - System resource usage
 """
 
+import html
 import time
 import psutil
 from datetime import datetime, timezone
@@ -62,7 +63,7 @@ async def platform_stats(client: Client, message: Message):
         await message.reply(text)
     except Exception as e:
         log.error(f"Stats error: {e}")
-        await message.reply(f"<b>❌ Error fetching stats:</b> <code>{e}</code>")
+        await message.reply(f"<b>❌ Error fetching stats:</b> <code>{html.escape(str(e))}</code>")
 
 
 @Client.on_message(filters.command("bots") & filters.private & filters.user(OWNERS))
@@ -97,7 +98,7 @@ async def list_all_bots(client: Client, message: Message):
         await message.reply(text)
     except Exception as e:
         log.error(f"Bots list error: {e}")
-        await message.reply(f"<b>❌ Error:</b> <code>{e}</code>")
+        await message.reply(f"<b>❌ Error:</b> <code>{html.escape(str(e))}</code>")
 
 
 @Client.on_message(filters.command(["sys", "system", "sysstats", "systats"]) & filters.private & filters.user(OWNERS))
@@ -128,7 +129,7 @@ async def system_stats(client: Client, message: Message):
         )
         await message.reply(text)
     except Exception as e:
-        await message.reply(f"<b>❌ System stats error:</b> <code>{e}</code>")
+        await message.reply(f"<b>❌ System stats error:</b> <code>{html.escape(str(e))}</code>")
 
 
 @Client.on_message(filters.command(["check", "checkbots"]) & filters.private & filters.user(OWNERS))

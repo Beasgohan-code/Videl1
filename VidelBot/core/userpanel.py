@@ -7,6 +7,7 @@ Admin user panel.
   /export                               users as CSV (id, name, username, joined,
                                         premium, expiry, banned, blocked, referrals)
 """
+import html
 import csv
 import io
 import logging
@@ -172,7 +173,7 @@ async def msg_cmd(client: Client, message: Message):
         else:
             await message.reply_to_message.copy(uid)
     except Exception as e:
-        return await message.reply_text(f"❌ Couldn't send: <code>{e}</code>")
+        return await message.reply_text(f"❌ Couldn't send: <code>{html.escape(str(e))}</code>")
     await message.reply_text(f"✅ Sent to <code>{uid}</code>.")
 
 

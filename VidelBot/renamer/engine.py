@@ -122,7 +122,10 @@ def is_duplicate(unique_id: str) -> bool:
 
 def cancel_user(uid: int) -> int:
     """Cancel the running job and drop everything queued. Returns how many jobs were affected."""
+    _cancel_before.pop(uid, None)          # re-insert so the dict stays ordered oldest → newest
     _cancel_before[uid] = time.time()
+    from core.bg import trim
+    trim(_cancel_before, 20000, lambda _k, ts: time.time() - ts > 3600)
     n = 0
     for job in list(_jobs.values()):
         if job.uid == uid and not job.cancelled:
@@ -393,6 +396,8 @@ async def submit(client, message: Message, name: str = "", send_as: str = "", us
 async def _worker(client, job: Job):
     uid = job.uid
     lock = _locks.setdefault(uid, asyncio.Lock())
+    from core.bg import trim
+    trim(_locks, 5000, lambda k, lk: k != uid and not lk.locked() and not getattr(lk, "_waiters", None))
     try:
         async with lock:
             if job.cancelled or job.created <= _cancel_before.get(uid, 0):

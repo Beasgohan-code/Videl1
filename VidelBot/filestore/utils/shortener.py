@@ -76,7 +76,7 @@ async def _shorten_adlinkfly(url: str, api_key: str, domain: str) -> str:
     api_url = f"{domain}/api"
     params = {"api": api_key, "url": url}
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         async with session.get(api_url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status == 200:
                 try:
@@ -98,7 +98,7 @@ async def _shorten_bitly(url: str, api_key: str) -> str:
         return url
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {"long_url": url}
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         async with session.post(
             "https://api-ssl.bitly.com/v4/shorten",
             json=payload,
@@ -115,7 +115,7 @@ async def _shorten_tinyurl(url: str, api_key: str = "") -> str:
     params = {"url": url}
     if api_key:
         params["api_token"] = api_key
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         async with session.get(
             "https://tinyurl.com/api-create.php",
             params=params,
@@ -130,7 +130,7 @@ async def _shorten_tinyurl(url: str, api_key: str = "") -> str:
 
 async def _shorten_isgd(url: str) -> str:
     params = {"format": "simple", "url": url}
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         async with session.get(
             "https://is.gd/create.php",
             params=params,
@@ -145,7 +145,7 @@ async def _shorten_isgd(url: str) -> str:
 
 async def _shorten_vgd(url: str) -> str:
     params = {"format": "simple", "url": url}
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         async with session.get(
             "https://v.gd/create.php",
             params=params,

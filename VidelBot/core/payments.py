@@ -13,6 +13,7 @@ Every successful payment activates/extends premium instantly, is stored in the
 Owners can refund with /refund <user_id> <charge_id>; users manage their
 subscription with /mysub (cancel / resume auto-renew).
 """
+import html
 import logging
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -238,7 +239,7 @@ async def subscribe_cmd(client: Client, message: Message):
     try:
         await _offer_subscription(client, message.chat.id, message.from_user.id)
     except Exception as e:
-        await message.reply_text(f"❌ Couldn't create the subscription link: <code>{e}</code>")
+        await message.reply_text(f"❌ Couldn't create the subscription link: <code>{html.escape(str(e))}</code>")
 
 
 def _sub_text(sub: dict | None, expiry) -> str:
@@ -660,7 +661,7 @@ async def refund_cmd(client: Client, message: Message):
     try:
         await client.refund_star_payment(uid, charge)
     except Exception as e:
-        return await message.reply_text(f"❌ Refund failed: <code>{e}</code>")
+        return await message.reply_text(f"❌ Refund failed: <code>{html.escape(str(e))}</code>")
     pay = await vdb.db["payments"].find_one({"charge_id": charge}) or {}
     await vdb.db["payments"].update_one({"charge_id": charge}, {"$set": {"refunded": True}})
     # a refunded subscription charge ends the subscription

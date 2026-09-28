@@ -1,4 +1,5 @@
 
+import html
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import (
@@ -532,7 +533,7 @@ async def do_transfer_callback(client: Client, query: CallbackQuery):
     except Exception as e:
         await query.message.edit_text(
             f"<b>❌ ᴛʀᴀɴsꜰᴇʀ ꜰᴀɪʟᴇᴅ</b>\n\n"
-            f"<blockquote>{e}</blockquote>",
+            f"<blockquote>{html.escape(str(e))}</blockquote>",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data=f"dashboard_{target_bot_id}")],
             ]),
@@ -608,7 +609,7 @@ async def restart_bot_callback(client: Client, query: CallbackQuery):
         )
     except Exception as e:
         await query.message.edit_text(
-            f"<b>❌ Restart failed:</b>\n<code>{e}</code>",
+            f"<b>❌ Restart failed:</b>\n<code>{html.escape(str(e))}</code>",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")],
             ]),

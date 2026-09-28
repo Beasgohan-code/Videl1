@@ -8,6 +8,7 @@ Owners can change Videl's own avatar from chat:
 The same helpers are used by the clone dashboard (🤖 Bot Photo) so every clone
 owner can give their FileStore bot an avatar without touching @BotFather.
 """
+import html
 import logging
 import os
 
@@ -106,7 +107,7 @@ async def setbotpic_cmd(client: Client, message: Message):
     try:
         await set_bot_photo(client, path)
     except Exception as e:
-        return await status.edit_text(f"❌ Telegram rejected the photo:\n<code>{e}</code>")
+        return await status.edit_text(f"❌ Telegram rejected the photo:\n<code>{html.escape(str(e))}</code>")
     finally:
         if path and os.path.exists(path):
             os.remove(path)
@@ -120,5 +121,5 @@ async def delbotpic_cmd(client: Client, message: Message):
     try:
         await remove_bot_photo(client)
     except Exception as e:
-        return await message.reply_text(f"❌ Couldn't remove the photo:\n<code>{e}</code>")
+        return await message.reply_text(f"❌ Couldn't remove the photo:\n<code>{html.escape(str(e))}</code>")
     await message.reply_text("🗑 <b>Profile photo removed.</b>")

@@ -1,3 +1,4 @@
+import html
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message
 from database.db import db
@@ -62,7 +63,7 @@ async def view_custom_thumbnail(client: Client, message: Message):
             )
         except Exception as e:
             # If file_id is invalid/old
-            await message.reply_text(f"<b>❌ Error loading thumbnail:</b> {e}\n<i>Please set a new one.</i>", parse_mode=enums.ParseMode.HTML)
+            await message.reply_text(f"<b>❌ Error loading thumbnail:</b> {html.escape(str(e))}\n<i>Please set a new one.</i>", parse_mode=enums.ParseMode.HTML)
     else:
         await message.reply_text(
             "<b>❌ No Custom Thumbnail Found</b>\n\n"

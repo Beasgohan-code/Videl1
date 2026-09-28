@@ -19,6 +19,7 @@ The dashboard of managed clones gets "🔁 Rotate token" (``replaceManagedBotTok
 restarts.  Without Bot Management Mode, everything silently falls back to the
 classic "paste your token" flow.
 """
+import html
 import asyncio
 import re
 import secrets
@@ -250,7 +251,7 @@ async def rotate_token(client: Client, query: CallbackQuery):
     try:
         new_token = await botapi.call(lambda b: b.replace_managed_bot_token(user_id=bot_id))
     except Exception as e:
-        return await query.message.edit_text(f"<b>❌ Rotation failed:</b> <code>{e}</code>",
+        return await query.message.edit_text(f"<b>❌ Rotation failed:</b> <code>{html.escape(str(e))}</code>",
                                              reply_markup=InlineKeyboardMarkup([back]))
     await apply_new_token(bot, new_token)
     try:

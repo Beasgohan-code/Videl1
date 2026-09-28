@@ -91,7 +91,7 @@ async def info_cmd(client: Client, message: Message):
     try:
         u = await client.get_users(target)
     except Exception as e:
-        return await message.reply_text(f"❌ Couldn't find that user: <code>{e}</code>")
+        return await message.reply_text(f"❌ Couldn't find that user: <code>{html.escape(str(e))}</code>")
     status = getattr(u.status, "name", str(u.status or "")).replace("_", " ").title() if u.status else "Hidden"
     doc = Doc("👤", "User info").table([
         ("Name", rich.Raw(u.mention)),
@@ -222,7 +222,12 @@ async def mediainfo_cmd(client: Client, message: Message):
             "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        out, _ = await proc.communicate()
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), 60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            out = b"{}"
         info = json.loads(out or b"{}")
         fmt = info.get("format", {})
         streams = info.get("streams", [])
@@ -245,7 +250,7 @@ async def mediainfo_cmd(client: Client, message: Message):
             doc.text("<i>No streams detected in the header.</i>")
         await rich.edit(status, doc)
     except Exception as e:
-        await status.edit_text(f"❌ mediainfo failed: <code>{e}</code>")
+        await status.edit_text(f"❌ mediainfo failed: <code>{html.escape(str(e))}</code>")
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -279,7 +284,7 @@ async def upload_cmd(client: Client, message: Message):
             disable_web_page_preview=True,
         )
     except Exception as e:
-        await status.edit_text(f"❌ Error: <code>{e}</code>")
+        await status.edit_text(f"❌ Error: <code>{html.escape(str(e))}</code>")
     finally:
         _busy.discard(uid)
         if path and os.path.exists(path):
@@ -342,7 +347,7 @@ async def rename_cmd(client: Client, message: Message):
         )
         await status.delete()
     except Exception as e:
-        await status.edit_text(f"❌ Rename failed: <code>{e}</code>")
+        await status.edit_text(f"❌ Rename failed: <code>{html.escape(str(e))}</code>")
     finally:
         _busy.discard(uid)
         shutil.rmtree(workdir, ignore_errors=True)

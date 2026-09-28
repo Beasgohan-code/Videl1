@@ -1,5 +1,6 @@
 
 
+import html
 import os
 from urllib.parse import unquote_plus
 
@@ -23,7 +24,7 @@ async def get_title(i):
         else:
             url = data[i].command[1]
             return str(unquote_plus(os.path.basename(url)))
-    except:
+    except Exception:
         return None
 
 
@@ -66,7 +67,7 @@ async def queue_answer(app, callback_query):
     taskpos = pos+1
     size = len(data)
     tasktitle = await get_title(pos)
-    await callback_query.edit_message_text(f"<b>{taskpos} of {size}</b>:\n\n{tasktitle}", reply_markup=InlineKeyboardMarkup(map(pos)))
+    await callback_query.edit_message_text(f"<b>{taskpos} of {size}</b>:\n\n{html.escape(str(tasktitle or 'Unknown'))}", reply_markup=InlineKeyboardMarkup(map(pos)))
 
 
 def queue_doc():

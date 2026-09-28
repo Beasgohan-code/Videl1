@@ -1,3 +1,4 @@
+import html
 import logging
 
 import asyncio
@@ -43,7 +44,7 @@ async def animate_loading(message: Message, duration: int = 5):
             try:
                 await message.edit_text(f"<b>{frame}</b>", parse_mode=enums.ParseMode.HTML)
                 await asyncio.sleep(0.5)
-            except:
+            except Exception:
                 return
 
 @Client.on_message(filters.private & filters.command("login"))
@@ -118,7 +119,7 @@ async def cancel_login(client: Client, message: Message):
         if "data" in state and "client" in state["data"]:
             try:
                 await state["data"]["client"].disconnect()
-            except:
+            except Exception:
                 pass
        
         del LOGIN_STATE[user_id]
@@ -150,7 +151,7 @@ async def login_handler(bot: Client, message: Message):
         if "data" in state and "client" in state["data"]:
             try:
                 await state["data"]["client"].disconnect()
-            except:
+            except Exception:
                 pass
         del LOGIN_STATE[user_id]
         await message.reply(
@@ -209,7 +210,7 @@ async def login_handler(bot: Client, message: Message):
             del LOGIN_STATE[user_id]
         except Exception as e:
             await status_msg.edit(
-                f"<b>❌ Something went wrong: {e} 🤔</b>\n\n"
+                f"<b>❌ Something went wrong: {html.escape(str(e))} 🤔</b>\n\n"
                 f"<i>Progress: {progress}</i>\n\nPlease try /login again.",
                 parse_mode=enums.ParseMode.HTML
             )
@@ -266,7 +267,7 @@ async def login_handler(bot: Client, message: Message):
         except Exception as e:
             animation_task.cancel()
             await status_msg.edit(
-                f"<b>❌ Something went wrong: {e} 🤔</b>\n\n<i>Progress: {progress}</i>",
+                f"<b>❌ Something went wrong: {html.escape(str(e))} 🤔</b>\n\n<i>Progress: {progress}</i>",
                 parse_mode=enums.ParseMode.HTML
             )
             await temp_client.disconnect()
@@ -297,7 +298,7 @@ async def login_handler(bot: Client, message: Message):
         except Exception as e:
             animation_task.cancel()
             await status_msg.edit(
-                f"<b>❌ Something went wrong: {e} 🤔</b>\n\n<i>Progress: {progress}</i>",
+                f"<b>❌ Something went wrong: {html.escape(str(e))} 🤔</b>\n\n<i>Progress: {progress}</i>",
                 parse_mode=enums.ParseMode.HTML
             )
             await temp_client.disconnect()

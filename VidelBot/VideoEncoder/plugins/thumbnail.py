@@ -55,7 +55,7 @@ async def cb_handler(client, query: CallbackQuery):
         logging.error(f"Error in cb_handler for {data}: {e}")
         try:
             await query.answer(f"Error: {str(e)}", show_alert=True)
-        except:
+        except Exception:
             pass
 
 def _is_thumb_photo(_, __, m):

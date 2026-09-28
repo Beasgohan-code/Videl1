@@ -77,7 +77,7 @@ async def set_dump_chat(client: Client, message: Message):
         try:
             chat = await client.get_chat(chat_id)
             chat_title = chat.title or "Private Chat"
-        except:
+        except Exception:
             chat_title = "Unknown Chat"
         await db.set_dump_chat(user_id, chat_id)
         await message.reply_text(
@@ -89,7 +89,7 @@ async def set_dump_chat(client: Client, message: Message):
     except ValueError:
         await message.reply_text("❌ <b>Invalid Chat ID</b>\n\n<i>Must be a number (e.g., -1001234567890)</i>", parse_mode=enums.ParseMode.HTML)
     except Exception as e:
-        await message.reply_text(f"❌ <b>Unable to Access Chat</b>\n<i>{e}</i>", parse_mode=enums.ParseMode.HTML)
+        await message.reply_text(f"❌ <b>Unable to Access Chat</b>\n<i>{html.escape(str(e))}</i>", parse_mode=enums.ParseMode.HTML)
 # ======================================================
 # Callbacks - Full Settings Navigation
 # ======================================================
@@ -108,7 +108,7 @@ async def settings_callbacks(client: Client, callback_query: CallbackQuery):
             try:
                 chat = await client.get_chat(current)
                 title = chat.title or "Private Chat"
-            except:
+            except Exception:
                 title = "Unknown (Inaccessible)"
             text = (
                 f"<b>🗑 Current Dump Chat</b>\n\n"

@@ -16,7 +16,12 @@ async def speedtest_handler(_, message):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), 180)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise Exception("Speedtest timed out after 3 minutes")
 
         if proc.returncode != 0:
             raise Exception(f"Speedtest failed: {stderr.decode().strip()}")

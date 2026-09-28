@@ -1,3 +1,4 @@
+import html
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
     Message,
@@ -190,7 +191,7 @@ async def add_premium_admin(client: Client, message: Message):
     except ValueError:
         await message.reply_text("❌ <b>Error:</b> User ID and Days must be numbers.", parse_mode=enums.ParseMode.HTML)
     except Exception as e:
-        await message.reply_text(f"❌ <b>Error:</b> {e}", parse_mode=enums.ParseMode.HTML)
+        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=enums.ParseMode.HTML)
 
 @Client.on_message(filters.command("remove_premium") & filters.user(ADMINS) & filters.private)
 async def remove_premium_admin(client: Client, message: Message):

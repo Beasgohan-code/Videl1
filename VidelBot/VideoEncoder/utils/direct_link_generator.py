@@ -132,7 +132,7 @@ def zippy_share(url: str) -> str:
         js_script = bs_obj.find("div", {"class": "center", }).find_all(
             "script"
         )[1]
-    except:
+    except Exception:
         js_script = bs_obj.find("div", {"class": "right", }).find_all(
             "script"
         )[0]
@@ -344,14 +344,16 @@ def racaty(url: str) -> str:
     except IndexError:
         raise DirectDownloadLinkException("No Racaty links found\n")
     scraper = cloudscraper.create_scraper()
-    r = scraper.get(url, timeout=HTTP_TIMEOUT)
-    soup = BeautifulSoup(r.text, "lxml")
-    op = soup.find("input", {"name": "op"})["value"]
-    ids = soup.find("input", {"name": "id"})["value"]
-    rpost = scraper.post(url, data={"op": op, "id": ids}, timeout=HTTP_TIMEOUT)
-    rsoup = BeautifulSoup(rpost.text, "lxml")
-    dl_url = rsoup.find("a", {"id": "uniqueExpirylink"})[
-        "href"].replace(" ", "%20")
+    try:
+        r = scraper.get(link, timeout=HTTP_TIMEOUT)
+        soup = BeautifulSoup(r.text, "lxml")
+        op = soup.find("input", {"name": "op"})["value"]
+        ids = soup.find("input", {"name": "id"})["value"]
+        rpost = scraper.post(link, data={"op": op, "id": ids}, timeout=HTTP_TIMEOUT)
+        rsoup = BeautifulSoup(rpost.text, "lxml")
+        dl_url = rsoup.find("a", {"id": "uniqueExpirylink"})["href"].replace(" ", "%20")
+    except (TypeError, KeyError):
+        raise DirectDownloadLinkException("Racaty page layout changed – couldn't find the download link.")
     return dl_url
 
 
@@ -376,7 +378,7 @@ def fichier(link: str) -> str:
         else:
             pw = {"pass": pswd}
             req = requests.post(url, data=pw)
-    except:
+    except Exception:
         raise DirectDownloadLinkException(
             "ERROR: Unable to reach 1fichier server!")
     if req.status_code == 404:

@@ -1,4 +1,5 @@
 
+import html
 import asyncio
 from datetime import datetime, timedelta, timezone
 
@@ -115,7 +116,7 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
 
     await status_msg.edit_text(
         f"<b>✅ Token verified!</b>\n\n"
-        f"<blockquote>Bot: <b>{bot_name}</b> (@{bot_username})\n\n"
+        f"<blockquote>Bot: <b>{html.escape(str(bot_name))}</b> (@{bot_username})\n\n"
         f"<b>Step 2/2:</b> Send me the <b>Log Channel ID</b>.\n\n"
         f"This is where your bot will store files.\n"
         f"Make sure the bot (@{bot_username}) is an admin in the channel.\n\n"
@@ -523,7 +524,7 @@ async def handle_creation_input(client: Client, message: Message):
                 raw = raw.replace("```json", "").replace("```", "").strip()
             data = json.loads(raw)
         except Exception as e:
-            await message.reply(f"<b>❌ Invalid JSON:</b> <code>{e}</code>")
+            await message.reply(f"<b>❌ Invalid JSON:</b> <code>{html.escape(str(e))}</code>")
             return
 
         settings = data.get("settings", data)

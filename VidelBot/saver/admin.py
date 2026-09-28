@@ -13,5 +13,5 @@ async def set_dump(client: Client, message: Message):
         chat_id = int(message.command[2])
         await db.set_dump_chat(user_id, chat_id)
         await message.reply_text(f"**Dump chat set for user {user_id}.**")
-    except:
+    except Exception:
         await message.reply_text("Error setting dump chat.")

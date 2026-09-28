@@ -80,7 +80,7 @@ async def driveupload(client, message):
     try:
         u = Uploader()
         await u.upload_to_drive(new_file, message, reply)
-    except:
+    except Exception:
         await reply.edit('Error while uploading!')
     else:
         await reply.delete()
