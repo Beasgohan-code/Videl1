@@ -67,6 +67,46 @@
       "description": "Use aiogram for newer Bot API features (coloured buttons, managed bots)",
       "value": "True",
       "required": false
+    },
+    "ENCODER_WORKERS": {
+      "description": "Encodes running at the same time",
+      "value": "1",
+      "required": false
+    },
+    "HW_ENCODER": {
+      "description": "GPU encoder: auto | nvenc | qsv | vaapi | off",
+      "value": "auto",
+      "required": false
+    },
+    "SPLIT_SIZE_MB": {
+      "description": "Split uploads above this size (MB, max 1990)",
+      "value": "1950",
+      "required": false
+    },
+    "LEECH_FREE_GB": {
+      "description": "/leech size limit for free users (GB)",
+      "value": "2",
+      "required": false
+    },
+    "LEECH_PRO_GB": {
+      "description": "/leech size limit for Encoder Pro / Premium (GB)",
+      "value": "8",
+      "required": false
+    },
+    "ADMIN_WEB_TOKEN": {
+      "description": "Long random string – enables the /admin web dashboard (open /admin#TOKEN)",
+      "value": "",
+      "required": false
+    },
+    "BACKUP_HOUR": {
+      "description": "Hour (0-23, LOG_TZ) for the daily database backup sent to the owner",
+      "value": "4",
+      "required": false
+    },
+    "DEFAULT_LANG": {
+      "description": "Fallback language: en hi ml ta es id ru ar",
+      "value": "en",
+      "required": false
     }
   },
   "formation": {

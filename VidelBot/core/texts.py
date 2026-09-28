@@ -192,6 +192,11 @@ ENC_HELP = (
         ("/batch", "encode in batch"), ("/af", "pick / reorder audio tracks, then encode"),
         ("/sample [sec]", "30 s test encode – check quality & size first"),
         ("/trim 1:00 2:30", "lossless cut of a part"), ("/screens [n]", "up to 10 screenshots"),
+        ("/mux", "reply to a video, then send a subtitle / audio file – added losslessly"),
+        ("/merge", "send 2-10 videos, then /merge done – one file"),
+        ("/convert mp3", "audio from a video: mp3 m4a opus flac wav · /convert gif 1:20 8"),
+        ("/watermark", "your text · reply to a photo for a logo · /watermark off"),
+        ("/leech link", "Mega / Google Drive / direct link → Telegram, split above 2 GB"),
         ("/queue", "check the queue"), ("/status", "live system status"),
         ("/settings", "settings (🎬 Video Encoder)"), ("/vset", "view settings"), ("/reset", "reset settings"),
         ("/thumb", "custom thumbnail for encodes"))), expandable=True)
@@ -200,7 +205,13 @@ ENC_HELP = (
         ("Quick profiles", "Mobile, Balanced, High quality, Anime, Tiny, Fast"),
         ("Target size", "fit a video into e.g. 200 MB"),
         ("Filters", "deinterlace, denoise, loudness normalise"),
-        ("Live progress", "speed, fps, ETA, size and a real ❌ Cancel"))), expandable=True)
+        ("Live progress", "speed, fps, ETA, size and a real ❌ Cancel"),
+        ("GPU", "NVENC / QSV / VAAPI used automatically when the server has one"),
+        ("AV1 💎", "smallest files – Encoder Pro"),
+        ("2-pass 💎", "target size within ~2 % – Encoder Pro"),
+        ("Logo watermark 💎", "position, size, opacity – Encoder Pro"),
+        ("Priority queue 💎", "Pro tasks run first, up to 10 at a time"),
+        ("Big files", "results over 2 GB are split into playable parts"))), expandable=True)
     + "\n\n<b>🛡 " + sc("For sudo") + "</b>\n"
     + quote("\n".join(f"◈ {c} — {sc(d)}" for c, d in (
         ("/vupload", "video upload"), ("/dupload", "document upload"), ("/gupload", "drive upload"),

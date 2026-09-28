@@ -136,9 +136,18 @@ S = {
 _cache: dict = {}
 
 
+def fallback() -> str:
+    """DEFAULT_LANG env (for users whose Telegram language isn't one of ours)."""
+    try:
+        import config
+        return config.DEFAULT_LANG if config.DEFAULT_LANG in LANGS else DEFAULT
+    except Exception:
+        return DEFAULT
+
+
 def norm(code: str | None) -> str:
     code = (code or "").lower().replace("_", "-").split("-")[0]
-    return code if code in LANGS else DEFAULT
+    return code if code in LANGS else fallback()
 
 
 def t(key: str, lang: str = DEFAULT, **kw) -> str:
