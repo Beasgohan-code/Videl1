@@ -275,6 +275,9 @@ SPLIT_SIZE_MB = env_int("SPLIT_SIZE_MB", 1950)                   # uploads above
 LEECH_FREE_GB = env_float("LEECH_FREE_GB", 2)
 LEECH_PRO_GB = env_float("LEECH_PRO_GB", 8)
 QUEUE_PERSIST = _bool("QUEUE_PERSIST", True)                    # encoder queue survives restarts
+SINGLE_INSTANCE = _bool("SINGLE_INSTANCE", True)                # one live copy per bot token (core/instance.py)
+SOURCE_CACHE_MIN = max(0, env_int("SOURCE_CACHE_MIN", 60))     # reuse a downloaded source for N min (0 = off)
+SOURCE_CACHE_GB = max(1, env_int("SOURCE_CACHE_GB", 10))        # cache size cap
 FAST_DL = _bool("FAST_DL", True)                                # parallel Telegram downloads (core/fastdl.py)
 FAST_DL_WORKERS = max(1, min(16, env_int("FAST_DL_WORKERS", 6)))  # chunk requests in flight per download
 

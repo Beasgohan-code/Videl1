@@ -9,9 +9,9 @@ from pyrogram.errors.exceptions.bad_request_400 import MessageNotModified
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from pySmartDL import SmartDL
 
-from .. import PUBLIC, all, everyone, owner, sudo_users, download_dir, encode_dir
+from .. import LOGGER, PUBLIC, all, everyone, owner, sudo_users, download_dir, encode_dir
 from .database.access_db import db
-from .display_progress import progress_for_url
+from .display_progress import humanbytes, progress_for_url
 from .encoding import encode, extract_subs
 from .uploads import upload_worker
 
@@ -113,6 +113,7 @@ async def handle_encode(filepath, message, msg, audio_map=None, opts=None):
     new_file = await encode(filepath, message, msg, audio_map=audio_map, opts=opts)
     link = None
     if new_file:
+        new_file = await size_guard(new_file, filepath, msg)
         await _safe_edit(msg, "<b>📤 Encoded – uploading…</b>")
         new_size = os.path.getsize(new_file) if os.path.isfile(new_file) else 0
         try:
@@ -125,6 +126,11 @@ async def handle_encode(filepath, message, msg, audio_map=None, opts=None):
                                     title="Sample ready" if getattr(new_file, "sample", None) else "Encode complete")
             except Exception as e:                       # the summary must never hide a finished upload
                 text = f"✅ <b>Video encoded!</b>\n<i>{html.escape(str(e))[:100]}</i>"
+            guard = getattr(new_file, "guard", None)
+            if guard:
+                text += (f"\n\n🛡 <b>Size guard:</b> the re-encode came out bigger ({humanbytes(guard[0])} vs "
+                         f"{humanbytes(guard[1])}), so you got a lossless copy of the source instead.\n"
+                         "<i>Raise the CRF or lower the resolution for a smaller file · toggle in /settings → Advanced.</i>")
             await _safe_edit(msg, text, _done_markup(link))
             if not getattr(new_file, "sample", None):
                 try:
@@ -146,6 +152,31 @@ async def handle_encode(filepath, message, msg, audio_map=None, opts=None):
             await message.reply(text)
         _remove(filepath)
     return link
+
+
+async def size_guard(result, src, msg):
+    """If a same-codec re-encode is bigger than its source, send a lossless remux of the source instead."""
+    from . import ffcmd
+    from .encoding import run_ffmpeg
+    try:
+        if getattr(result, "sample", None) or not ffcmd.guard_applies(result.settings or {}, result.info):
+            return result
+        new_size, src_size = os.path.getsize(result), os.path.getsize(src)
+        if not src_size or new_size < src_size:
+            return result
+        tmp = str(result) + ".remux" + os.path.splitext(result)[1]
+        code, err = await run_ffmpeg(ffcmd.remux_command(src, tmp, result.settings or {}, result.info),
+                                     key=getattr(msg, "id", None), timeout=1800)
+        if code == 0 and os.path.isfile(tmp) and 0 < os.path.getsize(tmp) < new_size:
+            os.replace(tmp, str(result))
+            result.guard = (new_size, os.path.getsize(result))
+            LOGGER.info(f"🛡 size guard: {os.path.basename(result)} {new_size} → {result.guard[1]} bytes (remux)")
+        elif os.path.exists(tmp):
+            os.remove(tmp)
+            LOGGER.info(f"size guard remux not used ({code}): {err[-200:] if err else ''}")
+    except Exception as e:                            # the guard is an optimisation – never fail the task
+        LOGGER.warning(f"size guard: {e}")
+    return result
 
 
 async def _safe_edit(msg, text, markup=None) -> bool:
@@ -248,7 +279,8 @@ async def get_zip_folder(orig_path: str):
         raise IndexError("File format not supported for extraction!")
 
 
-def delete_downloads():
+def delete_downloads(keep_cache: bool = True):
+    """Wipe the work folders. The source cache (.srccache) survives unless keep_cache=False (/clean)."""
     dir = encode_dir
     dir2 = download_dir
     for files in os.listdir(dir):
@@ -261,6 +293,8 @@ def delete_downloads():
             except PermissionError:
                 pass
     for files in os.listdir(dir2):
+        if keep_cache and files == ".srccache":
+            continue
         path = os.path.join(dir2, files)
         try:
             shutil.rmtree(path)

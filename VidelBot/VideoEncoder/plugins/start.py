@@ -135,5 +135,5 @@ async def delete_files(_, message):
     c = await check_chat(message, chat='Sudo')
     if not c:
         return
-    delete_downloads()
+    delete_downloads(keep_cache=False)
     await message.reply_text('Deleted all junk files!')

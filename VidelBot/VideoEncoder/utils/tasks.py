@@ -39,7 +39,12 @@ async def on_task_complete(message=None):
         scheduler.cleanup_task(message)
         await scheduler.forget(message)
     if not data and not scheduler.running():
-        delete_downloads()                    # fully idle → wipe leftovers
+        delete_downloads()                    # fully idle → wipe leftovers (the source cache stays)
+        try:
+            from . import srccache
+            srccache.prune()
+        except Exception:
+            pass
     await dispatch()
 
 
@@ -437,6 +442,30 @@ async def handle_download_url(message, msg, batch, dest_dir=None):
     return filepath
 
 
+def _media(m):
+    for kind in ("video", "document", "audio", "animation", "voice"):
+        media = getattr(m, kind, None)
+        if media is not None:
+            return media
+    return None
+
+
+async def _fetch_cached(src_msg, dest, label, msg, started):
+    """Source cache hit → instant; otherwise a (parallel) download that is cached for the next task."""
+    from core import fastdl
+    from . import jobs, srccache
+    media = _media(src_msg)
+    if media is not None:
+        hit = srccache.get(media, dest)
+        if hit:
+            return hit
+    path = await fastdl.fetch(src_msg, file_name=os.path.join(dest, ""), progress=progress_for_pyrogram,
+                              progress_args=(label, msg, started))
+    if path and media is not None and not jobs.is_cancelled(getattr(msg, "id", None)):
+        srccache.put(media, path)
+    return path
+
+
 async def handle_tg_down(message, msg, mode='no_reply', dest_dir=None):
     c_time = time.time()
 
@@ -455,9 +484,7 @@ async def handle_tg_down(message, msg, mode='no_reply', dest_dir=None):
              return None
         target_msg = message.reply_to_message
 
-    from core import fastdl                         # parallel chunks for big files, stock download otherwise
-    path = await fastdl.fetch(target_msg, file_name=os.path.join(dest_dir or download_dir, ""),
-                              progress=progress_for_pyrogram, progress_args=("Downloading...", msg, c_time))
+    path = await _fetch_cached(target_msg, dest_dir or download_dir, "Downloading...", msg, c_time)
 
     return path
 
@@ -478,9 +505,7 @@ async def _download_ref(message, msg, ref, dest, label):
     media = src and (src.video or src.document or src.audio or getattr(src, "voice", None))
     if not media:
         return None
-    from core import fastdl
-    path = await fastdl.fetch(src, file_name=os.path.join(dest, ""), progress=progress_for_pyrogram,
-                              progress_args=(label, msg, time.time()))
+    path = await _fetch_cached(src, dest, label, msg, time.time())
     if jobs.is_cancelled(msg.id):
         return None
     return path

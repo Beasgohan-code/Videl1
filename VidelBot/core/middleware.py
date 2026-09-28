@@ -2,6 +2,7 @@
 Global middleware – runs before every module. Pyrogram runs one handler per
 group, lowest group first, so each gate lives in its own group:
 
+  group -20 → re-delivered updates are dropped (Telegram replays some after a reconnect)
   group -5 → sender-less messages (channel posts, anonymous admins) stop here, except /id
   group -4 → user tracking / new-user log   (never blocks)
   group -3 → ban + maintenance gate         (StopPropagation)
@@ -19,6 +20,56 @@ from core.db import vdb
 from core.texts import BANNED_TEXT, MAINT_TEXT
 
 log = logging.getLogger("videl.middleware")
+
+
+# ─────────────────────────── replayed updates ───────────────────────────
+class _Seen:
+    """Keys of recently handled updates (bounded, time-limited)."""
+
+    def __init__(self, ttl: float = 900, cap: int = 20000):
+        from collections import OrderedDict
+        self.ttl, self.cap, self._d = ttl, cap, OrderedDict()
+
+    def check_and_add(self, key) -> bool:
+        """True if `key` was already seen (→ drop the update)."""
+        now = time.monotonic()
+        while self._d:                                   # expire from the old end
+            k, t = next(iter(self._d.items()))
+            if now - t < self.ttl and len(self._d) < self.cap:
+                break
+            self._d.popitem(last=False)
+        if key in self._d:
+            return True
+        self._d[key] = now
+        return False
+
+    def clear(self):
+        self._d.clear()
+
+
+SEEN = _Seen()
+DROPPED = {"n": 0}
+
+
+def _replayed(key) -> bool:
+    if SEEN.check_and_add(key):
+        DROPPED["n"] += 1
+        log.info(f"dropped a re-delivered update {key}")
+        return True
+    return False
+
+
+@Client.on_message(filters.incoming, group=-20)
+async def drop_replayed_messages(client: Client, message: Message):
+    chat = getattr(getattr(message, "chat", None), "id", None)
+    if chat is not None and message.id and _replayed(("m", id(client), chat, message.id)):
+        raise StopPropagation
+
+
+@Client.on_callback_query(group=-20)
+async def drop_replayed_callbacks(client: Client, query: CallbackQuery):
+    if query.id and _replayed(("q", id(client), query.id)):
+        raise StopPropagation
 
 
 def _gate_reason(user_id: int):

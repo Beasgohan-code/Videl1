@@ -96,6 +96,7 @@ class Encoded(str):
     settings: dict = None
     elapsed: float = 0.0
     sample: tuple = None
+    guard: tuple = None          # (encoded bytes, remux bytes) when the size guard swapped the file
     encoder: str = ""
     where: str = "CPU"
 
@@ -227,7 +228,7 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
     passlog = os.path.join(out_dir, f"2pass_{msg.id}") if twopass else None
     common = dict(audio_map=audio_map, subs_file=subs_file, watermark_file=watermark_file, motion_file=motion_file,
                   sample=sample, encoder=encoder, logo_file=logo_file, text_wm_file=text_wm_file,
-                  vaapi_device=_cfg_vaapi(), fps_flag=await _fps_flag())
+                  vaapi_device=_cfg_vaapi(), fps_flag=await _fps_flag(), threads=encoder_threads())
     passes = [1, 2] if twopass else [None]
     owned = jobs.get(msg.id) is None              # a task may have registered it already (download stage)
     job = jobs.register(msg.id, uid, getattr(getattr(msg, "chat", None), "id", None), name=name)
@@ -295,6 +296,18 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
     out.info, out.settings, out.elapsed, out.sample = info, settings, time.time() - started, sample
     out.encoder, out.where = encoder, where
     return out
+
+
+def encoder_threads(cpus: int | None = None, workers: int | None = None) -> int:
+    """ffmpeg -threads for one encode. One worker → 0 (ffmpeg uses every core). With N parallel workers each
+    gets cpus/N: N encoders all sized for the whole machine thrash caches and context-switch, and in
+    practice finish later than the same encodes sharing the cores fairly."""
+    import config
+    cpus = cpus or os.cpu_count() or 1
+    workers = workers or getattr(config, "ENCODER_WORKERS", 1)
+    if workers <= 1:
+        return 0
+    return max(2, cpus // workers)
 
 
 async def _drain(stream, keep: int = 16384) -> bytes:

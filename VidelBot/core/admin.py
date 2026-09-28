@@ -298,10 +298,14 @@ async def _restart(client: Client, status: Message, reason: str = "Restart"):
     except Exception:
         pass
     try:
+        from VideoEncoder.utils import jobs
+        jobs.kill_all()                     # exec keeps children alive – don't leave encodes running
         from VideoEncoder.utils.helper import delete_downloads
         delete_downloads()
     except Exception:
         pass
+    from core import instance
+    await instance.handover()               # the re-exec'd process keeps the single-instance lease
     os.execl(sys.executable, sys.executable, "run.py")
 
 

@@ -30,6 +30,8 @@ DEFAULTS = dict(
     mode="crf", target_mb=0, deinterlace=False, denoise=False, loudnorm=False,
     # Phase 16
     dedup=False,
+    # Phase 17
+    size_guard=True,
     # Phase 15
     av1=False, twopass=False, hw=True, logo=False, logo_id=None, wm_text="", wm_pos="br", wm_size="m",
     wm_opacity="75",
@@ -492,6 +494,63 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
     cmd += ["-max_muxing_queue_size", "4096", "-threads", str(threads)]
     cmd.append(out)
     return cmd
+
+
+_AUDIO_NAME = {"ac3": "ac3", "aac": "aac", "libvorbis": "vorbis", "alac": "alac", "libopus": "opus"}
+_MP4_VIDEO_OK = {"h264", "hevc", "av1", "mpeg4"}
+
+
+def guard_applies(s: dict, info: dict | None) -> bool:
+    """May the size guard swap a bigger encode for a lossless remux of the source?
+
+    Only when the user asked for nothing but "the same codec, smaller": no downscale, burn-in, watermark,
+    filter, fps / aspect / bit-depth change, and the source's audio already is what they asked for.
+    A codec switch (e.g. HEVC → H.264 for an old TV) never qualifies – there the bigger file is the point.
+    """
+    s = merge(s)
+    info = info or {}
+    v = info.get("video") or {}
+    if not info.get("ok") or not v or not s["size_guard"]:
+        return False
+    if (v.get("codec_name") or "") != video_codec(s):
+        return False
+    transforms = (s["resolution"] != "OG", s["hardsub"], s["watermark"], s["motion_watermark"],
+                  bool(s["logo"] and s["logo_id"]), s["deinterlace"], s["denoise"], s["dedup"], s["aspect"],
+                  s["frame"] in FPS, s["loudnorm"], s["channels"] != "source", s["sample"] != "source", s["bits"])
+    if any(transforms):
+        return False
+    ext = output_ext(s)
+    if ext == ".avi":
+        return False
+    audio = {st.get("codec_name") for st in info.get("audio") or []}
+    want = AUDIO_CODECS.get(s["audio"], "copy")
+    if want != "copy" and audio and audio != {_AUDIO_NAME.get(want, want)}:
+        return False
+    if ext == ".mp4" and ((v.get("codec_name") not in _MP4_VIDEO_OK) or (audio - MP4_AUDIO_OK)):
+        return False
+    return True
+
+
+def remux_command(src: str, out: str, s: dict, info: dict | None = None) -> list:
+    """Lossless copy of the source into the output container (video, audio, chapters, subtitles if kept)."""
+    s = merge(s)
+    info = info or {}
+    mp4 = out.lower().endswith(".mp4")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", src,
+           "-map", "0:V", "-map", "0:a?", "-map_chapters", "0", "-map_metadata", "0"]
+    sub_codec = []
+    if s["subtitles"]:
+        if mp4:
+            text = [st for st in info.get("subs") or [] if st.get("codec_name") in TEXT_SUBS]
+            for st in text:
+                cmd += ["-map", f"0:{st.get('index')}"]
+            sub_codec = ["-c:s", "mov_text"] if text else []
+        else:
+            cmd += ["-map", "0:s?", "-map", "0:t?"]
+    cmd += ["-c", "copy"] + sub_codec
+    if mp4:
+        cmd += ["-movflags", "+faststart"]
+    return cmd + [out]
 
 
 def trim_command(src: str, out: str, start: float, end: float | None) -> list:

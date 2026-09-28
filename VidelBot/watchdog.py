@@ -360,6 +360,13 @@ class Watchdog:
                     await asyncio.wait_for(worker_engine.stop_all_workers(), timeout=20)
                 except Exception:
                     pass
+                try:
+                    from VideoEncoder.utils import jobs
+                    jobs.kill_all()
+                    from core import instance
+                    await asyncio.wait_for(instance.handover(), timeout=10)
+                except Exception:
+                    pass
                 os.execl(sys.executable, sys.executable, "run.py")
             return False
 

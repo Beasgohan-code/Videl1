@@ -90,3 +90,46 @@ async def cancel(key, grace: float = 5.0) -> bool:
         except Exception:
             pass
     return True
+
+
+# ─────────────────────────── restarts ───────────────────────────
+def kill_all() -> int:
+    """SIGKILL every running ffmpeg. Called right before the process re-execs itself (/restart, watchdog):
+    os.exec* keeps child processes alive, so the old encodes kept eating the CPU while the restored queue
+    started the very same encodes again – a duplicate *and* a slowdown."""
+    n = 0
+    for job in list(_JOBS.values()):
+        proc = job.proc
+        try:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                n += 1
+        except (ProcessLookupError, OSError):
+            pass
+    return n
+
+
+def reap_orphans(names=("ffmpeg", "ffprobe", "mkvextract"), proc_root: str = "/proc") -> int:
+    """At startup: kill media tools that are still our children (left over from before an exec restart)."""
+    import os
+    import signal
+    me, n = os.getpid(), 0
+    try:
+        pids = [p for p in os.listdir(proc_root) if p.isdigit()]
+    except OSError:
+        return 0
+    for pid in pids:
+        try:
+            with open(os.path.join(proc_root, pid, "stat")) as f:
+                stat = f.read()
+            comm = stat[stat.index("(") + 1:stat.rindex(")")]
+            ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        if ppid == me and comm in names:
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+                n += 1
+            except OSError:
+                pass
+    return n

@@ -127,6 +127,18 @@ async def main():
 
     from core.db import vdb
     await vdb.warm_up()
+
+    # One live copy per bot token – a zero-downtime redeploy must not answer every update twice
+    from core import instance
+    await instance.acquire()
+    instance.start_heartbeat()
+    try:
+        from VideoEncoder.utils import jobs
+        n_orphans = jobs.reap_orphans()     # encodes left running by an exec restart
+        if n_orphans:
+            log.info(f"🧹 stopped {n_orphans} leftover ffmpeg process(es)")
+    except Exception as e:
+        log.debug(f"orphan sweep: {e}")
     try:
         from filestore.database.main_db import MainDB
         await MainDB().ensure_indexes()
@@ -196,6 +208,8 @@ async def main():
     from core import botapi
     await botapi.close()
     await app.stop()
+    instance.stop_heartbeat()
+    await instance.release()                  # the next deploy can start right away
 
 
 if __name__ == "__main__":

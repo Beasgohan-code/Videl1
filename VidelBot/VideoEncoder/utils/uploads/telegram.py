@@ -86,11 +86,12 @@ async def _upload_one(new_file, message, msg, as_doc=None, caption=None):
         thumb = await asyncio.to_thread(get_thumbnail, new_file, download_dir, (duration or 0) / 4)
 
     try:
-        if as_doc:
-            link = await upload_doc(message, msg, c_time, caption or filename, new_file, thumb)
-        else:
-            link = await upload_video(message, msg, new_file, caption or filename, c_time, thumb, duration, width,
+        async def send():
+            if as_doc:
+                return await upload_doc(message, msg, c_time, caption or filename, new_file, thumb)
+            return await upload_video(message, msg, new_file, caption or filename, c_time, thumb, duration, width,
                                       height)
+        link = await with_retry(send, msg)
     finally:
         if thumb and os.path.isfile(thumb):
             try:
@@ -98,6 +99,39 @@ async def _upload_one(new_file, message, msg, as_doc=None, caption=None):
             except OSError:
                 pass
     return link
+
+
+UPLOAD_RETRIES = 2            # extra attempts after the first
+MAX_FLOOD_WAIT = 900          # seconds we're willing to wait on a FloodWait before giving up
+
+
+async def with_retry(send, msg=None, retries: int = UPLOAD_RETRIES, sleep=asyncio.sleep):
+    """Run an upload, retrying only failures where Telegram did NOT accept the message – FloodWait
+    (the request was refused) and Telegram-side 5xx errors – so a retry can never post the file twice.
+    Everything else (cancel, bad file, network drop mid-send) goes straight to the caller as before."""
+    from pyrogram.errors import FloodWait, InternalServerError, ServiceUnavailable
+    attempt = 0
+    while True:
+        try:
+            return await send()
+        except FloodWait as e:
+            wait = int(getattr(e, "value", 0) or 0) + 1
+            if attempt >= retries or wait > MAX_FLOOD_WAIT:
+                raise
+            note = f"⏳ <b>Telegram asked to wait {wait}s</b> – the upload will retry automatically."
+        except (InternalServerError, ServiceUnavailable) as e:
+            if attempt >= retries:
+                raise
+            wait = 5 * (attempt + 1)
+            note = f"⚠️ <b>Telegram server error</b> (<code>{type(e).__name__}</code>) – retrying in {wait}s…"
+        attempt += 1
+        LOGGER.warning(f"upload retry {attempt}/{retries} in {wait}s")
+        if msg is not None:
+            try:
+                await msg.edit(note)
+            except Exception:
+                pass
+        await sleep(wait)
 
 
 async def _log_copy(send, *args, **kwargs):
