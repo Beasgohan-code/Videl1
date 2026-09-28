@@ -35,7 +35,7 @@ _me = {}
 
 async def _bot(client: Client):
     if not _me:
-        me = await client.get_me()
+        me = getattr(client, "me", None) or await client.get_me()
         _me.update(username=me.username, first_name=me.first_name, id=me.id)
     return _me
 

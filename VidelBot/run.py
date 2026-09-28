@@ -110,7 +110,8 @@ async def main():
 
     import keep_alive
     await keep_alive.start_server()
-    asyncio.create_task(keep_alive.self_ping_loop())
+    from core.bg import spawn
+    spawn(keep_alive.self_ping_loop(), name="self-ping")
 
     from filestore.database.mongo import get_motor_client
     for attempt in range(1, 6):             # Atlas DNS / cold-start hiccups are common on free hosts
@@ -181,15 +182,15 @@ async def main():
     except Exception as e:
         log.error(f"starting clone bots failed: {e}")
     from filestore.main_bot.plugins.clone_lifecycle import lifecycle_task
-    asyncio.create_task(lifecycle_task(app, worker_engine))     # clones unused for CLONE_INACTIVE_DAYS → off
+    spawn(lifecycle_task(app, worker_engine), name="clone-lifecycle")     # clones unused for CLONE_INACTIVE_DAYS → off
 
     import watchdog
     watchdog.start(app)
-    asyncio.create_task(_start_encoder_extras(app))
+    spawn(_start_encoder_extras(app), name="encoder-extras")
     from core.ui import fill_pic_pool
-    asyncio.create_task(fill_pic_pool())      # random start pics ready before the first /start
+    spawn(fill_pic_pool(), name="pic-pool")      # random start pics ready before the first /start
     if config.DAILY_REPORT:
-        asyncio.create_task(botlog.daily_report_loop(app))
+        spawn(botlog.daily_report_loop(app), name="daily-report")
 
     # #BotStarted → log channel + every owner's DM
     await botlog.boot_report(app, me, handlers=n, boot_seconds=time.time() - t0)

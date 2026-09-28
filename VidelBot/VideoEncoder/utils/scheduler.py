@@ -277,7 +277,8 @@ async def restore_queue(app) -> int:
     if restored:
         log.info(f"♻️ restored {restored} encoder task(s)")
         from .tasks import dispatch
-        asyncio.create_task(dispatch(spawn_all=True))
+        from core.bg import spawn
+        spawn(dispatch(spawn_all=True), name="encoder-restore-dispatch")
     return restored
 
 

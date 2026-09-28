@@ -99,7 +99,7 @@ def setup_flink(app: Client, worker_db, log_channel_id: int, is_admin_func):
             return await message.reply(f"<b>❌ Rᴀɴɢᴇ ᴛᴏᴏ ʙɪɢ (ᴍᴀx {_MAX_RANGE} ᴘᴏsᴛs).</b>")
 
         wait = await message.reply("<b>⏳ Bᴜɪʟᴅɪɴɢ ʟɪɴᴋs…</b>")
-        me = await client.get_me()
+        me = getattr(client, "me", None) or await client.get_me()
         mult = abs(log_channel_id)
 
         msgs = await get_messages(client, log_channel_id, list(range(lo, hi + 1)))

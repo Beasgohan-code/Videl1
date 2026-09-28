@@ -385,7 +385,8 @@ async def submit(client, message: Message, name: str = "", send_as: str = "", us
               send_as=send_as if send_as in store.MEDIA_TYPES else "")
     _pending[uid] = pending(uid) + 1
     _jobs[job.id] = job
-    asyncio.create_task(_worker(client, job))
+    from core.bg import spawn
+    spawn(_worker(client, job), name="rename-worker")
     return _pending[uid]
 
 

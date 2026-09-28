@@ -4,14 +4,42 @@ import json
 import re
 import urllib.parse
 from base64 import standard_b64encode
-from os import popen
+import os
+import subprocess
 from random import choice
 from urllib.parse import urlparse
 
 import cloudscraper
 import lk21
-import requests
+import requests as _requests
 from bs4 import BeautifulSoup
+
+HTTP_TIMEOUT = 30          # seconds – these run in a worker thread; without a timeout a dead host held the
+                           # encoder slot (and everything queued behind it) forever
+
+
+class _TimedRequests:
+    """`requests` with a default timeout for every call in this module."""
+
+    def __getattr__(self, name):
+        return getattr(_requests, name)
+
+    @staticmethod
+    def _call(method, *a, **k):
+        k.setdefault("timeout", HTTP_TIMEOUT)
+        return getattr(_requests, method)(*a, **k)
+
+    def get(self, *a, **k):
+        return self._call("get", *a, **k)
+
+    def post(self, *a, **k):
+        return self._call("post", *a, **k)
+
+    def head(self, *a, **k):
+        return self._call("head", *a, **k)
+
+
+requests = _TimedRequests()
 # from js2py import EvalJs
 
 
@@ -141,17 +169,19 @@ def yandex_disk(url: str) -> str:
 def cm_ru(url: str) -> str:
     """ cloud.mail.ru direct links generator
     Using https://github.com/JrMasterModelBuilder/cmrudl.py"""
-    reply = ''
     try:
-        text_url = re.findall(r'\bhttps?://.*cloud\.mail\.ru\S+', url)[0]
+        text_url = re.findall(r'\bhttps?://[^\s/]*cloud\.mail\.ru/[^\s;|&`$<>\'"\\]+', url)[0]
     except IndexError:
         raise DirectDownloadLinkException("`No cloud.mail.ru links found`\n")
-    command = f'vendor/cmrudl.py/cmrudl -s {text_url}'
-    result = popen(command).read()
-    result = result.splitlines()[-1]
+    tool = os.path.join("vendor", "cmrudl.py", "cmrudl")
+    if not os.path.isfile(tool):
+        raise DirectDownloadLinkException("cloud.mail.ru links aren't supported on this server")
+    # An argument list – never a shell string: the link comes from the user, and the old
+    # popen(f"... {text_url}") ran whatever `;`, `|` or `$(…)` it contained.
     try:
-        data = json.loads(result)
-    except json.decoder.JSONDecodeError:
+        out = subprocess.run([tool, "-s", "--", text_url], capture_output=True, text=True, timeout=60).stdout
+        data = json.loads(out.strip().splitlines()[-1])
+    except (subprocess.SubprocessError, OSError, IndexError, json.decoder.JSONDecodeError):
         raise DirectDownloadLinkException("`Error: Can't extract the link`\n")
     dl_url = data['download']
     return dl_url
@@ -212,10 +242,7 @@ def onedrive(link: str) -> str:
     resp = requests.head(direct_link1)
     if resp.status_code != 302:
         return "ERROR: Unauthorized link, the link may be private"
-    dl_link = resp.next.url
-    file_name = dl_link.rsplit("/", 1)[1]
-    resp2 = requests.head(dl_link)
-    return dl_link
+    return resp.next.url
 
 
 def hxfile(url: str) -> str:
@@ -317,11 +344,11 @@ def racaty(url: str) -> str:
     except IndexError:
         raise DirectDownloadLinkException("No Racaty links found\n")
     scraper = cloudscraper.create_scraper()
-    r = scraper.get(url)
+    r = scraper.get(url, timeout=HTTP_TIMEOUT)
     soup = BeautifulSoup(r.text, "lxml")
     op = soup.find("input", {"name": "op"})["value"]
     ids = soup.find("input", {"name": "id"})["value"]
-    rpost = scraper.post(url, data={"op": op, "id": ids})
+    rpost = scraper.post(url, data={"op": op, "id": ids}, timeout=HTTP_TIMEOUT)
     rsoup = BeautifulSoup(rpost.text, "lxml")
     dl_url = rsoup.find("a", {"id": "uniqueExpirylink"})[
         "href"].replace(" ", "%20")

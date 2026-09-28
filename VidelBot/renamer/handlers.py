@@ -669,7 +669,8 @@ async def leaderboard_cmd(client: Client, message: Message):
     else:
         sent = await message.reply_text(text, reply_markup=kb)
     if message.chat.type != enums.ChatType.PRIVATE and LEADERBOARD_DELETE_TIMER > 0:
-        asyncio.create_task(_delete_later([sent, message], LEADERBOARD_DELETE_TIMER))
+        from core.bg import spawn
+        spawn(_delete_later([sent, message], LEADERBOARD_DELETE_TIMER), name="leaderboard-autodelete")
 
 
 async def _delete_later(msgs, delay: int):

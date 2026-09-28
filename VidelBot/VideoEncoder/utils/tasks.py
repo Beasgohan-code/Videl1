@@ -81,7 +81,8 @@ async def dispatch(spawn_all: bool = False):
     inline = None if spawn_all or depth > 20 else starts[0]      # the finishing worker continues with one
     for m, mode in starts:
         if inline is None or m is not inline[0]:
-            asyncio.create_task(_spawn(m, mode))
+            from core.bg import spawn
+            spawn(_spawn(m, mode), name=f"encoder-{mode}")
     if inline:
         token = _DEPTH.set(depth + 1)
         try:

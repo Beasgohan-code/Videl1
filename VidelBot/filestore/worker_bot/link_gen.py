@@ -30,7 +30,7 @@ def setup_link_gen(app: Client, log_channel_id: int, is_admin_func):
 
     async def process_link(encoded: str, user_id: int, bot_id: int) -> str:
         bot = await main_db.get_bot(bot_id)
-        me = await app.get_me()
+        me = getattr(app, "me", None) or await app.get_me()
         base_link = f"https://t.me/{me.username}?start={encoded}"
 
         if not bot:
@@ -89,7 +89,7 @@ def setup_link_gen(app: Client, log_channel_id: int, is_admin_func):
             return await wait_msg.edit("<b>❌ Fᴀɪʟᴇᴅ ᴛᴏ ɢᴇᴛ ᴍᴇssᴀɢᴇ ID.</b>")
 
         encoded = await encode(f"get-{msg_id * abs(log_channel_id)}")
-        me = await client.get_me()
+        me = getattr(client, "me", None) or await client.get_me()
         link = await process_link(encoded, user_id, me.id)
 
         await message.reply(
@@ -149,7 +149,7 @@ def setup_link_gen(app: Client, log_channel_id: int, is_admin_func):
 
         # Range link
         encoded = await encode(f"get-{first_id * abs(log_channel_id)}-{last_id * abs(log_channel_id)}")
-        me = await client.get_me()
+        me = getattr(client, "me", None) or await client.get_me()
         link = await process_link(encoded, user_id, me.id)
 
         await message.reply(
@@ -200,7 +200,7 @@ def setup_link_gen(app: Client, log_channel_id: int, is_admin_func):
                     break
                 first_id, last_id = ids[0], ids[-1]
                 encoded = await encode(f"get-{first_id * abs(log_channel_id)}-{last_id * abs(log_channel_id)}")
-                me = await client.get_me()
+                me = getattr(client, "me", None) or await client.get_me()
                 link = await process_link(encoded, user_id, me.id)
                 await message.reply(
                     f"<b>✅ Cᴜsᴛᴏᴍ Bᴀᴛᴄʜ Lɪɴᴋ Gᴇɴᴇʀᴀᴛᴇᴅ ({len(ids)} ꜰɪʟᴇs):\n\n<blockquote><code>{link}</code></blockquote></b>",

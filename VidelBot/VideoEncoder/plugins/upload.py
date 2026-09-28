@@ -47,9 +47,14 @@ async def videoupload(client, message):
         await message.reply_text('you forgot to mention filepath!')
         return
     filename = os.path.basename(file)
-    duration = get_duration(file)
-    thumb = get_thumbnail(file, download_dir, duration / 4)
-    width, height = get_width_height(file)
+    if not os.path.isfile(file):
+        await message.reply_text('File not found.')
+        return
+    import asyncio
+    # ffprobe / ffmpeg block – keep them off the event loop (the whole bot froze during /vupload)
+    duration, (width, height) = await asyncio.gather(asyncio.to_thread(get_duration, file),
+                                                     asyncio.to_thread(get_width_height, file))
+    thumb = await asyncio.to_thread(get_thumbnail, file, download_dir, (duration or 0) / 4)
     text = f'Uploading {html.escape(file)}...'
     reply = await message.reply_text(text)
     try:

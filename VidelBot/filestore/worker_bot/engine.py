@@ -97,7 +97,8 @@ class WorkerEngine:
         # (throttle checked here first, so busy clones don't spawn a task per update)
         async def update_activity_middleware(client, update):
             if time.monotonic() - main_db._last_active_written.get(bot_id, -1e9) >= 60:
-                asyncio.create_task(main_db.update_last_active(bot_id))
+                from core.bg import spawn
+                spawn(main_db.update_last_active(bot_id), name="clone-last-active")
             raise ContinuePropagation
 
         app.add_handler(MessageHandler(update_activity_middleware), group=-1)
@@ -195,7 +196,7 @@ class WorkerEngine:
                     log.error(f"Error building fsub button for {ch_id}: {e}")
 
             if start_param:
-                me = await client.get_me()
+                me = getattr(client, "me", None) or await client.get_me()
                 buttons.append([
                     InlineKeyboardButton(
                         "♻️ Reload",
@@ -270,7 +271,7 @@ class WorkerEngine:
                 return True
 
             # Build verify URL — shorten the bot's start link so user must visit shortener
-            me_ = await client.get_me()
+            me_ = getattr(client, "me", None) or await client.get_me()
             token = await worker_db.new_verify_token(user_id)
             verify_url = f"https://t.me/{me_.username}?start=verify_{token}"
             from filestore.utils.shortener import shorten_url
@@ -428,10 +429,11 @@ class WorkerEngine:
                     f"<b>⏱ These files will be auto-deleted in {get_exp_time(del_timer)}.\n"
                     f"Save or forward them before deletion!</b>"
                 )
-                reload_url = f"https://t.me/{(await client.get_me()).username}?start={reload_param}"
-                asyncio.create_task(
-                    _schedule_delete(client, sent_msgs, notification, del_timer, reload_url)
-                )
+                me = getattr(client, "me", None) or await client.get_me()      # cached after start()
+                reload_url = f"https://t.me/{me.username}?start={reload_param}"
+                from core.bg import spawn
+                spawn(_schedule_delete(client, sent_msgs, notification, del_timer, reload_url),
+                      name="clone-autodelete")
             return len(sent_msgs)
 
         ctx = SimpleNamespace(
@@ -519,7 +521,7 @@ class WorkerEngine:
                 )
             else:
                 try:
-                    me_ = await client.get_me()
+                    me_ = getattr(client, "me", None) or await client.get_me()
                     start_message = start_message.format(
                         mention=message.from_user.mention,
                         first=message.from_user.first_name,
@@ -643,7 +645,7 @@ class WorkerEngine:
             await app.start()
             app.set_parse_mode(ParseMode.HTML)
 
-            me = await app.get_me()
+            me = getattr(app, "me", None) or await app.get_me()
             # command menus (users / admins) + scheduled-broadcast loop
             await clone_extras.after_start(app, ctx)
             app._videl_ctx = ctx

@@ -35,7 +35,7 @@ async def _shorten(url: str) -> list:
 
 @Client.on_inline_query()
 async def inline_handler(client: Client, query: InlineQuery):
-    me = await client.get_me()
+    me = getattr(client, "me", None) or await client.get_me()
     q = (query.query or "").strip()
     results = []
     if not q:
