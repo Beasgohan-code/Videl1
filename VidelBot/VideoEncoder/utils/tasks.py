@@ -422,9 +422,10 @@ async def handle_tg_down(message, msg, mode='no_reply', dest_dir=None):
 
     # Determine what to download
     target_msg = message
-    if message.reply_to_message and (message.reply_to_message.video or message.reply_to_message.document):
-        target_msg = message.reply_to_message
-    elif message.video or message.document:
+    r = message.reply_to_message
+    if r and (r.video or r.document or getattr(r, "audio", None)):       # audio: /convert on a music file
+        target_msg = r
+    elif message.video or message.document or getattr(message, "audio", None):
         target_msg = message
     elif mode == 'reply' and message.reply_to_message:
         target_msg = message.reply_to_message
@@ -642,6 +643,11 @@ async def leech_task(message, msg):
     except leech.LeechError as e:
         note = "" if pro else "\n<i>🎬 Encoder Pro raises the limit – see /plans.</i>" if "limit" in str(e) else ""
         await msg.edit(f"❌ <b>Download failed:</b> {html.escape(str(e))}{note}")
+        return
+    except Exception as e:                       # network errors, timeouts, disk full …
+        LOGGER.warning(f"leech {url[:80]}: {type(e).__name__}: {e}")
+        await msg.edit(f"❌ <b>Download failed:</b> {html.escape(type(e).__name__)} – "
+                       f"{html.escape(str(e))[:200] or 'the connection dropped'}.\n<i>Try again, or check the link.</i>")
         return
     if await _cancelled(msg):
         return

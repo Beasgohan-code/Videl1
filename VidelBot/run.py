@@ -82,6 +82,25 @@ async def start_with_retry(app):
             await asyncio.sleep(wait)
 
 
+async def _start_encoder_extras(app):
+    """GPU / AV1 detection (off the event loop), then re-queue encodes that were waiting before a restart."""
+    try:
+        from VideoEncoder.utils import hw, scheduler
+        await asyncio.to_thread(hw.detect)
+        log.info(f"🎛 {hw.summary()}")
+        await scheduler.restore_queue(app)
+    except Exception as e:
+        log.error(f"encoder extras: {e}")
+    for name in ("analytics", "backup"):
+        try:
+            mod = __import__(f"core.{name}", fromlist=["start"])
+            mod.start(app)
+        except ModuleNotFoundError:
+            pass
+        except Exception as e:
+            log.error(f"{name}: {e}")
+
+
 async def main():
     t0 = time.time()
     missing = config.missing_required()
@@ -154,6 +173,7 @@ async def main():
 
     import watchdog
     watchdog.start(app)
+    asyncio.create_task(_start_encoder_extras(app))
     from core.ui import fill_pic_pool
     asyncio.create_task(fill_pic_pool())      # random start pics ready before the first /start
     if config.DAILY_REPORT:

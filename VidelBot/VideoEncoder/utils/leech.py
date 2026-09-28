@@ -11,6 +11,8 @@ Everything streams to disk in chunks with a live progress card and honours ❌ C
 """
 import asyncio
 import base64
+import ipaddress
+import socket
 import html
 import json
 import os
@@ -20,6 +22,7 @@ import time
 from urllib.parse import unquote, urlparse
 
 import aiohttp
+from yarl import URL
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from core.style import hdr, row
@@ -39,6 +42,45 @@ class LeechError(Exception):
 
 class Cancelled(Exception):
     pass
+
+
+# ─────────────────────────── safety ───────────────────────────
+# Users must not be able to make the server fetch its own / its network's private addresses
+# (keep-alive dashboard, cloud metadata 169.254.169.254, databases …) and upload the answer.
+ALLOW_PRIVATE = os.environ.get("LEECH_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes")
+MAX_REDIRECTS = 8
+
+
+def _ip_blocked(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip.split("%", 1)[0])
+    except ValueError:
+        return True
+    if getattr(addr, "ipv4_mapped", None):
+        addr = addr.ipv4_mapped
+    return not addr.is_global or addr.is_multicast
+
+
+async def check_public(url: str):
+    """LeechError unless `url` is http(s) and every address its host resolves to is public."""
+    u = urlparse(url)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise LeechError("Only http:// and https:// links are supported.")
+    if ALLOW_PRIVATE:
+        return
+    host = u.hostname
+    try:
+        ipaddress.ip_address(host)
+        addrs = [host]
+    except ValueError:
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(host, u.port or (443 if u.scheme == "https" else 80),
+                                                                 type=socket.SOCK_STREAM)
+        except OSError:
+            raise LeechError(f"Couldn't find the server {host}.") from None
+        addrs = [i[4][0] for i in infos]
+    if not addrs or any(_ip_blocked(a) for a in addrs):
+        raise LeechError("That link points to a private / local address – it can't be downloaded.")
 
 
 # ─────────────────────────── link types ───────────────────────────
@@ -158,7 +200,19 @@ async def stream(session, url: str, dest_dir: str, name: str | None, *, key=None
                  expected_size: int = 0, decryptor=None, edit_every: float = 6.0) -> str:
     """Stream `url` into dest_dir. Returns the file path. Raises LeechError / Cancelled."""
     started, last_edit = time.time(), 0.0
-    async with session.get(url, allow_redirects=True) as resp:
+    resp = None
+    for _hop in range(MAX_REDIRECTS + 1):           # follow redirects by hand so every hop is checked
+        await check_public(url)
+        r = await session.get(url, allow_redirects=False)
+        if r.status in (301, 302, 303, 307, 308) and r.headers.get("Location"):
+            url = str(r.url.join(URL(r.headers["Location"])))
+            r.release()
+            continue
+        resp = r
+        break
+    if resp is None:
+        raise LeechError("Too many redirects.")
+    async with resp:
         if resp.status >= 400:
             raise LeechError(f"The server answered HTTP {resp.status}.")
         ctype = resp.headers.get("Content-Type", "")

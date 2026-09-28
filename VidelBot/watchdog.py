@@ -176,13 +176,18 @@ class Watchdog:
             busy = len(enc_queue) > 0
         except Exception:
             busy = False
+        live = set()
+        if busy:                              # per-task working dirs (<chat>_<msg>) of queued / running tasks
+            try:
+                from VideoEncoder.utils.scheduler import task_key
+                live = {k for k in (task_key(m) for m in list(enc_queue)) if k}
+            except Exception:
+                live = set()
         for d in ENCODER_DIRS:
-            if busy and not aggressive:
-                continue
-            keep = set()
+            keep = set(live)
             if busy and os.path.isdir(d):     # live ffmpeg progress files (process.txt / process_<msg>.txt)
-                keep = {n for n in os.listdir(d) if n.startswith("process")}
-            c, f = clean_dir(d, 24 if busy else age, keep=keep)
+                keep |= {n for n in os.listdir(d) if n.startswith("process")}
+            c, f = clean_dir(d, (age if aggressive else max(age, 6)) if busy else age, keep=keep)
             files += c
             freed += f
         # Stray progress files the saver writes in the working directory.
