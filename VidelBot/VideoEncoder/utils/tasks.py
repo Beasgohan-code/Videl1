@@ -17,7 +17,7 @@ from requests.utils import unquote
 from .. import LOGGER, data, download_dir, video_mimetype
 from .database.access_db import db
 from .direct_link_generator import direct_link_generator
-from .display_progress import progress_for_pyrogram
+from .display_progress import humanbytes, progress_for_pyrogram
 from .helper import delete_downloads, get_zip_folder, handle_encode, handle_extract, handle_url
 from .uploads.drive import _get_file_id
 from .uploads.drive.download import Downloader
@@ -43,6 +43,12 @@ async def on_task_complete():
             await handle_tasks(message, 'url')
         elif '/batch' in command:
             await handle_tasks(message, 'batch')
+        elif '/sample' in command:
+            await handle_tasks(message, 'sample')
+        elif '/trim' in command:
+            await handle_tasks(message, 'trim')
+        elif '/screens' in command:
+            await handle_tasks(message, 'screens')
         elif '/dl' in command:
             await handle_tasks(message, 'tg')
         elif '/af' in command:
@@ -66,16 +72,33 @@ async def on_task_complete():
         await handle_tasks(message, 'tg')
 
 
+_MODE_TITLE = {'tg': "Encode", 'url': "Encode (link)", 'af': "Audio arrange", 'batch': "Batch encode",
+               'sample': "Sample encode", 'trim': "Trim", 'screens': "Screenshots"}
+
+
 async def handle_tasks(message, mode):
     msg = None
     try:
-        msg = await message.reply_text("<b>💠 Downloading...</b>")
+        from . import jobs
+        from .encoding import cancel_markup
+        msg = await message.reply_text(f"<b>📥 Downloading…</b>\n<i>{_MODE_TITLE.get(mode, 'Task')}</i>")
+        jobs.register(msg.id, message.from_user.id if message.from_user else 0, message.chat.id, stage="download")
+        try:
+            await msg.edit_reply_markup(cancel_markup(msg.id))
+        except Exception:
+            pass
         if mode == 'tg':
             await tg_task(message, msg)
         elif mode == 'url':
             await url_task(message, msg)
         elif mode == 'af':
             await af_task(message, msg)
+        elif mode == 'sample':
+            await sample_task(message, msg)
+        elif mode == 'trim':
+            await trim_task(message, msg)
+        elif mode == 'screens':
+            await screens_task(message, msg)
         else:
             await batch_task(message, msg)
     except MessageNotModified:
@@ -95,28 +118,137 @@ async def handle_tasks(message, mode):
     except Exception as e:
         import traceback
         LOGGER.error(traceback.format_exc())
-        await message.reply(text=f"Error! <code>{e}</code>")
+        await message.reply(text=f"Error! <code>{html.escape(str(e))[:300]}</code>")
     finally:
+        if msg is not None:
+            from . import jobs
+            jobs.unregister(msg.id)
         await on_task_complete()
 
 
-async def tg_task(message, msg):
+async def _cancelled(msg) -> bool:
+    from . import jobs
+    if jobs.is_cancelled(msg.id):
+        try:
+            await msg.edit("🚫 <b>Task cancelled.</b>")
+        except Exception:
+            pass
+        return True
+    return False
+
+
+async def _download(message, msg):
     filepath = await handle_tg_down(message, msg)
+    if await _cancelled(msg):
+        if filepath and os.path.isfile(filepath):
+            os.remove(filepath)
+        return None
     if not filepath:
-        await msg.edit("Download failed or no file found.")
+        await msg.edit("❌ Download failed or no file found.")
+        return None
+    return filepath
+
+
+async def tg_task(message, msg):
+    filepath = await _download(message, msg)
+    if not filepath:
         return
-    await msg.edit('Encoding...')
+    await msg.edit('<b>🎬 Encoding…</b>')
     await handle_encode(filepath, message, msg)
 
 
-async def af_task(message, msg):
-    filepath = await handle_tg_down(message, msg)
+async def sample_task(message, msg):
+    """/sample [seconds] – encode a short clip from the middle with the current settings."""
+    from .ffcmd import parse_timestamp
+    parts = (message.text or message.caption or "").split()
+    length = 30
+    if len(parts) > 1:
+        length = int(parse_timestamp(parts[1]) or 30)
+    filepath = await _download(message, msg)
     if not filepath:
-        await msg.edit("Download failed or no file found.")
+        return
+    await msg.edit(f'<b>🧪 Encoding a {max(5, min(120, length))}s sample…</b>')
+    await handle_encode(filepath, message, msg, opts={"sample": length})
+
+
+def parse_trim_args(text):
+    """'/trim 1:00 2:30' → (60.0, 150.0); '/trim 90' → (90.0, None); invalid → None."""
+    from .ffcmd import parse_timestamp
+    parts = (text or "").split()[1:]
+    if not parts or len(parts) > 2:
+        return None
+    start = parse_timestamp(parts[0])
+    end = parse_timestamp(parts[1]) if len(parts) == 2 else None
+    if start is None or (len(parts) == 2 and (end is None or end <= start)):
+        return None
+    return start, end
+
+
+async def trim_task(message, msg):
+    from . import ffcmd
+    from .encoding import trim
+    from .uploads import upload_worker
+    rng = parse_trim_args(message.text or message.caption)
+    if not rng:
+        await msg.edit("Usage: <code>/trim 00:01:00 00:02:30</code> (reply to a video)")
+        return
+    filepath = await _download(message, msg)
+    if not filepath:
+        return
+    start, end = rng
+    await msg.edit(f"<b>✂️ Trimming</b> <code>{ffcmd.fmt_ts(start)}</code> → "
+                   f"<code>{ffcmd.fmt_ts(end) if end is not None else 'end'}</code>…")
+    out = await trim(filepath, start, end, key=msg.id)
+    if await _cancelled(msg):
+        return
+    if not out:
+        await msg.edit("❌ <b>Trim failed.</b> <i>Check the timestamps are inside the video.</i>")
+        return
+    size = os.path.getsize(out)
+    link = await upload_worker(out, message, msg)
+    if link is None and await _cancelled(msg):
+        return
+    from .helper import _done_markup
+    from core.style import hdr, row
+    await msg.edit("\n".join([hdr("✂️", "Trim complete"), f"<code>{html.escape(os.path.basename(out))[:80]}</code>", "",
+                               row("Range", f"{ffcmd.fmt_ts(start)} → {ffcmd.fmt_ts(end) if end is not None else 'end'}"),
+                               row("Size", humanbytes(size)),
+                               row("Mode", "Lossless (stream copy, cut at keyframes)")]),
+                   reply_markup=_done_markup(link), disable_web_page_preview=True)
+
+
+async def screens_task(message, msg):
+    from pyrogram.types import InputMediaPhoto
+    from . import ffcmd
+    from .encoding import probe, screenshots
+    parts = (message.text or message.caption or "").split()
+    count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 6
+    count = max(1, min(10, count))
+    filepath = await _download(message, msg)
+    if not filepath:
+        return
+    await msg.edit(f"<b>📸 Taking {count} screenshots…</b>")
+    info = await probe(filepath)
+    shots = await screenshots(filepath, count, info["duration"], key=msg.id)
+    if await _cancelled(msg):
+        return
+    if not shots:
+        await msg.edit("❌ <b>Couldn't take screenshots from this file.</b>")
+        return
+    name = html.escape(os.path.basename(filepath))[:80]
+    media = [InputMediaPhoto(p, caption=(f"📸 <code>{name}</code>\n" if i == 0 else "") + f"⏱ {ffcmd.fmt_ts(at)}")
+             for i, (p, at) in enumerate(shots)]
+    await message.reply_media_group(media)
+    await msg.edit(f"✅ <b>{len(shots)} screenshots</b> from <code>{name}</code>")
+
+
+async def af_task(message, msg):
+    filepath = await _download(message, msg)
+    if not filepath:
         return
 
     # Probe for streams
-    streams = get_media_streams(filepath)
+    streams = await asyncio.to_thread(get_media_streams, filepath)
     if not streams:
          await msg.edit("Could not retrieve media streams.")
          return
@@ -137,7 +269,12 @@ async def af_task(message, msg):
 
 
 async def url_task(message, msg):
-    filepath = await handle_download_url(message, msg, False)
+    try:
+        filepath = await handle_download_url(message, msg, False)
+    except RuntimeError:
+        if await _cancelled(msg):
+            return
+        raise
     if not filepath:
         # Error handled in handle_download_url logic or implicit failure
         return

@@ -4,13 +4,19 @@ import asyncio
 import math
 import time
 
+from pyrogram import StopTransmission
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 from .. import PROGRESS
+from . import jobs
 
 
 _last_edit: dict = {}          # (chat, message id) -> last edit time
 
 
 async def progress_for_pyrogram(current, total, ud_type, message, start):
+    if jobs.is_cancelled(getattr(message, "id", None)):
+        raise StopTransmission                  # ❌ Cancel pressed – pyrogram aborts the transfer
     now = time.time()
     diff = max(now - start, 0.001)
     # One edit per 5 s per status message. The original `round(diff % 5) == 0` was true for a whole
@@ -43,11 +49,15 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
                 humanbytes(speed) + "/s",
                 estimated_total_time if estimated_total_time != '...' else "Calculating"
             )
+            job = jobs.get(getattr(message, "id", None))
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "❌ Cancel", callback_data=f"enc_cancel:{message.id}")]]) if job else None
             await message.edit(
                 text="{}\n{}".format(
                     ud_type,
                     tmp
-                )
+                ),
+                reply_markup=markup
             )
         except Exception:
             pass

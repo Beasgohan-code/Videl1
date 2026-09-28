@@ -179,7 +179,10 @@ class Watchdog:
         for d in ENCODER_DIRS:
             if busy and not aggressive:
                 continue
-            c, f = clean_dir(d, 24 if busy else age, keep={"process.txt"} if busy else set())
+            keep = set()
+            if busy and os.path.isdir(d):     # live ffmpeg progress files (process.txt / process_<msg>.txt)
+                keep = {n for n in os.listdir(d) if n.startswith("process")}
+            c, f = clean_dir(d, 24 if busy else age, keep=keep)
             files += c
             freed += f
         # Stray progress files the saver writes in the working directory.

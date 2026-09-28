@@ -260,12 +260,50 @@ Rich screens: `/help`, `/about`, `/commands` (one table per section), `/stats`, 
 classic screens (photo / preview based): home, settings hub, encoder help, premium banner and the
 Auto-Rename panel.
 
+## 🎬 Encoder Pro
+
+The video encoder got a rebuilt pipeline. Every ffmpeg command now comes from one tested builder (`VideoEncoder/utils/ffcmd.py`), and the test suite runs those commands through a real ffmpeg.
+
+**Fixed**
+| Before | Now |
+|---|---|
+| 10-bit used `-profile:v main` → every 10-bit encode failed | x264 `high` / `high10`, x265 `main` / `main10` · **H.264 10-bit allowed** |
+| x265 got `-tune film` (doesn't exist) → failed | `film` only for x264, `animation` for both |
+| `scale=1920:1080` stretched non-16:9 video and upscaled | `scale=-2:H` keeps the aspect ratio and never upscales |
+| `-map 0:v?` encoded cover art as extra video streams | only the real video stream is mapped |
+| MP4: no `hvc1` tag, PGS → `mov_text` crash, Vorbis/FLAC copy | `hvc1` + `+faststart`, text subs only, unsupported audio → AAC; AVI-safe audio |
+| Opus at 44.1 kHz / 5.1(side) failed | 48 kHz + a layout libopus accepts |
+| ❌ Cancel only flipped a flag – ffmpeg kept running | the ffmpeg process is terminated (downloads / uploads / URL downloads stop too) |
+| 📊 Stats alert > 200 chars → never showed | short live summary |
+| ~25 DB reads per encode, blocking probes | one settings read, one ffprobe, probes off the event loop |
+| log-channel failure marked a finished upload as failed | log copy is best-effort |
+
+**New**
+- **⚡ Quick profiles:** 📱 Mobile · ⚖️ Balanced · 🎞 High quality · 🎌 Anime · 💾 Tiny · ⚡ Fast, set with one tap. The menu shows which one is active.
+- **🎯 Target-size mode:** "make it ≈ 200 MB". Videl picks the bitrate from the duration and audio bitrate.
+- **🧹 Filters:** deinterlace (bwdif, touches interlaced frames only), denoise (hqdn3d), EBU R128 loudness normalisation.
+- **`/sample [sec]`:** encodes a 30 s clip from the middle with your settings and predicts the full file size.
+- **`/trim 1:00 2:30`:** lossless, fast cut. **`/screens [n]`:** up to 10 evenly spread screenshots as an album.
+- **Live progress card:** bar, %, speed, fps, ETA, current → projected size, the settings in use, and a per-task ❌ Cancel.
+- **Summary card:** original → new size (−x %), time, speed, video / audio settings, a 📥 Open file button, and per-user totals ("12 encodes · saved 3.4 GB").
+- **Queue:**
+  - "position #N" replies;
+  - `/queue` shows the whole queue on one screen;
+  - `/vset` is a settings table;
+  - `/clear` reports how many waiting tasks it removed.
+- **Settings menus:**
+  - a summary card on each page;
+  - CRF ➖/➕ stepper (12–40);
+  - labelled chips instead of the dead "this button not works" buttons;
+  - x264-only options are hidden for H.265;
+  - an 🧪 Advanced page.
+
 ## 🧪 Tests
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
-The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes, and `tests/test_phase8.py` for the clone extras (smart-link limits / passwords / expiry, Stars checkout + delivery, premium, index + search, requests, anti-flood, broadcasts & schedules, export, the ✨ Extras panel and ownership transfer), and `tests/test_phase9.py` for the performance work (live progress, saver cancel / visible upload errors, encoder throttle, parallel force-sub, instant start pics, indexes, cache trimming), and `tests/test_phase10.py` for the clone lifecycle (warning → deactivation → reactivation, owner-only buttons), disabled buttons and the new home screen, and `tests/test_phase12.py` for the Auto-Rename upgrade (source / group / ranges / movie-aware templates, tag cleaning, word rules, presets, manual mode prompts, caption placeholders, probing + frame thumbnails, history, queue cancel, `/rename` on the engine), and `tests/test_phase13.py` for the rich UI (small caps keep tokens and escape HTML, every screen valid in both renderings, rich HTML tag whitelist, rich-safe keyboards and their handlers, `SendRichMessage` / rich edits on the wire, classic fallback, group rendering, replacing refused rich edits). Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
+The suite runs every module offline (in-memory MongoDB + fake Telegram client): plugin loading, payments, force-sub, ban/maintenance gates, all menu callbacks, watchdog cleanup / state expiry / clone healing / auto-restart, keep-alive endpoints, error handler and inline mode – plus `tests/test_phase4.py` for streaming drafts, bot photo, Stars subscriptions / gifts, native pickers, referrals, redeem codes, trial, the support inbox and the admin user panel, `tests/test_phase5.py` for the aiogram bridge, and `tests/test_phase6.py` for Auto-Rename (name extraction on real release names, templates, panels, metadata input, sequence sorting, queue / de-duplication, the full download → rename → upload → dump pipeline (plus a real-ffmpeg MKV/metadata run when ffmpeg is installed), NSFW / size limits, leaderboard periods, verification tokens & bypass detection), runtime admins and per-channel force-sub modes, and `tests/test_phase8.py` for the clone extras (smart-link limits / passwords / expiry, Stars checkout + delivery, premium, index + search, requests, anti-flood, broadcasts & schedules, export, the ✨ Extras panel and ownership transfer), and `tests/test_phase9.py` for the performance work (live progress, saver cancel / visible upload errors, encoder throttle, parallel force-sub, instant start pics, indexes, cache trimming), and `tests/test_phase10.py` for the clone lifecycle (warning → deactivation → reactivation, owner-only buttons), disabled buttons and the new home screen, and `tests/test_phase12.py` for the Auto-Rename upgrade (source / group / ranges / movie-aware templates, tag cleaning, word rules, presets, manual mode prompts, caption placeholders, probing + frame thumbnails, history, queue cancel, `/rename` on the engine), and `tests/test_phase13.py` for the rich UI (small caps keep tokens and escape HTML, every screen valid in both renderings, rich HTML tag whitelist, rich-safe keyboards and their handlers, `SendRichMessage` / rich edits on the wire, classic fallback, group rendering, replacing refused rich edits), and `tests/test_phase14.py` for Encoder Pro (the command builder for every codec / container / filter combination, real-ffmpeg encodes / trims / screenshots when ffmpeg is installed, single-read settings, cancel permissions + process kill, transfer cancel, progress / summary cards, profiles, CRF / target-size steppers, the new commands and queue screens). Its `RecordingSession` captures every Bot API request exactly as aiogram would put it on the wire, validated against the Bot API 10.3 models (coloured buttons, ephemeral replies, rich messages, managed-bot pairing / ownership proof / token rotation, Stars, gifts, photos, drafts, MTProto fallbacks). Two further checks run over the whole codebase: every `callback_data` must reach exactly one handler, and every menu text must be valid Bot API HTML.
 
 ## 🗂 Layout
 

@@ -343,7 +343,7 @@ def test_ddl_valid_link_starts_or_queues(encoder_stubs):
     run(enc_plugin.url_encode(None, first))
     run(enc_plugin.url_encode(None, second))
     assert encoder_stubs == [(first, "url")]
-    assert enc_queue == [first, second] and "Waiting for queue" in second.replies[-1]
+    assert enc_queue == [first, second] and "Added to the queue" in second.replies[-1] and "#2" in second.replies[-1]
 
 
 def test_batch_accepts_reply_to_archive(encoder_stubs):
@@ -439,7 +439,7 @@ def test_encode_progress_survives_missing_duration_and_zero_speed(monkeypatch):
 
     monkeypatch.setattr(encoding.asyncio, "sleep", fast)
     progress = download_dir + "process.txt"
-    cases = (("out_time_ms=5000000\nspeed=0\nprogress=continue\n", None, "Done: 5s"),
+    cases = (("out_time_ms=5000000\nspeed=0\nprogress=continue\n", None, "ᴅᴏɴᴇ:</b> 5s"),
              ("out_time_ms=20000000\nspeed=2.0x\nprogress=continue\n", 40.0, "50%"),
              ("out_time_ms=90000000\nspeed=N/A\nprogress=continue\n", 40.0, "100%"),
              (None, 40.0, None))

@@ -190,9 +190,17 @@ ENC_HELP = (
     + quote("\n".join(f"◈ {c} — {sc(d)}" for c, d in (
         ("/dl", "reply to a Telegram file to encode it"), ("/ddl", "encode through a direct link"),
         ("/batch", "encode in batch"), ("/af", "pick / reorder audio tracks, then encode"),
+        ("/sample [sec]", "30 s test encode – check quality & size first"),
+        ("/trim 1:00 2:30", "lossless cut of a part"), ("/screens [n]", "up to 10 screenshots"),
         ("/queue", "check the queue"), ("/status", "live system status"),
         ("/settings", "settings (🎬 Video Encoder)"), ("/vset", "view settings"), ("/reset", "reset settings"),
         ("/thumb", "custom thumbnail for encodes"))), expandable=True)
+    + "\n\n<b>⚡ " + sc("Encoder Pro") + "</b>\n"
+    + quote("\n".join(f"◈ {sc(a)} — {sc(b)}" for a, b in (
+        ("Quick profiles", "Mobile, Balanced, High quality, Anime, Tiny, Fast"),
+        ("Target size", "fit a video into e.g. 200 MB"),
+        ("Filters", "deinterlace, denoise, loudness normalise"),
+        ("Live progress", "speed, fps, ETA, size and a real ❌ Cancel"))), expandable=True)
     + "\n\n<b>🛡 " + sc("For sudo") + "</b>\n"
     + quote("\n".join(f"◈ {c} — {sc(d)}" for c, d in (
         ("/vupload", "video upload"), ("/dupload", "document upload"), ("/gupload", "drive upload"),

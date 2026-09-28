@@ -1,43 +1,57 @@
 
 
+import asyncio
 import os
 import time
 
-from ... import app, download_dir, log
+from ... import LOGGER, app, download_dir, log
 from ..database.access_db import db
 from ..display_progress import progress_for_pyrogram
 from ..encoding import get_duration, get_thumbnail, get_width_height
 
 
 async def upload_to_tg(new_file, message, msg):
-    # Variables
+    """Upload the encoded file (video or document per the user's setting). Returns its link, or None
+    when the user cancelled the upload."""
     c_time = time.time()
     filename = os.path.basename(new_file)
-    duration = get_duration(new_file)
+    # ffprobe / ffmpeg are blocking – keep them off the event loop
+    duration = await asyncio.to_thread(get_duration, new_file)
 
-    # Thumbnail Logic
     custom_thumb = await db.get_thumbnail(message.from_user.id)
+    thumb = None
     if custom_thumb:
-        thumb = await app.download_media(custom_thumb, file_name=os.path.join(download_dir, str(time.time()) + ".jpg"))
-    else:
-        thumb = get_thumbnail(new_file, download_dir, duration / 4)
-
-    width, height = get_width_height(new_file)
-    # Handle Upload
-    if await db.get_upload_as_doc(message.from_user.id) is True:
-        link = await upload_doc(message, msg, c_time, filename, new_file)
-    else:
-        link = await upload_video(message, msg, new_file, filename,
-                                  c_time, thumb, duration, width, height)
-
-    # Cleanup custom thumb download if it was used/downloaded
-    if custom_thumb and thumb and os.path.isfile(thumb):
         try:
-            os.remove(thumb)
-        except Exception:
-            pass
+            thumb = await app.download_media(custom_thumb,
+                                             file_name=os.path.join(download_dir, str(time.time()) + ".jpg"))
+        except Exception as e:
+            LOGGER.warning(f"custom thumbnail download failed: {e}")
+    if not thumb:
+        thumb = await asyncio.to_thread(get_thumbnail, new_file, download_dir, (duration or 0) / 4)
 
+    width, height = await asyncio.to_thread(get_width_height, new_file)
+    try:
+        if await db.get_upload_as_doc(message.from_user.id) is True:
+            link = await upload_doc(message, msg, c_time, filename, new_file, thumb)
+        else:
+            link = await upload_video(message, msg, new_file, filename, c_time, thumb, duration, width, height)
+    finally:
+        if thumb and os.path.isfile(thumb):
+            try:
+                os.remove(thumb)
+            except OSError:
+                pass
     return link
+
+
+async def _log_copy(send, *args, **kwargs):
+    """Copy to the log channel – a missing / misconfigured log chat must not fail the user's upload."""
+    if not log:
+        return
+    try:
+        await send(log, *args, **kwargs)
+    except Exception as e:
+        LOGGER.warning(f"encoder log copy failed: {e}")
 
 
 async def upload_video(message, msg, new_file, filename, c_time, thumb, duration, width, height):
@@ -53,23 +67,26 @@ async def upload_video(message, msg, new_file, filename, c_time, thumb, duration
         progress=progress_for_pyrogram,
         progress_args=("Uploading ...", msg, c_time)
     )
-    if resp:
-        await app.send_video(log, resp.video.file_id, thumb=thumb,
-                             caption=filename, duration=duration,
-                             width=width, height=height, parse_mode=None)
-
+    if not resp:                      # StopTransmission → cancelled
+        return None
+    media = resp.video or resp.document
+    if media:
+        await _log_copy(app.send_video if resp.video else app.send_document, media.file_id,
+                        caption=filename, parse_mode=None)
     return resp.link
 
 
-async def upload_doc(message, msg, c_time, filename, new_file):
+async def upload_doc(message, msg, c_time, filename, new_file, thumb=None):
     resp = await message.reply_document(
         new_file,
         caption=filename,
+        parse_mode=None,
+        thumb=thumb,
         progress=progress_for_pyrogram,
         progress_args=("Uploading ...", msg, c_time)
     )
-
-    if resp:
-        await app.send_document(log, resp.document.file_id, caption=filename, parse_mode=None)
-
+    if not resp:
+        return None
+    if resp.document:
+        await _log_copy(app.send_document, resp.document.file_id, caption=filename, parse_mode=None)
     return resp.link

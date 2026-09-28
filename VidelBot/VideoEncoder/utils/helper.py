@@ -1,6 +1,7 @@
 
 
 import asyncio
+import html
 import os
 import shutil
 
@@ -66,7 +67,11 @@ async def handle_url(url, filepath, msg):
     # SmartDL's constructor probes the URL synchronously – keep it off the event loop
     downloader = await asyncio.to_thread(SmartDL, url, filepath, progress_bar=False, threads=10)
     await asyncio.to_thread(downloader.start, blocking=False)
+    from . import jobs
     while not downloader.isFinished():
+        if jobs.is_cancelled(getattr(msg, "id", None)):
+            await asyncio.to_thread(downloader.stop)
+            raise RuntimeError("Download cancelled")
         await progress_for_url(downloader, msg)
         await asyncio.sleep(6)              # edit at most every few seconds (FloodWait otherwise)
     if not downloader.isSuccessful():
@@ -74,38 +79,81 @@ async def handle_url(url, filepath, msg):
         raise RuntimeError(f"Download failed: {errors}")
 
 
-async def handle_encode(filepath, message, msg, audio_map=None):
-    if await db.get_hardsub(message.from_user.id):
-        subs = await extract_subs(filepath, msg, message.from_user.id)
+def _done_markup(link):
+    rows = []
+    if link and str(link).startswith(("http://", "https://")):
+        rows.append([InlineKeyboardButton("📥 Open file", url=str(link))])
+    rows.append([InlineKeyboardButton("⚙️ Settings", callback_data="OpenSettings"),
+                 InlineKeyboardButton("🏠 Home", callback_data="start_btn")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _remove(*paths):
+    for p in paths:
+        try:
+            if p and os.path.isfile(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+
+async def handle_encode(filepath, message, msg, audio_map=None, opts=None):
+    """Encode → upload → before/after summary. Returns the uploaded file link (or None)."""
+    from . import jobs
+    from .encoding import LAST_ERROR, summary_text
+    uid = message.from_user.id
+    if await db.get_hardsub(uid):
+        await _safe_edit(msg, "<b>📝 Extracting subtitles for hardsub…</b>")
+        subs = await extract_subs(filepath, msg, uid)
         if not subs:
-            await msg.edit("Something went wrong while extracting the subtitles!")
-            return
-    new_file = await encode(filepath, message, msg, audio_map=audio_map)
+            await _safe_edit(msg, "❌ <b>Couldn't extract the subtitles.</b>\n<i>Picture subtitles (PGS/VobSub) can't be "
+                                  "hard-subbed – turn Hardsub off in /settings → Extras.</i>", _done_markup(None))
+            _remove(filepath)
+            return None
+    new_file = await encode(filepath, message, msg, audio_map=audio_map, opts=opts)
+    link = None
     if new_file:
-        await msg.edit("<code>Video Encoded, getting metadata...</code>")
+        await _safe_edit(msg, "<b>📤 Encoded – uploading…</b>")
+        new_size = os.path.getsize(new_file) if os.path.isfile(new_file) else 0
         try:
             link = await upload_worker(new_file, message, msg)
-            await msg.edit('Video Encoded Successfully! Link: {}'.format(link))
         except Exception as e:
-            await msg.edit(f"Error while uploading: {e}")
-            link = None
-
-        # Immediate cleanup after upload
-        try:
-            os.remove(new_file)
-            os.remove(filepath)
-        except Exception:
-            pass
-
+            await _safe_edit(msg, f"❌ <b>Upload failed:</b> <code>{html.escape(str(e))[:300]}</code>", _done_markup(None))
+        else:
+            try:
+                text = summary_text(new_file, new_size, link,
+                                    title="Sample ready" if getattr(new_file, "sample", None) else "Encode complete")
+            except Exception as e:                       # the summary must never hide a finished upload
+                text = f"✅ <b>Video encoded!</b>\n<i>{html.escape(str(e))[:100]}</i>"
+            await _safe_edit(msg, text, _done_markup(link))
+            if not getattr(new_file, "sample", None):
+                try:
+                    await db.add_encode_stat(uid, (new_file.info or {}).get("size", 0), new_size, new_file.elapsed)
+                except Exception:
+                    pass
+        _remove(new_file, filepath)
+    elif jobs.is_cancelled(msg.id) or getattr(msg, "_videl_cancelled", False):
+        _remove(filepath)
     else:
-        await message.reply("<code>Something wents wrong while encoding your file.</code>")
-        try:
-            os.remove(filepath)
-        except Exception:
-            pass
-        link = None
-
+        err = LAST_ERROR.pop(msg.id, "")
+        text = "❌ <b>Encoding failed.</b>"
+        if err:
+            text += f"\n<blockquote expandable><code>{html.escape(err)[-280:]}</code></blockquote>"
+        text += "\n<i>Try another preset / codec in /settings, or /sample to test quickly.</i>"
+        if not await _safe_edit(msg, text, _done_markup(None)):
+            await message.reply(text)
+        _remove(filepath)
     return link
+
+
+async def _safe_edit(msg, text, markup=None) -> bool:
+    try:
+        await msg.edit(text, reply_markup=markup, disable_web_page_preview=True)
+        return True
+    except MessageNotModified:
+        return True
+    except Exception:
+        return False
 
 
 async def handle_extract(archieve):

@@ -1,389 +1,245 @@
-
-
-import datetime
-import json
-import os
+import html
+import shutil
 
 from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery
 
-from .. import app, download_dir, log, owner, sudo_users, LOGGER
+from .. import LOGGER, app, data, download_dir, log, owner, sudo_users
 from ..plugins.queue import queue_answer
+from ..utils import ffcmd, jobs
 from ..utils.database.access_db import db
-from ..utils.settings import (AudioSettings, ExtraSettings, OpenSettings,
+from ..utils.settings import (AdvancedSettings, AudioSettings, ExtraSettings, OpenSettings, ProfileSettings,
                               VideoSettings)
-from .start import showw_status
 from ..video_utils.audio_selector import sessions
 
 
 _ENC_EXACT = {
-    "closeMeh", "VideoSettings", "OpenSettings", "AudioSettings", "ExtraSettings",
-    "Watermark", "cancel", "stats",
+    "closeMeh", "VideoSettings", "OpenSettings", "AudioSettings", "ExtraSettings", "AdvancedSettings",
+    "EncProfiles", "Watermark", "cancel", "stats",
 }
 
 
 def _is_encoder_cb(_, __, cb: CallbackQuery) -> bool:
     d = cb.data or ""
-    return d in _ENC_EXACT or d.startswith(("trigger", "queue+", "audiosel"))
+    return d in _ENC_EXACT or d.startswith(("trigger", "queue+", "audiosel", "encp:", "enc_cancel:"))
 
 
 encoder_cb_filter = filters.create(_is_encoder_cb)
 
+MENUS = {"video": VideoSettings, "audio": AudioSettings, "extra": ExtraSettings, "adv": AdvancedSettings}
+
+# callback → (field, values in cycle order, menu)  – same orders as the original bot
+CYCLES = {
+    "triggerextensions": ("extensions", ["MP4", "MKV", "AVI"], "video"),
+    "triggerframe": ("frame", ["source", "pal", "film", "23.976", "30", "60", "ntsc"], "video"),
+    "triggerPreset": ("preset", ffcmd.PRESET_ORDER, "video"),
+    "triggerResolution": ("resolution", ["OG", "1080", "720", "576", "480"], "video"),
+    "triggerreframe": ("reframe", ["pass", "4", "8", "16"], "video"),
+    "triggersamplerate": ("sample", ["44.1K", "48K", "source"], "audio"),
+    "triggerbitrate": ("bitrate", ["400", "320", "256", "224", "192", "160", "128", "source"], "audio"),
+    "triggerAudioCodec": ("audio", ["dd", "copy", "aac", "opus", "alac", "vorbis"], "audio"),
+    "triggerAudioChannels": ("channels", ["source", "1.0", "2.0", "2.1", "5.1", "7.1"], "audio"),
+    "triggerOpacity": ("motion_opacity", ["50", "75", "100"], "extra"),
+}
+
+# callback → (field, menu)
+TOGGLES = {
+    "triggerMode": ("drive", "extra"), "triggerUploadMode": ("upload_as_doc", "extra"),
+    "triggerResize": ("resize", "extra"), "triggerMetadata": ("metadata", "extra"),
+    "triggerVideo": ("watermark", "extra"), "triggerMotion": ("motion_watermark", "extra"),
+    "triggerHardsub": ("hardsub", "extra"), "triggerSubtitles": ("subtitles", "extra"),
+    "triggerBits": ("bits", "video"), "triggerHevc": ("hevc", "video"), "triggertune": ("tune", "video"),
+    "triggercabac": ("cabac", "video"), "triggeraspect": ("aspect", "video"),
+    "triggerDeint": ("deinterlace", "adv"), "triggerDenoise": ("denoise", "adv"),
+    "triggerLoudnorm": ("loudnorm", "adv"), "triggerLoudnorm:a": ("loudnorm", "audio"),
+}
+
+# (callback, new value) → one-time hint shown as a toast
+NOTES = {
+    ("triggerHevc", True): ("H.265 gives ~40% smaller files but encodes slower.", False),
+    ("triggerBits", True): ("10-bit: smoother gradients, less banding (H.264 uses High10).", False),
+    ("triggerAudioChannels", "7.1"): ("7.1 is meant for Blu-ray sources.", True),
+    ("triggerreframe", "16"): ("Reframe 16 may not play on every device.", True),
+    ("triggeraspect", True): ("This forces the video to 16:9.", False),
+    ("triggerHardsub", True): ("Hardsub works with text subtitles (SRT / ASS), not PGS pictures.", False),
+    ("triggerDeint", True): ("Only interlaced frames are processed – safe to leave on.", False),
+    ("triggerLoudnorm", True): ("Audio will be re-encoded to even out the volume.", False),
+}
+
+CRF_MIN, CRF_MAX = 12, 40
+
+
+async def _is_admin(uid: int) -> bool:
+    if uid in owner or uid in sudo_users:
+        return True
+    try:
+        return str(uid) in str(await db.get_sudo() or "").replace(",", " ").split()
+    except Exception:
+        return False
+
+
+async def _cancel(bot, cb: CallbackQuery, key):
+    job = jobs.get(key) if key is not None else jobs.latest()
+    if not job:
+        await cb.answer("Nothing to cancel – this task already finished.", show_alert=True)
+        return
+    uid = cb.from_user.id
+    if uid != job.user_id and not await _is_admin(uid):
+        await cb.answer("Only the user who started this task (or an admin) can cancel it.", show_alert=True)
+        return
+    await cb.answer("Cancelling…")
+    await jobs.cancel(job.key)
+    try:
+        await cb.message.edit_text("🚫 <b>Task cancelled.</b>")
+    except Exception:
+        pass
+    if log:
+        try:
+            who = f"<a href='tg://user?id={uid}'>{html.escape(cb.from_user.first_name or str(uid))}</a>"
+            await bot.send_message(log, f"🚫 <b>Encoder task cancelled</b> by {who}\n"
+                                        f"<code>{html.escape(job.name or '-')[:80]}</code> · stage: {job.stage}")
+        except Exception:
+            pass
+
+
+def _stats_text() -> str:
+    """Short enough for a callback alert (Telegram's limit is 200 characters)."""
+    parts = [f"📊 Encoder · queue: {len(data)}"]
+    running = jobs.active()
+    if running:
+        j = running[0]
+        parts.append(f"▶️ {(j.name or 'task')[:40]} ({j.stage})")
+    try:
+        import psutil
+        parts.append(f"CPU {psutil.cpu_percent(interval=None):.0f}% · RAM {psutil.virtual_memory().percent:.0f}%")
+    except Exception:
+        pass
+    try:
+        free = shutil.disk_usage(download_dir).free / 1024 ** 3
+        parts.append(f"Disk free {free:.1f} GB")
+    except Exception:
+        pass
+    return "\n".join(parts)[:200]
+
 
 @Client.on_callback_query(encoder_cb_filter)
 async def callback_handlers(bot: Client, cb: CallbackQuery):
+    d = cb.data or ""
+    uid = cb.from_user.id
+    note = None
     try:
-        # Close Button
-
-        if cb.data == "closeMeh":
+        if d == "closeMeh":
             await cb.message.delete(True)
+            return
 
-        # Settings
+        elif d == "OpenSettings":
+            await OpenSettings(cb.message, user_id=uid)
+        elif d == "VideoSettings":
+            await VideoSettings(cb.message, user_id=uid)
+        elif d == "AudioSettings":
+            await AudioSettings(cb.message, user_id=uid)
+        elif d == "ExtraSettings":
+            await ExtraSettings(cb.message, user_id=uid)
+        elif d == "AdvancedSettings":
+            await AdvancedSettings(cb.message, user_id=uid)
+        elif d == "EncProfiles":
+            await ProfileSettings(cb.message, user_id=uid)
 
-        elif cb.data == "VideoSettings":
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
+        elif d.startswith("encp:"):
+            key = d.split(":", 1)[1]
+            if key not in ffcmd.PROFILES:
+                await cb.answer("This profile no longer exists.", show_alert=True)
+                return
+            label, desc, vals = ffcmd.PROFILES[key]
+            await db.update_settings(uid, **vals)
+            note = (f"✅ {label} applied – {desc}", False)
+            await ProfileSettings(cb.message, user_id=uid)
 
-        elif cb.data == "OpenSettings":
-            await OpenSettings(cb.message, user_id=cb.from_user.id)
+        elif d in CYCLES:
+            field, values, menu = CYCLES[d]
+            s = await db.get_settings(uid)
+            cur = str(s.get(field))
+            nxt = values[(values.index(cur) + 1) % len(values)] if cur in values else values[0]
+            await db.update_settings(uid, **{field: nxt})
+            note = NOTES.get((d, nxt))
+            await MENUS[menu](cb.message, user_id=uid)
 
-        elif cb.data == "AudioSettings":
-            await AudioSettings(cb.message, user_id=cb.from_user.id)
+        elif d in TOGGLES:
+            field, menu = TOGGLES[d]
+            s = await db.get_settings(uid)
+            new = not bool(s.get(field))
+            await db.update_settings(uid, **{field: new})
+            note = NOTES.get((d.split(":")[0], new))
+            await MENUS[menu](cb.message, user_id=uid)
 
-        elif cb.data == "ExtraSettings":
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
-
-        elif cb.data == "triggerMode":
-            if await db.get_drive(cb.from_user.id) is True:
-                await db.set_drive(cb.from_user.id, drive=False)
+        elif d in ("triggerCRF", "triggerCRFdown"):
+            s = await db.get_settings(uid)
+            step = 1 if d == "triggerCRF" else -1
+            crf = max(CRF_MIN, min(CRF_MAX, int(s["crf"]) + step))
+            if crf == int(s["crf"]):
+                note = (f"CRF range is {CRF_MIN}–{CRF_MAX}.", False)
             else:
-                await db.set_drive(cb.from_user.id, drive=True)
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
+                await db.update_settings(uid, crf=crf)
+                await VideoSettings(cb.message, user_id=uid)
 
-        elif cb.data == "triggerUploadMode":
-            if await db.get_upload_as_doc(cb.from_user.id) is True:
-                await db.set_upload_as_doc(cb.from_user.id, upload_as_doc=False)
+        elif d == "triggerEncMode":
+            s = await db.get_settings(uid)
+            if s["mode"] == "size":
+                await db.update_settings(uid, mode="crf")
             else:
-                await db.set_upload_as_doc(cb.from_user.id, upload_as_doc=True)
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
+                await db.update_settings(uid, mode="size", target_mb=s["target_mb"] or 200)
+                note = ("🎯 Target size: Videl picks the bitrate so the file lands near your size.", False)
+            await AdvancedSettings(cb.message, user_id=uid)
 
-        elif cb.data == "triggerResize":
-            if await db.get_resize(cb.from_user.id) is True:
-                await db.set_resize(cb.from_user.id, resize=False)
-            else:
-                await db.set_resize(cb.from_user.id, resize=True)
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
+        elif d in ("triggerTargetSize", "triggerTargetDown"):
+            s = await db.get_settings(uid)
+            sizes = ffcmd.TARGET_SIZES[1:]
+            cur = s["target_mb"] if s["target_mb"] in sizes else 200
+            i = sizes.index(cur) + (1 if d == "triggerTargetSize" else -1)
+            await db.update_settings(uid, target_mb=sizes[max(0, min(len(sizes) - 1, i))])
+            await AdvancedSettings(cb.message, user_id=uid)
 
-        # Watermark
-        elif cb.data == "Watermark":
-            await cb.answer("Sir, this button not works XD\n\nPress Bottom Buttons.", show_alert=True)
+        elif d == "Watermark":            # label buttons on menus sent before the upgrade
+            await cb.answer()
+            return
 
-        # Metadata
-        elif cb.data == "triggerMetadata":
-            if await db.get_metadata_w(cb.from_user.id):
-                await db.set_metadata_w(cb.from_user.id, metadata=False)
-            else:
-                await db.set_metadata_w(cb.from_user.id, metadata=True)
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
-
-        # Watermark
-        elif cb.data == "triggerVideo":
-            if await db.get_watermark(cb.from_user.id):
-                await db.set_watermark(cb.from_user.id, watermark=False)
-            else:
-                await db.set_watermark(cb.from_user.id, watermark=True)
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
-
-        # Motion Watermark
-        elif cb.data == "triggerMotion":
-            if await db.get_motion_watermark(cb.from_user.id):
-                await db.set_motion_watermark(cb.from_user.id, motion=False)
-            else:
-                await db.set_motion_watermark(cb.from_user.id, motion=True)
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
-
-        # Motion Opacity
-        elif cb.data == "triggerOpacity":
-            op = await db.get_motion_opacity(cb.from_user.id)
-            if op == '50':
-                await db.set_motion_opacity(cb.from_user.id, opacity='75')
-            elif op == '75':
-                await db.set_motion_opacity(cb.from_user.id, opacity='100')
-            else:
-                await db.set_motion_opacity(cb.from_user.id, opacity='50')
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
-
-        # Subtitles
-        elif cb.data == "triggerHardsub":
-            if await db.get_hardsub(cb.from_user.id):
-                await db.set_hardsub(cb.from_user.id, hardsub=False)
-            else:
-                await db.set_hardsub(cb.from_user.id, hardsub=True)
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
-
-        elif cb.data == "triggerSubtitles":
-            if await db.get_subtitles(cb.from_user.id):
-                await db.set_subtitles(cb.from_user.id, subtitles=False)
-            else:
-                await db.set_subtitles(cb.from_user.id, subtitles=True)
-            await ExtraSettings(cb.message, user_id=cb.from_user.id)
-
-        # Extension
-        elif cb.data == "triggerextensions":
-            ex = await db.get_extensions(cb.from_user.id)
-            if ex == 'MP4':
-                await db.set_extensions(cb.from_user.id, extensions='MKV')
-            elif ex == 'MKV':
-                await db.set_extensions(cb.from_user.id, extensions='AVI')
-            else:
-                await db.set_extensions(cb.from_user.id, extensions='MP4')
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # Frame
-        elif cb.data == "triggerframe":
-            fr = await db.get_frame(cb.from_user.id)
-            if fr == 'ntsc':
-                await db.set_frame(cb.from_user.id, frame='source')
-            elif fr == 'source':
-                await db.set_frame(cb.from_user.id, frame='pal')
-            elif fr == 'pal':
-                await db.set_frame(cb.from_user.id, frame='film')
-            elif fr == 'film':
-                await db.set_frame(cb.from_user.id, frame='23.976')
-            elif fr == '23.976':
-                await db.set_frame(cb.from_user.id, frame='30')
-            elif fr == '30':
-                await db.set_frame(cb.from_user.id, frame='60')
-            else:
-                await db.set_frame(cb.from_user.id, frame='ntsc')
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # Preset
-        elif cb.data == "triggerPreset":
-            p = await db.get_preset(cb.from_user.id)
-            if p == 'uf':
-                await db.set_preset(cb.from_user.id, preset='sf')
-            elif p == 'sf':
-                await db.set_preset(cb.from_user.id, preset='vf')
-            elif p == 'vf':
-                await db.set_preset(cb.from_user.id, preset='f')
-            elif p == 'f':
-                await db.set_preset(cb.from_user.id, preset='m')
-            elif p == 'm':
-                await db.set_preset(cb.from_user.id, preset='s')
-            else:
-                await db.set_preset(cb.from_user.id, preset='uf')
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # sample rate
-        elif cb.data == "triggersamplerate":
-            sr = await db.get_samplerate(cb.from_user.id)
-            if sr == '44.1K':
-                await db.set_samplerate(cb.from_user.id, sample='48K')
-            elif sr == '48K':
-                await db.set_samplerate(cb.from_user.id, sample='source')
-            else:
-                await db.set_samplerate(cb.from_user.id, sample='44.1K')
-            await AudioSettings(cb.message, user_id=cb.from_user.id)
-
-        # bitrate
-        elif cb.data == "triggerbitrate":
-            bit = await db.get_bitrate(cb.from_user.id)
-            if bit == '400':
-                await db.set_bitrate(cb.from_user.id, bitrate='320')
-            elif bit == '320':
-                await db.set_bitrate(cb.from_user.id, bitrate='256')
-            elif bit == '256':
-                await db.set_bitrate(cb.from_user.id, bitrate='224')
-            elif bit == '224':
-                await db.set_bitrate(cb.from_user.id, bitrate='192')
-            elif bit == '192':
-                await db.set_bitrate(cb.from_user.id, bitrate='160')
-            elif bit == '160':
-                await db.set_bitrate(cb.from_user.id, bitrate='128')
-            elif bit == '128':
-                await db.set_bitrate(cb.from_user.id, bitrate='source')
-            else:
-                await db.set_bitrate(cb.from_user.id, bitrate='400')
-            await AudioSettings(cb.message, user_id=cb.from_user.id)
-
-        # Audio Codec
-        elif cb.data == "triggerAudioCodec":
-            a = await db.get_audio(cb.from_user.id)
-            if a == 'dd':
-                await db.set_audio(cb.from_user.id, audio='copy')
-            elif a == 'copy':
-                await db.set_audio(cb.from_user.id, audio='aac')
-            elif a == 'aac':
-                await db.set_audio(cb.from_user.id, audio='opus')
-            elif a == 'opus':
-                await db.set_audio(cb.from_user.id, audio='alac')
-            elif a == 'alac':
-                await db.set_audio(cb.from_user.id, audio='vorbis')
-            else:
-                await db.set_audio(cb.from_user.id, audio='dd')
-            await AudioSettings(cb.message, user_id=cb.from_user.id)
-
-        # Audio Channel
-        elif cb.data == "triggerAudioChannels":
-            c = await db.get_channels(cb.from_user.id)
-            if c == 'source':
-                await db.set_channels(cb.from_user.id, channels='1.0')
-            elif c == '1.0':
-                await db.set_channels(cb.from_user.id, channels='2.0')
-            elif c == '2.0':
-                await db.set_channels(cb.from_user.id, channels='2.1')
-            elif c == '2.1':
-                await db.set_channels(cb.from_user.id, channels='5.1')
-            elif c == '5.1':
-                await cb.answer("7.1 is for bluray only.", show_alert=True)
-                await db.set_channels(cb.from_user.id, channels='7.1')
-            else:
-                await db.set_channels(cb.from_user.id, channels='source')
-            await AudioSettings(cb.message, user_id=cb.from_user.id)
-
-        # Resolution
-        elif cb.data == "triggerResolution":
-            r = await db.get_resolution(cb.from_user.id)
-            if r == 'OG':
-                await db.set_resolution(cb.from_user.id, resolution='1080')
-            elif r == '1080':
-                await db.set_resolution(cb.from_user.id, resolution='720')
-            elif r == '720':
-                await db.set_resolution(cb.from_user.id, resolution='480')
-            elif r == '480':
-                await db.set_resolution(cb.from_user.id, resolution='576')
-            else:
-                await db.set_resolution(cb.from_user.id, resolution='OG')
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # Video Bits
-        elif cb.data == "triggerBits":
-            b = await db.get_bits(cb.from_user.id)
-            if await db.get_hevc(cb.from_user.id):
-                if b:
-                    await db.set_bits(cb.from_user.id, bits=False)
-                else:
-                    await db.set_bits(cb.from_user.id, bits=True)
-            else:
-                if b:
-                    await db.set_bits(cb.from_user.id, bits=False)
-                else:
-                    await cb.answer("H264 don't support 10 bits in this bot.",
-                                    show_alert=True)
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # HEVC
-        elif cb.data == "triggerHevc":
-            if await db.get_hevc(cb.from_user.id):
-                await db.set_hevc(cb.from_user.id, hevc=False)
-            else:
-                await db.set_hevc(cb.from_user.id, hevc=True)
-                await cb.answer("H265 need more time for encoding video", show_alert=True)
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # Tune
-        elif cb.data == "triggertune":
-            if await db.get_tune(cb.from_user.id):
-                await db.set_tune(cb.from_user.id, tune=False)
-            else:
-                await db.set_tune(cb.from_user.id, tune=True)
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # Reframe
-        elif cb.data == "triggerreframe":
-            rf = await db.get_reframe(cb.from_user.id)
-            if rf == '4':
-                await db.set_reframe(cb.from_user.id, reframe='8')
-            elif rf == '8':
-                await db.set_reframe(cb.from_user.id, reframe='16')
-                await cb.answer("Reframe 16 maybe not support", show_alert=True)
-            elif rf == '16':
-                await db.set_reframe(cb.from_user.id, reframe='pass')
-            else:
-                await db.set_reframe(cb.from_user.id, reframe='4')
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # CABAC
-        elif cb.data == "triggercabac":
-            if await db.get_cabac(cb.from_user.id):
-                await db.set_cabac(cb.from_user.id, cabac=False)
-            else:
-                await db.set_cabac(cb.from_user.id, cabac=True)
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # Aspect
-        elif cb.data == "triggeraspect":
-            if await db.get_aspect(cb.from_user.id):
-                await db.set_aspect(cb.from_user.id, aspect=False)
-            else:
-                await db.set_aspect(cb.from_user.id, aspect=True)
-                await cb.answer("This will help to force video to 16:9", show_alert=True)
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        elif cb.data == "triggerCRF":
-            crf = await db.get_crf(cb.from_user.id)
-            nextcrf = int(crf) + 1
-            if nextcrf > 30:
-                await db.set_crf(cb.from_user.id, crf=18)
-            else:
-                await db.set_crf(cb.from_user.id, crf=nextcrf)
-            await VideoSettings(cb.message, user_id=cb.from_user.id)
-
-        # Audio Selector Callbacks
-        elif cb.data.startswith("audiosel"):
-            user_id = cb.from_user.id
-            if user_id in sessions:
-                await sessions[user_id].resolve_callback(cb)
+        elif d.startswith("audiosel"):
+            if uid in sessions:
+                await sessions[uid].resolve_callback(cb)
             else:
                 await cb.answer("Session expired. Please try again.", show_alert=True)
+            return
 
-        # Cancel
+        elif d == "cancel" or d.startswith("enc_cancel:"):
+            key = None
+            if d.startswith("enc_cancel:"):
+                raw = d.split(":", 1)[1]
+                key = int(raw) if raw.lstrip("-").isdigit() else None
+            await _cancel(bot, cb, key)
+            return
 
-        elif cb.data == "cancel":
-            status = download_dir + "status.json"
-            try:
-                with open(status, 'r+') as f:
-                    statusMsg = json.load(f)
-                    user = cb.from_user.id
-                    if user != statusMsg['user']:
-                        if user in sudo_users or user in owner:
-                            pass
-                        else:
-                            return
-                    statusMsg['running'] = False
-                    f.seek(0)
-                    json.dump(statusMsg, f, indent=2)
-                    os.remove('VideoEncoder/utils/extras/downloads/process.txt')
-                    try:
-                        await cb.message.edit_text("🚦🚦 Process Cancelled 🚦🚦")
-                        chat_id = log
-                        utc_now = datetime.datetime.utcnow()
-                        ist_now = utc_now + \
-                            datetime.timedelta(minutes=30, hours=5)
-                        ist = ist_now.strftime("%d/%m/%Y, %H:%M:%S")
-                        bst_now = utc_now + \
-                            datetime.timedelta(minutes=00, hours=6)
-                        bst = bst_now.strftime("%d/%m/%Y, %H:%M:%S")
-                        now = f"\n{ist} (GMT+05:30)`\n`{bst} (GMT+06:00)"
-                        await bot.send_message(chat_id, f"**Last Process Cancelled, Bot is Free Now !!** \n\nProcess Done at `{now}`", parse_mode="markdown")
-                    except:
-                        pass
-            except FileNotFoundError:
-                 await cb.answer("Nothing to cancel or process already finished!", show_alert=True)
+        elif d == "stats":
+            await cb.answer(_stats_text(), show_alert=True)
+            return
 
-        # Stats
-        elif cb.data == 'stats':
-            stats = await showw_status(bot)
-            stats = stats.replace('<b>', '')
-            stats = stats.replace('</b>', '')
-            await cb.answer(stats, show_alert=True)
-
-        # Queue
-        elif cb.data.startswith("queue+"):
+        elif d.startswith("queue+"):
             await queue_answer(app, cb)
+            return
+
+        else:
+            await cb.answer()
+            return
+
+        try:
+            if note:
+                await cb.answer(note[0][:200], show_alert=note[1])
+            else:
+                await cb.answer()
+        except Exception:
+            pass
     except Exception as e:
-        LOGGER.error(f"Error in callback_handlers: {e}")
+        LOGGER.error(f"Error in callback_handlers ({d}): {e}")
         try:
             await cb.answer("An error occurred. Please try again later.", show_alert=True)
-        except:
+        except Exception:
             pass

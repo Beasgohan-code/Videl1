@@ -69,6 +69,8 @@ class LiveProgress:
         now = time.time()
         if now < self._next and current != total:
             return
+        if current == total and getattr(self, "_done", False):
+            return                      # completion already shown (speed would differ → a pointless edit)
         self._next = now + self.every
         text = self.render(current, total)
         if text == self._last_text:
@@ -76,6 +78,8 @@ class LiveProgress:
         try:
             await self.status.edit_text(text, reply_markup=self.reply_markup)
             self._last_text = text
+            if current == total:
+                self._done = True
         except FloodWait as e:
             self._next = time.time() + e.value + 1
         except MessageNotModified:

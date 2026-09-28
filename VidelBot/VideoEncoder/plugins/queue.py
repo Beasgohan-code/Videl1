@@ -69,23 +69,35 @@ async def queue_answer(app, callback_query):
     await callback_query.edit_message_text(f"<b>{taskpos} of {size}</b>:\n\n{tasktitle}", reply_markup=InlineKeyboardMarkup(map(pos)))
 
 
+def queue_doc():
+    """The whole queue on one screen (the old /queue edited one message per task in a loop)."""
+    from core.rich import Doc, Raw
+    from .status import task_parts
+    from ..utils import jobs
+    doc = Doc("📋", "Encoder queue", f"{len(data)} task{'s' if len(data) != 1 else ''}")
+    if not data:
+        return doc.text("<i>🥱 No active encodes – send /dl to a video to start one.</i>")
+    running = jobs.active()
+    stage = running[0].stage if running else "starting"
+    rows = []
+    for i, task_msg in enumerate(data[:25]):
+        kind, name, user = task_parts(task_msg)
+        state = f"▶️ {stage}" if i == 0 else f"⏳ #{i + 1}"
+        rows.append((state, kind, name[:40], Raw(user)))
+    doc.table(rows, header=("State", "Task", "File", "User"), compact=True)
+    if len(data) > 25:
+        doc.text(f"<i>…and {len(data) - 25} more.</i>")
+    return doc.footer("Admins can purge waiting tasks with /clear.")
+
+
 @Client.on_message(filters.command(['queue']))
 async def queue_message(app, message):
     c = await check_chat(message, chat='Both')
     if not c:
         return
     await AddUserToDatabase(app, message)
-    msg = await message.reply_text("Wait Checking...")
-    size = len(data)
-    if size >= 1:
-        for i in range(1, size):
-            pos = i-1
-            taskpos = i
-            tasktitle = await get_title(pos)
-            await msg.edit(
-                text=f"<b>{taskpos} of {size}</b>:\n\n{tasktitle}", reply_markup=InlineKeyboardMarkup(map(0)))
-    else:
-        await msg.edit('🥱 No Active Encodes.')
+    from core import rich
+    await rich.reply(message, queue_doc())
 
 
 @Client.on_message(filters.command('clear'))
@@ -96,8 +108,9 @@ async def clear(app, message):
     await AddUserToDatabase(app, message)
     if len(data) >= 1:
         current = data[0]
+        removed = len(data) - 1
         data.clear()
         data.append(current)
-        await message.reply('Purged all tasks!')
+        await message.reply(f'🧹 Purged {removed} waiting task{"s" if removed != 1 else ""} – the running one continues.')
     else:
         await message.reply("🥱 No Active Encodes.")

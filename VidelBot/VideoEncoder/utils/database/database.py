@@ -41,7 +41,13 @@ class Database:
             resize=False,
             thumbnail=None,
             motion_watermark=False,
-            motion_opacity='50'
+            motion_opacity='50',
+            # Encoder Pro
+            mode='crf',
+            target_mb=0,
+            deinterlace=False,
+            denoise=False,
+            loudnorm=False,
         )
 
     async def add_user(self, id):
@@ -70,6 +76,25 @@ class Database:
             await self.add_user(int(id))
             user = await self.col.find_one({'id': int(id)})
         return user
+
+    # ── Encoder Pro: one read / one write for the whole settings document ──
+    async def get_settings(self, id) -> dict:
+        """Every encode setting in ONE query (the encoder used to make ~25 round trips)."""
+        user = await self._get_user(id) or {}
+        from ..ffcmd import merge
+        out = merge(user)
+        for k in ('enc_count', 'enc_in', 'enc_out', 'enc_seconds'):
+            out[k] = user.get(k, 0) or 0
+        return out
+
+    async def update_settings(self, id, **fields):
+        if fields:
+            await self.col.update_one({'id': int(id)}, {'$set': fields}, upsert=True)
+
+    async def add_encode_stat(self, id, size_in: int, size_out: int, seconds: float):
+        await self.col.update_one({'id': int(id)}, {'$inc': {
+            'enc_count': 1, 'enc_in': int(size_in or 0), 'enc_out': int(size_out or 0),
+            'enc_seconds': int(seconds or 0)}}, upsert=True)
 
     # Telegram Related
 

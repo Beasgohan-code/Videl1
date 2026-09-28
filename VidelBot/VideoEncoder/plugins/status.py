@@ -28,7 +28,13 @@ def get_task_info(task_msg):
     if text_content:
         parts = text_content.split(None, 1)
         cmd = parts[0].lower()
-        if '/dl' in cmd:
+        if '/sample' in cmd:
+            task_type = "Sample Encode"
+        elif '/trim' in cmd:
+            task_type = "Trim"
+        elif '/screens' in cmd:
+            task_type = "Screenshots"
+        elif '/dl' in cmd:
             task_type = "Telegram Download"
         elif '/af' in cmd:
             task_type = "Audio Processing"
