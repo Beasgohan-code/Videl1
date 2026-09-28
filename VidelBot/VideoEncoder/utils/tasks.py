@@ -97,7 +97,16 @@ async def handle_tasks(message, mode):
     try:
         from . import jobs
         from .encoding import cancel_markup
-        msg = await message.reply_text(f"<b>📥 Downloading…</b>\n<i>{_MODE_TITLE.get(mode, 'Task')}</i>")
+        first = f"<b>📥 Downloading…</b>\n<i>{_MODE_TITLE.get(mode, 'Task')}</i>"
+        note = scheduler.NOTES.pop(id(message), None)
+        if note is not None:                  # one message per task: the queue note turns into the status card
+            try:
+                await note.edit(first)
+                msg = note
+            except Exception:
+                msg = None
+        if msg is None:
+            msg = await message.reply_text(first)
         jobs.register(msg.id, message.from_user.id if message.from_user else 0, message.chat.id, stage="download")
         try:
             await msg.edit_reply_markup(cancel_markup(msg.id))
@@ -142,7 +151,16 @@ async def handle_tasks(message, mode):
     except Exception as e:
         import traceback
         LOGGER.error(traceback.format_exc())
-        await message.reply(text=f"Error! <code>{html.escape(str(e))[:300]}</code>")
+        err = f"❌ <b>Error:</b> <code>{html.escape(str(e))[:300]}</code>"
+        edited = False
+        if msg is not None:                   # show it on the task's own card instead of a second message
+            try:
+                await msg.edit(err, reply_markup=None)
+                edited = True
+            except Exception:
+                pass
+        if not edited:
+            await message.reply(text=err)
     finally:
         if msg is not None:
             from . import jobs
@@ -437,10 +455,9 @@ async def handle_tg_down(message, msg, mode='no_reply', dest_dir=None):
              return None
         target_msg = message.reply_to_message
 
-    path = await target_msg.download(
-        file_name=os.path.join(dest_dir or download_dir, ""),
-        progress=progress_for_pyrogram,
-        progress_args=("Downloading...", msg, c_time))
+    from core import fastdl                         # parallel chunks for big files, stock download otherwise
+    path = await fastdl.fetch(target_msg, file_name=os.path.join(dest_dir or download_dir, ""),
+                              progress=progress_for_pyrogram, progress_args=("Downloading...", msg, c_time))
 
     return path
 
@@ -461,7 +478,8 @@ async def _download_ref(message, msg, ref, dest, label):
     media = src and (src.video or src.document or src.audio or getattr(src, "voice", None))
     if not media:
         return None
-    path = await src.download(file_name=os.path.join(dest, ""), progress=progress_for_pyrogram,
+    from core import fastdl
+    path = await fastdl.fetch(src, file_name=os.path.join(dest, ""), progress=progress_for_pyrogram,
                               progress_args=(label, msg, time.time()))
     if jobs.is_cancelled(msg.id):
         return None

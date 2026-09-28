@@ -14,7 +14,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import SOURCE_URL
-from core import rich
+from core import fastdl, rich
 from core.rich import Doc
 from core.ui import humanbytes, upload_to_host
 
@@ -267,8 +267,8 @@ async def upload_cmd(client: Client, message: Message):
     status = await message.reply_text("📥 <i>Downloading…</i>")
     path = None
     try:
-        path = await client.download_media(r, file_name=f"{TMP}/{uid}_{int(time.time())}/",
-                                           progress=_progress_cb(status, "📥 Downloading…"))
+        path = await fastdl.download(client, r, file_name=f"{TMP}/{uid}_{int(time.time())}/",
+                                     progress=_progress_cb(status, "📥 Downloading…"))
         await status.edit_text("☁️ <i>Uploading to host…</i>")
         url = await upload_to_host(path)
         if not url:
@@ -317,8 +317,8 @@ async def rename_cmd(client: Client, message: Message):
     thumb_path = None
     try:
         os.makedirs(workdir, exist_ok=True)
-        path = await client.download_media(r, file_name=f"{workdir}/{new_name}",
-                                           progress=_progress_cb(status, "📥 Downloading…"))
+        path = await fastdl.download(client, r, file_name=f"{workdir}/{new_name}",
+                                     progress=_progress_cb(status, "📥 Downloading…"))
         # Re-use the user's saver thumbnail / caption if they set one.
         caption = f"<code>{html.escape(new_name, quote=False)}</code>"
         try:

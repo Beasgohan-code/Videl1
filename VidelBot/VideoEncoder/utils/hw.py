@@ -19,6 +19,32 @@ from . import ffcmd
 log = logging.getLogger("VideoEncoder.hw")
 
 _CAPS: dict | None = None
+_FPS_FLAG: str | None = None
+
+
+def parse_version(text: str) -> tuple | None:
+    """'ffmpeg version 4.4.2-0ubuntu0…' → (4, 4) · 'n7.0.2' → (7, 0) · git 'N-11…' → None."""
+    import re
+    m = re.search(r"ffmpeg version n?(\d+)\.(\d+)", text or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def fps_mode_flag() -> str:
+    """The frame-sync option this ffmpeg understands – probed once.
+
+    -fps_mode arrived in 5.1 (4.x only knows -vsync) and -vsync is gone in 8.x, so neither works everywhere.
+    Git snapshots ('N-…') and anything unparseable are modern builds → -fps_mode.
+    """
+    global _FPS_FLAG
+    if _FPS_FLAG is None:
+        try:
+            out = subprocess.run(["ffmpeg", "-hide_banner", "-version"], capture_output=True, timeout=15).stdout
+            ver = parse_version(out.decode(errors="ignore"))
+        except Exception as e:
+            log.warning(f"ffmpeg -version failed: {e}")
+            ver = None
+        _FPS_FLAG = "-vsync" if ver is not None and ver < (5, 1) else "-fps_mode"
+    return _FPS_FLAG
 
 
 def _ffmpeg_encoders() -> set:

@@ -23,6 +23,13 @@ async def _enqueue(message, mode, extra=None) -> bool:
     """Run now if a worker is free, otherwise queue it (Encoder Pro / Premium first) and say where it is."""
     from ..utils import scheduler
     uid = message.from_user.id if message.from_user else 0
+    pos, same = scheduler.find_duplicate(message, mode, extra)
+    if pos:                                   # already queued / running – never encode the same thing twice
+        if not same:                          # (same message = Telegram re-delivered the update: stay quiet)
+            state = "running now" if scheduler.is_running(scheduler.data[pos - 1]) else f"position <b>#{pos}</b>"
+            await message.reply(f"♻️ <b>Already in your queue</b> – {state}.\n"
+                                "<i>Same file with the same settings, so it won't be encoded twice. See /queue.</i>")
+        return False
     pro = await _is_pro(uid)
     limit = config.ENC_MAX_TASKS_PRO if pro else config.ENC_MAX_TASKS_FREE
     have = scheduler.user_tasks(uid) if uid else 0
@@ -39,9 +46,11 @@ async def _enqueue(message, mode, extra=None) -> bool:
         await handle_tasks(message, mode)
     else:
         ahead = pos - 1
-        await message.reply(f"⏳ <b>Added to the queue</b> – position <b>#{pos}</b> "
-                            f"({ahead} task{'s' if ahead != 1 else ''} ahead)"
-                            + (" · ⚡ <b>priority</b>" if pro else "") + "\n<i>See it with /queue.</i>")
+        note = await message.reply(f"⏳ <b>Added to the queue</b> – position <b>#{pos}</b> "
+                                   f"({ahead} task{'s' if ahead != 1 else ''} ahead)"
+                                   + (" · ⚡ <b>priority</b>" if pro else "") + "\n<i>See it with /queue.</i>")
+        if note is not None and scheduler.position(message):
+            scheduler.NOTES[id(message)] = note   # becomes the live status card when the task starts
     await asyncio.sleep(1)
     return True
 

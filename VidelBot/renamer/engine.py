@@ -467,8 +467,9 @@ async def process(client, job: Job):
         # 1. download
         src = os.path.join(workdir, "src" + (os.path.splitext(old_name)[1] or ""))
         try:
-            path = await client.download_media(message, file_name=src,
-                                               progress=progress_cb(job, "📥 Downloading…"))
+            from core import fastdl
+            path = await fastdl.download(client, message, file_name=src,
+                                         progress=progress_cb(job, "📥 Downloading…"))
         except StopTransmission:
             raise Cancelled
         if job.cancelled:

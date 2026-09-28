@@ -275,6 +275,8 @@ SPLIT_SIZE_MB = env_int("SPLIT_SIZE_MB", 1950)                   # uploads above
 LEECH_FREE_GB = env_float("LEECH_FREE_GB", 2)
 LEECH_PRO_GB = env_float("LEECH_PRO_GB", 8)
 QUEUE_PERSIST = _bool("QUEUE_PERSIST", True)                    # encoder queue survives restarts
+FAST_DL = _bool("FAST_DL", True)                                # parallel Telegram downloads (core/fastdl.py)
+FAST_DL_WORKERS = max(1, min(16, env_int("FAST_DL_WORKERS", 6)))  # chunk requests in flight per download
 
 # ==============================
 # Owner tools: web dashboard · backups · analytics

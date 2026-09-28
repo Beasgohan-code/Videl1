@@ -410,7 +410,8 @@ def test_failed_download_raises_and_queue_moves_on(monkeypatch):
         run(real_handle(first, "url"))
     finally:
         enc_queue[:] = saved
-    assert any("404" in r for r in first.replies)
+    # reported on the task's own status card (Phase 16: one message per task) – or as a reply if that's gone
+    assert any("404" in str(e) for m in first.sent for e in m.edits) or any("404" in str(r) for r in first.replies)
     assert started == [(nxt, "url")]
 
 

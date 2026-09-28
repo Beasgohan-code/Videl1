@@ -48,6 +48,7 @@ class Database:
             deinterlace=False,
             denoise=False,
             loudnorm=False,
+            dedup=False,
         )
 
     async def add_user(self, id):

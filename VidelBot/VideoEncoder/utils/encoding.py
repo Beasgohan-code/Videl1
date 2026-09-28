@@ -227,13 +227,13 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
     passlog = os.path.join(out_dir, f"2pass_{msg.id}") if twopass else None
     common = dict(audio_map=audio_map, subs_file=subs_file, watermark_file=watermark_file, motion_file=motion_file,
                   sample=sample, encoder=encoder, logo_file=logo_file, text_wm_file=text_wm_file,
-                  vaapi_device=_cfg_vaapi())
+                  vaapi_device=_cfg_vaapi(), fps_flag=await _fps_flag())
     passes = [1, 2] if twopass else [None]
     owned = jobs.get(msg.id) is None              # a task may have registered it already (download stage)
     job = jobs.register(msg.id, uid, getattr(getattr(msg, "chat", None), "id", None), name=name)
     started = time.time()
     proc = None
-    stderr = stdout = b""
+    stderr = b""
     total = (sample[1] if sample else info["duration"]) or None
     try:
         for pass_no in passes:
@@ -245,12 +245,27 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
                                           passlog=passlog, **common)
             LOGGER.info(f"ffmpeg ({where}{', pass ' + str(pass_no) if pass_no else ''}): {' '.join(command[:-1])} …")
             stage = {1: "Pass 1/2 · analysing", 2: "Pass 2/2 · encoding"}.get(pass_no, "Encoding")
-            proc = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE,
+            # stdout is unused (progress goes to a file). stderr is drained *while* ffmpeg runs: reading it
+            # only after the progress loop let a chatty input (decode warnings on a damaged file) fill the
+            # 64 KB pipe and freeze ffmpeg mid-encode.
+            proc = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.DEVNULL,
+                                                        stdout=asyncio.subprocess.DEVNULL,
                                                         stderr=asyncio.subprocess.PIPE)
+            drain = asyncio.ensure_future(_drain(proc.stderr))
             jobs.attach(msg.id, proc)
-            await handle_progress(proc, msg, message, filepath, progress_file=progress, total_time=total,
-                                  settings=settings, info=info, stage=f"{stage} · {where}")
-            stdout, stderr = await proc.communicate()
+            try:
+                await handle_progress(proc, msg, message, filepath, progress_file=progress, total_time=total,
+                                      settings=settings, info=info, stage=f"{stage} · {where}")
+                await proc.wait()
+            except BaseException:
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                raise
+            finally:
+                stderr = await _drained(drain)
             if proc.returncode != 0:
                 break
     finally:
@@ -270,9 +285,6 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
             os.remove(output_filepath)
         return None
     e_response = (stderr or b"").decode(errors="ignore").strip()
-    t_response = (stdout or b"").decode(errors="ignore").strip()
-    if t_response:
-        LOGGER.info(f"FFmpeg stdout: {t_response[-500:]}")
     if proc is None or proc.returncode != 0 or not os.path.isfile(output_filepath) or os.path.getsize(output_filepath) == 0:
         LOGGER.error(f"Encoding failed (exit {getattr(proc, 'returncode', None)}): {e_response[-800:]}")
         if os.path.isfile(output_filepath):
@@ -283,6 +295,36 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
     out.info, out.settings, out.elapsed, out.sample = info, settings, time.time() - started, sample
     out.encoder, out.where = encoder, where
     return out
+
+
+async def _drain(stream, keep: int = 16384) -> bytes:
+    """Read a pipe to EOF, keeping only the last `keep` bytes (enough for the error card)."""
+    buf = bytearray()
+    if stream is None:
+        return b""
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            return bytes(buf)
+        buf += chunk
+        if len(buf) > keep * 2:
+            del buf[:-keep]
+
+
+async def _drained(task) -> bytes:
+    try:
+        return (await asyncio.wait_for(task, 10))[-16384:]
+    except Exception:                 # pipe stuck / cancelled – the error text is a nice-to-have
+        task.cancel()
+        return b""
+
+
+async def _fps_flag() -> str:
+    from . import hw
+    try:
+        return await asyncio.to_thread(hw.fps_mode_flag)     # one `ffmpeg -version` per process
+    except Exception:
+        return "-fps_mode"
 
 
 def _cfg_vaapi() -> str:
@@ -439,6 +481,8 @@ def get_thumbnail(in_filename, path, ttl):
             '-ss', str(ttl),
             '-i', in_filename,
             '-vframes', '1',
+            # Telegram ignores thumbnails over 320 px / 200 KB – a full-size 1080p frame never showed up
+            '-vf', 'scale=320:320:force_original_aspect_ratio=decrease', '-q:v', '4',
             '-y', out_filename
         ]
         subprocess.run(command, check=True, capture_output=True)
@@ -567,41 +611,72 @@ async def handle_progress(proc, msg, message, filepath, progress_file=None, tota
     LOGGER.info("ffmpeg_process: " + str(getattr(proc, "pid", "?")))
     last_stats = None
     probed = total_time is not None
-    while proc.returncode is None:
-        await asyncio.sleep(5)
-        if jobs.is_cancelled(getattr(msg, "id", None)):
-            break
-        if not os.path.exists(progress_file):
-            continue                      # ffmpeg hasn't written progress yet
-        try:
-            with open(progress_file, 'r', errors='ignore') as file:
-                text = file.read()
-        except OSError:
-            continue
-        state = re.findall(r"progress=(\w+)", text)
-        if state and state[-1] == "end":
-            break
-        try:
-            speed = _last(r"speed=\s*(\d+\.?\d*)x", text)
-            if speed is None:
-                speed = _last(r"speed=\s*(\d+\.?\d*)", text)
-            speed = speed if speed is not None else 1.0
-            us = _last(r"out_time_(?:ms|us)=(\d+)", text, int)
-            elapsed_media = (us or 0) / 1000000
-            fps = _last(r"fps=(\d+\.?\d*)", text)
-            size_now = _last(r"total_size=(\d+)", text, int)
-            if not probed:
-                total_time, _ = await media_info(filepath)   # probe once, not every 5 s
-                probed = True
-            stats = progress_text(name, elapsed_media, total_time, speed, fps, size_now, time.time() - started,
-                                  settings, stage=stage)
-        except Exception as e:           # never let a progress glitch orphan the ffmpeg process
-            LOGGER.warning(f"encode progress: {e}")
-            continue
-        if stats == last_stats:
-            continue                     # nothing new – don't spend an API call
-        last_stats = stats
-        try:
-            await msg.edit(text=stats, reply_markup=cancel_markup(getattr(msg, "id", 0)))
-        except Exception:
-            pass
+    # One waiter for the whole encode: a tick ends early the moment ffmpeg exits, instead of the next
+    # stage starting up to 5 s late (twice for 2-pass). Test doubles without wait() fall back to sleep.
+    waiter = asyncio.ensure_future(proc.wait()) if asyncio.iscoroutinefunction(getattr(proc, "wait", None)) else None
+    try:
+        while proc.returncode is None:
+            if waiter is not None:
+                await asyncio.wait({waiter}, timeout=PROGRESS_TICK)
+                if waiter.done():
+                    break
+            else:
+                await asyncio.sleep(PROGRESS_TICK)
+            if jobs.is_cancelled(getattr(msg, "id", None)):
+                break
+            text = _tail(progress_file)
+            if text is None:
+                continue                  # ffmpeg hasn't written progress yet
+            state = re.findall(r"progress=(\w+)", text)
+            if state and state[-1] == "end":
+                break
+            stats = await _progress_stats(text, name, total_time, probed, filepath, started, settings, stage)
+            if stats is None:
+                continue
+            probed, total_time, stats = True, stats[0], stats[1]
+            if stats == last_stats:
+                continue                  # nothing new – don't spend an API call
+            last_stats = stats
+            try:
+                await msg.edit(text=stats, reply_markup=cancel_markup(getattr(msg, "id", 0)))
+            except Exception:
+                pass
+    finally:
+        if waiter is not None and not waiter.done():
+            waiter.cancel()
+
+
+PROGRESS_TICK = 5
+
+
+def _tail(path: str, size: int = 4096) -> str | None:
+    """The last few KB of ffmpeg's -progress file. It gets a ~12-line block appended twice a second, so
+    re-reading the whole thing every tick meant scanning megabytes by the end of a long encode."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            f.seek(max(0, end - size))
+            return f.read().decode(errors="ignore")
+    except OSError:
+        return None
+
+
+async def _progress_stats(text, name, total_time, probed, filepath, started, settings, stage):
+    """→ (total_time, card text) or None when this tick can't be rendered."""
+    try:
+        speed = _last(r"speed=\s*(\d+\.?\d*)x", text)
+        if speed is None:
+            speed = _last(r"speed=\s*(\d+\.?\d*)", text)
+        speed = speed if speed is not None else 1.0
+        us = _last(r"out_time_(?:ms|us)=(\d+)", text, int)
+        elapsed_media = (us or 0) / 1000000
+        fps = _last(r"fps=(\d+\.?\d*)", text)
+        size_now = _last(r"total_size=(\d+)", text, int)
+        if not probed:
+            total_time, _ = await media_info(filepath)   # probe once, not every tick
+        return total_time, progress_text(name, elapsed_media, total_time, speed, fps, size_now,
+                                         time.time() - started, settings, stage=stage)
+    except Exception as e:               # never let a progress glitch orphan the ffmpeg process
+        LOGGER.warning(f"encode progress: {e}")
+        return None

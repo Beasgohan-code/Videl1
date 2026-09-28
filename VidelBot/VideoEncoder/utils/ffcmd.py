@@ -28,6 +28,8 @@ DEFAULTS = dict(
     crf=22, resize=False, thumbnail=None, motion_watermark=False, motion_opacity="50",
     # Encoder Pro
     mode="crf", target_mb=0, deinterlace=False, denoise=False, loudnorm=False,
+    # Phase 16
+    dedup=False,
     # Phase 15
     av1=False, twopass=False, hw=True, logo=False, logo_id=None, wm_text="", wm_pos="br", wm_size="m",
     wm_opacity="75",
@@ -261,12 +263,17 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
                   motion_file: str | None = None, sample: tuple | None = None, metadata_title: str = "Videl",
                   threads: int = 0, encoder: str | None = None, logo_file: str | None = None,
                   text_wm_file: str | None = None, pass_no: int | None = None, passlog: str | None = None,
-                  vaapi_device: str = "/dev/dri/renderD128") -> list:
+                  vaapi_device: str = "/dev/dri/renderD128", fps_flag: str | None = "-fps_mode") -> list:
     """Full ffmpeg argv (output path last).
 
     encoder   exact ffmpeg video encoder (from hw.pick_encoder); default = software for the codec
     logo_file PNG/JPG overlaid with -filter_complex (position / size / opacity from the settings)
     pass_no   1 → analysis pass (no audio, null muxer) · 2 → final pass · None → single pass
+    fps_flag  "-fps_mode" (ffmpeg ≥ 5.1) or "-vsync" (4.x) – see hw.fps_mode_flag(); None → leave ffmpeg's default
+
+    Frame timing: with the FPS setting on "source" the frames keep their own timestamps (vfr). ffmpeg's
+    default for MP4/MKV is CFR, which *duplicates* frames to fill every gap of a variable-frame-rate
+    source (phone clips, screen recordings, many web rips) – thousands of extra frames to encode.
     """
     s = merge(s)
     info = info or summarize(None)
@@ -296,6 +303,8 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
     if has_video:
         if s["deinterlace"]:
             vf.append("bwdif=mode=send_frame:parity=auto:deint=interlaced")
+        if s["dedup"] and not avi:                   # drop repeated frames early → later filters do less work
+            vf.append("mpdecimate")
         if s["denoise"]:
             vf.append("hqdn3d=1.5:1.5:6:6")
         target_h = RESOLUTIONS.get(str(s["resolution"]))
@@ -407,8 +416,12 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
         else:                                        # unknown encoder name – let ffmpeg pick defaults
             cmd += ["-c:v", enc]
             cmd += rate if rate else []
-        if s["frame"] in FPS:
+        if s["dedup"] and not avi:                   # a forced -r would put the dropped frames right back
+            cmd += [fps_flag or "-fps_mode", "vfr"]
+        elif s["frame"] in FPS:
             cmd += ["-r", FPS[s["frame"]]]
+        elif fps_flag and not avi:                   # AVI has no timestamps – it stays constant-rate
+            cmd += [fps_flag, "vfr"]
         if s["aspect"]:
             cmd += ["-aspect", "16:9"]
         if not logo_file:
@@ -553,7 +566,8 @@ def describe(s: dict) -> dict:
         "channels": {"1.0": "Mono", "2.0": "Stereo", "source": "Source"}.get(s["channels"], s["channels"]),
         "sample_rate": {"44.1K": "44.1 kHz", "48K": "48 kHz"}.get(s["sample"], "Source"),
         "filters": " · ".join(x for x, on in (("Deinterlace", s["deinterlace"]), ("Denoise", s["denoise"]),
-                                              ("Loudnorm", s["loudnorm"])) if on) or "None",
+                                              ("Dedup", s["dedup"]), ("Loudnorm", s["loudnorm"])) if on)
+                   or "None",
         "subtitles": "Hardsub" if s["hardsub"] else ("Copy" if s["subtitles"] else "Off"),
         "upload": ("G-Drive" if s["drive"] else "Telegram") + (" · Document" if s["upload_as_doc"] else " · Video"),
         "watermark": " · ".join(x for x, on in (("Text", s["watermark"]), ("Logo", s["logo"] and s["logo_id"]),

@@ -55,6 +55,7 @@ TOGGLES = {
     "triggerBits": ("bits", "video"), "triggerHevc": ("hevc", "video"), "triggertune": ("tune", "video"),
     "triggercabac": ("cabac", "video"), "triggeraspect": ("aspect", "video"),
     "triggerDeint": ("deinterlace", "adv"), "triggerDenoise": ("denoise", "adv"),
+    "triggerDedup": ("dedup", "adv"),
     "triggerLoudnorm": ("loudnorm", "adv"), "triggerLoudnorm:a": ("loudnorm", "audio"),
     "triggerVideo:w": ("watermark", "wm"), "triggerHw": ("hw", "video"),
 }
@@ -77,6 +78,8 @@ NOTES = {
     ("triggerHardsub", True): ("Hardsub works with text subtitles (SRT / ASS), not PGS pictures.", False),
     ("triggerDeint", True): ("Only interlaced frames are processed – safe to leave on.", False),
     ("triggerLoudnorm", True): ("Audio will be re-encoded to even out the volume.", False),
+    ("triggerDedup", True): ("Repeated frames are dropped – great for anime, slideshows and screen recordings "
+                             "(smaller + faster). The FPS setting is ignored while this is on.", True),
     ("triggerTwopass", True): ("2-pass: the size lands within ~2 % of your target; encoding takes ~1.7× longer.", False),
     ("triggerHw", False): ("GPU off – encodes use the CPU (slower, a little smaller at the same quality).", False),
     ("triggerCodec", "av1"): ("AV1: the smallest files (~30 % below H.265) but the slowest encode. "

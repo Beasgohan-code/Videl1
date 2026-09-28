@@ -67,10 +67,14 @@ async def _upload_parts(new_file, message, msg, as_doc=None):
 async def _upload_one(new_file, message, msg, as_doc=None, caption=None):
     c_time = time.time()
     filename = os.path.basename(new_file)
-    # ffprobe / ffmpeg are blocking – keep them off the event loop
-    duration = await asyncio.to_thread(get_duration, new_file)
+    uid = message.from_user.id
 
-    custom_thumb = await db.get_thumbnail(message.from_user.id)
+    async def _pref():
+        return as_doc if as_doc is not None else (await db.get_upload_as_doc(uid) is True)
+    # ffprobe / ffmpeg are blocking – off the event loop, and the independent lookups run side by side
+    duration, (width, height), custom_thumb, as_doc = await asyncio.gather(
+        asyncio.to_thread(get_duration, new_file), asyncio.to_thread(get_width_height, new_file),
+        db.get_thumbnail(uid), _pref())
     thumb = None
     if custom_thumb:
         try:
@@ -81,9 +85,6 @@ async def _upload_one(new_file, message, msg, as_doc=None, caption=None):
     if not thumb:
         thumb = await asyncio.to_thread(get_thumbnail, new_file, download_dir, (duration or 0) / 4)
 
-    width, height = await asyncio.to_thread(get_width_height, new_file)
-    if as_doc is None:
-        as_doc = await db.get_upload_as_doc(message.from_user.id) is True
     try:
         if as_doc:
             link = await upload_doc(message, msg, c_time, caption or filename, new_file, thumb)

@@ -172,6 +172,7 @@ async def AdvancedSettings(event: Message, user_id: int):
              sec("🧹", "Filters"),
              row("Deinterlace", "On (bwdif, only interlaced frames)" if s["deinterlace"] else "Off"),
              row("Denoise", "On (hqdn3d light)" if s["denoise"] else "Off"),
+             row("Dup frames", "Dropped (mpdecimate · smaller, faster)" if s["dedup"] else "Kept"),
              row("Loudness", "EBU R128 normalise" if s["loudnorm"] else "Off")]
     rows = [
         [Btn(f"Mode: {'🎯 Target size' if size_mode else '💎 CRF'}", callback_data="triggerEncMode")],
@@ -183,6 +184,7 @@ async def AdvancedSettings(event: Message, user_id: int):
     rows += [
         [Btn(f"Deinterlace {_on(s['deinterlace'])}", callback_data="triggerDeint"),
          Btn(f"Denoise {_on(s['denoise'])}", callback_data="triggerDenoise")],
+        [Btn(f"Drop duplicate frames {_on(s['dedup'])}", callback_data="triggerDedup")],
         [Btn(f"Loudness normalise {_on(s['loudnorm'])}", callback_data="triggerLoudnorm")],
         [Btn("⬅️ Back", callback_data="OpenSettings")],
     ]

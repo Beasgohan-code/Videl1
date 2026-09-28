@@ -204,7 +204,7 @@ ENC_HELP = (
     + quote("\n".join(f"◈ {sc(a)} — {sc(b)}" for a, b in (
         ("Quick profiles", "Mobile, Balanced, High quality, Anime, Tiny, Fast"),
         ("Target size", "fit a video into e.g. 200 MB"),
-        ("Filters", "deinterlace, denoise, loudness normalise"),
+        ("Filters", "deinterlace, denoise, drop duplicate frames, loudness normalise"),
         ("Live progress", "speed, fps, ETA, size and a real ❌ Cancel"),
         ("GPU", "NVENC / QSV / VAAPI used automatically when the server has one"),
         ("AV1 💎", "smallest files – Encoder Pro"),

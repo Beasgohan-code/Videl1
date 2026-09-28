@@ -83,6 +83,11 @@
       "value": "1950",
       "required": false
     },
+    "FAST_DL_WORKERS": {
+      "description": "Parallel chunk requests per Telegram download (1-16, set FAST_DL=False to disable)",
+      "value": "6",
+      "required": false
+    },
     "LEECH_FREE_GB": {
       "description": "/leech size limit for free users (GB)",
       "value": "2",
