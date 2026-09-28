@@ -96,6 +96,8 @@ class Encoded(str):
     settings: dict = None
     elapsed: float = 0.0
     sample: tuple = None
+    encoder: str = ""
+    where: str = "CPU"
 
 
 def _probe_sync(filepath):
@@ -161,50 +163,102 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
     settings.update(opts.get("override") or {})
     info = opts.get("info") or await probe(filepath)
 
+    from . import hw
+    from .scheduler import task_dirs
+    encoder, where = hw.pick_encoder(settings)
+    if encoder is None:
+        LAST_ERROR[msg.id] = f"{ffcmd.describe(settings)['codec']}: {where}. Pick H.264 / H.265 in /settings."
+        return None
+    if settings.get("av1") or settings.get("twopass"):
+        pro = True
+        try:
+            from core.plans import is_encoder_pro
+            pro = await is_encoder_pro(uid)
+        except Exception:
+            pass
+        if not pro and settings.get("av1"):
+            LAST_ERROR[msg.id] = "AV1 is an 🎬 Encoder Pro feature – see /plans, or switch the codec in /settings."
+            return None
+        if not pro:
+            settings["twopass"] = False           # 2-pass is Pro-only → plain single pass
+    out_dir = opts.get("out_dir") or task_dirs(message)[1]
+    os.makedirs(out_dir, exist_ok=True)
+
     path, _ext = os.path.splitext(filepath)
     name = os.path.basename(path)
     sample = None
     if opts.get("sample"):
         sample = ffcmd.sample_window(info["duration"], opts["sample"])
         name += ".sample"
-    output_filepath = os.path.join(encode_dir, name + ffcmd.output_ext(settings))
+    output_filepath = os.path.join(out_dir, name + ffcmd.output_ext(settings))
     if os.path.abspath(output_filepath) == os.path.abspath(filepath):
-        output_filepath = os.path.join(encode_dir, name + ".videl" + ffcmd.output_ext(settings))
+        output_filepath = os.path.join(out_dir, name + ".videl" + ffcmd.output_ext(settings))
     if os.path.isfile(output_filepath):
         os.remove(output_filepath)
 
-    progress = os.path.join(download_dir, f"process_{msg.id}.txt")
+    progress = os.path.join(out_dir, f"process_{msg.id}.txt")
     open(progress, 'w').close()
 
     subs_file = os.path.join(encode_dir, str(msg.id) + '.ass') if settings["hardsub"] else None
     if subs_file and not os.path.isfile(subs_file):
         subs_file = None
-    watermark_file = WATERMARK_ASS if settings["watermark"] and os.path.isfile(WATERMARK_ASS) else None
-    motion_file = None
+    watermark_file = text_wm_file = motion_file = logo_file = None
+    temp_files = [progress]
+    if settings["watermark"]:
+        if (settings.get("wm_text") or "").strip():             # the user's own text
+            text_wm_file = os.path.join(out_dir, f"wm_{msg.id}.ass")
+            with open(text_wm_file, 'w', encoding='utf-8') as f:
+                f.write(ffcmd.text_watermark_ass(settings["wm_text"], settings["wm_pos"], settings["wm_size"],
+                                                 settings["wm_opacity"]))
+            temp_files.append(text_wm_file)
+        elif os.path.isfile(WATERMARK_ASS):
+            watermark_file = WATERMARK_ASS
     if settings["motion_watermark"]:
-        motion_file = os.path.join(encode_dir, f"motion_{msg.id}.ass")
+        motion_file = os.path.join(out_dir, f"motion_{msg.id}.ass")
         with open(motion_file, 'w', encoding='utf-8') as f:
             f.write(_motion_ass(settings["motion_opacity"]))
+        temp_files.append(motion_file)
+    if settings["logo"] and settings.get("logo_id"):
+        logo_file = await _fetch_logo(message, settings["logo_id"], out_dir, msg.id)
+        if logo_file:
+            temp_files.append(logo_file)
 
-    command = ffcmd.build_command(filepath, output_filepath, settings, info, progress=progress, audio_map=audio_map,
-                                  subs_file=subs_file, watermark_file=watermark_file, motion_file=motion_file,
-                                  sample=sample)
-    LOGGER.info(f"ffmpeg: {' '.join(command[:-1])} …")
+    twopass = ffcmd.twopass_applies(settings, encoder, sample)
+    passlog = os.path.join(out_dir, f"2pass_{msg.id}") if twopass else None
+    common = dict(audio_map=audio_map, subs_file=subs_file, watermark_file=watermark_file, motion_file=motion_file,
+                  sample=sample, encoder=encoder, logo_file=logo_file, text_wm_file=text_wm_file,
+                  vaapi_device=_cfg_vaapi())
+    passes = [1, 2] if twopass else [None]
     owned = jobs.get(msg.id) is None              # a task may have registered it already (download stage)
     job = jobs.register(msg.id, uid, getattr(getattr(msg, "chat", None), "id", None), name=name)
     started = time.time()
+    proc = None
+    stderr = stdout = b""
+    total = (sample[1] if sample else info["duration"]) or None
     try:
-        proc = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.PIPE)
-        jobs.attach(msg.id, proc)
-        await handle_progress(proc, msg, message, filepath, progress_file=progress,
-                              total_time=(sample[1] if sample else info["duration"]) or None,
-                              settings=settings, info=info)
-        stdout, stderr = await proc.communicate()
+        for pass_no in passes:
+            if job.cancelled:
+                break
+            open(progress, 'w').close()
+            target = os.devnull if pass_no == 1 else output_filepath
+            command = ffcmd.build_command(filepath, target, settings, info, progress=progress, pass_no=pass_no,
+                                          passlog=passlog, **common)
+            LOGGER.info(f"ffmpeg ({where}{', pass ' + str(pass_no) if pass_no else ''}): {' '.join(command[:-1])} …")
+            stage = {1: "Pass 1/2 · analysing", 2: "Pass 2/2 · encoding"}.get(pass_no, "Encoding")
+            proc = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE,
+                                                        stderr=asyncio.subprocess.PIPE)
+            jobs.attach(msg.id, proc)
+            await handle_progress(proc, msg, message, filepath, progress_file=progress, total_time=total,
+                                  settings=settings, info=info, stage=f"{stage} · {where}")
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                break
     finally:
         if owned:
             jobs.unregister(msg.id)
-        for f in (progress, motion_file):
+        if passlog and os.path.isdir(out_dir):     # x264 .log/.mbtree · x265 .x265/.cutree
+            temp_files += [os.path.join(out_dir, p) for p in os.listdir(out_dir) if p.startswith(f"2pass_{msg.id}")]
+        for f in temp_files:
             if f and os.path.exists(f):
                 try:
                     os.remove(f)
@@ -215,19 +269,87 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
         if os.path.isfile(output_filepath):
             os.remove(output_filepath)
         return None
-    e_response = stderr.decode(errors="ignore").strip()
-    t_response = stdout.decode(errors="ignore").strip()
+    e_response = (stderr or b"").decode(errors="ignore").strip()
+    t_response = (stdout or b"").decode(errors="ignore").strip()
     if t_response:
         LOGGER.info(f"FFmpeg stdout: {t_response[-500:]}")
-    if proc.returncode != 0 or not os.path.isfile(output_filepath) or os.path.getsize(output_filepath) == 0:
-        LOGGER.error(f"Encoding failed (exit {proc.returncode}): {e_response[-800:]}")
+    if proc is None or proc.returncode != 0 or not os.path.isfile(output_filepath) or os.path.getsize(output_filepath) == 0:
+        LOGGER.error(f"Encoding failed (exit {getattr(proc, 'returncode', None)}): {e_response[-800:]}")
         if os.path.isfile(output_filepath):
             os.remove(output_filepath)
         LAST_ERROR[msg.id] = e_response[-300:]
         return None
     out = Encoded(output_filepath)
     out.info, out.settings, out.elapsed, out.sample = info, settings, time.time() - started, sample
+    out.encoder, out.where = encoder, where
     return out
+
+
+def _cfg_vaapi() -> str:
+    import config
+    return config.VAAPI_DEVICE
+
+
+async def _fetch_logo(message, file_id, out_dir, key):
+    """Download the user's logo (a Telegram photo / image file_id) → local path, or None."""
+    try:
+        client = getattr(message, "_client", None)
+        if client is None:
+            from .. import app as client
+        return await client.download_media(file_id, file_name=os.path.join(out_dir, f"logo_{key}.png"))
+    except Exception as e:
+        LOGGER.warning(f"logo download failed: {e}")
+        return None
+
+
+async def split_for_upload(path: str, limit: int, key=None) -> list:
+    """Split a file bigger than `limit` bytes into parts that fit. Videos are cut at keyframes with stream
+    copy (every part plays on its own); anything else is byte-split into .001 .002 … (join with 7-Zip / cat).
+    Returns the list of part paths ([path] when no split is needed)."""
+    size = os.path.getsize(path)
+    if size <= limit:
+        return [path]
+    base, ext = os.path.splitext(path)
+    parts_dir = base + ".parts"
+    os.makedirs(parts_dir, exist_ok=True)
+    info = await probe(path)
+    if info.get("video") is not None and info.get("duration"):
+        seg = ffcmd.split_plan(size, info["duration"], limit)
+        for _attempt in range(4):
+            for old in os.listdir(parts_dir):
+                os.remove(os.path.join(parts_dir, old))
+            pattern = os.path.join(parts_dir, os.path.basename(base) + ".part%03d" + (ext or ".mkv"))
+            code, err = await run_ffmpeg(ffcmd.split_command(path, pattern, seg), key)
+            parts = sorted(os.path.join(parts_dir, p) for p in os.listdir(parts_dir))
+            if code == 0 and parts and all(os.path.getsize(p) <= limit for p in parts):
+                return parts
+            if key is not None and jobs.is_cancelled(key):
+                return []
+            seg *= 0.75                           # a keyframe gap made one part too big – cut shorter
+            LOGGER.warning(f"split retry ({code}): {err[-200:]}")
+    # byte split fallback
+    for old in os.listdir(parts_dir):
+        os.remove(os.path.join(parts_dir, old))
+    parts, n = [], 1
+    with open(path, "rb") as src:
+        while True:
+            if key is not None and jobs.is_cancelled(key):
+                return []
+            part = os.path.join(parts_dir, f"{os.path.basename(path)}.{n:03d}")
+            written = 0
+            with open(part, "wb") as dst:
+                while written < limit:
+                    chunk = src.read(min(8 * 1024 * 1024, limit - written))
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    written += len(chunk)
+            if not written:
+                os.remove(part)
+                break
+            parts.append(part)
+            n += 1
+    return parts
 
 
 LAST_ERROR: dict = {}
@@ -246,10 +368,10 @@ async def run_ffmpeg(cmd, key=None, timeout=None):
     return proc.returncode, err.decode(errors="ignore")[-400:]
 
 
-async def trim(filepath, start, end, key=None):
+async def trim(filepath, start, end, key=None, out_dir=None):
     """Lossless cut → new file path (or None)."""
     base, ext = os.path.splitext(os.path.basename(filepath))
-    out = os.path.join(encode_dir, f"{base}.trim_{int(start)}-{int(end) if end is not None else 'end'}{ext or '.mkv'}")
+    out = os.path.join(out_dir or encode_dir, f"{base}.trim_{int(start)}-{int(end) if end is not None else 'end'}{ext or '.mkv'}")
     code, err = await run_ffmpeg(ffcmd.trim_command(filepath, out, start, end), key)
     if code != 0 or not os.path.isfile(out) or os.path.getsize(out) == 0:
         LOGGER.error(f"trim failed ({code}): {err}")
@@ -257,11 +379,11 @@ async def trim(filepath, start, end, key=None):
     return out
 
 
-async def screenshots(filepath, count, duration=None, key=None):
+async def screenshots(filepath, count, duration=None, key=None, out_dir=None):
     """`count` evenly spread JPEG screenshots → list of paths."""
     if not duration:
         duration = (await probe(filepath))["duration"]
-    base = os.path.join(encode_dir, f"shot_{int(time.time() * 1000)}")
+    base = os.path.join(out_dir or encode_dir, f"shot_{int(time.time() * 1000)}")
     shots = []
     for i, at in enumerate(ffcmd.screenshot_times(duration, count)):
         if key is not None and jobs.is_cancelled(key):
@@ -438,7 +560,7 @@ def progress_text(name, elapsed_media, total_time, speed, fps, size_now, wall, s
 
 
 async def handle_progress(proc, msg, message, filepath, progress_file=None, total_time=None, settings=None,
-                          info=None):
+                          info=None, stage="Encoding"):
     name = os.path.basename(filepath)
     started = time.time()
     progress_file = progress_file or (download_dir + 'process.txt')
@@ -472,7 +594,7 @@ async def handle_progress(proc, msg, message, filepath, progress_file=None, tota
                 total_time, _ = await media_info(filepath)   # probe once, not every 5 s
                 probed = True
             stats = progress_text(name, elapsed_media, total_time, speed, fps, size_now, time.time() - started,
-                                  settings)
+                                  settings, stage=stage)
         except Exception as e:           # never let a progress glitch orphan the ffmpeg process
             LOGGER.warning(f"encode progress: {e}")
             continue

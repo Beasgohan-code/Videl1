@@ -94,17 +94,23 @@ async def ProfileSettings(event: Message, user_id: int):
 async def VideoSettings(event: Message, user_id: int):
     s = await db.get_settings(user_id)
     d = ffcmd.describe(s)
-    x265 = bool(s["hevc"])
+    codec = ffcmd.video_codec(s)
+    x265 = codec != "h264"
+    from . import hw
+    caps = hw.cached()
+    gpu_kinds = (caps or {}).get("encoders") or {}
     lines = [hdr("🎞", "Video settings"), "",
              row("Codec", d["codec"]), row("Quality", d["quality"] + ("  <i>(target-size mode on)</i>"
                                                                       if s["mode"] == "size" and s["target_mb"] else "")),
              row("Resolution", d["resolution"] + " <i>(keeps aspect, never upscales)</i>"),
              row("Preset", d["preset"]), row("Tune", d["tune"]), row("FPS", d["fps"]),
-             row("Container", d["container"]), "",
+             row("Container", d["container"]),
+             row("Encoder", _encoder_label(s, caps)), "",
              hint("Lower CRF = better quality & bigger file. 18-20 near-lossless, 22-26 balanced, 28+ small.")]
     rows = [
         [_chip("🎞 ʙᴀꜱɪᴄ")],
-        [Btn(f"Codec: {'H.265' if x265 else 'H.264'}", callback_data="triggerHevc"),
+        [Btn(f"Codec: {d['codec'].replace(' 10-bit', '')}" + (" 💎" if codec == "av1" else ""),
+             callback_data="triggerCodec"),
          Btn(f"Bits: {'10' if s['bits'] else '8'}", callback_data="triggerBits")],
         [Btn("➖", callback_data="triggerCRFdown"), _chip(f"CRF {s['crf']}"),
          Btn("➕", callback_data="triggerCRF")],
@@ -116,11 +122,21 @@ async def VideoSettings(event: Message, user_id: int):
         [Btn(f"FPS: {d['fps']}", callback_data="triggerframe"),
          Btn(f"Aspect: {'16:9' if s['aspect'] else 'Source'}", callback_data="triggeraspect")],
     ]
+    if gpu_kinds:
+        rows.append([Btn(f"⚡ GPU ({caps['kind'].upper()}) {_on(s['hw'])}", callback_data="triggerHw")])
     if not x265:            # x264-only options
         rows.append([Btn(f"CABAC {_on(s['cabac'])}", callback_data="triggercabac"),
                      Btn(f"Reframe: {str(s['reframe']).capitalize()}", callback_data="triggerreframe")])
     rows.append([Btn("⬅️ Back", callback_data="OpenSettings")])
     await _render(event, "\n".join(lines), rows, lambda: VideoSettings(event, user_id))
+
+
+def _encoder_label(s: dict, caps) -> str:
+    if caps is None:
+        return "Auto"
+    from . import hw
+    enc, where = hw.pick_encoder(s, caps)
+    return f"{enc} · {where}" if enc else f"⚠️ {where}"
 
 
 # ─────────────────────────── audio ───────────────────────────
@@ -150,6 +166,8 @@ async def AdvancedSettings(event: Message, user_id: int):
     lines = [hdr("🧪", "Advanced"), "",
              sec("🎯", "Rate control"),
              row("Mode", f"Target size ≈ {target} MB" if size_mode else f"Constant quality (CRF {s['crf']})"),
+             row("Passes", ("2-pass (lands within ~2 %, takes ~1.7× longer)" if s["twopass"] else "1-pass")
+                 if size_mode else "–"),
              hint("Target size picks the bitrate so the file fits – handy for the 2 GB / 4 GB upload limit."), "",
              sec("🧹", "Filters"),
              row("Deinterlace", "On (bwdif, only interlaced frames)" if s["deinterlace"] else "Off"),
@@ -161,6 +179,7 @@ async def AdvancedSettings(event: Message, user_id: int):
     if size_mode:
         rows.append([Btn("➖", callback_data="triggerTargetDown"), _chip(f"≈ {target} MB"),
                      Btn("➕", callback_data="triggerTargetSize")])
+        rows.append([Btn(f"🎯 2-pass exact size {_on(s['twopass'])} 💎", callback_data="triggerTwopass")])
     rows += [
         [Btn(f"Deinterlace {_on(s['deinterlace'])}", callback_data="triggerDeint"),
          Btn(f"Denoise {_on(s['denoise'])}", callback_data="triggerDenoise")],
@@ -189,6 +208,30 @@ async def ExtraSettings(event: Message, user_id: int):
          Btn(f"Text {_on(s['watermark'])}", callback_data="triggerVideo")],
         [Btn(f"Motion {_on(s['motion_watermark'])}", callback_data="triggerMotion"),
          Btn(f"Opacity: {s['motion_opacity']}%", callback_data="triggerOpacity")],
+        [Btn(f"🖼 Logo {_on(s['logo'] and s['logo_id'])}" if s["logo_id"] else "🖼 Logo: /watermark", callback_data="triggerLogo"),
+         Btn("🎨 Style", callback_data="WmSettings")],
         [Btn("⬅️ Back", callback_data="OpenSettings")],
     ]
     await _render(event, "\n".join(lines), rows, lambda: ExtraSettings(event, user_id))
+
+
+# ─────────────────────────── watermark style ───────────────────────────
+async def WmSettings(event: Message, user_id: int):
+    s = await db.get_settings(user_id)
+    text = s.get("wm_text") or ""
+    lines = [hdr("🎨", "Watermark style"), "",
+             row("Text", f"<code>{html.escape(text)}</code>" if text else "<i>default (/watermark Your text)</i>"),
+             row("Logo", ("✅ on" if s["logo"] else "▫️ off") if s["logo_id"] else "<i>not set – reply /watermark to a photo</i>"),
+             row("Position", ffcmd.WM_POS_LABEL.get(s["wm_pos"], s["wm_pos"])),
+             row("Size", {"s": "Small", "m": "Medium", "l": "Large"}.get(s["wm_size"], "Medium")),
+             row("Opacity", f"{s['wm_opacity']}%"), "",
+             hint("Position, size and opacity apply to both the text and the logo. Logos are 🎬 Encoder Pro.")]
+    rows = [
+        [Btn(f"Text {_on(s['watermark'])}", callback_data="triggerVideo:w"),
+         Btn(f"Logo {_on(s['logo'] and s['logo_id'])}", callback_data="triggerLogo:w")],
+        [Btn(f"Pos: {ffcmd.WM_POS_LABEL.get(s['wm_pos'], '').split(' ', 1)[0]}", callback_data="triggerWmPos"),
+         Btn(f"Size: {str(s['wm_size']).upper()}", callback_data="triggerWmSize"),
+         Btn(f"Opacity: {s['wm_opacity']}%", callback_data="triggerWmOpacity")],
+        [Btn("⬅️ Back", callback_data="ExtraSettings")],
+    ]
+    await _render(event, "\n".join(lines), rows, lambda: WmSettings(event, user_id))

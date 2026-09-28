@@ -9,13 +9,13 @@ from ..plugins.queue import queue_answer
 from ..utils import ffcmd, jobs
 from ..utils.database.access_db import db
 from ..utils.settings import (AdvancedSettings, AudioSettings, ExtraSettings, OpenSettings, ProfileSettings,
-                              VideoSettings)
+                              VideoSettings, WmSettings)
 from ..video_utils.audio_selector import sessions
 
 
 _ENC_EXACT = {
     "closeMeh", "VideoSettings", "OpenSettings", "AudioSettings", "ExtraSettings", "AdvancedSettings",
-    "EncProfiles", "Watermark", "cancel", "stats",
+    "EncProfiles", "Watermark", "WmSettings", "cancel", "stats",
 }
 
 
@@ -26,7 +26,8 @@ def _is_encoder_cb(_, __, cb: CallbackQuery) -> bool:
 
 encoder_cb_filter = filters.create(_is_encoder_cb)
 
-MENUS = {"video": VideoSettings, "audio": AudioSettings, "extra": ExtraSettings, "adv": AdvancedSettings}
+MENUS = {"video": VideoSettings, "audio": AudioSettings, "extra": ExtraSettings, "adv": AdvancedSettings,
+         "wm": WmSettings}
 
 # callback → (field, values in cycle order, menu)  – same orders as the original bot
 CYCLES = {
@@ -40,6 +41,9 @@ CYCLES = {
     "triggerAudioCodec": ("audio", ["dd", "copy", "aac", "opus", "alac", "vorbis"], "audio"),
     "triggerAudioChannels": ("channels", ["source", "1.0", "2.0", "2.1", "5.1", "7.1"], "audio"),
     "triggerOpacity": ("motion_opacity", ["50", "75", "100"], "extra"),
+    "triggerWmPos": ("wm_pos", ffcmd.WM_POSITIONS, "wm"),
+    "triggerWmSize": ("wm_size", ["s", "m", "l"], "wm"),
+    "triggerWmOpacity": ("wm_opacity", ffcmd.WM_OPACITY, "wm"),
 }
 
 # callback → (field, menu)
@@ -52,7 +56,16 @@ TOGGLES = {
     "triggercabac": ("cabac", "video"), "triggeraspect": ("aspect", "video"),
     "triggerDeint": ("deinterlace", "adv"), "triggerDenoise": ("denoise", "adv"),
     "triggerLoudnorm": ("loudnorm", "adv"), "triggerLoudnorm:a": ("loudnorm", "audio"),
+    "triggerVideo:w": ("watermark", "wm"), "triggerHw": ("hw", "video"),
 }
+
+# Encoder Pro only (admins, Encoder Pro, Premium) – callback → (field, menu, pitch)
+PRO_TOGGLES = {
+    "triggerTwopass": ("twopass", "adv", "🎯 2-pass exact size is an 🎬 Encoder Pro feature – /plans"),
+    "triggerLogo": ("logo", "extra", "🖼 Logo watermarks are an 🎬 Encoder Pro feature – /plans"),
+    "triggerLogo:w": ("logo", "wm", "🖼 Logo watermarks are an 🎬 Encoder Pro feature – /plans"),
+}
+CODECS = ["h264", "hevc", "av1"]
 
 # (callback, new value) → one-time hint shown as a toast
 NOTES = {
@@ -64,7 +77,19 @@ NOTES = {
     ("triggerHardsub", True): ("Hardsub works with text subtitles (SRT / ASS), not PGS pictures.", False),
     ("triggerDeint", True): ("Only interlaced frames are processed – safe to leave on.", False),
     ("triggerLoudnorm", True): ("Audio will be re-encoded to even out the volume.", False),
+    ("triggerTwopass", True): ("2-pass: the size lands within ~2 % of your target; encoding takes ~1.7× longer.", False),
+    ("triggerHw", False): ("GPU off – encodes use the CPU (slower, a little smaller at the same quality).", False),
+    ("triggerCodec", "av1"): ("AV1: the smallest files (~30 % below H.265) but the slowest encode. "
+                              "Plays on modern phones, browsers and TVs.", True),
 }
+
+
+async def _pro(uid: int) -> bool:
+    try:
+        from core.plans import is_encoder_pro
+        return await is_encoder_pro(uid)
+    except Exception:
+        return uid in sudo_users or uid == owner
 
 CRF_MIN, CRF_MAX = 12, 40
 
@@ -171,6 +196,33 @@ async def callback_handlers(bot: Client, cb: CallbackQuery):
             await db.update_settings(uid, **{field: new})
             note = NOTES.get((d.split(":")[0], new))
             await MENUS[menu](cb.message, user_id=uid)
+
+        elif d == "triggerCodec":
+            s = await db.get_settings(uid)
+            cur = ffcmd.video_codec(s)
+            nxt = CODECS[(CODECS.index(cur) + 1) % len(CODECS)]
+            if nxt == "av1" and not await _pro(uid):
+                nxt = "h264"
+                note = ("💎 AV1 is an 🎬 Encoder Pro feature – /plans", True)
+            await db.update_settings(uid, hevc=nxt == "hevc", av1=nxt == "av1")
+            note = note or NOTES.get((d, nxt)) or NOTES.get(("triggerHevc", True) if nxt == "hevc" else ("", ""))
+            await VideoSettings(cb.message, user_id=uid)
+
+        elif d in PRO_TOGGLES:
+            field, menu, pitch = PRO_TOGGLES[d]
+            s = await db.get_settings(uid)
+            new = not bool(s.get(field))
+            if field == "logo" and new and not s.get("logo_id"):
+                note = ("🖼 Set a logo first: reply /watermark to a photo (PNG with transparency looks best).", True)
+            elif new and not await _pro(uid):
+                note = (pitch, True)
+            else:
+                await db.update_settings(uid, **{field: new})
+                note = NOTES.get((d.split(":")[0], new))
+                await MENUS[menu](cb.message, user_id=uid)
+
+        elif d == "WmSettings":
+            await WmSettings(cb.message, user_id=uid)
 
         elif d in ("triggerCRF", "triggerCRFdown"):
             s = await db.get_settings(uid)

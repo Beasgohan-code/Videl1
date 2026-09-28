@@ -10,9 +10,61 @@ from ..display_progress import progress_for_pyrogram
 from ..encoding import get_duration, get_thumbnail, get_width_height
 
 
-async def upload_to_tg(new_file, message, msg):
-    """Upload the encoded file (video or document per the user's setting). Returns its link, or None
-    when the user cancelled the upload."""
+SPLIT_LIMIT = None      # bytes; None → config.SPLIT_SIZE_MB
+
+
+def split_limit() -> int:
+    if SPLIT_LIMIT:
+        return SPLIT_LIMIT
+    import config
+    return max(50, min(1990, int(config.SPLIT_SIZE_MB))) * 1024 * 1024
+
+
+async def upload_to_tg(new_file, message, msg, as_doc=None, caption=None):
+    """Upload a file (video or document per the user's setting). Files above the Telegram limit are
+    split into playable parts first. Returns the (first) link, or None when the user cancelled."""
+    if os.path.isfile(new_file) and os.path.getsize(new_file) > split_limit():
+        return await _upload_parts(new_file, message, msg, as_doc)
+    return await _upload_one(new_file, message, msg, as_doc, caption)
+
+
+async def _upload_parts(new_file, message, msg, as_doc=None):
+    import shutil
+    from ..encoding import split_for_upload
+    try:
+        await msg.edit(f"✂️ <b>File is over {split_limit() // 1048576} MB</b> – splitting it into parts…")
+    except Exception:
+        pass
+    parts = await split_for_upload(new_file, split_limit(), key=getattr(msg, "id", None))
+    if not parts:
+        return None
+    first = None
+    name = os.path.basename(new_file)
+    video_parts = all(p.lower().endswith((".mkv", ".mp4", ".webm", ".avi", ".mov")) for p in parts)
+    try:
+        for i, part in enumerate(parts, 1):
+            try:
+                await msg.edit(f"📤 <b>Uploading part {i}/{len(parts)}</b>\n<code>{name[:60]}</code>")
+            except Exception:
+                pass
+            link = await _upload_one(part, message, msg, as_doc if video_parts else True,
+                                     caption=f"{os.path.basename(part)}\n📦 Part {i} of {len(parts)} · {name}")
+            if link is None:
+                return first
+            first = first or link
+    finally:
+        if parts[0] != new_file:
+            shutil.rmtree(os.path.dirname(parts[0]), ignore_errors=True)
+    try:
+        await message.reply_text(f"📦 <b>{len(parts)} parts uploaded</b> – <code>{name[:80]}</code>\n"
+                                 + ("<i>Every part plays on its own.</i>" if video_parts else
+                                    "<i>Join them with 7-Zip (open .001) or <code>cat file.* &gt; file</code>.</i>"))
+    except Exception:
+        pass
+    return first
+
+
+async def _upload_one(new_file, message, msg, as_doc=None, caption=None):
     c_time = time.time()
     filename = os.path.basename(new_file)
     # ffprobe / ffmpeg are blocking – keep them off the event loop
@@ -30,11 +82,14 @@ async def upload_to_tg(new_file, message, msg):
         thumb = await asyncio.to_thread(get_thumbnail, new_file, download_dir, (duration or 0) / 4)
 
     width, height = await asyncio.to_thread(get_width_height, new_file)
+    if as_doc is None:
+        as_doc = await db.get_upload_as_doc(message.from_user.id) is True
     try:
-        if await db.get_upload_as_doc(message.from_user.id) is True:
-            link = await upload_doc(message, msg, c_time, filename, new_file, thumb)
+        if as_doc:
+            link = await upload_doc(message, msg, c_time, caption or filename, new_file, thumb)
         else:
-            link = await upload_video(message, msg, new_file, filename, c_time, thumb, duration, width, height)
+            link = await upload_video(message, msg, new_file, caption or filename, c_time, thumb, duration, width,
+                                      height)
     finally:
         if thumb and os.path.isfile(thumb):
             try:

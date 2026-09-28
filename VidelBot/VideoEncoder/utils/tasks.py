@@ -227,7 +227,7 @@ async def trim_task(message, msg):
     start, end = rng
     await msg.edit(f"<b>✂️ Trimming</b> <code>{ffcmd.fmt_ts(start)}</code> → "
                    f"<code>{ffcmd.fmt_ts(end) if end is not None else 'end'}</code>…")
-    out = await trim(filepath, start, end, key=msg.id)
+    out = await trim(filepath, start, end, key=msg.id, out_dir=_dirs(message)[1])
     if await _cancelled(msg):
         return
     if not out:
@@ -258,7 +258,7 @@ async def screens_task(message, msg):
         return
     await msg.edit(f"<b>📸 Taking {count} screenshots…</b>")
     info = await probe(filepath)
-    shots = await screenshots(filepath, count, info["duration"], key=msg.id)
+    shots = await screenshots(filepath, count, info["duration"], key=msg.id, out_dir=_dirs(message)[1])
     if await _cancelled(msg):
         return
     if not shots:
@@ -440,3 +440,218 @@ async def handle_tg_down(message, msg, mode='no_reply', dest_dir=None):
         progress_args=("Downloading...", msg, c_time))
 
     return path
+
+
+# ═════════════════════════ Phase 15 task types ═════════════════════════
+async def _fetch_msg(message, ref):
+    """[chat_id, msg_id] → Message (None if it's gone)."""
+    try:
+        m = await message._client.get_messages(int(ref[0]), int(ref[1]))
+        return None if not m or getattr(m, "empty", False) else m
+    except Exception:
+        return None
+
+
+async def _download_ref(message, msg, ref, dest, label):
+    from . import jobs
+    src = await _fetch_msg(message, ref)
+    media = src and (src.video or src.document or src.audio or getattr(src, "voice", None))
+    if not media:
+        return None
+    path = await src.download(file_name=os.path.join(dest, ""), progress=progress_for_pyrogram,
+                              progress_args=(label, msg, time.time()))
+    if jobs.is_cancelled(msg.id):
+        return None
+    return path
+
+
+async def _finish_card(message, msg, out, title, rows_):
+    from .uploads.telegram import upload_to_tg
+    from .helper import _done_markup
+    from core.style import hdr, row
+    size = os.path.getsize(out)
+    link = await upload_to_tg(out, message, msg)
+    if link is None and await _cancelled(msg):
+        return
+    lines = [hdr("✅", title), f"<code>{html.escape(os.path.basename(out))[:80]}</code>", "",
+             row("Size", humanbytes(size))] + [row(k, v) for k, v in rows_]
+    await msg.edit("\n".join(lines), reply_markup=_done_markup(link), disable_web_page_preview=True)
+
+
+async def mux_task(message, msg):
+    """/mux – add a subtitle or audio track to a video (no re-encode)."""
+    from . import ffcmd, scheduler
+    from .encoding import probe, run_ffmpeg
+    extra = scheduler.extra_of(message)
+    dl, enc = _dirs(message)
+    video = await _download(message, msg)
+    if not video:
+        return
+    track = await _download_ref(message, msg, extra.get("track") or [0, 0], dl, "Downloading the track…")
+    if await _cancelled(msg):
+        return
+    if not track:
+        await msg.edit("❌ <b>The subtitle / audio file is gone</b> – send /mux again.")
+        return
+    kind = extra.get("kind") or ffcmd.track_kind(track) or "sub"
+    await msg.edit(f"<b>🧩 Adding the {'subtitle' if kind == 'sub' else 'audio'} track…</b>")
+    info, tinfo = await probe(video), await probe(track)
+    t_codec = ((tinfo.get("audio") or [{}])[0]).get("codec_name", "") if kind == "audio" else ""
+    base = os.path.splitext(os.path.basename(video))[0]
+    out = os.path.join(enc, base + ".muxed" + ffcmd.mux_ext(video))
+    code, err = await run_ffmpeg(ffcmd.mux_command(video, track, out, kind, info, t_codec), msg.id)
+    if await _cancelled(msg):
+        return
+    if code != 0 or not os.path.isfile(out) or not os.path.getsize(out):
+        await msg.edit("❌ <b>Couldn't add the track.</b>\n"
+                       f"<blockquote expandable><code>{html.escape(err)[-280:]}</code></blockquote>")
+        return
+    await _finish_card(message, msg, out, "Track added", [
+        ("Added", ("💬 Subtitle " if kind == "sub" else "🔊 Audio ") + os.path.splitext(track)[1].upper().lstrip(".")),
+        ("Mode", "Lossless (stream copy)")])
+
+
+async def merge_task(message, msg):
+    """/merge – join 2-10 videos (lossless when they match, otherwise normalised to the first one)."""
+    from . import ffcmd, scheduler
+    from .encoding import probe, run_ffmpeg
+    parts = scheduler.extra_of(message).get("parts") or []
+    dl, enc = _dirs(message)
+    paths = []
+    for i, ref in enumerate(parts, 1):
+        sub = os.path.join(dl, f"{i:02d}")
+        os.makedirs(sub, exist_ok=True)
+        p = await _download_ref(message, msg, ref, sub, f"Downloading {i}/{len(parts)}…")
+        if await _cancelled(msg):
+            return
+        if p:
+            paths.append(p)
+    if len(paths) < 2:
+        await msg.edit("❌ <b>Need at least 2 videos to merge</b> – some files were deleted.")
+        return
+    infos = [await probe(p) for p in paths]
+    base = os.path.splitext(os.path.basename(paths[0]))[0]
+    lossless = ffcmd.can_concat_copy(infos)
+    if lossless:
+        ext = ".mp4" if all(p.lower().endswith(".mp4") for p in paths) else ".mkv"
+        inputs = paths
+    else:
+        w, h, fps = ffcmd.merge_target(infos)
+        ext, inputs = ".mp4", []
+        for i, (p, inf) in enumerate(zip(paths, infos), 1):
+            await msg.edit(f"<b>🔧 Matching video {i}/{len(paths)}</b> to {w}×{h} @ {fps} fps…")
+            norm = os.path.join(enc, f"norm_{i:02d}.mp4")
+            code, err = await run_ffmpeg(ffcmd.normalize_command(p, norm, inf, w, h, fps), msg.id)
+            if await _cancelled(msg):
+                return
+            if code != 0:
+                await msg.edit(f"❌ <b>Video {i} couldn't be converted.</b>\n"
+                               f"<blockquote expandable><code>{html.escape(err)[-280:]}</code></blockquote>")
+                return
+            inputs.append(norm)
+    await msg.edit(f"<b>🔗 Joining {len(inputs)} videos…</b>")
+    list_file = os.path.join(enc, "concat.txt")
+    with open(list_file, "w", encoding="utf-8") as f:
+        f.write(ffcmd.concat_list(inputs))
+    out = os.path.join(enc, base + ".merged" + ext)
+    code, err = await run_ffmpeg(ffcmd.concat_command(list_file, out), msg.id)
+    if await _cancelled(msg):
+        return
+    if code != 0 or not os.path.isfile(out) or not os.path.getsize(out):
+        await msg.edit("❌ <b>Merge failed.</b>\n"
+                       f"<blockquote expandable><code>{html.escape(err)[-280:]}</code></blockquote>")
+        return
+    total = sum(i.get("duration") or 0 for i in infos)
+    from . import ffcmd as _f
+    await _finish_card(message, msg, out, "Videos merged", [
+        ("Parts", str(len(inputs))), ("Length", _f.fmt_ts(total)),
+        ("Mode", "Lossless join" if lossless else "Normalised to the first video (H.264 / AAC)")])
+
+
+async def convert_task(message, msg):
+    """/convert mp3|m4a|opus|flac|wav|gif – audio extraction or a GIF clip."""
+    from . import ffcmd, scheduler
+    from .encoding import probe, run_ffmpeg
+    extra = scheduler.extra_of(message)
+    fmt = extra.get("fmt", "mp3")
+    _dl, enc = _dirs(message)
+    src = await _download(message, msg)
+    if not src:
+        return
+    info = await probe(src)
+    base = os.path.splitext(os.path.basename(src))[0]
+    if fmt == "gif":
+        if info.get("video") is None and info.get("ok"):
+            await msg.edit("❌ <b>No video stream</b> – a GIF needs a video.")
+            return
+        start, length = ffcmd.gif_window(info.get("duration") or 0, extra.get("start"), extra.get("length"))
+        await msg.edit(f"<b>🎞 Making a {length:g}s GIF</b> from {ffcmd.fmt_ts(start)}…")
+        out = os.path.join(enc, f"{base}.gif")
+        code, err = await run_ffmpeg(ffcmd.gif_command(src, out, start, length), msg.id, timeout=900)
+        if await _cancelled(msg):
+            return
+        if code != 0 or not os.path.isfile(out):
+            await msg.edit(f"❌ <b>GIF failed.</b>\n<code>{html.escape(err)[-200:]}</code>")
+            return
+        await message.reply_animation(out, caption=f"🎞 <code>{html.escape(base)[:60]}</code> · "
+                                                   f"{ffcmd.fmt_ts(start)} +{length:g}s · {humanbytes(os.path.getsize(out))}")
+        await msg.edit(f"✅ <b>GIF ready</b> – {humanbytes(os.path.getsize(out))}")
+        return
+    if not info.get("audio") and info.get("ok"):
+        await msg.edit("❌ <b>This file has no audio track.</b>")
+        return
+    ext, _args = ffcmd.CONVERT_FORMATS[fmt]
+    out = os.path.join(enc, base + ext)
+    await msg.edit(f"<b>🎧 Extracting audio → {fmt.upper()}…</b>")
+    code, err = await run_ffmpeg(ffcmd.audio_extract_command(src, out, fmt), msg.id, timeout=3600)
+    if await _cancelled(msg):
+        return
+    if code != 0 or not os.path.isfile(out) or not os.path.getsize(out):
+        await msg.edit(f"❌ <b>Audio extraction failed.</b>\n<code>{html.escape(err)[-200:]}</code>")
+        return
+    dur = int((await probe(out)).get("duration") or info.get("duration") or 0)
+    await message.reply_audio(out, caption=f"🎧 <code>{html.escape(base)[:60]}</code> · {fmt.upper()}",
+                              duration=dur, title=base[:60], performer="Videl", progress=progress_for_pyrogram,
+                              progress_args=("Uploading…", msg, time.time()))
+    await msg.edit(f"✅ <b>Audio ready</b> – {fmt.upper()} · {humanbytes(os.path.getsize(out))}")
+
+
+async def leech_task(message, msg):
+    """/leech <url> [| name] – download a Mega / Google Drive / direct link and upload it as-is."""
+    import config
+    from . import leech, scheduler
+    from .uploads.telegram import upload_to_tg
+    from .helper import _done_markup
+    from core.style import hdr, row
+    extra = scheduler.extra_of(message)
+    url = extra.get("url") or ""
+    dl, _enc = _dirs(message)
+    pro = False
+    try:
+        from core.plans import is_encoder_pro
+        pro = await is_encoder_pro(message.from_user.id)
+    except Exception:
+        pass
+    limit = int((config.LEECH_PRO_GB if pro else config.LEECH_FREE_GB) * 1024 ** 3)
+    await msg.edit(f"<b>🌐 Connecting…</b>\n<code>{html.escape(url[:80])}</code>")
+    try:
+        path = await leech.download(url, dl, name=extra.get("name") or None, key=msg.id, msg=msg, max_bytes=limit)
+    except leech.Cancelled:
+        await _cancelled(msg)
+        return
+    except leech.LeechError as e:
+        note = "" if pro else "\n<i>🎬 Encoder Pro raises the limit – see /plans.</i>" if "limit" in str(e) else ""
+        await msg.edit(f"❌ <b>Download failed:</b> {html.escape(str(e))}{note}")
+        return
+    if await _cancelled(msg):
+        return
+    size = os.path.getsize(path)
+    await msg.edit(f"<b>📤 Downloaded {humanbytes(size)}</b> – uploading…")
+    is_video = path.lower().endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v"))
+    link = await upload_to_tg(path, message, msg, as_doc=None if is_video else True)
+    if link is None and await _cancelled(msg):
+        return
+    await msg.edit("\n".join([hdr("✅", "Link uploaded"), f"<code>{html.escape(os.path.basename(path))[:80]}</code>",
+                              "", row("Size", humanbytes(size)), row("Source", leech.kind_of(url).replace(
+                                  "gdrive", "Google Drive").replace("mega", "Mega").replace("direct", "Direct link"))]),
+                   reply_markup=_done_markup(link), disable_web_page_preview=True)

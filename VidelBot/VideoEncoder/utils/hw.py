@@ -77,6 +77,11 @@ def detect(force: bool = False) -> dict:
     return _CAPS
 
 
+def cached() -> dict | None:
+    """The capability table if detection already ran (never blocks – for menus)."""
+    return _CAPS
+
+
 def set_caps(caps: dict | None):
     """Tests / tooling: inject a capability table (None → detect again next time)."""
     global _CAPS

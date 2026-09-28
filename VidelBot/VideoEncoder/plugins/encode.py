@@ -3,22 +3,47 @@ import re
 
 from pyrogram import Client, filters
 
-from .. import data, video_mimetype
+import config
+
+from .. import video_mimetype
 from ..utils.database.add_user import AddUserToDatabase
 from ..utils.helper import check_chat
 from ..utils.tasks import handle_tasks, parse_trim_args
 
 
-async def _enqueue(message, mode):
-    """Run now if the encoder is idle, otherwise queue it and tell the user where they are."""
-    data.append(message)
-    if len(data) == 1:
+async def _is_pro(uid: int) -> bool:
+    try:
+        from core.plans import is_encoder_pro
+        return await is_encoder_pro(uid)
+    except Exception:
+        return False
+
+
+async def _enqueue(message, mode, extra=None) -> bool:
+    """Run now if a worker is free, otherwise queue it (Encoder Pro / Premium first) and say where it is."""
+    from ..utils import scheduler
+    uid = message.from_user.id if message.from_user else 0
+    pro = await _is_pro(uid)
+    limit = config.ENC_MAX_TASKS_PRO if pro else config.ENC_MAX_TASKS_FREE
+    have = scheduler.user_tasks(uid) if uid else 0
+    if uid and uid not in config.ADMINS and have >= limit:
+        await message.reply(f"⏳ <b>You already have {have} task{'s' if have != 1 else ''} in the queue</b> "
+                            f"(limit {limit}).\n<i>Wait for one to finish"
+                            + ("" if pro else f", or get 🎬 Encoder Pro for up to {config.ENC_MAX_TASKS_PRO} + "
+                                              "priority – /plans") + ".</i>")
+        return False
+    pos = scheduler.add(message, mode, priority=pro, extra=extra)
+    await scheduler.persist(message, mode, extra, pro)
+    if scheduler.can_start(message):
+        scheduler.mark_running(message)
         await handle_tasks(message, mode)
     else:
-        ahead = len(data) - 1
-        await message.reply(f"⏳ <b>Added to the queue</b> – position <b>#{len(data)}</b> "
-                            f"({ahead} task{'s' if ahead != 1 else ''} ahead)\n<i>See it with /queue.</i>")
+        ahead = pos - 1
+        await message.reply(f"⏳ <b>Added to the queue</b> – position <b>#{pos}</b> "
+                            f"({ahead} task{'s' if ahead != 1 else ''} ahead)"
+                            + (" · ⚡ <b>priority</b>" if pro else "") + "\n<i>See it with /queue.</i>")
     await asyncio.sleep(1)
+    return True
 
 
 def _has_media(message) -> bool:
