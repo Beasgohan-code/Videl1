@@ -1,6 +1,7 @@
 
 
 import asyncio
+import contextvars
 import html
 import os
 import time
@@ -24,60 +25,75 @@ from .uploads.drive.download import Downloader
 from .encoding import get_media_streams
 from ..video_utils.audio_selector import AudioSelect
 
-async def on_task_complete():
-    delete_downloads()
-    if not data:
-        return
-    del data[0]
-    if not len(data) > 0:
-        return
-    message = data[0]
+_DEPTH = contextvars.ContextVar("videl_enc_depth", default=0)
 
-    # Determine text content (message text or caption)
-    text_content = message.text or message.caption
 
-    if text_content:
-        text = text_content.split(None, 1)
-        command = text[0].lower()
-        if '/ddl' in command:
-            await handle_tasks(message, 'url')
-        elif '/batch' in command:
-            await handle_tasks(message, 'batch')
-        elif '/sample' in command:
-            await handle_tasks(message, 'sample')
-        elif '/trim' in command:
-            await handle_tasks(message, 'trim')
-        elif '/screens' in command:
-            await handle_tasks(message, 'screens')
-        elif '/dl' in command:
-            await handle_tasks(message, 'tg')
-        elif '/af' in command:
-            await handle_tasks(message, 'af')
-        else:
-             # If has text but not a known command, check if it's a file
-            if message.document or message.video:
-                 if message.document and not message.document.mime_type in video_mimetype:
-                    await on_task_complete()
-                    return
-                 await handle_tasks(message, 'tg')
-            else:
-                 # Just text, maybe a link but without command? Or unhandled
-                 pass
-    else:
-        # Fallback for any other file message if somehow added
-        if message.document:
-            if not message.document.mime_type in video_mimetype:
-                await on_task_complete()
-                return
-        await handle_tasks(message, 'tg')
+async def on_task_complete(message=None):
+    """A task ended (done / failed / cancelled): drop it, clean ITS folders, start what's next."""
+    from . import scheduler
+    if message is None:                       # legacy callers: the oldest running task, else the queue head
+        rs = scheduler.running()
+        message = rs[0] if rs else (data[0] if data else None)
+    if message is not None:
+        scheduler.finish(message)
+        scheduler.cleanup_task(message)
+        await scheduler.forget(message)
+    if not data and not scheduler.running():
+        delete_downloads()                    # fully idle → wipe leftovers
+    await dispatch()
+
+
+def _skippable(message, mode) -> bool:
+    """A bare (command-less) non-video document that slipped into the queue."""
+    text = message.text or message.caption or ""
+    return (mode == 'tg' and not text.startswith("/") and getattr(message, "document", None) is not None
+            and message.document.mime_type not in video_mimetype)
+
+
+async def _spawn(message, mode):
+    _DEPTH.set(0)
+    await handle_tasks(message, mode)
+
+
+async def dispatch(spawn_all: bool = False):
+    """Fill every free worker slot with the next waiting task (priority first)."""
+    from . import scheduler
+    starts = []
+    while scheduler.slots_free() > 0:
+        nxt = scheduler.next_waiting()
+        if nxt is None:
+            break
+        mode = scheduler.mode_of(nxt)
+        if mode is None or _skippable(nxt, mode):
+            scheduler.finish(nxt)
+            await scheduler.forget(nxt)
+            continue
+        scheduler.mark_running(nxt)
+        starts.append((nxt, mode))
+    if not starts:
+        return
+    depth = _DEPTH.get()
+    inline = None if spawn_all or depth > 20 else starts[0]      # the finishing worker continues with one
+    for m, mode in starts:
+        if inline is None or m is not inline[0]:
+            asyncio.create_task(_spawn(m, mode))
+    if inline:
+        token = _DEPTH.set(depth + 1)
+        try:
+            await handle_tasks(*inline)
+        finally:
+            _DEPTH.reset(token)
 
 
 _MODE_TITLE = {'tg': "Encode", 'url': "Encode (link)", 'af': "Audio arrange", 'batch': "Batch encode",
-               'sample': "Sample encode", 'trim': "Trim", 'screens': "Screenshots"}
+               'sample': "Sample encode", 'trim': "Trim", 'screens': "Screenshots", 'mux': "Add track",
+               'merge': "Merge videos", 'convert': "Convert", 'leech': "Link upload"}
 
 
 async def handle_tasks(message, mode):
     msg = None
+    from . import scheduler
+    scheduler.mark_running(message)
     try:
         from . import jobs
         from .encoding import cancel_markup
@@ -99,6 +115,14 @@ async def handle_tasks(message, mode):
             await trim_task(message, msg)
         elif mode == 'screens':
             await screens_task(message, msg)
+        elif mode == 'mux':
+            await mux_task(message, msg)
+        elif mode == 'merge':
+            await merge_task(message, msg)
+        elif mode == 'convert':
+            await convert_task(message, msg)
+        elif mode == 'leech':
+            await leech_task(message, msg)
         else:
             await batch_task(message, msg)
     except MessageNotModified:
@@ -123,7 +147,7 @@ async def handle_tasks(message, mode):
         if msg is not None:
             from . import jobs
             jobs.unregister(msg.id)
-        await on_task_complete()
+        await on_task_complete(message)
 
 
 async def _cancelled(msg) -> bool:
@@ -137,8 +161,13 @@ async def _cancelled(msg) -> bool:
     return False
 
 
+def _dirs(message):
+    from .scheduler import task_dirs
+    return task_dirs(message)
+
+
 async def _download(message, msg):
-    filepath = await handle_tg_down(message, msg)
+    filepath = await handle_tg_down(message, msg, dest_dir=_dirs(message)[0])
     if await _cancelled(msg):
         if filepath and os.path.isfile(filepath):
             os.remove(filepath)
@@ -270,7 +299,7 @@ async def af_task(message, msg):
 
 async def url_task(message, msg):
     try:
-        filepath = await handle_download_url(message, msg, False)
+        filepath = await handle_download_url(message, msg, False, dest_dir=_dirs(message)[0])
     except RuntimeError:
         if await _cancelled(msg):
             return
@@ -284,9 +313,9 @@ async def url_task(message, msg):
 
 async def batch_task(message, msg):
     if message.reply_to_message:
-        filepath = await handle_tg_down(message, msg, mode='reply')
+        filepath = await handle_tg_down(message, msg, mode='reply', dest_dir=_dirs(message)[0])
     else:
-        filepath = await handle_download_url(message, msg, True)
+        filepath = await handle_download_url(message, msg, True, dest_dir=_dirs(message)[0])
     if not filepath:
         await msg.edit('NO ZIP FOUND!')
         return
@@ -346,7 +375,7 @@ async def batch_task(message, msg):
     await msg.edit('Encoded Files! Links: {}'.format(first_index.link), disable_web_page_preview=True)
 
 
-async def handle_download_url(message, msg, batch):
+async def handle_download_url(message, msg, batch, dest_dir=None):
     url = message.text.split(None, 1)[1].strip()
     if 'drive.google.com' in url:
         file_id = _get_file_id(url)
@@ -379,7 +408,7 @@ async def handle_download_url(message, msg, batch):
     if not custom_file_name:
         custom_file_name = "downloaded_file"
 
-    path = os.path.join(download_dir, custom_file_name)
+    path = os.path.join(dest_dir or download_dir, custom_file_name)
     filepath = path
     if 'drive.google.com' in url:
         await n.handle_drive(msg, url, custom_file_name, batch)
@@ -388,7 +417,7 @@ async def handle_download_url(message, msg, batch):
     return filepath
 
 
-async def handle_tg_down(message, msg, mode='no_reply'):
+async def handle_tg_down(message, msg, mode='no_reply', dest_dir=None):
     c_time = time.time()
 
     # Determine what to download
@@ -406,7 +435,7 @@ async def handle_tg_down(message, msg, mode='no_reply'):
         target_msg = message.reply_to_message
 
     path = await target_msg.download(
-        file_name=os.path.join(download_dir, ""),
+        file_name=os.path.join(dest_dir or download_dir, ""),
         progress=progress_for_pyrogram,
         progress_args=("Downloading...", msg, c_time))
 
