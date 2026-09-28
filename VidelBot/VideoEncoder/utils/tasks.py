@@ -93,7 +93,7 @@ async def dispatch(spawn_all: bool = False):
 
 _MODE_TITLE = {'tg': "Encode", 'url': "Encode (link)", 'af': "Audio arrange", 'batch': "Batch encode",
                'sample': "Sample encode", 'trim': "Trim", 'screens': "Screenshots", 'mux': "Add track",
-               'merge': "Merge videos", 'convert': "Convert", 'leech': "Link upload"}
+               'merge': "Merge videos", 'convert': "Convert", 'leech': "Link upload", 'compress': "🗜 Compress"}
 
 
 async def handle_tasks(message, mode):
@@ -138,6 +138,8 @@ async def handle_tasks(message, mode):
             await convert_task(message, msg)
         elif mode == 'leech':
             await leech_task(message, msg)
+        elif mode == 'compress':
+            await compress_task(message, msg)
         else:
             await batch_task(message, msg)
     except MessageNotModified:
@@ -715,3 +717,69 @@ async def leech_task(message, msg):
                    reply_markup=_done_markup(link), disable_web_page_preview=True)
     from core.analytics import bump_later
     bump_later("leech")
+
+
+async def compress_task(message, msg):
+    """/compress – download (or source-cache hit) → one fast encode with the chosen quality → upload."""
+    from . import compress, scheduler
+    from .encoding import LAST_ERROR, Encoded, encode, probe
+    from .helper import _done_markup, _remove, _safe_edit
+    from .uploads import upload_worker
+    opts = compress.normalize(scheduler.extra_of(message))
+    src = await _download(message, msg)
+    if not src:
+        return
+    info = await probe(src)
+    if info.get("video") is None and info.get("ok"):
+        await _safe_edit(msg, "❌ <b>No video stream</b> – /compress needs a video.", _done_markup(None))
+        _remove(src)
+        return
+    src_size = os.path.getsize(src)
+    override, notes = compress.override(opts, info, src_size)
+    await _safe_edit(msg, compress.working_text(opts, info, notes))
+    result = await encode(src, message, msg, opts={"override": override, "info": info})
+    if not result:
+        from . import jobs
+        if not (jobs.is_cancelled(msg.id) or getattr(msg, "_videl_cancelled", False)):
+            err = LAST_ERROR.pop(msg.id, "")
+            text = "❌ <b>Compression failed.</b>"
+            if err:
+                text += f"\n<blockquote expandable><code>{html.escape(err)[-280:]}</code></blockquote>"
+            await _safe_edit(msg, text + "\n<i>Try H.264 or another resolution.</i>", _done_markup(None))
+        _remove(src)
+        return
+    new_size = os.path.getsize(result)
+    if new_size >= src_size * 0.98:                   # never send a "compressed" file that isn't smaller
+        await _safe_edit(msg, compress.bigger_text(opts, src_size, new_size), _done_markup(None))
+        _remove(result, src)
+        return
+    stem = os.path.splitext(os.path.basename(src))[0]
+    tag = compress.label(opts, int(info.get("height") or 0)).split()[0]
+    final = os.path.join(os.path.dirname(result), f"{stem} [{tag}]{os.path.splitext(result)[1]}")
+    try:
+        os.replace(result, final)
+        moved = Encoded(final)
+        for k in ("info", "settings", "elapsed", "sample", "guard", "encoder", "where"):
+            setattr(moved, k, getattr(result, k, None))
+        result = moved
+    except OSError:
+        final = str(result)
+    await _safe_edit(msg, "<b>📤 Compressed – uploading…</b>")
+    try:
+        link = await upload_worker(result, message, msg)
+    except Exception as e:
+        await _safe_edit(msg, f"❌ <b>Upload failed:</b> <code>{html.escape(str(e))[:300]}</code>", _done_markup(None))
+        _remove(result, src)
+        return
+    if link is None and await _cancelled(msg):
+        _remove(result, src)
+        return
+    await _safe_edit(msg, compress.done_text(os.path.basename(final), opts, info, src_size, new_size,
+                                             result.elapsed or 0.0, notes), _done_markup(link))
+    try:
+        await db.add_encode_stat(message.from_user.id, src_size, new_size, result.elapsed)
+        from core.analytics import bump_later
+        bump_later("encode")
+    except Exception:
+        pass
+    _remove(result, src)

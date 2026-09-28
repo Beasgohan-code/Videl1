@@ -35,7 +35,7 @@ NOTES: dict = {}         # id(message) → its "Added to the queue" message, reu
 
 COMMAND_MODES = {"/ddl": "url", "/batch": "batch", "/sample": "sample", "/trim": "trim", "/screens": "screens",
                  "/dl": "tg", "/af": "af", "/mux": "mux", "/merge": "merge", "/convert": "convert",
-                 "/leech": "leech"}
+                 "/leech": "leech", "/compress": "compress"}
 MAX_RESTORE_AGE = timedelta(hours=48)
 
 

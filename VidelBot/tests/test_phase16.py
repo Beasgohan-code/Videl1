@@ -91,7 +91,8 @@ def test_forced_fps_and_avi_stay_constant_rate():
 def test_dedup_drops_repeated_frames_and_ignores_forced_fps():
     cmd = build({"dedup": True, "frame": "30", "deinterlace": True, "resolution": "720"})
     vf = val(cmd, "-vf")
-    assert vf.startswith("bwdif") and vf.index("mpdecimate") < vf.index("scale")   # before the heavy filters
+    # Phase 19: deinterlace → downscale → dedup (measured faster: mpdecimate compares the small picture)
+    assert vf.startswith("bwdif") and vf.index("bwdif") < vf.index("scale") < vf.index("mpdecimate")
     assert val(cmd, "-fps_mode") == "vfr" and "-r" not in cmd
     assert "mpdecimate" not in (val(build({"dedup": True, "extensions": "AVI"}), "-vf") or "")
     assert "Dedup" in ffcmd.describe({"dedup": True})["filters"]

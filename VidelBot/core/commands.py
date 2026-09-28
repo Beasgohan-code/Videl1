@@ -56,6 +56,7 @@ USER_COMMANDS = [
     ("verify", "🔐 Verification status"),
     # encoder
     ("dl", "🎬 Encode a replied video / file"),
+    ("compress", "🗜 Compress a video – 1080p / 720p / 480p / 360p"),
     ("ddl", "🔗 Encode from a direct link"),
     ("batch", "📦 Batch-encode several links"),
     ("af", "🎧 Rearrange audio tracks (reply)"),
@@ -68,7 +69,6 @@ USER_COMMANDS = [
     ("watermark", "©️ Your text / logo watermark"),
     ("leech", "🌐 Mega / Drive / direct link → Telegram"),
     ("queue", "📋 Encoder queue"),
-    ("vset", "🎛 View your encoder settings"),
     ("status", "📈 Server & queue status"),
     ("stats", "📊 Bot statistics"),
     # tools
@@ -103,6 +103,7 @@ GROUP_COMMANDS = [
     ("help", "❓ Help"),
     ("guide", "📖 Illustrated guide"),
     ("dl", "🎬 Encode a replied video / file"),
+    ("compress", "🗜 Compress a video (reply)"),
     ("ddl", "🔗 Encode from a direct link"),
     ("batch", "📦 Batch-encode several links"),
     ("af", "🎧 Rearrange audio tracks (reply)"),

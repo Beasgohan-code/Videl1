@@ -19,22 +19,32 @@ async def _is_pro(uid: int) -> bool:
         return False
 
 
-async def _enqueue(message, mode, extra=None) -> bool:
-    """Run now if a worker is free, otherwise queue it (Encoder Pro / Premium first) and say where it is."""
+async def _enqueue(message, mode, extra=None, card=None) -> bool:
+    """Run now if a worker is free, otherwise queue it (Encoder Pro / Premium first) and say where it is.
+
+    card: a message of ours (e.g. the /compress panel) to reuse as the status card instead of new replies."""
+    async def say(text):
+        if card is not None:
+            try:
+                await card.edit(text, reply_markup=None)
+                return card
+            except Exception:
+                pass
+        return await message.reply(text)
     from ..utils import scheduler
     uid = message.from_user.id if message.from_user else 0
     pos, same = scheduler.find_duplicate(message, mode, extra)
     if pos:                                   # already queued / running – never encode the same thing twice
         if not same:                          # (same message = Telegram re-delivered the update: stay quiet)
             state = "running now" if scheduler.is_running(scheduler.data[pos - 1]) else f"position <b>#{pos}</b>"
-            await message.reply(f"♻️ <b>Already in your queue</b> – {state}.\n"
-                                "<i>Same file with the same settings, so it won't be encoded twice. See /queue.</i>")
+            await say(f"♻️ <b>Already in your queue</b> – {state}.\n"
+                      "<i>Same file with the same settings, so it won't be encoded twice. See /queue.</i>")
         return False
     pro = await _is_pro(uid)
     limit = config.ENC_MAX_TASKS_PRO if pro else config.ENC_MAX_TASKS_FREE
     have = scheduler.user_tasks(uid) if uid else 0
     if uid and uid not in config.ADMINS and have >= limit:
-        await message.reply(f"⏳ <b>You already have {have} task{'s' if have != 1 else ''} in the queue</b> "
+        await say(f"⏳ <b>You already have {have} task{'s' if have != 1 else ''} in the queue</b> "
                             f"(limit {limit}).\n<i>Wait for one to finish"
                             + ("" if pro else f", or get 🎬 Encoder Pro for up to {config.ENC_MAX_TASKS_PRO} + "
                                               "priority – /plans") + ".</i>")
@@ -42,11 +52,13 @@ async def _enqueue(message, mode, extra=None) -> bool:
     pos = scheduler.add(message, mode, priority=pro, extra=extra)
     await scheduler.persist(message, mode, extra, pro)
     if scheduler.can_start(message):
+        if card is not None:
+            scheduler.NOTES[id(message)] = card       # handle_tasks turns it into the live status card
         scheduler.mark_running(message)
         await handle_tasks(message, mode)
     else:
         ahead = pos - 1
-        note = await message.reply(f"⏳ <b>Added to the queue</b> – position <b>#{pos}</b> "
+        note = await say(f"⏳ <b>Added to the queue</b> – position <b>#{pos}</b> "
                                    f"({ahead} task{'s' if ahead != 1 else ''} ahead)"
                                    + (" · ⚡ <b>priority</b>" if pro else "") + "\n<i>See it with /queue.</i>")
         if note is not None and scheduler.position(message):

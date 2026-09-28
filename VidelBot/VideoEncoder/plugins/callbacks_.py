@@ -34,7 +34,7 @@ CYCLES = {
     "triggerextensions": ("extensions", ["MP4", "MKV", "AVI"], "video"),
     "triggerframe": ("frame", ["source", "pal", "film", "23.976", "30", "60", "ntsc"], "video"),
     "triggerPreset": ("preset", ffcmd.PRESET_ORDER, "video"),
-    "triggerResolution": ("resolution", ["OG", "1080", "720", "576", "480"], "video"),
+    "triggerResolution": ("resolution", ["OG", "1080", "720", "576", "480", "360"], "video"),
     "triggerreframe": ("reframe", ["pass", "4", "8", "16"], "video"),
     "triggersamplerate": ("sample", ["44.1K", "48K", "source"], "audio"),
     "triggerbitrate": ("bitrate", ["400", "320", "256", "224", "192", "160", "128", "source"], "audio"),

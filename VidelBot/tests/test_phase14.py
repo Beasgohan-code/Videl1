@@ -73,7 +73,8 @@ def test_tunes_are_valid_for_each_encoder():
 
 
 def test_scaling_keeps_aspect_and_never_upscales():
-    assert "scale=-2:480:flags=lanczos" in val(cmd_for(resolution="480"), "-vf")
+    assert "scale=-2:480:flags=bicubic" in val(cmd_for(resolution="480"), "-vf")        # fast preset (default sf)
+    assert "scale=-2:480:flags=lanczos" in val(cmd_for(resolution="480", preset="s"), "-vf")   # slow = quality
     assert "-vf" not in cmd_for(resolution="720")                          # source is 544p → no upscale
     unknown = ffcmd.build_command("a", "b.mkv", {"resolution": "480"}, ffcmd.summarize(None))
     assert "scale=-2:480" in val(unknown, "-vf")
