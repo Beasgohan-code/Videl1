@@ -305,8 +305,7 @@ def test_plan_and_premium_views():
     c = FakeClient()
     m = FakeMsg("/myplan", uid=5)
     run(my_plan(c, m))
-    from core.design import plain
-    assert "Free Tier" in plain(m.replies[-1])
+    assert "Free Tier" in m.replies[-1]
     m = FakeMsg("/premium", uid=5)
     run(premium_info(c, m))
     assert m.replies

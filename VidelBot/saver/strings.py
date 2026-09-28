@@ -1,45 +1,62 @@
-"""Texts for the Content Saver module (Videl design system – see core/design.py)."""
+"""Texts for the Content Saver module."""
 from config import FREE_LIMIT_DAILY
-from core.design import DOT, bullets, cmd, details, footer, heading, page, section
 
-HELP_TXT = page(
-    heading("📥", "Content Saver", "Save posts from any channel — even restricted ones."),
-    section("🚀", "How it works", bullets(
-        "<b>Public channels</b> — just send the post link, e.g. <code>https://t.me/channel/123</code>",
-        "<b>Private channels</b> — " + cmd("login") + " once, then send <code>https://t.me/c/123456789/10</code>",
-        "<b>Batch</b> — send a range <code>https://t.me/channel/100-120</code>" + DOT + "stop with " + cmd("cancel"),
-        "<b>Encode it</b> — reply " + cmd("dl") + " to any saved video")),
-    details("⚙️", "Customise",
-            cmd("set_caption") + DOT + cmd("see_caption") + DOT + cmd("del_caption"),
-            cmd("set_thumb") + DOT + cmd("view_thumb") + DOT + cmd("del_thumb") + DOT + cmd("thumb_mode"),
-            cmd("set_del_word") + DOT + cmd("rem_del_word") + DOT + cmd("set_repl_word") + DOT + cmd("rem_repl_word"),
-            "<code>/setchat &lt;chat_id&gt;</code> — auto-forward saved files"),
-    section("💎", "Plans",
-            f"<b>Free</b>{DOT}{FREE_LIMIT_DAILY} saves / 24h{DOT}5 posts per batch",
-            f"<b>Premium</b>{DOT}unlimited — {cmd('myplan')}{DOT}{cmd('premium')}"),
-)
+HELP_TXT = f"""<b>📥 Content Saver — Guide</b>
 
-COMMANDS_TXT = page(
-    heading("📜", "Content Saver Commands", "Everything the saver understands."),
-    section("👤", "Main", bullets(
-        cmd("login", "connect account") + DOT + cmd("logout", "disconnect"),
-        cmd("cancel", "stop current task"),
-        cmd("myplan", "plan &amp; quota") + DOT + cmd("premium", "upgrade options"))),
-    details("💎", "Premium &amp; rewards", bullets(
-        cmd("buy", "pay with ⭐ Stars") + DOT + cmd("mysub", "monthly auto-renew"),
-        cmd("gift", "Premium for a friend"),
-        cmd("trial", "free trial") + DOT + "<code>/redeem CODE</code>",
-        cmd("refer", "invite friends &amp; earn Premium") + DOT + cmd("support"))),
-    details("📤", "Dump chat", bullets(
-        "<code>/setchat &lt;chat_id&gt;</code> — forward destination",
-        "<code>/setchat clear</code> — remove dump chat")),
-    details("✍️", "Caption &amp; words", bullets(
-        "<code>/set_caption &lt;text&gt;</code> — use <code>{filename}</code> <code>{size}</code>",
-        cmd("see_caption") + DOT + cmd("del_caption"),
-        "<code>/set_del_word w1 w2</code>" + DOT + "<code>/rem_del_word w1</code>",
-        "<code>/set_repl_word old new</code>" + DOT + "<code>/rem_repl_word old</code>")),
-    details("🖼", "Thumbnail", bullets(
-        cmd("set_thumb", "reply to a photo") + DOT + cmd("view_thumb"),
-        cmd("del_thumb") + DOT + cmd("thumb_mode"))),
-    footer("Tip: just send a link — no command needed."),
-)
+<blockquote expandable>
+<b>1. Public channels</b> (no login)
+• Just send the post link, e.g. <code>https://t.me/channel/123</code>
+
+<b>2. Private / restricted channels</b>
+• Use <code>/login</code> once to connect your account
+• Then send links like <code>https://t.me/c/123456789/10</code>
+
+<b>3. Batch</b>
+• Send a range: <code>https://t.me/channel/100-120</code>
+• Stop anytime with <code>/cancel</code>
+
+<b>4. Encode what you saved</b>
+• Reply <code>/dl</code> to any saved video to compress / re-encode it
+</blockquote>
+
+<b>⚙️ Customise</b>
+<blockquote>/set_caption · /see_caption · /del_caption
+/set_thumb · /view_thumb · /del_thumb · /thumb_mode
+/set_del_word · /rem_del_word · /set_repl_word · /rem_repl_word
+/setchat &lt;chat_id&gt; — auto-forward saved files</blockquote>
+
+<b>💎 Plans</b>
+<blockquote>Free: {FREE_LIMIT_DAILY} saves / 24h · 5 posts per batch
+Premium: unlimited — /myplan · /premium</blockquote>
+"""
+
+COMMANDS_TXT = """<b>📜 Content Saver Commands</b>
+
+<b>👤 Main</b>
+<blockquote>/login — Connect account
+/logout — Disconnect account
+/cancel — Stop current task
+/myplan — Plan & quota
+/premium — Upgrade options</blockquote>
+
+<b>💎 Premium & Rewards</b>
+<blockquote>/buy — Pay with ⭐ Stars · /mysub — monthly auto-renew
+/gift — Gift Premium to a friend
+/trial — Free trial · /redeem CODE — Redeem a code
+/refer — Invite friends & earn Premium
+/support — Message the bot owner</blockquote>
+
+<b>📤 Dump Chat</b>
+<blockquote>/setchat &lt;chat_id&gt; — Forward destination
+/setchat clear — Remove dump chat</blockquote>
+
+<b>✍️ Caption & Words</b>
+<blockquote>/set_caption &lt;text&gt; — {filename} {size}
+/see_caption · /del_caption
+/set_del_word w1 w2 · /rem_del_word w1
+/set_repl_word old new · /rem_repl_word old</blockquote>
+
+<b>🖼 Thumbnail</b>
+<blockquote>/set_thumb (reply to photo) · /view_thumb
+/del_thumb · /thumb_mode</blockquote>
+"""

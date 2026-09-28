@@ -161,31 +161,19 @@ async def panel_view(uid: int):
     return text, InlineKeyboardMarkup([r for r in kb if r])
 
 
-from core.design import DOT as _DOT, bullets as _bullets, cmd as _cmd, details as _details, \
-    footer as _footer, heading as _heading, page as _page, section as _section
-
-TUTORIAL = _page(
-    _heading("✏️", "Auto-Rename", "Save a template once — every file you send comes back renamed."),
-    _section("🚀", "Two steps",
-             "<b>❶</b> Save a template:",
-             "<code>/autorename {title} S{season}E{episode} [{quality}] [{audio}]</code>",
-             "<b>❷</b> Send (or forward) your files — done."),
-    _details("🧩", "Placeholders",
-             "<i>read from the original file name</i>",
-             "<code>{title}</code> — series / movie name",
-             "<code>{season}</code> · <code>{episode}</code> — 01, 02 …",
-             "<code>{quality}</code> — 480p · 720p · 1080p · 4K · WEB-DL …",
-             "<code>{audio}</code> — Dual · Multi · Hindi · Jap · AAC …",
-             "<code>{year}</code> · <code>{codec}</code> (x264 · x265 · HEVC) · <code>{filename}</code>",
-             "<b>Classic style also works:</b> <code>[SSeason] [EPEpisode] [Quality] [Audio] Your Channel</code>"),
-    _details("🎛", "Extras", _bullets(
-        _cmd("setmedia", "document · video · audio"),
-        _cmd("metadata", "title, author, audio / subtitle titles …"),
-        "<code>/set_caption</code> — {filename} {filesize} {duration}" + _DOT + _cmd("set_thumb", "reply to a photo"),
-        _cmd("start_sequence") + " → send files → " + _cmd("end_sequence", "sorted episodes"),
-        "<code>/testrename name.mkv</code> — preview only",
-        _cmd("leaderboard", "top renamers") + _DOT + _cmd("cancel", "stop the queue"))),
-    _footer("Tip: /testrename shows the result before you send real files."),
+TUTORIAL = (
+    "<b>📖 Auto-Rename – how to</b>\n\n"
+    "1️⃣ Save a template:\n<code>/autorename {title} S{season}E{episode} [{quality}] [{audio}]</code>\n"
+    "2️⃣ Send (or forward) your files – they come back renamed.\n\n"
+    "<b>Placeholders</b> (read from the original file name):\n"
+    "<blockquote>{title} – series / movie name\n{season} – 01, 02 …\n{episode} – 01, 02 …\n"
+    "{quality} – 480p · 720p · 1080p · 4K · WEB-DL …\n{audio} – Dual · Multi · Hindi · Jap · AAC …\n"
+    "{year} – 2024\n{codec} – x264 · x265 · HEVC\n{filename} – the original name</blockquote>\n"
+    "<b>Classic style also works:</b>\n<code>[SSeason] [EPEpisode] [Quality] [Audio] Your Channel</code>\n\n"
+    "<b>Extras</b>\n<blockquote>/setmedia – document · video · audio\n/metadata – title, author, audio / subtitle titles …\n"
+    "/set_caption – {filename} {filesize} {duration}\n/set_thumb – reply to a photo\n"
+    "/start_sequence → send files → /end_sequence – sorted episodes\n/testrename name.mkv – preview only\n"
+    "/leaderboard – top renamers · /cancel – stop the queue</blockquote>"
 )
 
 

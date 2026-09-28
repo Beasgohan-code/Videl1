@@ -148,7 +148,7 @@ def test_dashboard_and_list_show_idle_state(monkeypatch):
     _bot(4242, 9, is_active=False, deactivated_reason="inactive")
     q = FakeQuery("dashboard_4242", uid=5)
     run(dashboard_callback(FakeClient(), q))
-    assert "Deactivated" in q.message.edits[-1] and "Last used" in q.message.edits[-1]
+    assert "ᴅᴇᴀᴄᴛɪᴠᴀᴛᴇᴅ" in q.message.edits[-1] and "ʟᴀsᴛ ᴜsᴇᴅ" in q.message.edits[-1]
     q = FakeQuery("my_bots", uid=5)
     run(my_bots_callback(FakeClient(), q))
     assert "💤" in q.message.edits[-1]
@@ -232,7 +232,7 @@ def test_clone_help_mentions_the_idle_rule(monkeypatch):
     from core.menus import clone_help_text
     monkeypatch.setattr(config, "CLONE_INACTIVE_DAYS", 7)
     t = clone_help_text()
-    assert "7 days" in t and "{idle_block}" not in t and "{days}" not in t
+    assert "7 ᴅᴀʏs" in t and "{idle_days}" not in t
     monkeypatch.setattr(config, "CLONE_INACTIVE_DAYS", 0)
     t = clone_help_text()
-    assert "💤" not in t and "{idle_block}" not in t and "𝗛𝗼𝘄 𝘁𝗼 𝗰𝗿𝗲𝗮𝘁𝗲" in t
+    assert "💤" not in t and "{idle_days}" not in t and "ʜᴏᴡ ᴛᴏ ᴄʀᴇᴀᴛᴇ" in t

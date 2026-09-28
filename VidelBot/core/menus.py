@@ -78,11 +78,12 @@ async def about_text(client) -> str:
 
 
 def clone_help_text() -> str:
+    import re
     import config
     days = int(getattr(config, "CLONE_INACTIVE_DAYS", 7) or 0)
-    block = texts.CLONE_IDLE_BLOCK.replace("{days}", str(days)) if days > 0 else ""
-    text = texts.CLONE_HELP_MSG.replace("{idle_block}", block)
-    return text.replace("\n\n\n\n", "\n\n")        # no gap left behind when the block is off
+    if days <= 0:   # auto-off disabled → drop the idle-bots note
+        return re.sub(r"\n<blockquote><b>💤.*?</blockquote>\n", "\n", texts.CLONE_HELP_MSG, flags=re.S)
+    return texts.CLONE_HELP_MSG.replace("{idle_days}", str(days))
 
 
 def channels_text() -> str:
@@ -118,7 +119,7 @@ def help_kb(user_id: int, close: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows(
         [Btn("📜 Saver Commands", callback_data="cmd_list_btn"), Btn("🎬 Encoder", callback_data="help_enc")],
         [Btn("⚡ Clone Bots", callback_data="clone_help"), Btn("🧰 Tools", callback_data="help_tools")],
-        [Btn("✏️ Auto-Rename", callback_data="help_rename"), Btn("📖 Illustrated guide", callback_data="guide_btn")],
+        [Btn("✏️ Auto-Rename", callback_data="help_rename")],
         [Btn("👮 Admin", callback_data="help_admin")] if user_id in ADMINS else [],
         [Btn("❌ Close Menu", callback_data="close_btn")] if close
         else [Btn("⬅️ Back to Home", callback_data="start_btn")],
