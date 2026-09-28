@@ -4,6 +4,7 @@ main_db.py — Database operations for the main controller bot.
 Manages the registry of user-created bots and main bot users.
 """
 
+import time
 from datetime import datetime, timezone
 from filestore.database.mongo import get_db
 from filestore.fs_config import LOGGER
@@ -165,10 +166,33 @@ class MainDB:
         )
 
     async def set_bot_active(self, bot_id: int, active: bool):
-        """Enable or disable a bot."""
+        """Enable or disable a bot. Turning it on also restarts the inactivity clock – otherwise a clone
+        woken after a long sleep would be switched off again by the very next sweep."""
+        if active:
+            update = {"$set": {"is_active": True, "last_active": datetime.now(timezone.utc)},
+                      "$unset": {"deactivated_at": "", "deactivated_reason": "", "inactive_warned": ""}}
+            self._last_active_written[bot_id] = time.monotonic()
+        else:
+            update = {"$set": {"is_active": False}}
+        await self.bots.update_one({"_id": bot_id}, update)
+
+    async def deactivate_inactive(self, bot_id: int):
+        """Switch a clone off because nobody used it for CLONE_INACTIVE_DAYS."""
         await self.bots.update_one(
             {"_id": bot_id},
-            {"$set": {"is_active": active}},
+            {"$set": {"is_active": False, "deactivated_at": datetime.now(timezone.utc),
+                      "deactivated_reason": "inactive"},
+             "$unset": {"inactive_warned": ""}},
+        )
+
+    async def mark_inactive_warned(self, bot_id: int):
+        await self.bots.update_one({"_id": bot_id}, {"$set": {"inactive_warned": datetime.now(timezone.utc)}})
+
+    async def keep_alive(self, bot_id: int):
+        """Owner tapped “keep it running” – counts as activity."""
+        await self.bots.update_one(
+            {"_id": bot_id},
+            {"$set": {"last_active": datetime.now(timezone.utc)}, "$unset": {"inactive_warned": ""}},
         )
 
     async def update_log_channel(self, bot_id: int, channel_id: int):
@@ -189,7 +213,7 @@ class MainDB:
         self._last_active_written[bot_id] = now
         await self.bots.update_one(
             {"_id": bot_id},
-            {"$set": {"last_active": datetime.now(timezone.utc)}},
+            {"$set": {"last_active": datetime.now(timezone.utc)}, "$unset": {"inactive_warned": ""}},
         )
 
     # =========================================================================

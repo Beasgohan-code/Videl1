@@ -11,22 +11,18 @@ from config import BOT_NAME, FREE_LIMIT_DAILY, FREE_LIMIT_SIZE_GB, MAX_BOTS_PER_
 # Home (Save-Restricted-Content layout)
 # ════════════════════════════════════════════════════════════════
 START_TXT = """<b>👋 Hello {mention},</b>
-<b>🤖 I am <a href=https://t.me/{username}>{first_name}</a></b>
-<i>Your Professional All-in-One Utility Bot.</i>
-<blockquote><b>🚀 System Status: 🟢 Online</b>
-<b>⚡ Performance: 10x High-Speed Processing</b>
-<b>🔐 Security: End-to-End Encrypted</b>
-<b>📊 Uptime: {uptime}</b></blockquote>
-<blockquote expandable><b>╭─── ✦ ꜰᴇᴀᴛᴜʀᴇs ✦ ───╮</b>
-<b>│ ◈ 📥 Save restricted content</b>
-<b>│ ◈ 🎬 Video encoder (x264 / x265)</b>
-<b>│ ◈ ⚡ Clone your own FileStore bot</b>
-<b>│ ◈ ✏️ Auto-Rename · metadata · thumbnails</b>
-<b>│ ◈ 🧰 MediaInfo · Upload · QR · Short links</b>
-<b>│ ◈ 💎 Premium with Telegram Stars</b>
-<b>│ ◈ 🎁 Gifts · 🔁 Subscriptions · 🤝 Referrals</b>
-<b>╰──────────────────╯</b></blockquote>
-<b>👇 Select an Option Below to Get Started:</b>
+<b>I'm <a href=https://t.me/{username}>{first_name}</a> — your all-in-one Telegram workspace.</b>
+<i>Save, encode, rename and share files, all from one chat.</i>
+<blockquote><b>🟢 Online</b>  ·  <b>⏱ Uptime:</b> {uptime}
+<b>👤 Your plan:</b> {plan}</blockquote>
+<blockquote expandable><b>✦ What I can do</b>
+📥 <b>Save</b> — posts from restricted channels &amp; groups
+🎬 <b>Encode</b> — shrink videos with x264 / x265
+✏️ <b>Auto-Rename</b> — clean names, metadata &amp; thumbnails
+⚡ <b>Clone</b> — launch your own FileStore bot
+🧰 <b>Tools</b> — MediaInfo, uploads, QR codes, short links
+💎 <b>Premium</b> — Telegram Stars, gifts &amp; referrals</blockquote>
+<b>Choose an option below to get started 👇</b>
 """
 
 HELP_TXT = f"""<b>📚 Comprehensive Help &amp; User Guide</b>
@@ -60,16 +56,20 @@ HELP_TXT = f"""<b>📚 Comprehensive Help &amp; User Guide</b>
 • Priority Support &amp; Advanced Features.
 """
 
-ABOUT_TXT = """<b>ℹ️ About This Bot</b>
-<blockquote><b>╭────[ 🧩 Technical Stack ]────⍟</b>
-<b>├⍟ 🤖 Bot Name : <a href=https://t.me/{username}>{first_name}</a></b>
-<b>├⍟ 🧩 Modules : Saver · Encoder · Clone · Tools</b>
-<b>├⍟ 📚 Library : <a href='https://pyrofork.wulan17.dev/'>Pyrofork (MTProto)</a></b>
-<b>├⍟ 🐍 Language : <a href='https://www.python.org/'>Python 3.11+</a></b>
+ABOUT_TXT = """<b>ℹ️ About {first_name}</b>
+<blockquote><b>╭────[ 🧩 Overview ]────⍟</b>
+<b>├⍟ 🤖 Bot : <a href=https://t.me/{username}>@{username}</a></b>
+<b>├⍟ 🧩 Modules : Saver · Encoder · Auto-Rename · Clone · Tools</b>
+<b>├⍟ 📡 Protocol : MTProto (Pyrofork) + Bot API {api}</b>
+<b>├⍟ 🐍 Language : <a href='https://www.python.org/'>Python 3.11</a></b>
 <b>├⍟ 🗄 Database : <a href='https://www.mongodb.com/'>MongoDB</a></b>
 <b>├⍟ 🎞 Engine : <a href='https://ffmpeg.org/'>FFmpeg</a></b>
-<b>├⍟ 📡 Hosting : Dedicated High-Speed Server</b>
+<b>├⍟ ⏱ Uptime : {uptime}</b>
 <b>╰───────────────⍟</b></blockquote>
+<blockquote expandable><b>🔒 Privacy</b>
+• /logout removes your saved login session at any time.
+• Temporary downloads are cleaned up automatically after upload.
+• /cancel stops any running task · /settings controls your preferences.</blockquote>
 """
 
 CHANNELS_EMPTY = "📢 No channels configured yet."
@@ -112,6 +112,9 @@ CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━
 <b>❷</b> sᴇɴᴅ ʏᴏᴜʀ ʙᴏᴛ ᴛᴏᴋᴇɴ (ꜰʀᴏᴍ @BotFather)
 <b>❸</b> ᴛᴀᴘ <b>📢 sᴇʟᴇᴄᴛ ᴄʜᴀɴɴᴇʟ</b> (ᴏʀ sᴇɴᴅ ɪᴛs ɪᴅ)
 <b>❹</b> ʏᴏᴜʀ ʙᴏᴛ sᴛᴀʀᴛs ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ!</blockquote>
+
+<blockquote><b>💤 ɪᴅʟᴇ ʙᴏᴛs:</b> ᴀ ᴄʟᴏɴᴇ ɴᴏʙᴏᴅʏ ᴜsᴇs ꜰᴏʀ {idle_days} ᴅᴀʏs ɪs ᴅᴇᴀᴄᴛɪᴠᴀᴛᴇᴅ. ʏᴏᴜ ɢᴇᴛ ᴀ ᴡᴀʀɴɪɴɢ ᴀ ᴅᴀʏ ʙᴇꜰᴏʀᴇ
+ᴀɴᴅ ᴄᴀɴ ʀᴇᴀᴄᴛɪᴠᴀᴛᴇ ɪᴛ ᴡɪᴛʜ ᴏɴᴇ ᴛᴀᴘ — ᴜsᴇʀs, ꜰɪʟᴇs ᴀɴᴅ ʟɪɴᴋs ᴀʀᴇ ᴋᴇᴘᴛ.</blockquote>
 
 <blockquote expandable><b>🎛 ᴅᴀsʜʙᴏᴀʀᴅ ꜰᴇᴀᴛᴜʀᴇs:</b>
 

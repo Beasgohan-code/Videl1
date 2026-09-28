@@ -55,7 +55,7 @@ async def platform_stats(client: Client, message: Message):
             f"◈ <b>Running:</b> 🟢 <code>{active_count}</code>\n"
             f"◈ <b>Stopped:</b> 🔴 <code>{stopped_count}</code>\n"
             f"◈ <b>Max Bots/User:</b> <code>{MAX_BOTS_PER_USER}</code>\n"
-            f"◈ <b>Hibernation:</b> <code>{HIBERNATION_HOURS}h</code>\n"
+            f"◈ <b>Auto-off:</b> <code>{str(HIBERNATION_HOURS // 24) + ' days unused' if HIBERNATION_HOURS else 'off'}</code>\n"
             f"</blockquote>\n"
 
         )
@@ -186,7 +186,7 @@ async def _check_bots(client, message, status):
         f"🟢 Running &amp; reachable: <code>{len(ok)}</code>\n"
         f"🔴 Running but not responding: <code>{len(dead)}</code>\n"
         f"⚠️ Active but not running: <code>{len(missing)}</code>\n"
-        f"💤 Stopped / hibernated: <code>{len(off)}</code>"
+        f"💤 Stopped / deactivated: <code>{len(off)}</code>"
         + block("🔴 Not responding", dead) + block("⚠️ Not running", missing)
         + (fixed or ("\n\n<i>Use /check fix to restart the broken ones.</i>" if (dead or missing) else ""))
     )

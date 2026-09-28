@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -61,44 +61,6 @@ def load_plugins(app) -> int:
                         app.add_handler(handler, group)
                         count += 1
     return count
-
-
-async def hibernation_task(app, worker_engine):
-    """Stop clone bots idle for more than HIBERNATION_HOURS to save RAM."""
-    from filestore.database.main_db import MainDB
-
-    main_db = MainDB()
-    while True:
-        await asyncio.sleep(3600)
-        try:
-            now = datetime.now(timezone.utc)
-            for bot in await main_db.get_all_active_bots():
-                last = bot.get("last_active") or bot.get("created_at") or now
-                if last.tzinfo is None:
-                    last = last.replace(tzinfo=timezone.utc)
-                if now - last <= timedelta(hours=config.HIBERNATION_HOURS):
-                    continue
-                bot_id = bot["_id"]
-                log.info(f"💤 hibernating idle clone {bot_id}")
-                await worker_engine.stop_worker(bot_id)
-                await main_db.set_bot_active(bot_id, False)
-                from core import botlog
-                await botlog.event("CloneHibernated", (
-                    f"<b>🤖 Clone bot:</b> @{bot.get('bot_username', 'unknown')} (<code>{bot_id}</code>)\n"
-                    f"<b>👤 Owner:</b> <code>{bot.get('owner_id')}</code>\n"
-                    f"<b>💤 Idle for:</b> more than {config.HIBERNATION_HOURS}h"), client=app)
-                try:
-                    await app.send_message(
-                        bot["owner_id"],
-                        "<b>💤 Bot Hibernated</b>\n\n<blockquote>"
-                        f"Your bot @{bot.get('bot_username', 'unknown')} was switched off after "
-                        f"{config.HIBERNATION_HOURS}h of inactivity to save resources.\n\n"
-                        "Wake it up anytime: <b>🤖 Clone Bots → 📋 My Bots → 🟢 Start Bot</b>.</blockquote>",
-                    )
-                except Exception:
-                    pass
-        except Exception as e:
-            log.error(f"hibernation sweep failed: {e}")
 
 
 async def start_with_retry(app):
@@ -187,7 +149,8 @@ async def main():
         log.info(f"👷 {worker_engine.active_count} clone bots running")
     except Exception as e:
         log.error(f"starting clone bots failed: {e}")
-    asyncio.create_task(hibernation_task(app, worker_engine))
+    from filestore.main_bot.plugins.clone_lifecycle import lifecycle_task
+    asyncio.create_task(lifecycle_task(app, worker_engine))     # clones unused for CLONE_INACTIVE_DAYS → off
 
     import watchdog
     watchdog.start(app)

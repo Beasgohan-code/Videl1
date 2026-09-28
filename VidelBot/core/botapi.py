@@ -194,6 +194,11 @@ def style_for(text: str, data: str = "") -> str | None:
     return None
 
 
+def is_noop(data: str) -> bool:
+    """Status chips / page indicators use callback_data "noop" or "noop:<anything>"."""
+    return data == "noop" or data.startswith("noop:")
+
+
 def convert_markup(markup):
     """pyrofork InlineKeyboardMarkup → aiogram InlineKeyboardMarkup with styles.
     Returns None if a button can't be represented (caller then uses pyrofork)."""
@@ -209,7 +214,12 @@ def convert_markup(markup):
             kw = {"text": b.text, "style": style_for(b.text, getattr(b, "callback_data", "") or "")}
             if getattr(b, "callback_data", None) is not None:
                 data = b.callback_data
-                kw["callback_data"] = data.decode() if isinstance(data, bytes) else data
+                data = data.decode() if isinstance(data, bytes) else data
+                if is_noop(data) and hasattr(at, "DisabledButton"):
+                    kw["disabled"] = at.DisabledButton()      # Bot API 10.3: greyed out, does nothing
+                    kw["style"] = None
+                else:
+                    kw["callback_data"] = data
             elif getattr(b, "url", None):
                 kw["url"] = b.url
             elif getattr(b, "copy_text", None):

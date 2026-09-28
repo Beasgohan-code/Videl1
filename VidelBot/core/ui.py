@@ -135,6 +135,25 @@ def effect(name: str = "fire"):
     return EFFECTS.get(name) if MESSAGE_EFFECTS else None
 
 
+_bg_tasks: set = set()
+
+
+def background(coro):
+    """Fire-and-forget: run *coro* without delaying the reply (errors are logged, never raised)."""
+    import asyncio
+
+    async def _run():
+        try:
+            await coro
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger("videl.ui").debug(f"background task failed: {e}")
+
+    task = asyncio.get_event_loop().create_task(_run())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
+
 async def react(message, big: bool = True):
     if not START_REACTIONS:
         return

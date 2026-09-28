@@ -1,5 +1,6 @@
 
 import asyncio
+import time
 import html as _html
 
 from config import env_int
@@ -93,8 +94,10 @@ class WorkerEngine:
         )
 
         # Global middleware to update last_active
+        # (throttle checked here first, so busy clones don't spawn a task per update)
         async def update_activity_middleware(client, update):
-            asyncio.create_task(main_db.update_last_active(bot_id))
+            if time.monotonic() - main_db._last_active_written.get(bot_id, -1e9) >= 60:
+                asyncio.create_task(main_db.update_last_active(bot_id))
             raise ContinuePropagation
 
         app.add_handler(MessageHandler(update_activity_middleware), group=-1)

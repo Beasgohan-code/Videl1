@@ -240,7 +240,8 @@ VIDEL_DB_NAME = os.environ.get("VIDEL_DB_NAME", "Videl")  # core (users / bans /
 MAIN_LOG_CHANNEL = env_int("MAIN_LOG_CHANNEL", 0) or LOG_CHANNEL
 MAX_BOTS_PER_USER = env_int("MAX_BOTS_PER_USER", 1)
 BOT_CREATION_COOLDOWN = env_int("BOT_CREATION_COOLDOWN", 30)
-HIBERNATION_HOURS = env_int("HIBERNATION_HOURS", 48)
+CLONE_INACTIVE_DAYS = env_int("CLONE_INACTIVE_DAYS", 7)   # clones nobody used for this long are deactivated (0 = never)
+HIBERNATION_HOURS = CLONE_INACTIVE_DAYS * 24             # legacy name, same meaning
 DEFAULT_AUTO_DELETE = env_int("DEFAULT_AUTO_DELETE", 0)
 ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", "")  # Fernet key – encrypts clone bot tokens in DB
 BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "")

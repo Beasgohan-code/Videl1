@@ -64,28 +64,34 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
 
     # Build buttons for each bot
     from filestore.worker_bot.engine import worker_engine
+    from filestore.main_bot.plugins.clone_lifecycle import period, status_of
     buttons = []
+    counts = {"🟢": 0, "💤": 0, "🔴": 0}
     for bot in bots:
         bot_id = bot["_id"]
-        is_live = worker_engine.get_worker(bot_id) is not None
-        status = "🟢" if is_live else "🔴"
-        username = bot.get("bot_username", "unknown")
-        bot_id = bot["_id"]
-        buttons.append([
-            InlineKeyboardButton(
-                f"{status} @{username}",
-                callback_data=f"dashboard_{bot_id}",
-            )
-        ])
-
+        emoji, _label = status_of(bot, worker_engine.get_worker(bot_id) is not None)
+        counts[emoji] += 1
+        buttons.append([InlineKeyboardButton(f"{emoji} @{bot.get('bot_username', 'unknown')}",
+                                             callback_data=f"dashboard_{bot_id}")])
+    if len(bots) < MAX_BOTS_PER_USER:
+        buttons.append([InlineKeyboardButton("⚡ ᴄʀᴇᴀᴛᴇ ᴀɴᴏᴛʜᴇʀ", callback_data="create_bot")])
+    else:   # Bot API 10.3 disabled button – a status chip, not an action
+        buttons.append([InlineKeyboardButton(f"🔒 ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ · {len(bots)}/{MAX_BOTS_PER_USER}",
+                                             callback_data="noop:limit")])
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍᴇɴᴜ", callback_data="back_menu")])
 
-    await query.message.edit_text(
+    summary = " · ".join(f"{k} {v}" for k, v in counts.items() if v)
+    limit = period()
+    note = (f"\n<i>💤 Clones unused for {limit.days} days switch off automatically – tap one to turn it back on.</i>"
+            if limit else "")
+    from core.ui import smart_edit
+    await smart_edit(
+        query.message,
         f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
         f"📋 𝗠𝗬 𝗕𝗢𝗧𝗦  [{len(bots)}/{MAX_BOTS_PER_USER}]\n"
         f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-        f"<blockquote>sᴇʟᴇᴄᴛ ᴀ ʙᴏᴛ ᴛᴏ ᴏᴘᴇɴ ɪᴛs ᴅᴀsʜʙᴏᴀʀᴅ:</blockquote>",
-        reply_markup=InlineKeyboardMarkup(buttons),
+        f"<blockquote>{summary}\nsᴇʟᴇᴄᴛ ᴀ ʙᴏᴛ ᴛᴏ ᴏᴘᴇɴ ɪᴛs ᴅᴀsʜʙᴏᴀʀᴅ:</blockquote>{note}",
+        InlineKeyboardMarkup(buttons),
     )
     await query.answer()
 
@@ -117,7 +123,19 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
 
     from filestore.worker_bot.engine import worker_engine
     is_live = worker_engine.get_worker(bot_id) is not None
-    status = "🟢 ʀᴜɴɴɪɴɢ" if is_live else "🔴 sᴛᴏᴘᴘᴇᴅ"
+    from datetime import datetime, timezone
+    from filestore.main_bot.plugins.clone_lifecycle import ago, last_activity, period, status_of
+    emoji, label = status_of(bot, is_live)
+    status = f"{emoji} {label}"
+    now = datetime.now(timezone.utc)
+    idle = now - last_activity(bot, now)
+    limit = period()
+    if is_live and limit:
+        left = limit - idle
+        auto_off = f"in {ago(left).replace(' ago', '')}" if left.total_seconds() > 0 else "soon"
+        activity_line = f"◈ <b>ʟᴀsᴛ ᴜsᴇᴅ:</b> {ago(idle)} · <i>ᴀᴜᴛᴏ-ᴏꜰꜰ {auto_off}</i>\n"
+    else:
+        activity_line = f"◈ <b>ʟᴀsᴛ ᴜsᴇᴅ:</b> {ago(idle)}\n"
     username = bot.get("bot_username", "unknown")
     channel = bot.get("log_channel_id", "Not set")
 
@@ -138,6 +156,7 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
         f"<blockquote>"
         f"◈ <b>ʙᴏᴛ:</b> @{username}\n"
         f"◈ <b>sᴛᴀᴛᴜs:</b> {status}\n"
+        f"{activity_line}"
         f"◈ <b>ᴄʜᴀɴɴᴇʟ:</b> <code>{channel}</code>\n"
         f"◈ <b>ᴀᴜᴛᴏ-ᴅᴇʟ:</b> {auto_del_text}\n"
         f"◈ <b>sʜᴏʀᴛᴇɴᴇʀ:</b> {shortener_status}\n"
