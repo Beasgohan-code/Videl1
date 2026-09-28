@@ -83,6 +83,11 @@
       "value": "1950",
       "required": false
     },
+    "SINGLE_INSTANCE": {
+      "description": "Only one running copy per bot token (prevents doubled replies / encodes during redeploys)",
+      "value": "True",
+      "required": false
+    },
     "FAST_DL_WORKERS": {
       "description": "Parallel chunk requests per Telegram download (1-16, set FAST_DL=False to disable)",
       "value": "6",
