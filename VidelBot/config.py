@@ -284,7 +284,14 @@ FAST_DL_WORKERS = max(1, min(16, env_int("FAST_DL_WORKERS", 6)))  # chunk reques
 # ==============================
 # Owner tools: web dashboard · backups · analytics
 # ==============================
-ADMIN_WEB_TOKEN = os.environ.get("ADMIN_WEB_TOKEN", "")          # empty → /admin dashboard disabled
+# Web dashboard at https://<your-app>/admin – owners/admins open it from Telegram with /dashboard
+# (🌐 Mini App button: signed in by Telegram itself · 🔗 one-time browser link). ADMIN_WEB_TOKEN is optional:
+# set it to also allow opening /admin#TOKEN directly. WEB_DASHBOARD=false turns the page off completely.
+WEB_DASHBOARD = _bool("WEB_DASHBOARD", True)
+ADMIN_WEB_TOKEN = os.environ.get("ADMIN_WEB_TOKEN", "")
+WEB_SESSION_HOURS = max(1, env_int("WEB_SESSION_HOURS", 12))      # how long a dashboard sign-in lasts
+# who may show the page in a frame – Telegram Web opens Mini Apps in an iframe
+WEB_FRAME_ANCESTORS = os.environ.get("WEB_FRAME_ANCESTORS", "https://web.telegram.org https://*.telegram.org").strip()
 BACKUP_ENABLED = _bool("BACKUP_ENABLED", True)                  # daily gzip JSON backup → owner DM
 BACKUP_HOUR = env_int("BACKUP_HOUR", 4)
 BACKUP_CHAT = env_int("BACKUP_CHAT", 0)                         # 0 → first owner

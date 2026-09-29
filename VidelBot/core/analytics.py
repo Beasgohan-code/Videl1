@@ -270,15 +270,47 @@ async def summary_text(days: int, data: dict | None = None) -> str:
     return "\n".join(lines)
 
 
-def _kb(days: int) -> InlineKeyboardMarkup:
+def web_url() -> str:
+    """Public https address of this app's web dashboard, or '' when the host didn't tell us one."""
+    url = (config.KEEP_ALIVE_URL or "").strip().rstrip("/")
+    return f"{url}/admin" if url.startswith("https://") else ""
+
+
+def web_rows(private: bool) -> list:
+    """🌐 Mini App (signed in by Telegram) + 🔗 one-time browser link – private chats only: a group member
+    tapping the link would get the owner's dashboard. In groups only the token page (if a token is set)."""
+    import keep_alive
+    from pyrogram.types import WebAppInfo
+    url = web_url()
+    if not url or not keep_alive.enabled():
+        return []
+    if private:
+        return [[Btn("🌐 Open dashboard", web_app=WebAppInfo(url=url)),
+                 Btn("🔗 Open in browser", url=f"{url}#l.{keep_alive.issue_link()}")]]
+    return [[Btn("🌐 Web dashboard", url=url)]] if config.ADMIN_WEB_TOKEN else []
+
+
+def web_hint(private: bool) -> str:
+    import keep_alive
+    if not keep_alive.enabled():
+        return ""
+    url = web_url()
+    if not url:
+        return ("\n\n🌐 <b>Web dashboard</b>: this host didn't report its public address – set "
+                "<code>KEEP_ALIVE_URL=https://your-app-address</code> and restart to get the button here.")
+    if private:
+        return (f"\n\n🌐 <b>Web dashboard</b>: <code>{url}</code>\n<i>🌐 opens it inside Telegram (signed in "
+                f"automatically) · 🔗 is a one-time browser link, valid 10 minutes.</i>")
+    return "\n\n🌐 <i>Send /dashboard in my private chat for the web dashboard buttons.</i>"
+
+
+def _kb(days: int, private: bool = False) -> InlineKeyboardMarkup:
     rows = [[Btn(("• " if d == days else "") + f"{d} days", callback_data=f"anl:{d}") for d in RANGES]]
-    url = (config.KEEP_ALIVE_URL or "").rstrip("/")
-    if config.ADMIN_WEB_TOKEN and url.startswith("https://"):
-        rows.append([Btn("🌐 Web dashboard", url=f"{url}/admin")])
+    rows += web_rows(private)
     return InlineKeyboardMarkup(rows)
 
 
-async def send_analytics(client, chat_id: int, days: int = 30):
+async def send_analytics(client, chat_id: int, days: int = 30, private: bool | None = None):
     from pyrogram.types import InputMediaPhoto
     users, work, _ = await charts(days)
     text = await summary_text(days)
@@ -288,7 +320,10 @@ async def send_analytics(client, chat_id: int, days: int = 30):
         await client.send_media_group(chat_id, [InputMediaPhoto(a), InputMediaPhoto(b)])
     except Exception as e:
         log.warning(f"analytics charts: {e}")
-    await client.send_message(chat_id, text, reply_markup=_kb(days), disable_web_page_preview=True)
+    if private is None:
+        private = int(chat_id) > 0                    # user chats have positive ids
+    await client.send_message(chat_id, text + web_hint(private), reply_markup=_kb(days, private),
+                              disable_web_page_preview=True)
 
 
 @Client.on_message(filters.command(["analytics", "dashboard"]) & filters.user(config.ADMINS))

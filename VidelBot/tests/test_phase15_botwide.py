@@ -114,9 +114,18 @@ def _web(token, calls):
     return run(go())
 
 
-def test_dashboard_is_off_without_a_token():
+def test_dashboard_is_off_when_disabled(monkeypatch):
+    # Phase 21: the page is on by default (sign-in from /dashboard); WEB_DASHBOARD=false and no token → gone
+    monkeypatch.setattr(config, "WEB_DASHBOARD", False)
     res = _web("", [("/admin", {}), ("/admin/api/stats", {"X-Admin-Token": ""})])
     assert [r[0] for r in res] == [404, 404]
+
+
+def test_dashboard_without_token_needs_a_sign_in(monkeypatch):
+    monkeypatch.setattr(config, "WEB_DASHBOARD", True)
+    res = _web("", [("/admin", {}), ("/admin/api/stats", {"X-Admin-Token": ""}),
+                    ("/admin/api/stats", {"X-Admin-Token": "guess"})])
+    assert [r[0] for r in res] == [200, 401, 401]
 
 
 def test_dashboard_auth_data_chart_and_rate_limit():

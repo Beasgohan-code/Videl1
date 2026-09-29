@@ -124,7 +124,7 @@ GROUP_COMMANDS = [
 ]
 
 ADMIN_COMMANDS = [
-    ("analytics", "📊 Charts: users, jobs, revenue"),
+    ("analytics", "📊 Charts + 🌐 web dashboard"),
     ("users", "👥 User counts"),
     ("user", "🔍 User profile & actions: id | @name"),
     ("msg", "✉️ Message a user: id text"),

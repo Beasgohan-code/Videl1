@@ -23,7 +23,12 @@ PRESET = {"h264": "vf", "hevc": "sf"}
 AUDIO = ["128", "96", "64", "copy"]                    # AAC kbps (stereo) · copy = keep the original track(s)
 TARGETS = [0, 10, 25, 50, 100, 200, 500, 1000]         # MB · 0 = off (quality mode)
 FORMATS = ["MP4", "MKV"]
-DEFAULT = {"res": "720", "codec": "h264", "level": "balanced", "audio": "128", "target": 0, "fmt": "MP4"}
+DEFAULT = {"res": "720", "codec": "h264", "level": "balanced", "audio": "128", "target": 0, "fmt": "MP4",
+           "compare": True, "sdr": True, "cut": None, "album": False}
+# Per-task keys: never remembered as the user's "last choice".
+TASK_KEYS = ("cut", "album")
+ALBUM_MAX = 10                  # Telegram albums hold up to 10 files
+AUTO_MIN_MB = 5                 # auto-compress ignores files smaller than this (nothing worth saving)
 
 # One-tap presets (row under the quality buttons).
 QUICK = {
@@ -70,12 +75,52 @@ def normalize(opts: dict | None) -> dict:
     o["fmt"] = str(o["fmt"]).upper()
     if o["fmt"] not in FORMATS:
         o["fmt"] = DEFAULT["fmt"]
+    o["compare"], o["sdr"], o["album"] = bool(o["compare"]), bool(o["sdr"]), bool(o["album"])
+    o["cut"] = _clean_cut(o["cut"])
+    return o
+
+
+def _clean_cut(cut):
+    """[start, end] seconds (end 0 = to the end) or None."""
+    try:
+        start, end = float(cut[0] or 0), float(cut[1] or 0)
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    if start < 0 or end < 0 or (end and end <= start) or (not start and not end):
+        return None
+    return [round(start, 2), round(end, 2)]
+
+
+def remembered(opts: dict) -> dict:
+    """What is saved as the user's last choice (per-task keys dropped)."""
+    o = normalize(opts)
+    for k in TASK_KEYS:
+        o[k] = DEFAULT[k]
     return o
 
 
 _ARG_RES = re.compile(r"^(1080|720|480|360)p?$", re.I)
 _ARG_MB = re.compile(r"^(\d{1,4})\s*(mb|m)$", re.I)
 _ARG_GB = re.compile(r"^(\d(?:\.\d+)?)\s*(gb|g)$", re.I)
+_TS = r"\d{1,3}(?::\d{1,2}){0,2}(?:\.\d+)?"
+_ARG_CUT = re.compile(rf"^({_TS})?\s*[-–—]\s*({_TS})?$")
+
+
+def _secs(ts: str | None) -> float:
+    if not ts:
+        return 0.0
+    sec = 0.0
+    for p in ts.split(":"):
+        sec = sec * 60 + float(p)
+    return sec
+
+
+def parse_cut(word: str):
+    """'10:00-25:00' → [600, 1500] · '1:30-' → [90, 0] (to the end) · '-5:00' → [0, 300] · else None."""
+    m = _ARG_CUT.match((word or "").strip())
+    if not m or not (m.group(1) or m.group(2)):
+        return None
+    return _clean_cut([_secs(m.group(1)), _secs(m.group(2))])
 
 
 def parse_args(text: str) -> dict:
@@ -83,7 +128,16 @@ def parse_args(text: str) -> dict:
     out: dict = {}
     for w in (text or "").split()[1:]:
         lw = w.lower().strip(",")
-        if lw in ("mobile", "phone"):
+        cut = parse_cut(lw)
+        if cut:
+            out["cut"] = cut
+        elif lw in ("keephdr", "hdr"):
+            out["sdr"] = False
+        elif lw in ("sdr", "tonemap"):
+            out["sdr"] = True
+        elif lw in ("nocompare", "nopreview"):
+            out["compare"] = False
+        elif lw in ("mobile", "phone"):
             out.update(QUICK["mobile"][2])
         elif _ARG_RES.match(lw):
             out["res"] = _ARG_RES.match(lw).group(1)
@@ -109,7 +163,44 @@ def parse_args(text: str) -> dict:
     return out
 
 
+def is_oneshot(args: dict) -> bool:
+    """Typed choices start right away; a bare cut / HDR switch still shows the panel (with it pre-set)."""
+    return any(k not in ("cut", "sdr", "compare") for k in args)
+
+
 # ─────────────────────────── file facts ───────────────────────────
+def cut_span(cut, duration: float) -> tuple | None:
+    """(start, length) actually encoded – same rules as ffcmd.cut_window."""
+    from .ffcmd import cut_window
+    return cut_window(cut, duration)
+
+
+def view(opts: dict, meta: dict) -> dict:
+    """What the card talks about: one file, the part of it that is cut, or the whole album (totals)."""
+    opts = normalize(opts)
+    meta = dict(meta or {})
+    items = meta.pop("album", None) or []
+    if opts["album"] and len(items) > 1:
+        return {"name": f"Album · {len(items)} videos", "size": sum(int(m.get("size") or 0) for m in items),
+                "duration": sum(int(m.get("duration") or 0) for m in items),
+                "height": max(int(m.get("height") or 0) for m in items),
+                "width": max(int(m.get("width") or 0) for m in items), "items": items}
+    span = cut_span(opts["cut"], meta.get("duration") or 0) if opts["cut"] else None
+    if span:
+        dur = int(meta.get("duration") or 0)
+        meta["size"] = int(int(meta.get("size") or 0) * span[1] / dur) if dur else meta.get("size")
+        meta["duration"] = int(round(span[1]))
+        meta["span"] = span
+    return meta
+
+
+def fmt_cut(cut) -> str:
+    cut = _clean_cut(cut)
+    if not cut:
+        return ""
+    return f"{_dur(cut[0])}–{_dur(cut[1]) if cut[1] else sc('end')}"
+
+
 def meta_of(message) -> dict:
     """What Telegram already tells us about the file (no download needed for the card)."""
     m = getattr(message, "video", None) or getattr(message, "document", None) or getattr(message, "animation", None)
@@ -166,9 +257,19 @@ def raw_estimate(opts: dict, meta: dict) -> int | None:
 
 
 def estimate(opts: dict, meta: dict) -> int | None:
-    """Rough output size in bytes (None when Telegram gave no duration)."""
+    """Rough output size in bytes (None when Telegram gave no duration). An album view → the sum of its files."""
     opts = normalize(opts)
+    if "album" in (meta or {}):                       # raw file facts → what the card is about
+        meta = view(opts, meta)
+    items = (meta or {}).get("items")
+    if items:
+        parts = [estimate(opts, m) for m in items]
+        known = [p for p in parts if p]
+        return sum(known) if known else None
     if opts["target"]:
+        size = int((meta or {}).get("size") or 0)
+        if size and opts["target"] * 1024 * 1024 >= size:
+            return size
         return opts["target"] * 1024 * 1024
     total = raw_estimate(opts, meta)
     if total is None:
@@ -194,6 +295,10 @@ def warnings(opts: dict, meta: dict) -> list:
     """Problems worth knowing *before* spending minutes on an encode."""
     opts = normalize(opts)
     meta = meta or {}
+    if "album" in meta:
+        meta = view(opts, meta)
+    if meta.get("items"):                             # an album: judge by its longest video
+        meta = max(meta["items"], key=lambda m: int(m.get("duration") or 0))
     out = []
     dur = int(meta.get("duration") or 0)
     if opts["target"] and dur:
@@ -213,9 +318,10 @@ def apply_quick(opts: dict, name: str, meta: dict) -> tuple[dict, str]:
         return normalize(opts), ""
     ico, title, preset = QUICK[name]
     o = normalize({**normalize(opts), **preset})
-    if not can_pick(o["res"], meta):
+    v = view(o, meta)
+    if not can_pick(o["res"], v):
         for r in RES:
-            if can_pick(r, meta):
+            if can_pick(r, v):
                 o["res"] = r
                 break
     return o, f"{ico} {title}"
@@ -229,6 +335,11 @@ def speed_key(opts: dict, height: int) -> str:
 
 def eta_seconds(opts: dict, meta: dict, speeds: dict | None) -> int | None:
     """Encode time from this server's own history (× realtime per codec + output size)."""
+    if "album" in (meta or {}):
+        meta = view(opts, meta)
+    if (meta or {}).get("items"):
+        parts = [eta_seconds(opts, m, speeds) for m in meta["items"]]
+        return sum(parts) if parts and all(parts) else None
     dur = int((meta or {}).get("duration") or 0)
     factor = (speeds or {}).get(speed_key(opts, src_class(meta)))
     try:
@@ -291,7 +402,15 @@ def override(opts: dict, info: dict | None, src_size: int = 0) -> tuple[dict, li
     h = int(info.get("height") or 0)
     if h and int(opts["res"]) >= h:
         notes.append(f"kept {h}p – never upscaled")
+    span = cut_span(opts["cut"], info.get("duration") or 0) if opts["cut"] else None
+    if span:
+        notes.append(f"cut {_dur(span[0])}–{_dur(span[0] + span[1])}")
     return o, notes
+
+
+def wants_tonemap(opts: dict, info: dict | None) -> str:
+    """'HDR10' / 'HLG' when the source is HDR and the user didn't ask to keep it → tone-map to SDR."""
+    return (info or {}).get("hdr") or "" if normalize(opts)["sdr"] else ""
 
 
 def label(opts: dict, height: int = 0) -> str:
@@ -313,44 +432,53 @@ def _dur(sec: int) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def panel_text(opts: dict, meta: dict, speeds: dict | None = None) -> str:
+def panel_text(opts: dict, meta: dict, speeds: dict | None = None, auto: bool = False) -> str:
     opts = normalize(opts)
-    meta = meta or {}
-    facts = [f"📄 <code>{html.escape(str(meta.get('name') or 'video'))[:70]}</code>"]
+    v = view(opts, meta)
+    album = bool(v.get("items"))
+    facts = [(f"📚 <b>{sc('Album')}</b> · {len(v['items'])} {sc('videos')}" if album
+              else f"📄 <code>{html.escape(str(v.get('name') or 'video'))[:70]}</code>")]
     bits = []
-    if meta.get("size"):
-        bits.append(f"💾 {_size(meta['size'])}")
-    if meta.get("duration"):
-        bits.append(f"⏱ {_dur(meta['duration'])}")
-    if meta.get("height"):
-        bits.append(f"🎞 {meta['height']}p")
+    if v.get("size"):
+        bits.append(f"💾 {_size(v['size'])}")
+    if v.get("duration"):
+        bits.append(f"⏱ {_dur(v['duration'])}")
+    if v.get("height"):
+        bits.append(f"🎞 {'≤ ' if album else ''}{v['height']}p")
     if bits:
         facts.append(" · ".join(bits))
+    if v.get("span"):
+        facts.append(f"✂️ {sc('only')} {fmt_cut(opts['cut'])}")
     ico, cname, csub = CODECS[opts["codec"]]
     lico, lname = LEVELS[opts["level"]]
     audio = sc("Keep original") if opts["audio"] == "copy" else f"AAC {opts['audio']}k"
-    target = f"{opts['target']} MB" if opts["target"] else sc("Off · quality mode")
+    target = (f"{opts['target']} MB" + (f" <i>({sc('each')})</i>" if album else "")) if opts["target"] \
+        else sc("Off · quality mode")
     qual = f"{sc(lname)} <i>(CRF {CRF[opts['codec']][opts['level']]})</i>" if not opts["target"] else \
         f"<s>{sc(lname)}</s> <i>({sc('target size decides')})</i>"
     lines = [hdr("🗜", "File compressor", "pick a quality – then tap start"), "",
              quote("\n".join(facts)), "",
-             row("Quality", f"<b>{opts['res']}p</b>" + ("" if can_pick(opts["res"], meta) else f" {LOCK}")),
+             row("Quality", f"<b>{opts['res']}p</b>" + ("" if can_pick(opts["res"], v) else f" {LOCK}")),
              row("Codec", f"{ico} {cname} · <i>{sc(csub)}</i>"),
              row("Level", f"{lico} {qual}"),
              row("Audio", audio),
              row("Format", opts["fmt"] + (f" · <i>{sc('streams in Telegram')}</i>" if opts["fmt"] == "MP4"
                                           else f" · <i>{sc('keeps every subtitle')}</i>")),
              row("Target", target)]
-    est = estimate(opts, meta)
+    extras = [("🖼 " + sc("before / after")) if opts["compare"] else "",
+              ("🌈 " + sc("HDR → SDR")) if opts["sdr"] else ("🌈 " + sc("keep HDR")),
+              ("🤖 " + sc("auto on")) if auto else ""]
+    lines.append(row("Extras", " · ".join(x for x in extras if x)))
+    est = estimate(opts, v)
     if est:
-        src = int(meta.get("size") or 0)
+        src = int(v.get("size") or 0)
         pct = f" <b>(−{(1 - est / src) * 100:.0f}%)</b>" if src and est < src else ""
         lines += ["", f"📉 <b>{sc('Estimate')}:</b> ≈ {_size(est)}{pct}"]
-        eta = eta_seconds(opts, meta, speeds)
+        eta = eta_seconds(opts, v, speeds)
         if eta:
             lines.append(f"⏱ <b>{sc('Encode time')}:</b> ≈ {_eta(eta)} <i>({sc('from this server')})</i>")
         lines.append(hint("a rough guess – busy, grainy scenes need more bits"))
-    warn = warnings(opts, meta)
+    warn = warnings(opts, v)
     if warn:
         lines += [""] + [f"⚠️ <i>{html.escape(w)}</i>" for w in warn]
     return "\n".join(lines)
@@ -369,29 +497,39 @@ def _mark(on: bool, text: str) -> str:
     return f"✅ {text}" if on else text
 
 
-def keyboard(opts: dict, meta: dict):
+def keyboard(opts: dict, meta: dict, auto: bool = False):
     from pyrogram.types import InlineKeyboardButton as Btn, InlineKeyboardMarkup
     opts = normalize(opts)
+    v = view(opts, meta)
     res_row = []
     for r in RES:
-        if can_pick(r, meta):
+        if can_pick(r, v):
             res_row.append(Btn(_mark(opts["res"] == r, sc(f"{r}p")), callback_data=f"cmp:res:{r}"))
         else:
             res_row.append(Btn(f"{LOCK} {sc(r + 'p')}", callback_data=f"cmp:lock:{r}"))
-    codec_row = [Btn(_mark(opts["codec"] == k, f"{v[0]} {sc(v[1])}"), callback_data=f"cmp:codec:{k}")
-                 for k, v in CODECS.items()]
-    level_row = [Btn(_mark(opts["level"] == k and not opts["target"], f"{v[0]} {sc(v[1])}"),
-                     callback_data=f"cmp:level:{k}") for k, v in LEVELS.items()]
+    codec_row = [Btn(_mark(opts["codec"] == k, f"{v_[0]} {sc(v_[1])}"), callback_data=f"cmp:codec:{k}")
+                 for k, v_ in CODECS.items()]
+    level_row = [Btn(_mark(opts["level"] == k and not opts["target"], f"{v_[0]} {sc(v_[1])}"),
+                     callback_data=f"cmp:level:{k}") for k, v_ in LEVELS.items()]
     audio = sc("keep") if opts["audio"] == "copy" else sc(f"{opts['audio']}k")
     target = f"{opts['target']}ᴍʙ" if opts["target"] else sc("off")
     extra_row = [Btn(f"🔊 {audio}", callback_data="cmp:audio"),
                  Btn(f"🎞 {opts['fmt']}", callback_data="cmp:fmt"),
                  Btn(f"🎯 {target}", callback_data="cmp:target")]
-    quick_row = [Btn(_mark(_is_quick(opts, k), f"{v[0]} {sc(v[1])}"), callback_data=f"cmp:quick:{k}")
-                 for k, v in QUICK.items()]
-    return InlineKeyboardMarkup([res_row, quick_row, codec_row, level_row, extra_row,
-                                 [Btn(f"🚀 {sc('Start')}", callback_data="cmp:go"),
-                                  Btn(f"✖️ {sc('Close')}", callback_data="cmp:close")]])
+    quick_row = [Btn(_mark(_is_quick(opts, k), f"{v_[0]} {sc(v_[1])}"), callback_data=f"cmp:quick:{k}")
+                 for k, v_ in QUICK.items()]
+    more_row = [Btn(_mark(opts["compare"], f"🖼 {sc('Compare')}"), callback_data="cmp:compare"),
+                Btn(f"🌈 {sc('SDR') if opts['sdr'] else sc('HDR')}", callback_data="cmp:sdr"),
+                Btn(_mark(auto, f"🤖 {sc('Auto')}"), callback_data="cmp:auto")]
+    rows = [res_row, quick_row, codec_row, level_row, extra_row, more_row]
+    album = (meta or {}).get("album") or []
+    if len(album) > 1:
+        rows.append([Btn(_mark(opts["album"], f"📚 {sc('Whole album')} · {len(album)}"), callback_data="cmp:album:on"),
+                     Btn(_mark(not opts["album"], f"🎞 {sc('This one')}"), callback_data="cmp:album:off")])
+    if opts["cut"] and not v.get("items"):
+        rows.append([Btn(f"✂️ {fmt_cut(opts['cut'])} · ✖️ {sc('whole video')}", callback_data="cmp:cut:clear")])
+    rows.append([Btn(f"🚀 {sc('Start')}", callback_data="cmp:go"), Btn(f"✖️ {sc('Close')}", callback_data="cmp:close")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _is_quick(opts: dict, name: str) -> bool:
@@ -421,15 +559,73 @@ def apply(opts: dict, action: str, value: str = "") -> tuple[dict, str]:
         i = TARGETS.index(o["target"]) if o["target"] in TARGETS else 0
         o["target"] = TARGETS[(i + 1) % len(TARGETS)]
         return o, f"🎯 target {o['target']} MB" if o["target"] else "🎯 target off – quality mode"
+    if action == "compare":
+        o["compare"] = not o["compare"]
+        return o, "🖼 a before / after frame comes with the result" if o["compare"] else "🖼 no comparison frame"
+    if action == "sdr":
+        o["sdr"] = not o["sdr"]
+        return o, ("🌈 HDR videos are converted to normal colours (SDR)" if o["sdr"]
+                   else "🌈 HDR is kept as it is (looks washed out on many phones)")
+    if action == "album" and value in ("on", "off"):
+        o["album"] = value == "on"
+        return o, "📚 every video of the album" if o["album"] else "🎞 only this video"
+    if action == "cut" and value == "clear":
+        o["cut"] = None
+        return o, "✂️ the whole video"
     return o, ""
 
 
 def queued_text(opts: dict, meta: dict) -> str:
     opts = normalize(opts)
-    lines = [hdr("🗜", "Compressing", label(opts, int((meta or {}).get("height") or 0))),
-             hint("getting your file ready…")]
-    lines += [f"⚠️ <i>{html.escape(w)}</i>" for w in warnings(opts, meta)]
+    v = view(opts, meta)
+    sub = label(opts, int(v.get("height") or 0))
+    if v.get("span"):
+        sub += f" · ✂️ {fmt_cut(opts['cut'])}"
+    lines = [hdr("🗜", "Compressing", sub), hint("getting your file ready…")]
+    lines += [f"⚠️ <i>{html.escape(w)}</i>" for w in warnings(opts, v)]
     return "\n".join(lines)
+
+
+def batch_text(opts: dict, queued: int, total: int, limited: int = 0) -> str:
+    """Summary card after 🚀 on a whole album – every video gets its own live status card below."""
+    opts = normalize(opts)
+    lines = [hdr("📚", "Album compress", label(opts)), "",
+             row("Queued", f"<b>{queued}</b> / {total} {sc('videos')}"),
+             row("Settings", (f"{opts['target']} MB {sc('each')}" if opts["target"]
+                              else f"{LEVELS[opts['level']][1]} · CRF {CRF[opts['codec']][opts['level']]}")
+                 + f" · {opts['fmt']}")]
+    if limited:
+        lines += ["", f"⚠️ <i>{limited} {sc('skipped – your queue limit is full. send')}</i> <code>/compress</code> "
+                      f"<i>{sc('again later')}.</i>"]
+    lines += ["", hint("each video gets its own status card below.")]
+    return "\n".join(lines)
+
+
+def auto_text(opts: dict, meta: dict) -> str:
+    return (queued_text(opts, meta) + "\n" + f"<i>🤖 {sc('auto-compress is on · turn it off')}:</i> "
+            "<code>/compress auto off</code>")
+
+
+def auto_state_text(on: bool, opts: dict) -> str:
+    opts = remembered(opts)
+    if not on:
+        return "\n".join([hdr("🤖", "Auto-compress", "off"), "",
+                          hint("videos you send are left alone."),
+                          f"<i>{sc('turn it on')}:</i> <code>/compress auto on</code>"])
+    return "\n".join([hdr("🤖", "Auto-compress", "on"), "",
+                      quote(f"{sc('every video you send me in private is compressed to')} <b>{label(opts)}</b> · "
+                            + (f"{opts['target']} MB" if opts["target"] else LEVELS[opts["level"]][1])
+                            + f" · {opts['fmt']}"), "",
+                      f"<i>{sc('uses your last')}</i> <code>/compress</code> <i>{sc('choice')} · "
+                      f"{sc(f'files under {AUTO_MIN_MB} MB are skipped')}</i>",
+                      f"<i>{sc('turn it off')}:</i> <code>/compress auto off</code>"])
+
+
+def compare_caption(opts: dict, info: dict, old: int, new: int, at: float) -> str:
+    opts = normalize(opts)
+    h = int((info or {}).get("height") or 0)
+    return (f"🖼 <b>{sc('Before')}</b> ◀️ {h or '?'}p · {_size(old)}   |   ▶️ <b>{sc('After')}</b> "
+            f"{label(opts, h)} · {_size(new)}\n" + hint(f"same frame at {_dur(int(at))} – zoom in to compare"))
 
 
 def working_text(opts: dict, info: dict, notes: list) -> str:
@@ -491,5 +687,12 @@ def usage_text() -> str:
         f"<b>⚡ {sc('One-shot')}</b> <i>({sc('skips the buttons')})</i>",
         "<code>/compress 480</code>\n<code>/compress 720 strong hevc</code>\n<code>/compress 360 50mb</code>\n"
         "<code>/compress mobile</code>", "",
+        f"<b>✂️ {sc('Only a part')}</b>",
+        "<code>/compress 480 10:00-25:00</code>\n<code>/compress 1:30-</code> <i>(→ {})</i>".format(sc("to the end")), "",
+        f"<b>✨ {sc('More')}</b>",
+        f"📚 {sc('reply to an album → compress every video in it')}\n"
+        f"🖼 {sc('before / after frame with every result')}\n"
+        f"🌈 {sc('HDR videos are fixed to normal colours automatically')}\n"
+        f"🤖 <code>/compress auto on</code> – {sc('compress every video you send')}", "",
         hint("your last choice is remembered for next time."),
     ])

@@ -47,6 +47,25 @@ def fps_mode_flag() -> str:
     return _FPS_FLAG
 
 
+_FILTERS: dict = {}
+
+
+def has_filter(name: str) -> bool:
+    """Does this ffmpeg build have the filter (e.g. zscale for HDR tone-mapping)? One `ffmpeg -filters` per process."""
+    if "_all" not in _FILTERS:
+        names = set()
+        try:
+            out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, timeout=30).stdout
+            for line in out.decode(errors="ignore").splitlines():
+                parts = line.split()
+                if len(parts) >= 3 and len(parts[0]) in (3, 4) and set(parts[0]) <= set(".TSC|AVN"):
+                    names.add(parts[1])
+        except Exception as e:
+            log.warning(f"ffmpeg -filters failed: {e}")
+        _FILTERS["_all"] = names
+    return name in _FILTERS["_all"]
+
+
 def _ffmpeg_encoders() -> set:
     try:
         out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, timeout=30).stdout

@@ -96,6 +96,7 @@ class Encoded(str):
     settings: dict = None
     elapsed: float = 0.0
     sample: tuple = None
+    cut: tuple = None            # (start, length) of a /compress cut
     guard: tuple = None          # (encoded bytes, remux bytes) when the size guard swapped the file
     encoder: str = ""
     where: str = "CPU"
@@ -191,6 +192,8 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
     if opts.get("sample"):
         sample = ffcmd.sample_window(info["duration"], opts["sample"])
         name += ".sample"
+    cut = None if sample else ffcmd.cut_window(opts.get("cut"), info["duration"])
+    tonemap = bool(opts.get("tonemap")) and not sample
     output_filepath = os.path.join(out_dir, name + ffcmd.output_ext(settings))
     if os.path.abspath(output_filepath) == os.path.abspath(filepath):
         output_filepath = os.path.join(out_dir, name + ".videl" + ffcmd.output_ext(settings))
@@ -228,14 +231,15 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
     passlog = os.path.join(out_dir, f"2pass_{msg.id}") if twopass else None
     common = dict(audio_map=audio_map, subs_file=subs_file, watermark_file=watermark_file, motion_file=motion_file,
                   sample=sample, encoder=encoder, logo_file=logo_file, text_wm_file=text_wm_file,
-                  vaapi_device=_cfg_vaapi(), fps_flag=await _fps_flag(), threads=encoder_threads())
+                  vaapi_device=_cfg_vaapi(), fps_flag=await _fps_flag(), threads=encoder_threads(),
+                  cut=cut, tonemap=tonemap)
     passes = [1, 2] if twopass else [None]
     owned = jobs.get(msg.id) is None              # a task may have registered it already (download stage)
     job = jobs.register(msg.id, uid, getattr(getattr(msg, "chat", None), "id", None), name=name)
     started = time.time()
     proc = None
     stderr = b""
-    total = (sample[1] if sample else info["duration"]) or None
+    total = (sample[1] if sample else cut[1] if cut else info["duration"]) or None
     try:
         for pass_no in passes:
             if job.cancelled:
@@ -295,6 +299,7 @@ async def encode(filepath, message, msg, audio_map=None, opts=None):
         return None
     out = Encoded(output_filepath)
     out.info, out.settings, out.elapsed, out.sample = info, settings, time.time() - started, sample
+    out.cut = cut
     out.encoder, out.where = encoder, where
     return out
 

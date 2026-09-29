@@ -496,7 +496,8 @@ async def menu_callbacks(client: Client, query: CallbackQuery):
     elif data == "help_admin":
         if uid not in ADMINS:
             return await query.answer("Admins only.", show_alert=True)
-        await smart_edit(msg, texts.ADMIN_HELP, back_home_kb("help_btn"))
+        await smart_edit(msg, texts.ADMIN_HELP, back_home_kb("help_btn", extra=[
+            Btn("📊 Dashboard · 🌐 Web", callback_data="anl:30")]))
 
     elif data == "hub_enc":
         from VideoEncoder.utils.database.access_db import db as enc_db

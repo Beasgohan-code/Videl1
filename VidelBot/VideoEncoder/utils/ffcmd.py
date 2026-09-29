@@ -167,7 +167,23 @@ def summarize(probe: dict | None) -> dict:
         size = 0
     return {"ok": bool(streams), "video": video, "audio": audio, "subs": subs, "duration": duration, "size": size,
             "height": int((video or {}).get("height") or 0), "width": int((video or {}).get("width") or 0),
-            "interlaced": (video or {}).get("field_order") not in (None, "", "progressive", "unknown")}
+            "interlaced": (video or {}).get("field_order") not in (None, "", "progressive", "unknown"),
+            "hdr": hdr_kind(video)}
+
+
+HDR_TRANSFERS = {"smpte2084": "HDR10", "arib-std-b67": "HLG"}
+
+
+def hdr_kind(video: dict | None) -> str:
+    """'HDR10' (PQ) · 'HLG' · '' – from the stream's transfer characteristics (ffprobe color_transfer)."""
+    return HDR_TRANSFERS.get(str((video or {}).get("color_transfer") or "").lower(), "")
+
+
+# HDR → SDR: linearise, tone-map (hable keeps highlights without the grey wash of a plain conversion) and
+# convert to BT.709 8-bit. Runs *after* the downscale – a 480p picture tone-maps ~5× faster than 4K.
+TONEMAP_CHAIN = ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+                 "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+SDR_TAGS = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
 
 
 # ─────────────────────────── helpers ───────────────────────────
@@ -268,13 +284,17 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
                   motion_file: str | None = None, sample: tuple | None = None, metadata_title: str = "Videl",
                   threads: int = 0, encoder: str | None = None, logo_file: str | None = None,
                   text_wm_file: str | None = None, pass_no: int | None = None, passlog: str | None = None,
-                  vaapi_device: str = "/dev/dri/renderD128", fps_flag: str | None = "-fps_mode") -> list:
+                  vaapi_device: str = "/dev/dri/renderD128", fps_flag: str | None = "-fps_mode",
+                  cut: tuple | None = None, tonemap: bool = False) -> list:
     """Full ffmpeg argv (output path last).
 
     encoder   exact ffmpeg video encoder (from hw.pick_encoder); default = software for the codec
     logo_file PNG/JPG overlaid with -filter_complex (position / size / opacity from the settings)
     pass_no   1 → analysis pass (no audio, null muxer) · 2 → final pass · None → single pass
     fps_flag  "-fps_mode" (ffmpeg ≥ 5.1) or "-vsync" (4.x) – see hw.fps_mode_flag(); None → leave ffmpeg's default
+    cut       (start, length) seconds – encode only that part (input seeking: nothing before it is decoded).
+              Unlike `sample` it is a real output: target size is worked out for the cut's length.
+    tonemap   HDR source → SDR BT.709 (TONEMAP_CHAIN; needs the zscale filter – hw.has_filter("zscale"))
 
     Frame timing: with the FPS setting on "source" the frames keep their own timestamps (vfr). ffmpeg's
     default for MP4/MKV is CFR, which *duplicates* frames to fill every gap of a variable-frame-rate
@@ -293,8 +313,9 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
         cmd += ["-vaapi_device", vaapi_device]
     if progress:
         cmd += ["-progress", progress, "-nostats"]
-    if sample:
-        cmd += ["-ss", f"{max(0.0, float(sample[0])):.2f}", "-t", f"{float(sample[1]):.2f}"]
+    window = sample or cut
+    if window:
+        cmd += ["-ss", f"{max(0.0, float(window[0])):.2f}", "-t", f"{float(window[1]):.2f}"]
     if hw == "nvenc" and not first_pass:
         # decode on the GPU too (frames come back to RAM, so every CPU filter still works); ffmpeg falls back
         # to software decoding by itself when the codec / GPU can't do it
@@ -320,6 +341,9 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
         if target_h and (not info["height"] or info["height"] > target_h):
             scaler = "bicubic" if s["preset"] in FAST_SCALER_PRESETS else "lanczos"
             vf.append(f"scale=-2:{target_h}:flags={scaler}")
+        tonemap = bool(tonemap and hw not in ("vaapi", "qsv"))   # hw surfaces can't take the float chain
+        if tonemap:
+            vf.append(TONEMAP_CHAIN)
         if s["dedup"] and not avi:                   # drop repeated frames before the costly filters
             vf.append("mpdecimate")
         if s["denoise"]:
@@ -350,14 +374,15 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
                 cmd += ["-map", f"0:{idx}"]
         else:
             cmd += ["-map", "0:a?"]
-        cmd += ["-map_chapters", "0", "-map_metadata", "0"]
+        cmd += ["-map_chapters", "-1" if cut else "0", "-map_metadata", "0"]
 
     # ── video ──
     if has_video:
         preset = s["preset"] if s["preset"] in PRESETS else "s"
         v_kbps = 0
         if s["mode"] == "size" and s["target_mb"] and not sample:
-            v_kbps = target_video_kbps(s["target_mb"], info["duration"], audio_kbps(s, info))
+            dur = float(cut[1]) if cut else info["duration"]
+            v_kbps = target_video_kbps(s["target_mb"], dur, audio_kbps(s, info))
         rate = (["-b:v", f"{v_kbps}k", "-maxrate", f"{int(v_kbps * 1.5)}k", "-bufsize", f"{v_kbps * 2}k"]
                 if v_kbps else None)
         if enc in ("libx264", "libx265"):
@@ -438,6 +463,8 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
             cmd += [fps_flag, "vfr"]
         if s["aspect"]:
             cmd += ["-aspect", "16:9"]
+        if tonemap:
+            cmd += SDR_TAGS
         if not logo_file:
             chain = vf + hw_tail
             if chain:
@@ -625,6 +652,47 @@ def sample_window(duration: float, length: int = 30) -> tuple:
     if not duration or duration <= length:
         return 0.0, float(duration or length)
     return max(0.0, duration / 2 - length / 2), float(length)
+
+
+def compare_command(src: str, out: str, at_src: float, at_out: float, height: int, dest: str,
+                    tonemap: bool = False) -> list:
+    """One JPEG: the same frame from the source (left) and the result (right), both scaled to `height`.
+    Input seeking → only two frames are decoded, so it takes about a second even on a movie.
+    tonemap: the source is HDR – show its left half in SDR too, so the comparison is about compression,
+    not about washed-out colours."""
+    h = max(144, min(int(height or 720), 720))
+    left = f"[0:v:0]scale=-2:{h}:flags=bicubic"
+    if tonemap:
+        left += "," + TONEMAP_CHAIN
+    graph = (f"{left},setsar=1,format=yuvj420p[a];[1:v:0]scale=-2:{h}:flags=bicubic,setsar=1,format=yuvj420p[b];"
+             "[a][b]hstack=inputs=2")
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-ss", f"{max(0.0, float(at_src)):.2f}", "-i", src, "-ss", f"{max(0.0, float(at_out)):.2f}", "-i", out,
+            "-filter_complex", graph, "-frames:v", "1", "-q:v", "3", dest]
+
+
+def cut_window(cut, duration: float) -> tuple | None:
+    """[start, end] seconds (end 0/None = to the end) → (start, length) clamped to the video, or None when it
+    covers the whole video / makes no sense."""
+    if not cut:
+        return None
+    try:
+        start, end = float(cut[0] or 0), float(cut[1] or 0)
+    except (TypeError, ValueError, IndexError):
+        return None
+    duration = float(duration or 0)
+    start = max(0.0, start)
+    if duration:
+        if start >= duration:
+            return None
+        end = min(end, duration) if end else duration
+    if end and end <= start:
+        return None
+    if not end:                                       # "from X to the end" needs the length
+        return None
+    if start <= 0.5 and duration and end >= duration - 0.5:
+        return None                                   # the whole video anyway
+    return start, end - start
 
 
 def parse_timestamp(text: str) -> float | None:

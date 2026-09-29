@@ -103,8 +103,13 @@
       "value": "8",
       "required": false
     },
+    "WEB_DASHBOARD": {
+      "description": "Web dashboard at https://<your-app>/admin – open it from Telegram with /dashboard (true/false)",
+      "value": "true",
+      "required": false
+    },
     "ADMIN_WEB_TOKEN": {
-      "description": "Long random string – enables the /admin web dashboard (open /admin#TOKEN)",
+      "description": "Optional long random string – also lets you open /admin#TOKEN directly in a browser",
       "value": "",
       "required": false
     },

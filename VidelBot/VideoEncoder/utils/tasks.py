@@ -736,12 +736,22 @@ async def compress_task(message, msg):
         return
     src_size = os.path.getsize(src)
     override, notes = compress.override(opts, info, src_size)
+    tonemap = False
+    hdr = compress.wants_tonemap(opts, info)
+    if hdr:
+        from .hw import has_filter
+        tonemap = await asyncio.to_thread(has_filter, "zscale")
+        notes.append(f"{hdr} → normal colours (SDR)" if tonemap else f"{hdr} kept – this ffmpeg can't tone-map")
+    span = compress.cut_span(opts["cut"], info.get("duration") or 0) if opts["cut"] else None
+    # what the result is measured against: the whole file, or the cut's share of it
+    ref = int(src_size * span[1] / info["duration"]) if span and info.get("duration") else src_size
     await _safe_edit(msg, compress.working_text(opts, info, notes))
-    result = await encode(src, message, msg, opts={"override": override, "info": info, "watch": src_size})
+    result = await encode(src, message, msg, opts={"override": override, "info": info, "watch": ref,
+                                                   "cut": opts["cut"] if span else None, "tonemap": tonemap})
     watched = SIZE_WATCH.pop(msg.id, None)
     if watched and not result:                        # stopped early: it was heading for a bigger file
         LAST_ERROR.pop(msg.id, None)
-        await _safe_edit(msg, compress.bigger_text(opts, src_size, watched[0] or src_size, stopped_at=watched[1]),
+        await _safe_edit(msg, compress.bigger_text(opts, ref, watched[0] or ref, stopped_at=watched[1]),
                          _done_markup(None))
         _remove(src)
         return
@@ -756,17 +766,20 @@ async def compress_task(message, msg):
         _remove(src)
         return
     new_size = os.path.getsize(result)
-    if new_size >= src_size * 0.98:                   # never send a "compressed" file that isn't smaller
+    # never send a "compressed" file that isn't smaller (a cut is always sent – it's a different video)
+    if new_size >= ref * 0.98 and not span:
         await _safe_edit(msg, compress.bigger_text(opts, src_size, new_size), _done_markup(None))
         _remove(result, src)
         return
     stem = os.path.splitext(os.path.basename(src))[0]
     tag = compress.label(opts, int(info.get("height") or 0)).split()[0]
+    if span:
+        tag += " " + compress.fmt_cut([span[0], span[0] + span[1]]).replace(":", ".")
     final = os.path.join(os.path.dirname(result), f"{stem} [{tag}]{os.path.splitext(result)[1]}")
     try:
         os.replace(result, final)
         moved = Encoded(final)
-        for k in ("info", "settings", "elapsed", "sample", "guard", "encoder", "where"):
+        for k in ("info", "settings", "elapsed", "sample", "cut", "guard", "encoder", "where"):
             setattr(moved, k, getattr(result, k, None))
         result = moved
     except OSError:
@@ -781,11 +794,14 @@ async def compress_task(message, msg):
     if link is None and await _cancelled(msg):
         _remove(result, src)
         return
-    await _safe_edit(msg, compress.done_text(os.path.basename(final), opts, info, src_size, new_size,
+    shown = dict(info, duration=span[1]) if span else info
+    await _safe_edit(msg, compress.done_text(os.path.basename(final), opts, shown, ref, new_size,
                                              result.elapsed or 0.0, notes), _done_markup(link))
-    if info.get("duration") and result.elapsed:
+    if opts["compare"]:
+        await compress_compare(msg, src, str(result), opts, info, span, ref, new_size, tonemap)
+    if shown.get("duration") and result.elapsed:
         await compress_learn(compress.speed_key(opts, int(info.get("height") or 0)),
-                             float(info["duration"]) / float(result.elapsed))
+                             float(shown["duration"]) / float(result.elapsed))
     try:
         await db.add_encode_stat(message.from_user.id, src_size, new_size, result.elapsed)
         from core.analytics import bump_later
@@ -796,6 +812,33 @@ async def compress_task(message, msg):
 
 
 CMP_SPEED_ID = "cmp_speed"
+
+
+async def compress_compare(msg, src: str, out: str, opts: dict, info: dict, span, old: int, new: int,
+                           tonemap: bool = False):
+    """🖼 The same frame before / after, side by side, as a reply to the result card. Best effort: a failure
+    here never touches the finished task."""
+    from . import compress, ffcmd
+    from .encoding import run_ffmpeg
+    from .helper import _remove
+    try:
+        length = span[1] if span else float(info.get("duration") or 0)
+        at_out = length * 0.4 if length > 2 else 0.0
+        at_src = (span[0] if span else 0.0) + at_out
+        out_h = int(compress.out_class(compress.normalize(opts), {"height": info.get("height"),
+                                                                  "width": info.get("width")}) or 720)
+        dest = os.path.join(os.path.dirname(out), f"compare_{msg.id}.jpg")
+        code, err = await run_ffmpeg(ffcmd.compare_command(src, out, at_src, at_out, out_h, dest, tonemap),
+                                     timeout=90)
+        if code != 0 or not os.path.isfile(dest):
+            LOGGER.debug(f"compare frame failed ({code}): {err}")
+            return
+        try:
+            await msg.reply_photo(dest, caption=compress.compare_caption(opts, info, old, new, at_src), quote=True)
+        finally:
+            _remove(dest)
+    except Exception as e:
+        LOGGER.debug(f"compare frame skipped: {e}")
 
 
 async def compress_speeds() -> dict:
