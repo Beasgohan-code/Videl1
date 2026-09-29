@@ -1,0 +1,182 @@
+
+
+import asyncio
+import os
+import time
+
+from ... import LOGGER, app, download_dir, log
+from ..database.access_db import db
+from ..display_progress import progress_for_pyrogram
+from ..encoding import get_duration, get_thumbnail, get_width_height
+
+
+SPLIT_LIMIT = None      # bytes; None → config.SPLIT_SIZE_MB
+
+
+def split_limit() -> int:
+    if SPLIT_LIMIT:
+        return SPLIT_LIMIT
+    import config
+    return max(50, min(1990, int(config.SPLIT_SIZE_MB))) * 1024 * 1024
+
+
+async def upload_to_tg(new_file, message, msg, as_doc=None, caption=None):
+    """Upload a file (video or document per the user's setting). Files above the Telegram limit are
+    split into playable parts first. Returns the (first) link, or None when the user cancelled."""
+    if os.path.isfile(new_file) and os.path.getsize(new_file) > split_limit():
+        return await _upload_parts(new_file, message, msg, as_doc)
+    return await _upload_one(new_file, message, msg, as_doc, caption)
+
+
+async def _upload_parts(new_file, message, msg, as_doc=None):
+    import shutil
+    from ..encoding import split_for_upload
+    try:
+        await msg.edit(f"✂️ <b>File is over {split_limit() // 1048576} MB</b> – splitting it into parts…")
+    except Exception:
+        pass
+    parts = await split_for_upload(new_file, split_limit(), key=getattr(msg, "id", None))
+    if not parts:
+        return None
+    first = None
+    name = os.path.basename(new_file)
+    video_parts = all(p.lower().endswith((".mkv", ".mp4", ".webm", ".avi", ".mov")) for p in parts)
+    try:
+        for i, part in enumerate(parts, 1):
+            try:
+                await msg.edit(f"📤 <b>Uploading part {i}/{len(parts)}</b>\n<code>{name[:60]}</code>")
+            except Exception:
+                pass
+            link = await _upload_one(part, message, msg, as_doc if video_parts else True,
+                                     caption=f"{os.path.basename(part)}\n📦 Part {i} of {len(parts)} · {name}")
+            if link is None:
+                return first
+            first = first or link
+    finally:
+        if parts[0] != new_file:
+            shutil.rmtree(os.path.dirname(parts[0]), ignore_errors=True)
+    try:
+        await message.reply_text(f"📦 <b>{len(parts)} parts uploaded</b> – <code>{name[:80]}</code>\n"
+                                 + ("<i>Every part plays on its own.</i>" if video_parts else
+                                    "<i>Join them with 7-Zip (open .001) or <code>cat file.* &gt; file</code>.</i>"))
+    except Exception:
+        pass
+    return first
+
+
+async def _upload_one(new_file, message, msg, as_doc=None, caption=None):
+    c_time = time.time()
+    filename = os.path.basename(new_file)
+    uid = message.from_user.id
+
+    async def _pref():
+        return as_doc if as_doc is not None else (await db.get_upload_as_doc(uid) is True)
+    # ffprobe / ffmpeg are blocking – off the event loop, and the independent lookups run side by side
+    duration, (width, height), custom_thumb, as_doc = await asyncio.gather(
+        asyncio.to_thread(get_duration, new_file), asyncio.to_thread(get_width_height, new_file),
+        db.get_thumbnail(uid), _pref())
+    thumb = None
+    if custom_thumb:
+        try:
+            thumb = await app.download_media(custom_thumb,
+                                             file_name=os.path.join(download_dir, str(time.time()) + ".jpg"))
+        except Exception as e:
+            LOGGER.warning(f"custom thumbnail download failed: {e}")
+    if not thumb:
+        thumb = await asyncio.to_thread(get_thumbnail, new_file, download_dir, (duration or 0) / 4)
+
+    try:
+        async def send():
+            if as_doc:
+                return await upload_doc(message, msg, c_time, caption or filename, new_file, thumb)
+            return await upload_video(message, msg, new_file, caption or filename, c_time, thumb, duration, width,
+                                      height)
+        link = await with_retry(send, msg)
+    finally:
+        if thumb and os.path.isfile(thumb):
+            try:
+                os.remove(thumb)
+            except OSError:
+                pass
+    return link
+
+
+UPLOAD_RETRIES = 2            # extra attempts after the first
+MAX_FLOOD_WAIT = 900          # seconds we're willing to wait on a FloodWait before giving up
+
+
+async def with_retry(send, msg=None, retries: int = UPLOAD_RETRIES, sleep=asyncio.sleep):
+    """Run an upload, retrying only failures where Telegram did NOT accept the message – FloodWait
+    (the request was refused) and Telegram-side 5xx errors – so a retry can never post the file twice.
+    Everything else (cancel, bad file, network drop mid-send) goes straight to the caller as before."""
+    from pyrogram.errors import FloodWait, InternalServerError, ServiceUnavailable
+    attempt = 0
+    while True:
+        try:
+            return await send()
+        except FloodWait as e:
+            wait = int(getattr(e, "value", 0) or 0) + 1
+            if attempt >= retries or wait > MAX_FLOOD_WAIT:
+                raise
+            note = f"⏳ <b>Telegram asked to wait {wait}s</b> – the upload will retry automatically."
+        except (InternalServerError, ServiceUnavailable) as e:
+            if attempt >= retries:
+                raise
+            wait = 5 * (attempt + 1)
+            note = f"⚠️ <b>Telegram server error</b> (<code>{type(e).__name__}</code>) – retrying in {wait}s…"
+        attempt += 1
+        LOGGER.warning(f"upload retry {attempt}/{retries} in {wait}s")
+        if msg is not None:
+            try:
+                await msg.edit(note)
+            except Exception:
+                pass
+        await sleep(wait)
+
+
+async def _log_copy(send, *args, **kwargs):
+    """Copy to the log channel – a missing / misconfigured log chat must not fail the user's upload."""
+    if not log:
+        return
+    try:
+        await send(log, *args, **kwargs)
+    except Exception as e:
+        LOGGER.warning(f"encoder log copy failed: {e}")
+
+
+async def upload_video(message, msg, new_file, filename, c_time, thumb, duration, width, height):
+    resp = await message.reply_video(
+        new_file,
+        supports_streaming=True,
+        parse_mode=None,
+        caption=filename,
+        thumb=thumb,
+        duration=duration,
+        width=width,
+        height=height,
+        progress=progress_for_pyrogram,
+        progress_args=("Uploading ...", msg, c_time)
+    )
+    if not resp:                      # StopTransmission → cancelled
+        return None
+    media = resp.video or resp.document
+    if media:
+        await _log_copy(app.send_video if resp.video else app.send_document, media.file_id,
+                        caption=filename, parse_mode=None)
+    return resp.link
+
+
+async def upload_doc(message, msg, c_time, filename, new_file, thumb=None):
+    resp = await message.reply_document(
+        new_file,
+        caption=filename,
+        parse_mode=None,
+        thumb=thumb,
+        progress=progress_for_pyrogram,
+        progress_args=("Uploading ...", msg, c_time)
+    )
+    if not resp:
+        return None
+    if resp.document:
+        await _log_copy(app.send_document, resp.document.file_id, caption=filename, parse_mode=None)
+    return resp.link

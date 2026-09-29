@@ -1,0 +1,11 @@
+name = "permanent-link-worker"
+main = "index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+MONGODB_APP_ID = ""
+MONGODB_DATA_SOURCE = "Cluster0"
+MONGODB_DATABASE = ""
+MONGODB_API_KEY = ""
+BACKEND_API_SECRET = ""

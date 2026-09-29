@@ -1,0 +1,5 @@
+# Heroku container stack:  heroku stack:set container -a <app>  →  git push heroku HEAD:main
+# No `run:` section on purpose – Heroku then uses the Dockerfile's ENTRYPOINT (tini) + CMD.
+build:
+  docker:
+    web: Dockerfile

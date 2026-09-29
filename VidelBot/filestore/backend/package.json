@@ -1,0 +1,11 @@
+{
+  "name": "permanent-link-worker",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "itty-router": "^4.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

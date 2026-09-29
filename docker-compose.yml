@@ -1,0 +1,20 @@
+# VPS / local:  cp VidelBot/config.env.sample VidelBot/config.env  →  edit  →  docker compose up -d --build
+services:
+  videl:
+    build: .
+    container_name: videl
+    restart: unless-stopped
+    env_file:
+      - VidelBot/config.env
+    environment:
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - videl_downloads:/app/downloads
+      - videl_logs:/app/logs
+    stop_grace_period: 30s
+
+volumes:
+  videl_downloads:
+  videl_logs:

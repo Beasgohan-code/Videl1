@@ -1,0 +1,134 @@
+{
+  "name": "Videl",
+  "description": "All-in-one Telegram bot: save restricted content, auto-rename & encode videos, clone FileStore bots, Stars premium.",
+  "keywords": [
+    "telegram",
+    "bot",
+    "pyrogram",
+    "aiogram",
+    "filestore",
+    "encoder",
+    "rename"
+  ],
+  "stack": "container",
+  "env": {
+    "BOT_TOKEN": {
+      "description": "Bot token from @BotFather",
+      "required": true
+    },
+    "API_ID": {
+      "description": "From my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "From my.telegram.org",
+      "required": true
+    },
+    "DB_URI": {
+      "description": "MongoDB connection string (MongoDB Atlas free tier works)",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Your Telegram user id (space-separated for several owners)",
+      "required": true
+    },
+    "LOG_CHANNEL": {
+      "description": "Log channel id (-100…), the bot must be admin there",
+      "required": false
+    },
+    "ENCRYPTION_KEY": {
+      "description": "Fernet key that encrypts clone-bot tokens (python -c \"from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())\")",
+      "required": false
+    },
+    "FSUB_CHANNELS": {
+      "description": "Force-subscribe channel ids / @usernames (space separated)",
+      "required": false
+    },
+    "RENAME_DUMP_CHANNEL": {
+      "description": "Copy every auto-renamed file here (optional)",
+      "required": false
+    },
+    "BOT_NAME": {
+      "description": "Bot display name",
+      "value": "Videl",
+      "required": false
+    },
+    "LOG_TZ": {
+      "description": "Timezone for logs / daily report",
+      "value": "Asia/Kolkata",
+      "required": false
+    },
+    "MAX_LINK_FILES": {
+      "description": "Most files one clone-bot share/batch link may deliver",
+      "value": "1000",
+      "required": false
+    },
+    "AIOGRAM_ENABLED": {
+      "description": "Use aiogram for newer Bot API features (coloured buttons, managed bots)",
+      "value": "True",
+      "required": false
+    },
+    "ENCODER_WORKERS": {
+      "description": "Encodes running at the same time",
+      "value": "1",
+      "required": false
+    },
+    "HW_ENCODER": {
+      "description": "GPU encoder: auto | nvenc | qsv | vaapi | off",
+      "value": "auto",
+      "required": false
+    },
+    "SPLIT_SIZE_MB": {
+      "description": "Split uploads above this size (MB, max 1990)",
+      "value": "1950",
+      "required": false
+    },
+    "SINGLE_INSTANCE": {
+      "description": "Only one running copy per bot token (prevents doubled replies / encodes during redeploys)",
+      "value": "True",
+      "required": false
+    },
+    "FAST_DL_WORKERS": {
+      "description": "Parallel chunk requests per Telegram download (1-16, set FAST_DL=False to disable)",
+      "value": "6",
+      "required": false
+    },
+    "LEECH_FREE_GB": {
+      "description": "/leech size limit for free users (GB)",
+      "value": "2",
+      "required": false
+    },
+    "LEECH_PRO_GB": {
+      "description": "/leech size limit for Encoder Pro / Premium (GB)",
+      "value": "8",
+      "required": false
+    },
+    "WEB_DASHBOARD": {
+      "description": "Web dashboard at https://<your-app>/admin – open it from Telegram with /dashboard (true/false)",
+      "value": "true",
+      "required": false
+    },
+    "ADMIN_WEB_TOKEN": {
+      "description": "Optional long random string – also lets you open /admin#TOKEN directly in a browser",
+      "value": "",
+      "required": false
+    },
+    "BACKUP_HOUR": {
+      "description": "Hour (0-23, LOG_TZ) for the daily database backup sent to the owner",
+      "value": "4",
+      "required": false
+    },
+    "DEFAULT_LANG": {
+      "description": "Fallback language: en hi ml ta es id ru ar",
+      "value": "en",
+      "required": false
+    }
+  },
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "repository": "https://github.com/Beasgohan-code/Videl1"
+}
