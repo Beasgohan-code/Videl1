@@ -18,14 +18,18 @@ def setup_link_gen(app: Client, log_channel_id: int, is_admin_func):
 
     async def wait_for_input(user_id: int, timeout: int = 300) -> Message | None:
         """Wait for the next message from this user."""
-        future = asyncio.get_event_loop().create_future()
+        old = _waiting.get(user_id)
+        if old is not None and not old.done():
+            old.set_result("CANCEL")            # the same command started again → end the older flow
+        future = asyncio.get_running_loop().create_future()
         _waiting[user_id] = future
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             return None
         finally:
-            _waiting.pop(user_id, None)
+            if _waiting.get(user_id) is future:    # an older flow timing out must not drop the newer one's slot
+                _waiting.pop(user_id, None)
 
 
     async def process_link(encoded: str, user_id: int, bot_id: int) -> str:

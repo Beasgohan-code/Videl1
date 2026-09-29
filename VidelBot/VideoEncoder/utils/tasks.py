@@ -340,7 +340,8 @@ async def url_task(message, msg):
 
 
 async def batch_task(message, msg):
-    if message.reply_to_message:
+    # "/batch <url>" sent as a reply to some text used to ignore the url and fail with NO ZIP FOUND
+    if message.reply_to_message and getattr(message.reply_to_message, "document", None):
         filepath = await handle_tg_down(message, msg, mode='reply', dest_dir=_dirs(message)[0])
     else:
         filepath = await handle_download_url(message, msg, True, dest_dir=_dirs(message)[0])

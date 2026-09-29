@@ -64,6 +64,13 @@ async def queue_answer(app, callback_query):
     if pos == -1:
         await callback_query.answer("no task", show_alert=True)
         return
+    if pos >= len(data):          # stale button from an old queue message → show the queue as it is now
+        doc = queue_doc()
+        try:
+            await callback_query.edit_message_text(doc.classic())
+        except Exception:
+            pass
+        return await callback_query.answer("The queue changed – showing it as it is now.")
     taskpos = pos+1
     size = len(data)
     tasktitle = await get_title(pos)
@@ -78,12 +85,16 @@ def queue_doc():
     doc = Doc("📋", "Encoder queue", f"{len(data)} task{'s' if len(data) != 1 else ''}")
     if not data:
         return doc.text("<i>🥱 No active encodes – send /dl to a video to start one.</i>")
-    running = jobs.active()
-    stage = running[0].stage if running else "starting"
+    from ..utils import scheduler
+    active = jobs.active()
+    # with ENCODER_WORKERS > 1 several tasks run at once – mark every running one
+    stage = active[0].stage if len(active) == 1 else "running"
+    run = scheduler.running() or data[:1]
     rows = []
     for i, task_msg in enumerate(data[:25]):
         kind, name, user = task_parts(task_msg)
-        state = f"▶️ {stage}" if i == 0 else f"⏳ #{i + 1}"
+        # waiting tasks keep their queue position – the same #n their "Added to the queue" card shows
+        state = f"▶️ {stage}" if any(task_msg is r for r in run) else f"⏳ #{i + 1}"
         rows.append((state, kind, name[:40], Raw(user)))
     doc.table(rows, header=("State", "Task", "File", "User"), compact=True)
     if len(data) > 25:
@@ -107,11 +118,31 @@ async def clear(app, message):
     if not c:
         return
     await AddUserToDatabase(app, message)
-    if len(data) >= 1:
-        current = data[0]
-        removed = len(data) - 1
-        data.clear()
-        data.append(current)
-        await message.reply(f'🧹 Purged {removed} waiting task{"s" if removed != 1 else ""} – the running one continues.')
+    removed = await purge_waiting()
+    if removed:
+        await message.reply(f'🧹 Purged {removed} waiting task{"s" if removed != 1 else ""} – running tasks continue.')
+    elif data:
+        await message.reply("🥱 Nothing is waiting – only running tasks are in the queue (❌ Cancel stops them).")
     else:
         await message.reply("🥱 No Active Encodes.")
+
+
+async def purge_waiting() -> int:
+    """Remove every task that hasn't started. Running tasks are untouched.
+
+    The old /clear kept data[0] and dropped the rest: with ENCODER_WORKERS > 1 that also dropped
+    tasks that were still encoding (the scheduler then saw free slots and started more on top), and
+    the purged tasks stayed in Mongo, so they all came back after the next restart."""
+    from ..utils import scheduler
+    victims = scheduler.waiting()
+    for m in victims:
+        note = scheduler.NOTES.get(id(m))
+        scheduler.finish(m)
+        scheduler.cleanup_task(m)
+        await scheduler.forget(m)
+        if note is not None:
+            try:
+                await note.edit_text("🧹 <b>Removed from the queue</b> by an admin – send the command again to retry.")
+            except Exception:
+                pass
+    return len(victims)

@@ -60,6 +60,12 @@ def load_plugins(app) -> int:
                     if isinstance(group, int):
                         app.add_handler(handler, group)
                         count += 1
+    # last group-0 handler: the "what can I do with this file?" hint for files no plugin claimed
+    try:
+        from core import filehint
+        count += filehint.register(app)
+    except Exception:
+        log.exception("❌ file hint not registered")
     return count
 
 

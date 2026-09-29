@@ -57,7 +57,9 @@ def _env_num(cast, name, default, empty=None):
         return cast(raw)
     except ValueError:
         import sys
-        print(f"[config] {name}={raw!r} is not a valid {cast.__name__} – using {default}", file=sys.stderr)
+        hint = (" – channels need their numeric id like -1001234567890 (forward a post to @userinfobot), "
+                "not an @username" if raw.startswith("@") else "")
+        print(f"[config] {name}={raw!r} is not a valid {cast.__name__} – using {default}{hint}", file=sys.stderr)
         return default
 
 
@@ -308,7 +310,16 @@ SOURCE_URL = os.environ.get("SOURCE_URL", "https://github.com/Beasgohan-code/Vid
 PORT = env_int("PORT", 8080)
 # Public URL of this app – pinged periodically so free hosts (Render/Koyeb/Replit…)
 # don't put it to sleep. Auto-detected on Render, Koyeb, Railway and Heroku.
-KEEP_ALIVE_URL = (
+def _https(url: str) -> str:
+    """'videl.onrender.com/' → 'https://videl.onrender.com' (a pasted bare domain used to break self-ping and
+    hide the dashboard button)."""
+    url = (url or "").strip().rstrip("/")
+    if url and "://" not in url:
+        url = "https://" + url
+    return url
+
+
+KEEP_ALIVE_URL = _https(
     os.environ.get("KEEP_ALIVE_URL")
     or os.environ.get("RENDER_EXTERNAL_URL")
     or (f"https://{os.environ['KOYEB_PUBLIC_DOMAIN']}" if os.environ.get("KOYEB_PUBLIC_DOMAIN") else "")

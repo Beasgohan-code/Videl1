@@ -36,14 +36,18 @@ def setup_flink(app: Client, worker_db, log_channel_id: int, is_admin_func):
     waiting: dict[int, asyncio.Future] = {}
 
     async def wait_for(user_id: int, timeout: int = 300):
-        fut = asyncio.get_event_loop().create_future()
+        old = waiting.get(user_id)
+        if old is not None and not old.done():
+            old.set_result("CANCEL")            # the same command started again → end the older flow
+        fut = asyncio.get_running_loop().create_future()
         waiting[user_id] = fut
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
             return None
         finally:
-            waiting.pop(user_id, None)
+            if waiting.get(user_id) is fut:    # an older flow timing out must not drop the newer one's slot
+                waiting.pop(user_id, None)
 
     # group=1 → runs before link_gen's catcher (group=2); only active while waiting.
     @app.on_message(filters.private & ~filters.command(["start", "flink"]), group=1)

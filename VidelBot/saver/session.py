@@ -132,7 +132,13 @@ async def cancel_login(client: Client, message: Message):
         pass
 
 async def check_login_state(_, __, message):
-    return bool(message.from_user) and message.from_user.id in LOGIN_STATE
+    if not message.from_user or message.from_user.id not in LOGIN_STATE:
+        return False
+    # other commands (/help, /start …) used to be swallowed as the phone number / code and killed the login;
+    # a 2FA password may legitimately start with "/", so that step still takes everything
+    if (message.text or "").startswith("/"):
+        return LOGIN_STATE[message.from_user.id].get("step") == "WAITING_PASSWORD"
+    return True
 login_state_filter = filters.create(check_login_state)
 
 @Client.on_message(filters.private & filters.text & login_state_filter & ~filters.command(["cancel", "cancellogin"]))
@@ -177,11 +183,12 @@ async def login_handler(bot: Client, message: Message):
         )
        
         animation_task = asyncio.create_task(animate_loading(status_msg))
-       
-        await temp_client.connect()
-        animation_task.cancel() 
-       
+
         try:
+            try:
+                await temp_client.connect()      # a network error here used to escape the handler
+            finally:
+                animation_task.cancel()
             code = await temp_client.send_code(phone_number)
            
             state["data"]["client"] = temp_client
@@ -206,16 +213,18 @@ async def login_handler(bot: Client, message: Message):
                 "Please try again (e.g., +919876543210).",
                 parse_mode=enums.ParseMode.HTML
             )
-            await temp_client.disconnect()
-            del LOGIN_STATE[user_id]
+            await _drop(temp_client)
+            LOGIN_STATE.pop(user_id, None)
+            await _remove_keyboard(message)
         except Exception as e:
             await status_msg.edit(
                 f"<b>❌ Something went wrong: {html.escape(str(e))} 🤔</b>\n\n"
                 f"<i>Progress: {progress}</i>\n\nPlease try /login again.",
                 parse_mode=enums.ParseMode.HTML
             )
-            await temp_client.disconnect()
-            del LOGIN_STATE[user_id]
+            await _drop(temp_client)
+            LOGIN_STATE.pop(user_id, None)
+            await _remove_keyboard(message)
    
     elif step == "WAITING_CODE":
         phone_code = text.replace(" ", "")
@@ -250,8 +259,9 @@ async def login_handler(bot: Client, message: Message):
                 f"<i>Progress: {progress}</i>\n\nPlease start over with /login.",
                 parse_mode=enums.ParseMode.HTML
             )
-            await temp_client.disconnect()
-            del LOGIN_STATE[user_id]
+            await _drop(temp_client)
+            LOGIN_STATE.pop(user_id, None)
+            await _remove_keyboard(message)
         except SessionPasswordNeeded:
             animation_task.cancel()
            
@@ -270,12 +280,17 @@ async def login_handler(bot: Client, message: Message):
                 f"<b>❌ Something went wrong: {html.escape(str(e))} 🤔</b>\n\n<i>Progress: {progress}</i>",
                 parse_mode=enums.ParseMode.HTML
             )
-            await temp_client.disconnect()
-            del LOGIN_STATE[user_id]
+            await _drop(temp_client)
+            LOGIN_STATE.pop(user_id, None)
+            await _remove_keyboard(message)
    
     elif step == "WAITING_PASSWORD":
         password = text
         temp_client = state["data"]["client"]
+        try:
+            await message.delete()               # don't leave the 2FA password readable in the chat
+        except Exception:
+            pass
        
         status_msg = await message.reply(
             f"<b>🔑 Checking password... 🔑</b>\n\n<i>Progress: {progress}</i>",
@@ -301,8 +316,9 @@ async def login_handler(bot: Client, message: Message):
                 f"<b>❌ Something went wrong: {html.escape(str(e))} 🤔</b>\n\n<i>Progress: {progress}</i>",
                 parse_mode=enums.ParseMode.HTML
             )
-            await temp_client.disconnect()
-            del LOGIN_STATE[user_id]
+            await _drop(temp_client)
+            LOGIN_STATE.pop(user_id, None)
+            await _remove_keyboard(message)
 
 async def finalize_login(status_msg: Message, temp_client, user_id):
     try:
@@ -321,19 +337,39 @@ async def finalize_login(status_msg: Message, temp_client, user_id):
             del LOGIN_STATE[user_id]
         await _log_session("Login", user_id, account, phone)
            
+        # (edits only accept inline keyboards – passing ReplyKeyboardRemove here made both this edit and the
+        #  error edit below fail, so a successful login showed nothing and the ❌ Cancel keyboard stayed)
         await status_msg.edit(
             "<b>🎉 Login Successful! 🌟</b>\n\n"
             "<i>Progress: ✅ Phone Number → ✅ Code → ✅ Password</i>\n\n"
             "<i>Your session has been saved securely. 🔒</i>\n\n"
             "You can now use all features! 🚀",
             parse_mode=enums.ParseMode.HTML,
-            reply_markup=remove_keyboard
         )
     except Exception as e:
-        await status_msg.edit(
-            f"<b>❌ Failed to save session: {e} 😔</b>\n\nPlease try /login again.",
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=remove_keyboard
-        )
-        if user_id in LOGIN_STATE:
-            del LOGIN_STATE[user_id]
+        LOGIN_STATE.pop(user_id, None)
+        await _drop(temp_client)
+        try:
+            await status_msg.edit(
+                f"<b>❌ Failed to save session: {html.escape(str(e))} 😔</b>\n\nPlease try /login again.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
+    await _remove_keyboard(status_msg)
+
+
+async def _drop(temp_client):
+    try:
+        await temp_client.disconnect()
+    except Exception:
+        pass
+
+
+async def _remove_keyboard(message: Message):
+    """Take the ❌ Cancel reply-keyboard away (only a *new* message can do that)."""
+    try:
+        note = await message.reply("✅", reply_markup=remove_keyboard, quote=False)
+        await note.delete()
+    except Exception:
+        pass
