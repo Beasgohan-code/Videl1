@@ -586,7 +586,9 @@ async def admins_callback(client: Client, query: CallbackQuery):
     await query.message.edit_text(
         f"<b>👥 Admin Management</b>\n\n"
         f"<blockquote><b>Bot Owner:</b> <code>{bot['owner_id']}</code> (always admin)\n\n"
-        f"<b>Additional Admins:</b>\n{admin_list}</blockquote>",
+        f"<b>Additional Admins:</b>\n{admin_list}</blockquote>\n"
+        f"<i>🔒 Admins can make links, batches, bans and broadcasts in the bot – "
+        f"only you can change its settings.</i>",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Add Admin", callback_data=f"add_admin_{bot_id}")],
             [InlineKeyboardButton("➖ Remove Admin", callback_data=f"rem_admin_{bot_id}")],

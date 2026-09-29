@@ -270,7 +270,7 @@ def esc(text) -> str:
     return html.escape(str(text or ""), quote=False)
 
 
-def default_help(settings: dict, admin: bool) -> str:
+def default_help(settings: dict, admin: bool, owner: bool = False) -> str:
     lines = ["<b>❓ How to use this bot</b>", "",
              "<blockquote>• Open a file link to get its files here."]
     if setting(settings, "search_public") or admin:
@@ -280,11 +280,14 @@ def default_help(settings: dict, admin: bool) -> str:
     if (settings or {}).get("premium_stars"):
         lines.append("• /plan – premium: no verification / ads.")
     lines.append("• /about – about this bot.</blockquote>")
-    if admin:
+    if admin or owner:
         lines += ["", "<b>👮 Admin</b>",
-                  "<blockquote>/settings · /smartlink · /links · /analytics · /broadcast · /schedules\n"
-                  "/requests · /index · /autolink · /setpostchannel · /addpremium · /setpremium\n"
-                  "/setbuttons · /sethelp · /setabout · /export · /maintenance · /antiflood</blockquote>"]
+                  "<blockquote>/smartlink · /links · /analytics · /broadcast · /schedules · /requests\n"
+                  "/index · /addpremium · /delpremium · /premiumusers · /ban · /unban · /users</blockquote>"]
+    if owner:
+        lines += ["<b>👑 Owner</b> <i>(settings – only you)</i>",
+                  "<blockquote>/settings · /autolink · /setpostchannel · /setpremium · /setbuttons · /sethelp\n"
+                  "/setabout · /maintenance · /antiflood · /requestmode · /searchmode · /export</blockquote>"]
     return "\n".join(lines)
 
 
@@ -321,6 +324,10 @@ async def analytics_text(bot_id: int, username: str = "") -> str:
             label = esc(t.get("label") or "files")[:40]
             lines.append(f"{i}. {label} – <b>{t.get('clicks', 0)}</b> opens")
     return "\n".join(lines)
+
+
+OWNER_ONLY = "<b>🔒 Only the bot's owner can change its settings.</b>"
+OWNER_ONLY_ALERT = "🔒 Only the bot's owner can change its settings."
 
 
 # ═════════════════════════════ per-clone setup ═════════════════════════════
@@ -364,6 +371,26 @@ def setup_extras(app: Client, ctx):
             if not message.from_user or not await is_admin(message.from_user.id):
                 return
             return await func(client, message)
+        wrapper.__name__ = func.__name__
+        return wrapper
+
+    async def is_owner(uid: int) -> bool:
+        """Settings belong to the clone's owner alone – not clone admins and not Videl's own staff.
+        Read from the live bot document so an ownership transfer takes effect immediately."""
+        doc = await ctx.fresh_doc() or {}
+        return uid == doc.get("owner_id", ctx.owner_id)
+
+    def owner_only(func):
+        """For commands that change the clone's settings. Admins are told why nothing happened;
+        everyone else is ignored, the same as with admin commands."""
+        async def wrapper(client, message):
+            if not message.from_user:
+                return
+            uid = message.from_user.id
+            if await is_owner(uid):
+                return await func(client, message)
+            if await is_admin(uid):
+                await message.reply(OWNER_ONLY)
         wrapper.__name__ = func.__name__
         return wrapper
 
@@ -629,7 +656,7 @@ def setup_extras(app: Client, ctx):
         await message.reply("<b>💎 Premium users</b>\n\n" + "\n".join(lines))
 
     @app.on_message(filters.command("setpremium") & filters.private)
-    @admin_only
+    @owner_only
     async def setpremium_cmd(client, message):
         parts = args_of(message).lower().split()
         if parts and parts[0] in ("off", "0", "disable"):
@@ -785,7 +812,7 @@ def setup_extras(app: Client, ctx):
                 log.warning(f"[clone {bot_id}] channel post handling failed: {e}")
 
     @app.on_message(filters.command("autolink") & filters.private)
-    @admin_only
+    @owner_only
     async def autolink_cmd(client, message):
         parts = args_of(message).lower().split()
         keys = {"dm": "autolink_dm", "edit": "autolink_edit", "button": "autolink_edit", "post": "autolink_post"}
@@ -803,7 +830,7 @@ def setup_extras(app: Client, ctx):
             "<i>New files are always indexed for /search.</i>")
 
     @app.on_message(filters.command("setpostchannel") & filters.private)
-    @admin_only
+    @owner_only
     async def setpostchannel_cmd(client, message):
         arg = args_of(message)
         if arg.lower() in ("off", "none", "0"):
@@ -941,7 +968,7 @@ def setup_extras(app: Client, ctx):
                            switch_pm_parameter="help")
 
     @app.on_message(filters.command("searchmode") & filters.private)
-    @admin_only
+    @owner_only
     async def searchmode_cmd(client, message):
         arg = args_of(message).lower()
         if arg in ("on", "off"):
@@ -1195,7 +1222,7 @@ def setup_extras(app: Client, ctx):
 
     # ─────────────────────────── D · buttons, help/about, switches ───────────────────────────
     @app.on_message(filters.command("setbuttons") & filters.private)
-    @admin_only
+    @owner_only
     async def setbuttons_cmd(client, message):
         text = args_of(message) or (message.reply_to_message.text if message.reply_to_message else "") or ""
         if not text.strip():
@@ -1216,7 +1243,7 @@ def setup_extras(app: Client, ctx):
                             reply_markup=file_buttons_markup({"file_buttons": rows}))
 
     @app.on_message(filters.command("delbuttons") & filters.private)
-    @admin_only
+    @owner_only
     async def delbuttons_cmd(client, message):
         await set_setting("file_buttons", [])
         await message.reply("<b>✅ File buttons removed.</b>")
@@ -1226,7 +1253,8 @@ def setup_extras(app: Client, ctx):
         settings = await settings_now()
         text = settings.get(key) or ""
         if not text:
-            return await message.reply(fallback(settings, await is_admin(user.id)), disable_web_page_preview=True)
+            return await message.reply(fallback(settings, await is_admin(user.id), await is_owner(user.id)),
+                                       disable_web_page_preview=True)
         try:
             text = text.replace("{mention}", user.mention).replace("{first}", esc(user.first_name)) \
                        .replace("{bot}", "@" + (await me()).username)
@@ -1234,7 +1262,7 @@ def setup_extras(app: Client, ctx):
         except Exception:
             await message.reply(esc(settings.get(key)), disable_web_page_preview=True)
 
-    def default_about(settings, admin):
+    def default_about(settings, admin, owner=False):
         return ("<b>ℹ️ About</b>\n\n<blockquote>A file-sharing bot made with Videl.\n"
                 "Open a link to receive its files – /help shows everything I can do.</blockquote>")
 
@@ -1271,12 +1299,12 @@ def setup_extras(app: Client, ctx):
         await message.reply(f"<b>✅ /{name} updated.</b>")
 
     @app.on_message(filters.command("sethelp") & filters.private)
-    @admin_only
+    @owner_only
     async def sethelp_cmd(client, message):
         await set_text(message, "help_text", "help")
 
     @app.on_message(filters.command("setabout") & filters.private)
-    @admin_only
+    @owner_only
     async def setabout_cmd(client, message):
         await set_text(message, "about_text", "about")
 
@@ -1289,17 +1317,17 @@ def setup_extras(app: Client, ctx):
                             f"<code>/{message.command[0]} on|off</code>")
 
     @app.on_message(filters.command("maintenance") & filters.private)
-    @admin_only
+    @owner_only
     async def maintenance_cmd(client, message):
         await toggle_cmd(message, "maintenance_mode", "🛠 Maintenance")
 
     @app.on_message(filters.command("requestmode") & filters.private)
-    @admin_only
+    @owner_only
     async def requestmode_cmd(client, message):
         await toggle_cmd(message, "requests", "📨 File requests")
 
     @app.on_message(filters.command("antiflood") & filters.private)
-    @admin_only
+    @owner_only
     async def antiflood_cmd(client, message):
         parts = args_of(message).lower().split()
         if parts[:1] == ["autoban"] and len(parts) == 2 and parts[1] in ("on", "off"):
@@ -1313,7 +1341,7 @@ def setup_extras(app: Client, ctx):
                             "<code>/antiflood on|off</code> · <code>/antiflood autoban on|off</code>")
 
     @app.on_message(filters.command("settings") & filters.private)
-    @admin_only
+    @owner_only
     async def settings_cmd(client, message):
         s = await settings_now()
         await message.reply("<b>⚙️ Feature switches</b>\n<i>Tap to turn on / off.</i>",
@@ -1321,8 +1349,8 @@ def setup_extras(app: Client, ctx):
 
     @app.on_callback_query(filters.regex(r"^xt:(\w+)$"))
     async def settings_cb(client, query: CallbackQuery):
-        if not await is_admin(query.from_user.id):
-            return await query.answer("Admins only", show_alert=True)
+        if not await is_owner(query.from_user.id):
+            return await query.answer(OWNER_ONLY_ALERT, show_alert=True)
         key = query.matches[0].group(1)
         if key not in TOGGLE_KEYS:
             return await query.answer()
