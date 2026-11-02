@@ -321,7 +321,12 @@ class Watchdog:
                 self.worker_failures[bot_id] = fails + 1
                 log.warning(f"clone {bot_id} start failed ({fails + 1}x): {e}")
                 if fails + 1 == 5:
-                    await self._clone_event("CloneFailed", doc, f"❌ failed to start 5× in a row: <code>{str(e)[:150]}</code>")
+                    import html
+                    await self._clone_event(
+                        "CloneFailed",
+                        doc,
+                        f"❌ failed to start 5× in a row: <code>{html.escape(str(e)[:150])}</code>",
+                    )
                     await self._notify(doc.get("owner_id"),
                                        f"⚠️ Your clone bot @{doc.get('bot_username', '?')} keeps failing to start. "
                                        "Was its token revoked? Check it in /clone → 📋 My Bots.")

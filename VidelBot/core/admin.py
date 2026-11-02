@@ -319,17 +319,30 @@ async def restart_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command("update") & owner_filter)
 async def update_cmd(client: Client, message: Message):
+    import html
+    import re
     status = await message.reply_text("📥 <i>Pulling latest code…</i>")
-    proc = await asyncio.create_subprocess_shell(
-        "git pull --ff-only", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+    proc = await asyncio.create_subprocess_exec(
+        "git", "pull", "--ff-only",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
     )
-    out, _ = await proc.communicate()
-    out = out.decode(errors="ignore").strip()[-3000:] or "no output"
+    try:
+        raw_out, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return await status.edit_text("❌ <b>git pull timed out after 60s.</b>")
+    out = raw_out.decode(errors="ignore").strip()[-3000:] or "no output"
+    out = re.sub(r"(https?://)[^@\s/]+@", r"\1***@", out)
+    safe_out = html.escape(out)
     if proc.returncode != 0:
-        return await status.edit_text(f"❌ <b>git pull failed</b>\n<pre>{out}</pre>")
+        return await status.edit_text(f"❌ <b>git pull failed</b>\n<pre>{safe_out}</pre>")
     if "Already up to date" in out:
         return await status.edit_text("✅ Already up to date.")
-    await status.edit_text(f"<pre>{out}</pre>\n\n♻️ <i>Restarting…</i>")
+    await status.edit_text(f"<pre>{safe_out}</pre>\n\n♻️ <i>Restarting…</i>")
     await _restart(client, status, reason="Update")
 
 

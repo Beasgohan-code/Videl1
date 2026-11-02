@@ -75,6 +75,7 @@ class CloneExtras:
             await self.requests.create_index([("status", 1), ("at", -1)])
             await self.schedules.create_index("run_at")
             await self.purchases.create_index([("code", 1), ("user", 1)], unique=True)
+            await self.payments.create_index("charge_id", unique=True, sparse=True)
         except Exception:
             pass   # index creation is an optimisation only
 
@@ -167,9 +168,32 @@ class CloneExtras:
     async def list_premium(self, limit=50) -> list:
         return await self.premium.find({}).limit(limit).to_list(length=limit)
 
-    async def record_payment(self, user_id: int, kind: str, stars: int, charge_id: str, ref=""):
-        await self.payments.insert_one({"user": user_id, "kind": kind, "stars": stars,
-                                        "charge_id": charge_id, "ref": ref, "at": now()})
+    async def claim_payment(self, user_id: int, kind: str, stars: int, charge_id: str, ref="") -> bool:
+        """Atomically claim `charge_id` once so replayed clone Stars updates never double-grant."""
+        charge_id = (charge_id or "").strip()
+        if not charge_id:
+            return False
+        doc = {"user": user_id, "kind": kind, "stars": int(stars), "charge_id": charge_id,
+               "ref": ref, "at": now(), "fulfilled": False}
+        try:
+            res = await self.payments.update_one({"charge_id": charge_id}, {"$setOnInsert": doc}, upsert=True)
+            return res.upserted_id is not None
+        except Exception as exc:
+            if "E11000" in str(exc) or exc.__class__.__name__ == "DuplicateKeyError":
+                return False
+            raise
+
+    async def mark_payment_fulfilled(self, charge_id: str):
+        await self.payments.update_one({"charge_id": charge_id}, {"$set": {"fulfilled": True}})
+
+    async def rollback_unfulfilled_payment(self, charge_id: str):
+        await self.payments.delete_one({"charge_id": charge_id, "fulfilled": False})
+
+    async def record_payment(self, user_id: int, kind: str, stars: int, charge_id: str, ref="") -> bool:
+        claimed = await self.claim_payment(user_id, kind, stars, charge_id, ref)
+        if claimed:
+            await self.mark_payment_fulfilled(charge_id)
+        return claimed
 
     async def stars_earned(self) -> int:
         total = 0
