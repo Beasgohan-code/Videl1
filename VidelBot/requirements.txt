@@ -24,7 +24,8 @@ dnspython==2.8.0
 # ── Security / tools ────────────────────────────────
 cryptography==50.0.1
 qrcode[pil]==8.2
-pillow==12.3.0                  # thumbnails (auto-rename, saver)
+pillow==12.3.0                  # thumbnails & image studio (auto-rename, saver, studio)
+pypdf==6.21.4                   # PDF metadata, merge, split & page extraction (media studio)
 
 # ── Encoder: media / downloads ───────────────────────
 hachoir==3.4.0

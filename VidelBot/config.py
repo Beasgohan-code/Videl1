@@ -232,6 +232,8 @@ DRIVE_HTTP_TIMEOUT = max(10, env_int("GDRIVE_HTTP_TIMEOUT", env_int("DRIVE_HTTP_
 RCLONE_CONFIG_PATH = (os.environ.get("RCLONE_CONFIG_PATH") or os.environ.get("RCLONE_CONFIG", "rclone.conf")).strip()
 RCLONE_DEFAULT_REMOTE = os.environ.get("RCLONE_DEFAULT_REMOTE", "").strip()
 GOFILE_TOKEN = os.environ.get("GOFILE_TOKEN", "").strip()
+DROPBOX_ACCESS_TOKEN = os.environ.get("DROPBOX_ACCESS_TOKEN", "").strip()
+ONEDRIVE_ACCESS_TOKEN = os.environ.get("ONEDRIVE_ACCESS_TOKEN", "").strip()
 GOFILE_FOLDER_ID = os.environ.get("GOFILE_FOLDER_ID", "").strip()
 
 # The original encoder code expects trailing slashes.
