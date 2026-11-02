@@ -79,8 +79,8 @@ a.pri{background:var(--acc);border-color:var(--acc);color:#fff}
 </style></head><body><div class="box">
 <div class="badge"><span class="dot"></span>Online</div>
 <h1>{{BOT}} is running ✨</h1>
-<p>Unified Telegram Media Suite · WzGram MTProto + Richgram UI</p>
-<div class="actions"><a class="pri" href="/admin">📊 Admin Console</a><a href="/health">🩺 Health JSON</a></div>
+<p>Multi-Bot SaaS Platform · WzGram MTProto + Bot API 10.3 + Richgram UI</p>
+<div class="actions"><a class="pri" href="/app">🚀 SaaS Studio</a><a href="/admin">📊 Admin Console</a><a href="/health">🩺 Health JSON</a></div>
 </div></body></html>"""
 
 
@@ -910,6 +910,8 @@ def make_app() -> web.Application:
     app.router.add_get("/admin/api/workspace", _admin_workspace)
     app.router.add_post("/admin/api/workspace/clean", _admin_workspace_clean)
     app.router.add_get("/admin/chart/{name:users|jobs}.png", _admin_chart)
+    from webapp import mount_webapp
+    mount_webapp(app)
     return app
 
 
