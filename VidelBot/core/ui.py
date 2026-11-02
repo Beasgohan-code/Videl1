@@ -134,6 +134,9 @@ def styled_button(
     return InlineKeyboardButton(label, **kw)
 
 
+btn = styled_button
+
+
 def wzgram_markup(markup):
     """Apply automatic ``ButtonStyle`` & ``DisabledButton`` to an ``InlineKeyboardMarkup`` for WzGram MTProto."""
     if markup is None or not COLORED_BUTTONS:

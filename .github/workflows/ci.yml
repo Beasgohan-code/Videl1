@@ -82,7 +82,7 @@ jobs:
           os.environ.setdefault("OWNER_ID", "1")
           import client
           st = client.runtime_stack()
-          assert st["engine"] == "WzGram" and st["richgram"] is True, st
+          assert st["engine"] == "WzGram" and st["rich_available"] is True and bool(st["richgram"]), st
           print("Runtime stack OK:", st)
           '
 

@@ -258,15 +258,56 @@ def start(app):
         log.info(f"💾 daily backup at {config.BACKUP_HOUR:02d}:00 {config.LOG_TZ} → {_target()}")
 
 
+def _db_doctor_doc(rep: dict):
+    from core.rich import Doc
+    from core.ui import styled_button as btn
+
+    is_dry = rep["dry_run"]
+    total_red = rep["total_redundant_docs"]
+    title = "Database Integrity Check" if is_dry else "Database Deduplication Complete"
+    sub = "read-only dry-run audit" if is_dry else f"merged {rep['merged_users']} user group(s)"
+    doc = Doc("🩺" if is_dry else "✅", title, sub)
+    doc.kv_table([
+        ("📥 Saver duplicates", f"{rep['saver_duplicate_users']} user(s) · {rep['saver_redundant_docs']} extra row(s)"),
+        ("🎬 Encoder duplicates", f"{rep['encoder_duplicate_users']} user(s) · {rep['encoder_redundant_docs']} extra row(s)"),
+        ("👤 Core user duplicates", f"{rep['videl_duplicate_users']} user(s)"),
+        ("⭐ Payments recorded", f"{rep['payments_total']} ({rep['payments_missing_charge']} missing charge_id)"),
+        ("🔁 Active subscriptions", str(rep["active_subscriptions"])),
+        ("🤖 Registered clones", str(rep["clones_total"])),
+        ("🧹 Removed extra rows", str(rep["removed_docs"]) if not is_dry else None),
+    ], key_header="Check", val_header="Status")
+    if is_dry and total_red > 0:
+        doc.quote(
+            f"Found {total_red} redundant duplicate row(s). Merging preserves Premium, Lifetime status, "
+            "login sessions, thumbnails, captions, word filters, and max save counters."
+        )
+        kb = InlineKeyboardMarkup([
+            [btn(f"🧹 Merge {total_red} Duplicate Row(s)", callback_data="bkr:dedupe_ok", style="success")],
+            [btn("✖️ Close", callback_data="close_btn", style="danger")],
+        ])
+    else:
+        if is_dry:
+            doc.status("ok", "All collections clean", "Zero duplicate user documents detected.")
+        kb = InlineKeyboardMarkup([[btn("✖️ Close", callback_data="close_btn")]])
+    return doc, kb
+
+
 # ─────────────────────────── /backup ───────────────────────────
 @Client.on_message(filters.command("backup") & filters.user(config.OWNERS))
 async def backup_cmd(client: Client, message: Message):
+    subcmd = (message.command[1].lower() if getattr(message, "command", None) and len(message.command) > 1 else "")
+    if subcmd in ("check", "doctor", "dedupe"):
+        from core import db_doctor, rich
+        rep = await db_doctor.inspect_and_deduplicate(dry_run=True)
+        doc_ui, kb = _db_doctor_doc(rep)
+        return await rich.reply(message, doc_ui, reply_markup=kb)
+
     doc = message.reply_to_message.document if message.reply_to_message else None
     if doc:
         if not (doc.file_name or "").endswith(".json.gz"):
             return await message.reply_text("⚠️ Reply to a <code>.json.gz</code> Videl backup file.")
         _pending[message.from_user.id] = (message.chat.id, message.reply_to_message.id, time.time())
-        from core.ui import btn
+        from core.ui import styled_button as btn
         return await message.reply_text(
             f"♻️ <b>Restore this backup?</b>\n<code>{html.escape(doc.file_name)}</code> · {doc.file_size / 1048576:.2f} MB\n\n"
             "<blockquote>Every document is <b>upserted</b> by its id – existing data is updated, nothing is deleted. "
@@ -285,11 +326,17 @@ async def backup_cmd(client: Client, message: Message):
         pass
 
 
-@Client.on_callback_query(filters.regex(r"^bkr:(yes|no|dry)$"))
+@Client.on_callback_query(filters.regex(r"^bkr:(yes|no|dry|dedupe_ok)$"))
 async def backup_restore_cb(client: Client, query: CallbackQuery):
     uid = query.from_user.id
     if uid not in config.OWNERS:
         return await query.answer("Owners only.", show_alert=True)
+    if query.data == "bkr:dedupe_ok":
+        from core import db_doctor, rich
+        await query.answer("Merging duplicates…")
+        rep = await db_doctor.inspect_and_deduplicate(dry_run=False)
+        doc_ui, kb = _db_doctor_doc(rep)
+        return await rich.edit(query.message, doc_ui, reply_markup=kb)
     is_dry = query.data == "bkr:dry"
     pending = _pending.get(uid) if is_dry else _pending.pop(uid, None)
     if query.data == "bkr:no" or not pending or time.time() - pending[2] > 600:

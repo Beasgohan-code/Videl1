@@ -180,9 +180,11 @@ async def apply_word_filters(user_id: int, text: str) -> str:
         return text
     try:
         for w in await db.get_delete_words(user_id) or []:
-            text = re.sub(re.escape(w), "", text, flags=re.IGNORECASE)
+            if w:
+                text = re.sub(re.escape(str(w)), "", text, flags=re.IGNORECASE)
         for target, repl in (await db.get_replace_words(user_id) or {}).items():
-            text = re.sub(re.escape(target), repl, text, flags=re.IGNORECASE)
+            if target:
+                text = re.sub(re.escape(str(target)), lambda _m, r=str(repl): r, text, flags=re.IGNORECASE)
     except Exception as e:
         logger.warning(f"word filter failed for {user_id}: {e}")
     return re.sub(r"[ \t]{2,}", " ", text).strip()

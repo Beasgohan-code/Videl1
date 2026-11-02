@@ -34,6 +34,17 @@ async def _verify_ownership(query: CallbackQuery, bot_id: int):
     return bot
 
 
+async def _verify_message_ownership(message: Message, bot_id: int):
+    """Re-verify bot ownership before processing any pending text/media input."""
+    uid = message.from_user.id
+    bot = await main_db.get_bot(bot_id)
+    if not bot or bot.get("owner_id") != uid:
+        _get_state().pop(uid, None)
+        await message.reply("<b>❌ Access denied!</b>")
+        return None
+    return bot
+
+
 def _extract_bot_id(pattern: str, data: str) -> int | None:
     """Extract bot_id from callback data using a regex pattern."""
     match = re.match(pattern, data)
@@ -223,6 +234,8 @@ async def handle_auto_delete_input(client: Client, message: Message, state: dict
     """Process custom auto-delete time input."""
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    if not await _verify_message_ownership(message, bot_id):
+        return
 
     try:
         seconds = int(message.text.strip())
@@ -424,6 +437,9 @@ async def handle_fsub_channel_input(client: Client, message: Message, state: dic
     """Process force-sub channel ID input."""
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    bot = await _verify_message_ownership(message, bot_id)
+    if not bot:
+        return
 
     try:
         channel_id = int(message.text.strip())
@@ -435,11 +451,6 @@ async def handle_fsub_channel_input(client: Client, message: Message, state: dic
 
     # Verify that the cloned bot has access and can create invite links
     import html
-    bot = await main_db.get_bot(bot_id)
-    if not bot or bot.get("owner_id") != user_id:
-        _get_state().pop(user_id, None)
-        await status_msg.edit_text("<b>❌ Access denied!</b>")
-        return
     token = decrypt_token(bot["bot_token_encrypted"])
 
     temp_client = Client(
@@ -700,6 +711,8 @@ async def handle_admin_input(client: Client, message: Message, state: dict):
     """Process admin ID input."""
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    if not await _verify_message_ownership(message, bot_id):
+        return
 
     try:
         admin_id = int(message.text.strip())
@@ -875,6 +888,9 @@ async def handle_botphoto_input(client: Client, message: Message, state: dict):
     import os
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    doc = await _verify_message_ownership(message, bot_id)
+    if not doc:
+        return
     back = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"startcfg_{bot_id}")]])
     from filestore.worker_bot.engine import worker_engine
     from core.profile import download_photo, remove_bot_photo, set_bot_photo
@@ -884,8 +900,7 @@ async def handle_botphoto_input(client: Client, message: Message, state: dict):
     if botapi.enabled():  # Bot API with the clone's own token – works even while it's stopped
         try:
             from filestore.utils.security import decrypt_token
-            doc = await main_db.get_bot(bot_id)
-            token = decrypt_token(doc["bot_token_encrypted"]) if doc else ""
+            token = decrypt_token(doc["bot_token_encrypted"])
         except Exception:
             token = ""
     if not worker and not token:
@@ -939,6 +954,8 @@ async def captioncfg_callback(client: Client, query: CallbackQuery):
 async def handle_startcfg_input(client: Client, message: Message, state: dict):
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    if not await _verify_message_ownership(message, bot_id):
+        return
     action = state["action"]
 
     if action == "set_botphoto":  # no worker restart needed
@@ -1223,6 +1240,8 @@ async def handle_shortener_input(client: Client, message: Message, state: dict, 
     awaiting_shortener_api_key / awaiting_shortener_domain steps)."""
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    if not await _verify_message_ownership(message, bot_id):
+        return
     action = {"api_key": "short_api", "domain": "short_domain"}.get(field) or state.get("action", "")
     text = message.text.strip() if message.text else ""
 

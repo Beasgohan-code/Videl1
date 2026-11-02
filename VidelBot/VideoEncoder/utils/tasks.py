@@ -367,11 +367,11 @@ async def batch_task(message, msg):
         for i in sorted(files_):
             msg_ = await message.reply('Encoding')
             filepath = os.path.join(dirpath, i)
-            await msg.edit('Encode Started!\nEncoding: <code>{}</code>'.format(i))
+            await msg.edit('Encode Started!\nEncoding: <code>{}</code>'.format(html.escape(i, quote=False)))
             try:
                 url = await handle_encode(filepath, message, msg_)
             except Exception as e:
-                await msg_.edit(str(e) + '\n\n Continuing...')
+                await msg_.edit(html.escape(str(e), quote=False) + '\n\n Continuing...')
                 continue
             else:
                 sentfiles.append((i, url))

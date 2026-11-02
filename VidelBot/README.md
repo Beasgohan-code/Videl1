@@ -505,7 +505,10 @@ Inside clones: `-10` Stars payments (atomic `charge_id` idempotency) → `-3` an
 - **Dry-Run & Non-Destructive Restore:**
   1. Reply `/backup` to any `.json.gz` Videl backup document.
   2. Tap **🔍 Dry-Run** (`bkr:dry`) first: Videl streams and validates the archive (capped at 256 MiB uncompressed to prevent gzip bombs), checks schema integrity, and displays exact **New inserts**, **Updates**, **Live secrets preserved**, and **Invalid rows skipped** without modifying MongoDB.
-  3. Tap **♻️ Apply Restore Now** (`bkr:yes`): Documents are upserted by `_id` (existing records are never deleted, and live user sessions are never overwritten by `null` backup placeholders), followed by automatic `vdb.warm_up()` and `load_db_admins()` cache refresh.
+  3. Tap **♻️ Restore** (`bkr:yes`): Documents are upserted by `_id` (existing records are never deleted, and live user sessions are never overwritten by `null` backup placeholders), followed by automatic `vdb.warm_up()` and `load_db_admins()` cache refresh.
+- **Database Integrity & Legacy Duplicate-User Doctor (`core/db_doctor.py`):**
+  1. Send `/backup check` (or `/backup doctor`) as a bot owner to run a read-only audit across `videl`, `saver`, `encoder`, and `filestore` without modifying MongoDB.
+  2. If legacy duplicate `id` rows are found in `saver.users` or `encoder.users`, tap **🧹 Merge Duplicate Row(s)** (`bkr:dedupe_ok`) to merge them non-destructively (preserving Lifetime or latest `premium_expiry`, user `/login` `session`s, custom thumbnails, captions, word filters, encoder settings, and max save/encode counters).
 
 ### 5. Troubleshooting
 - **`ImportError` or `RICH_AVAILABLE == False` after installing packages:** `richgram` lists `kurigram` in its package metadata, which shares the `pyrogram` import namespace with `wzgram`. Run `pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6` (already automated in the root `Dockerfile` and `.github/workflows/ci.yml`).
