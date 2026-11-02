@@ -1,0 +1,104 @@
+name: group_mod
+version: "1.0.0"
+author: Videl
+description: Richgram-powered group management & Bot API 10.3 moderation (bans, mutes, warns, member tags, reaction moderation, topics, join-requests, locks, anti-raid, welcome/rules & filters)
+entry: plugin.py
+enabled: true
+min_bot_version: "3.0.0"
+tags:
+  - group
+  - moderation
+  - botapi10
+permissions:
+  - group_admin_verification
+config_schema:
+  default_warn_limit:
+    type: int
+    default: 3
+    description: Default warnings before automatic mute/ban in groups
+  flood_limit:
+    type: int
+    default: 7
+    description: Messages within 8 seconds before group anti-flood triggers
+commands:
+  - name: gsettings
+    description: Interactive Richgram group moderation dashboard
+    access: admin
+  - name: gban
+    description: Ban a member from the group (reply or user + optional duration/reason)
+    access: admin
+  - name: gunban
+    description: Unban a user in the group
+    access: admin
+  - name: kick
+    aliases: [punch]
+    description: Kick a user from the group without permanent ban
+    access: admin
+  - name: mute
+    description: Mute a member in the group (supports 10m/2h/7d duration)
+    access: admin
+  - name: unmute
+    description: Restore a muted member's send permissions
+    access: admin
+  - name: warn
+    description: Issue a warning to a group member
+    access: admin
+  - name: unwarn
+    description: Remove one warning from a group member
+    access: admin
+  - name: warns
+    description: View a member's active warnings
+    access: user
+  - name: tag
+    description: Set a custom Bot API 10.3 member tag (<=16 chars)
+    access: admin
+  - name: deltag
+    description: Clear a member's custom tag
+    access: admin
+  - name: clearreactions
+    aliases: [delreactions]
+    description: Delete message reactions or purge a user's reactions across the chat
+    access: admin
+  - name: topic
+    description: Create, close, or reopen a supergroup forum topic
+    access: admin
+  - name: joinmode
+    description: Set join-request handling (off, notify, auto)
+    access: admin
+  - name: rules
+    description: View group rules (ephemeral Richgram card)
+    access: user
+  - name: setrules
+    description: Set or clear the group rules
+    access: admin
+  - name: welcome
+    description: Configure or toggle group welcome greetings
+    access: admin
+  - name: goodbye
+    description: Configure or toggle group goodbye messages
+    access: admin
+  - name: lock
+    description: Lock links, forwards, bots, media, or all messages for non-admins
+    access: admin
+  - name: unlock
+    description: Unlock links, forwards, bots, media, or all messages
+    access: admin
+  - name: gfilter
+    description: Add a group keyword auto-reply filter
+    access: admin
+  - name: delfilter
+    description: Remove a group keyword filter
+    access: admin
+  - name: gfilters
+    description: List active keyword filters in this group
+    access: user
+  - name: antiraid
+    description: Toggle emergency anti-raid join shield
+    access: admin
+  - name: modreport
+    description: Report a replied message to group administrators
+    access: user
+callbacks:
+  - pattern: "^plg_gmod:[\\w:_-]+$"
+    description: Group settings, warn removal, join-request approval & modreport actions
+    access: admin

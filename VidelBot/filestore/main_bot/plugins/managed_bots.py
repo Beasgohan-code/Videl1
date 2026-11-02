@@ -325,3 +325,32 @@ async def apply_new_token(bot: dict, new_token: str):
     except Exception as e:
         log.warning(f"restart after token rotation failed: {e}")
     return enc
+
+
+async def get_access_settings(bot_id: int, client=None):
+    """Fetch Bot API 10.3 ``BotAccessSettings`` for a managed clone bot."""
+    if botapi.enabled():
+        return await botapi.get_managed_bot_access_settings(bot_id)
+    from core.ui import is_wzgram_client
+    if is_wzgram_client(client) and hasattr(client, "get_managed_bot_access_settings"):
+        try:
+            return await client.get_managed_bot_access_settings(bot_id)
+        except Exception as e:
+            log.debug(f"wzgram get_managed_bot_access_settings({bot_id}) failed: {e}")
+    return None
+
+
+async def set_access_settings(bot_id: int, restricted: bool,
+                              added_user_ids: list[int] | None = None, client=None) -> bool:
+    """Update Bot API 10.3 ``setManagedBotAccessSettings`` for a managed clone bot."""
+    if botapi.enabled():
+        return await botapi.set_managed_bot_access_settings(bot_id, restricted, added_user_ids=added_user_ids)
+    from core.ui import is_wzgram_client
+    if is_wzgram_client(client) and hasattr(client, "set_managed_bot_access_settings"):
+        try:
+            return bool(await client.set_managed_bot_access_settings(
+                bot_id, restricted, added_user_ids=added_user_ids
+            ))
+        except Exception as e:
+            log.debug(f"wzgram set_managed_bot_access_settings({bot_id}) failed: {e}")
+    return False

@@ -87,18 +87,33 @@ def _is_command(message: Message) -> bool:
     return text.startswith("/")
 
 
+_ANON_GROUP_MOD_CMDS = frozenset({
+    "gsettings", "gban", "gunban", "kick", "punch", "mute", "unmute",
+    "warn", "unwarn", "warns", "tag", "deltag", "clearreactions", "delreactions",
+    "topic", "joinmode", "rules", "setrules", "welcome", "goodbye",
+    "lock", "unlock", "gfilter", "delfilter", "gfilters", "antiraid",
+})
+
+
 @Client.on_message(filters.incoming & ~filters.service, group=-5)
 async def senderless_gate(client: Client, message: Message):
     """Channel posts and anonymous-admin messages have no from_user; every module expects one.
-    Let /id through (useful to read a channel's ID), give anonymous admins a hint, drop the rest."""
+    Let /id and group-moderation commands from anonymous group admins through; drop the rest."""
     if message.from_user:
         return
     text = message.text or message.caption or ""
     cmd = text.split()[0][1:].split("@")[0].lower() if text.startswith("/") and text.split() else ""
     if cmd == "id":
         return
-    if _is_command(message) and message.chat and message.chat.type.value in ("group", "supergroup") \
-            and message.sender_chat and message.sender_chat.id == message.chat.id:
+    is_anon_grp = bool(
+        message.chat
+        and message.chat.type.value in ("group", "supergroup")
+        and message.sender_chat
+        and message.sender_chat.id == message.chat.id
+    )
+    if is_anon_grp and cmd in _ANON_GROUP_MOD_CMDS:
+        return
+    if _is_command(message) and is_anon_grp:
         try:
             await message.reply_text("👤 You're posting as the group (anonymous admin). "
                                      "Turn off <b>Remain anonymous</b> or DM me to use commands.")

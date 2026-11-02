@@ -128,6 +128,28 @@ GROUP_COMMANDS = [
     ("id", "🆔 User / chat IDs"),
     ("info", "👤 User info"),
     ("ping", "🏓 Latency"),
+    # group moderation & Bot API 10.3 community tools
+    ("gsettings", "🛡 Group moderation & settings dashboard"),
+    ("rules", "📜 View group rules"),
+    ("setrules", "✍️ Set group rules (admin)"),
+    ("gban", "🚫 Ban a group member (admin)"),
+    ("gunban", "✅ Unban a group member (admin)"),
+    ("kick", "👢 Kick a group member (admin)"),
+    ("mute", "🔇 Mute a group member (admin)"),
+    ("unmute", "🔊 Unmute a group member (admin)"),
+    ("warn", "⚠️ Warn a group member (admin)"),
+    ("warns", "📋 Check active warnings"),
+    ("tag", "🏷 Set custom member tag (admin)"),
+    ("deltag", "🏷 Clear member tag (admin)"),
+    ("clearreactions", "🧹 Clear reactions on message or chat (admin)"),
+    ("topic", "💬 Create, close or reopen forum topic (admin)"),
+    ("joinmode", "🚪 Configure join-request approval (admin)"),
+    ("welcome", "👋 Configure group welcome message (admin)"),
+    ("lock", "🔒 Lock links, forwards, media or bots (admin)"),
+    ("unlock", "🔓 Unlock restricted content types (admin)"),
+    ("gfilter", "💬 Add keyword auto-reply filter (admin)"),
+    ("antiraid", "🚨 Toggle emergency anti-raid shield (admin)"),
+    ("modreport", "🚨 Report a message to group admins"),
 ]
 
 ADMIN_COMMANDS = [

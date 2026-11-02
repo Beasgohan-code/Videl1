@@ -131,8 +131,13 @@ def tools_doc(username: str):
         ("/ping", "Bot latency"),
         ("/guide", "Illustrated guide with plans & FAQ"),
     ], header=("Command", "What it does"))
+    doc.details("🛡 Group moderation (Bot API 10.3)", Doc().items([
+        Raw("/gsettings · /rules · /setrules · /welcome · /goodbye"),
+        Raw("/gban · /gunban · /kick · /mute · /unmute · /warn · /warns"),
+        Raw("/tag · /deltag · /clearreactions · /topic · /joinmode · /lock · /antiraid · /modreport"),
+    ]))
     doc.details("💡 Tips", Doc().items([
-        "In groups, /help /id /info /guide answer only you (ephemeral messages).",
+        "In groups, /help /id /info /guide /rules answer only you (ephemeral messages).",
         Raw(f"Inline: type <code>@{html.escape(username)} text</code> in any chat to share a QR / short link."),
     ]), open_=True)
     return doc
