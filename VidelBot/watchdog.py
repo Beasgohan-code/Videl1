@@ -392,6 +392,15 @@ class Watchdog:
         except Exception:
             pass
         self._trim_module_caches()
+        try:
+            from core.sysinfo import memory_pressure
+            high, pct = memory_pressure(getattr(config, "MEMORY_HIGH_WATERMARK_PCT", 85))
+            if high:
+                log.warning(f"🐕 container memory pressure {pct:.1f}% – pruning source cache")
+                from VideoEncoder.utils import srccache
+                srccache.prune()
+        except Exception:
+            pass
         gc.collect()
         return round(psutil.Process().memory_info().rss / 1048576, 1)
 

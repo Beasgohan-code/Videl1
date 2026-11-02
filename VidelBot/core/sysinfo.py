@@ -155,3 +155,22 @@ def system_snapshot(disk_path: str = ".") -> dict[str, Any]:
         "net_recv_bytes": bytes_recv,
         "is_low_end": cpus <= 2 or (0 < ram_mb <= 1536),
     }
+
+
+def memory_pressure(threshold_pct: float = 90.0) -> tuple[bool, float]:
+    """Return `(is_over_threshold, current_mem_percent)` using cgroup-aware container RAM."""
+    if threshold_pct <= 0:
+        return False, 0.0
+    try:
+        vm = psutil.virtual_memory()
+        cg_limit = cgroup_memory_limit_bytes()
+        cg_used = cgroup_memory_current_bytes()
+        if cg_limit and cg_limit < vm.total:
+            used = min(cg_limit, cg_used if cg_used is not None else process_rss_bytes())
+            pct = round((used * 100.0 / cg_limit), 1) if cg_limit else 0.0
+        else:
+            pct = round(float(vm.percent), 1)
+        return pct >= float(threshold_pct), pct
+    except Exception:
+        return False, 0.0
+

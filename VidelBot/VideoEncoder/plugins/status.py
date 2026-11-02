@@ -198,11 +198,14 @@ def status_doc(page: int = 1, filter_mode: str = "all", viewer_id: int | None = 
                 elif j.get("processed"):
                     size_txt = f" · {get_readable_file_size(j['processed'])}"
                 eng = f" [{j['engine']}]" if j.get("engine") else ""
-                detail = f"▶️ {j.get('stage') or item['kind']}{eng} · {_mini_bar(pct)} {pct:.0f}% · {spd} · ETA {eta_txt}{size_txt}"
+                icon = "⏸" if j.get("paused") else "▶️"
+                state_prefix = f"{icon} {'Paused · ' if j.get('paused') else ''}{j.get('stage') or item['kind']}{eng}"
+                detail = f"{state_prefix} · {_mini_bar(pct)} {pct:.0f}% · {spd} · ETA {eta_txt}{size_txt}"
             elif item["running"]:
                 detail = f"▶️ {item['kind']} · starting…"
             else:
-                detail = f"⏳ Queued #{item['pos']} · {item['kind']}"
+                prio_tag = " ⚡" if id(data[item["pos"] - 1]) in scheduler.PRIO and item["pos"] <= len(data) else ""
+                detail = f"⏳ Queued #{item['pos']}{prio_tag} · {item['kind']}"
             rows.append((item["pos"], detail, str(item["name"])[:42], Raw(item["user_html"])))
         doc.table(rows, header=("#", "Progress / State", "File", "User"), compact=True)
     else:
@@ -221,17 +224,31 @@ def _status_kb(page: int = 1, filter_mode: str = "all", viewer_id: int | None = 
 
     rows: list[list] = []
 
-    # Per-task cancel buttons for active jobs on this page (max 3 per row)
-    cancel_btns = []
+    # Per-task Pause/Resume, Stop & Boost controls for items on this page
+    action_btns = []
+    is_viewer_admin = bool(viewer_id and (viewer_id in owner or viewer_id in sudo_users))
+    if not is_viewer_admin and viewer_id:
+        import config
+        is_viewer_admin = viewer_id in getattr(config, "ADMINS", ()) or viewer_id in getattr(config, "OWNERS", ())
+
     for item in page_items:
         j = item.get("job")
         if j and j.get("key") is not None:
-            cancel_btns.append(
-                btn(f"✖️ Stop #{item['pos']}", callback_data=f"status cancel {j['key']}", style="danger")
+            k = j["key"]
+            if j.get("paused"):
+                action_btns.append(btn(f"▶️ Resume #{item['pos']}", callback_data=f"status resume {k}", style="success"))
+            else:
+                action_btns.append(btn(f"⏸ Pause #{item['pos']}", callback_data=f"status pause {k}"))
+            action_btns.append(
+                btn(f"✖️ Stop #{item['pos']}", callback_data=f"status cancel {k}", style="danger")
             )
-    if cancel_btns:
-        for i in range(0, len(cancel_btns), 3):
-            rows.append(cancel_btns[i : i + 3])
+        elif not item.get("running") and is_viewer_admin and item["pos"] > 1:
+            action_btns.append(
+                btn(f"⚡ Boost #{item['pos']}", callback_data=f"status boost {item['pos']}", style="primary")
+            )
+    if action_btns:
+        for i in range(0, len(action_btns), 3):
+            rows.append(action_btns[i : i + 3])
 
     # Pagination controls when tasks span multiple pages
     if pages > 1:
@@ -289,17 +306,32 @@ async def status_pages(client, query: CallbackQuery):
     msg = query.message
     msg_key = (getattr(getattr(msg, "chat", None), "id", 0), getattr(msg, "id", 0))
 
-    if cmd == "cancel" and len(parts) >= 3:
+    if cmd in ("cancel", "pause", "resume") and len(parts) >= 3:
         raw_key = parts[2]
         job_key = int(raw_key) if raw_key.lstrip("-").isdigit() else raw_key
         job = jobs.get(job_key)
         if job is None:
-            await query.answer("Nothing to cancel – that task already finished.", show_alert=True)
+            await query.answer("Nothing to update – that task already finished.", show_alert=True)
         elif not await _can_cancel_job(uid, job):
-            return await query.answer("Only the user who started this task (or an admin) can cancel it.", show_alert=True)
-        else:
+            return await query.answer("Only the user who started this task (or an admin) can control it.", show_alert=True)
+        elif cmd == "cancel":
             await jobs.cancel(job_key)
             await query.answer("✖️ Task cancelled.")
+        elif cmd == "pause":
+            jobs.pause(job_key)
+            await query.answer("⏸ Task paused.")
+        elif cmd == "resume":
+            jobs.resume(job_key)
+            await query.answer("▶️ Task resumed.")
+        page, mode = 1, "all"
+    elif cmd == "boost" and len(parts) >= 3:
+        if not await _can_cancel_job(uid, None):
+            return await query.answer("Only an admin or owner can prioritize queued tasks.", show_alert=True)
+        pos_num = int(parts[2]) if parts[2].isdigit() else 0
+        if scheduler.promote_to_front(pos_num):
+            await query.answer(f"⚡ Promoted task #{pos_num} to priority.")
+        else:
+            await query.answer("Task is already running or no longer waiting.", show_alert=True)
         page, mode = 1, "all"
     elif cmd == "page":
         page = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 1
@@ -326,10 +358,10 @@ async def status_pages(client, query: CallbackQuery):
             await msg.edit_text(doc.classic(), reply_markup=kb)
         else:
             await rich.edit(msg, doc, reply_markup=kb)
-        if cmd != "cancel":
+        if cmd not in ("cancel", "pause", "resume", "boost"):
             await query.answer("Refreshed!" if cmd == "ref" else f"View: {mode} · page {page}")
     except MessageNotModified:
-        if cmd != "cancel":
+        if cmd not in ("cancel", "pause", "resume", "boost"):
             await query.answer("Already up to date.")
     except (MessageIdInvalid, MessageDeleteForbidden):
         await query.answer("This status card is no longer active.", show_alert=True)

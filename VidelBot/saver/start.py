@@ -150,12 +150,22 @@ def get_message_type(msg):
     return None
 
 
+def _saver_job_key(user_id: int) -> int:
+    return -200_000 - int(user_id)
+
+
 def _live(status, user_id: int, title: str):
     """In-place progress for one transfer (SRC progress layout) with a ⏹ Cancel button."""
     from core.progress import LiveProgress
-    return LiveProgress(status, title, template=script.PROGRESS_BAR,
-                        cancel=lambda: bool(batch_temp.IS_BATCH.get(user_id)),
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Cancel", callback_data="sv_cancel")]]))
+    return LiveProgress(
+        status,
+        title,
+        template=script.PROGRESS_BAR,
+        cancel=lambda: bool(batch_temp.IS_BATCH.get(user_id)),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Cancel", callback_data="sv_cancel")]]),
+        job_key=_saver_job_key(user_id),
+        engine="ContentSaver",
+    )
 
 
 @Client.on_callback_query(filters.regex(r"^sv_cancel$"))
@@ -275,11 +285,33 @@ async def save(client: Client, message: Message):
 
     batch_temp.IS_BATCH[user_id] = False
     acc = None
+    total_posts = max(1, toID - fromID + 1)
+    saver_key = _saver_job_key(user_id)
+    try:
+        from VideoEncoder.utils import jobs as live_jobs
+        live_jobs.register(
+            saver_key,
+            user_id,
+            message.chat.id,
+            name=f"Saver {fromID}-{toID}" if total_posts > 1 else f"Saver #{fromID}",
+            stage=f"Saver · 0/{total_posts}",
+            engine="ContentSaver",
+            mode="saver",
+            on_cancel=lambda: batch_temp.IS_BATCH.__setitem__(user_id, True),
+        )
+    except Exception:
+        live_jobs = None
 
     try:
-        for msgid in range(fromID, toID + 1):
+        for step_idx, msgid in enumerate(range(fromID, toID + 1), 1):
             if batch_temp.IS_BATCH.get(user_id):
                 break
+            if live_jobs is not None:
+                live_jobs.update_progress(
+                    saver_key,
+                    stage=f"Saver · {step_idx}/{total_posts}",
+                    pct=round((step_idx - 1) * 100.0 / total_posts, 1) if total_posts > 1 else None,
+                )
 
             if is_public_link:
                 username = datas[3]
@@ -330,6 +362,8 @@ async def save(client: Client, message: Message):
             await asyncio.sleep(2)
     finally:
         batch_temp.IS_BATCH[user_id] = True
+        if live_jobs is not None:
+            live_jobs.unregister(saver_key)
         if acc is not None:
             try:
                 await acc.disconnect()

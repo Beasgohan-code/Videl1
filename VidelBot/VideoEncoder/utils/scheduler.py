@@ -62,7 +62,42 @@ def waiting() -> list:
 
 
 def slots_free() -> int:
-    return config.ENCODER_WORKERS - len(running())
+    active_count = len(running())
+    free = config.ENCODER_WORKERS - active_count
+    if free <= 0:
+        return 0
+    # Prevent OOM kills on parallel workers: if >=1 task is already running and container RAM is critical,
+    # hold extra worker slots back until memory drops or the active encode finishes.
+    pause_pct = int(getattr(config, "MEMORY_PAUSE_NEW_TASKS_PCT", 0) or 0)
+    if active_count >= 1 and pause_pct > 0:
+        try:
+            from core.sysinfo import memory_pressure
+            over, _ = memory_pressure(pause_pct)
+            if over:
+                return 0
+        except Exception:
+            pass
+    return free
+
+
+def promote_to_front(pos_1based: int) -> bool:
+    """Promote a waiting task (1-based index in `data`) to priority ahead of other waiting items."""
+    idx = int(pos_1based) - 1
+    if idx < 0 or idx >= len(data):
+        return False
+    target = data[idx]
+    run = running()
+    if any(target is r for r in run):
+        return False
+    PRIO.add(id(target))
+    data.pop(idx)
+    insert_at = len(data)
+    for i, m in enumerate(data):
+        if not any(m is r for r in run):
+            insert_at = i
+            break
+    data.insert(insert_at, target)
+    return True
 
 
 def next_waiting():

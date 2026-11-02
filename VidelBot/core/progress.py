@@ -2,15 +2,45 @@
 Live transfer progress – one async pyrogram `progress=` callback that edits a status message in place.
 
 Replaces the old "write a *status.txt file, poll it every 5 s" pattern: no disk I/O, no background
-tasks that can leak, no edits when nothing changed, FloodWait-aware, deleted-message-safe, and
-optionally feeds live metrics into `VideoEncoder.utils.jobs`.
+tasks that can leak, no edits when nothing changed, per-chat FloodWait coalescing, deleted-message
+circuit breaker, pause/resume support, and live telemetry into `VideoEncoder.utils.jobs`.
 """
 import time
+from collections import OrderedDict
 
 from pyrogram import StopTransmission
 from pyrogram.errors import FloodWait, MessageDeleteForbidden, MessageIdInvalid, MessageNotModified
 
 from core.ui import humanbytes, readable_time
+
+# Shared per-chat FloodWait cooldown & deleted-message circuit breaker across concurrent transfers
+_CHAT_COOLDOWN: dict[int, float] = {}
+_DEAD_MESSAGES: OrderedDict[tuple[int, int], float] = OrderedDict()
+_MAX_DEAD_TRACKED = 1024
+
+
+def _msg_ident(msg) -> tuple[int, int] | None:
+    if msg is None:
+        return None
+    chat_id = getattr(getattr(msg, "chat", None), "id", None)
+    mid = getattr(msg, "id", None)
+    if not chat_id or not mid:
+        return None
+    return int(chat_id), int(mid)
+
+
+def mark_message_dead(msg) -> None:
+    ident = _msg_ident(msg)
+    if ident is None:
+        return
+    _DEAD_MESSAGES[ident] = time.time()
+    while len(_DEAD_MESSAGES) > _MAX_DEAD_TRACKED:
+        _DEAD_MESSAGES.popitem(last=False)
+
+
+def is_message_dead(msg) -> bool:
+    ident = _msg_ident(msg)
+    return bool(ident and ident in _DEAD_MESSAGES)
 
 
 def bar(pct: float, width: int = 20, full: str = "█", empty: str = "░") -> str:
@@ -65,7 +95,7 @@ class LiveProgress:
         self.start = time.time()
         self._next = 0.0
         self._last_text = None
-        self._message_dead = False
+        self._message_dead = is_message_dead(status)
 
     def metrics(self, current: int, total: int) -> dict:
         now = time.time()
@@ -98,6 +128,10 @@ class LiveProgress:
 
                 if jobs.is_cancelled(self.job_key):
                     raise Cancelled()
+                if jobs.is_paused(self.job_key):
+                    ok = await jobs.wait_if_paused(self.job_key)
+                    if not ok or (self.cancel and self.cancel()):
+                        raise Cancelled()
                 m = self.metrics(current, total)
                 jobs.update_progress(
                     self.job_key,
@@ -114,9 +148,13 @@ class LiveProgress:
                 raise
             except Exception:
                 pass
-        if self._message_dead or self.status is None:
+        if self._message_dead or self.status is None or is_message_dead(self.status):
+            self._message_dead = True
             return
         now = time.time()
+        ident = _msg_ident(self.status)
+        if ident is not None and now < _CHAT_COOLDOWN.get(ident[0], 0.0):
+            return
         if now < self._next and current != total:
             return
         if current == total and getattr(self, "_done", False):
@@ -131,10 +169,19 @@ class LiveProgress:
             if current == total:
                 self._done = True
         except FloodWait as e:
-            self._next = time.time() + int(getattr(e, "value", 5) or 5) + 1
+            wait_s = int(getattr(e, "value", 5) or 5) + 1
+            until = time.time() + wait_s
+            self._next = until
+            if ident is not None:
+                _CHAT_COOLDOWN[ident[0]] = max(_CHAT_COOLDOWN.get(ident[0], 0.0), until)
+                if len(_CHAT_COOLDOWN) > 1024:
+                    _CHAT_COOLDOWN.clear()
         except (MessageIdInvalid, MessageDeleteForbidden):
             self._message_dead = True
+            mark_message_dead(self.status)
         except MessageNotModified:
             self._last_text = text
-        except Exception:
-            pass
+        except Exception as exc:
+            if "MESSAGE_ID_INVALID" in str(exc):
+                self._message_dead = True
+                mark_message_dead(self.status)

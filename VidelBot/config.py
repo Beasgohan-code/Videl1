@@ -228,7 +228,11 @@ DRIVE_DIR = os.environ.get("DRIVE_DIR", "")
 INDEX_URL = os.environ.get("INDEX_URL", "")
 GDRIVE_TOKEN_FILE = os.environ.get("GDRIVE_TOKEN_FILE", "token.json")
 GDRIVE_SA_FILE = os.environ.get("GDRIVE_SA_FILE", os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""))
-DRIVE_HTTP_TIMEOUT = max(10, env_int("DRIVE_HTTP_TIMEOUT", 60))
+DRIVE_HTTP_TIMEOUT = max(10, env_int("GDRIVE_HTTP_TIMEOUT", env_int("DRIVE_HTTP_TIMEOUT", 60)))
+RCLONE_CONFIG_PATH = (os.environ.get("RCLONE_CONFIG_PATH") or os.environ.get("RCLONE_CONFIG", "rclone.conf")).strip()
+RCLONE_DEFAULT_REMOTE = os.environ.get("RCLONE_DEFAULT_REMOTE", "").strip()
+GOFILE_TOKEN = os.environ.get("GOFILE_TOKEN", "").strip()
+GOFILE_FOLDER_ID = os.environ.get("GOFILE_FOLDER_ID", "").strip()
 
 # The original encoder code expects trailing slashes.
 if not DOWNLOAD_DIR.endswith("/"):
@@ -352,6 +356,8 @@ CLEANUP_AFTER_HOURS = env_float("CLEANUP_AFTER_HOURS", 6)       # delete temp fi
 MIN_FREE_DISK_GB = env_float("MIN_FREE_DISK_GB", 2)             # aggressive cleanup below this
 STATE_TIMEOUT_MIN = env_int("STATE_TIMEOUT_MIN", 15)           # drop abandoned login/setup flows
 AUTO_RESTART_ON_HANG = _bool("AUTO_RESTART_ON_HANG", True)                         # restart if Telegram is unreachable
+MEMORY_HIGH_WATERMARK_PCT = max(0, min(99, env_int("MEMORY_HIGH_WATERMARK_PCT", 85)))  # watchdog trims caches above this %
+MEMORY_PAUSE_NEW_TASKS_PCT = max(0, min(99, env_int("MEMORY_PAUSE_NEW_TASKS_PCT", 92)))  # hold extra parallel encodes above this % (0 = off)
 
 
 def missing_required():

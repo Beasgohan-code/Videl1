@@ -1,20 +1,31 @@
 """
-Running encoder & transfer jobs – unified live telemetry and hard cancellation.
+Running encoder & transfer jobs – unified live telemetry, pause/resume, and hard cancellation.
 
-The original cancel only flipped a flag in status.json that nothing read, so ffmpeg kept
-running until the end. Every active download, ffmpeg encode, split, Google Drive transfer,
-and Telegram upload registers here:
-  • live progress (`pct`, `processed`, `total`, `speed`, `speed_label`, `eta`, `engine`, `stage`)
+Every active VideoEncoder task, Google Drive transfer, Rclone/GoFile upload, Auto-Rename job,
+and Content Saver batch registers here:
+  • live progress (`pct`, `processed`, `total`, `speed`, `speed_label`, `eta`, `engine`, `stage`, `paused`)
     feeds `/status`, `/queue`, and the `/admin` web console without extra disk polling,
-  • cancelling terminates child subprocesses (`SIGTERM` → `SIGKILL` after grace) and signals
-    chunked upload/download loops via `jobs.is_cancelled(key)`.
+  • `pause(key)` / `resume(key)` suspends and resumes active POSIX child subprocesses (`SIGSTOP` / `SIGCONT`)
+    and async chunked transfer loops (`wait_if_paused(key)`),
+  • `cancel(key)` resumes any `SIGSTOP`ped subprocess before sending `SIGTERM` → `SIGKILL`, triggers optional
+    `on_cancel` hooks for subsystem state flags, and marks the job cancelled in `_RECENT`.
 """
 import asyncio
+import os
+import signal
 import time
 from collections import deque
 
-_JOBS: dict = {}              # status-message id → Job
+_JOBS: dict = {}              # status-message id (or subsystem negative key) → Job
 _RECENT = deque(maxlen=200)   # keys cancelled lately (the job may already be unregistered)
+
+
+def _sig_if_supported(name: str):
+    return getattr(signal, name, None)
+
+
+_SIGSTOP = _sig_if_supported("SIGSTOP")
+_SIGCONT = _sig_if_supported("SIGCONT")
 
 
 class Job:
@@ -25,6 +36,9 @@ class Job:
         "proc",
         "started",
         "cancelled",
+        "paused",
+        "_pause_ev",
+        "on_cancel",
         "stage",
         "name",
         "engine",
@@ -38,7 +52,7 @@ class Job:
         "updated_at",
     )
 
-    def __init__(self, key, user_id, chat_id, name="", stage="encode", engine="", mode=""):
+    def __init__(self, key, user_id, chat_id, name="", stage="encode", engine="", mode="", on_cancel=None):
         self.key = key
         self.user_id = user_id
         self.chat_id = chat_id
@@ -49,6 +63,10 @@ class Job:
         self.proc = None
         self.started = time.time()
         self.cancelled = False
+        self.paused = False
+        self._pause_ev = asyncio.Event()
+        self._pause_ev.set()
+        self.on_cancel = on_cancel
         self.progress = 0.0
         self.processed = 0
         self.total = 0
@@ -75,13 +93,14 @@ class Job:
             "eta": max(0, int(round(self.eta or 0))),
             "elapsed": max(0, int(now - self.started)),
             "cancelled": bool(self.cancelled),
+            "paused": bool(self.paused),
         }
 
 
-def register(key, user_id, chat_id, name="", stage="encode", *, engine="", mode="") -> Job:
+def register(key, user_id, chat_id, name="", stage="encode", *, engine="", mode="", on_cancel=None) -> Job:
     job = _JOBS.get(key)
     if job is None:
-        job = _JOBS[key] = Job(key, user_id, chat_id, name, stage, engine=engine, mode=mode)
+        job = _JOBS[key] = Job(key, user_id, chat_id, name, stage, engine=engine, mode=mode, on_cancel=on_cancel)
     else:
         job.stage = stage
         if name:
@@ -90,6 +109,8 @@ def register(key, user_id, chat_id, name="", stage="encode", *, engine="", mode=
             job.engine = engine
         if mode:
             job.mode = mode
+        if on_cancel is not None:
+            job.on_cancel = on_cancel
         job.updated_at = time.time()
     return job
 
@@ -143,6 +164,8 @@ def attach(key, proc):
         job.proc = proc
         if job.cancelled:
             _terminate_now(proc)
+        elif job.paused and _SIGSTOP is not None:
+            _signal_proc(proc, _SIGSTOP)
     return job
 
 
@@ -155,8 +178,75 @@ def is_cancelled(key) -> bool:
     return bool(job and job.cancelled) or key in _RECENT
 
 
+def is_paused(key) -> bool:
+    job = _JOBS.get(key)
+    return bool(job and job.paused and not job.cancelled)
+
+
+def _signal_proc(proc, sig) -> bool:
+    if proc is None or sig is None or getattr(proc, "returncode", None) is not None:
+        return False
+    try:
+        if hasattr(proc, "send_signal"):
+            proc.send_signal(sig)
+            return True
+        pid = getattr(proc, "pid", None)
+        if pid:
+            os.kill(int(pid), sig)
+            return True
+    except (ProcessLookupError, OSError, ValueError):
+        pass
+    return False
+
+
+def pause(key) -> bool:
+    """Pause a running job (`SIGSTOP` on attached subprocess + async pause gate)."""
+    job = _JOBS.get(key)
+    if not job or job.cancelled:
+        return False
+    if job.paused:
+        return True
+    job.paused = True
+    job._pause_ev.clear()
+    job.updated_at = time.time()
+    if _SIGSTOP is not None:
+        _signal_proc(job.proc, _SIGSTOP)
+    return True
+
+
+def resume(key) -> bool:
+    """Resume a paused job (`SIGCONT` on attached subprocess + open async pause gate)."""
+    job = _JOBS.get(key)
+    if not job or job.cancelled:
+        return False
+    job.paused = False
+    job._pause_ev.set()
+    job.updated_at = time.time()
+    if _SIGCONT is not None:
+        _signal_proc(job.proc, _SIGCONT)
+    return True
+
+
+async def wait_if_paused(key, max_wait: float | None = None) -> bool:
+    """Block while `key` is paused; returns `False` if the job was cancelled while paused."""
+    job = _JOBS.get(key)
+    if not job or not job.paused:
+        return not is_cancelled(key)
+    try:
+        if max_wait is not None:
+            await asyncio.wait_for(job._pause_ev.wait(), timeout=max_wait)
+        else:
+            await job._pause_ev.wait()
+    except asyncio.TimeoutError:
+        pass
+    return not is_cancelled(key)
+
+
 def unregister(key):
-    _JOBS.pop(key, None)
+    job = _JOBS.pop(key, None)
+    if job is not None:
+        job.paused = False
+        job._pause_ev.set()
 
 
 def active() -> list:
@@ -175,18 +265,29 @@ def latest():
 def _terminate_now(proc):
     try:
         if proc is not None and proc.returncode is None:
+            if _SIGCONT is not None:
+                _signal_proc(proc, _SIGCONT)
             proc.terminate()
     except (ProcessLookupError, OSError):
         pass
 
 
 async def cancel(key, grace: float = 5.0) -> bool:
-    """Mark the job cancelled and stop its subprocess (`SIGTERM` → `SIGKILL`)."""
+    """Mark the job cancelled, wake any paused gate, run `on_cancel`, and stop its subprocess (`SIGTERM` → `SIGKILL`)."""
     job = _JOBS.get(key)
     if not job:
         return False
     job.cancelled = True
+    job.paused = False
+    job._pause_ev.set()
     _RECENT.append(key)
+    if callable(job.on_cancel):
+        try:
+            res = job.on_cancel()
+            if asyncio.iscoroutine(res):
+                await res
+        except Exception:
+            pass
     proc = job.proc
     _terminate_now(proc)
     if proc is not None:
@@ -204,14 +305,16 @@ async def cancel(key, grace: float = 5.0) -> bool:
 
 # ─────────────────────────── restarts ───────────────────────────
 def kill_all() -> int:
-    """SIGKILL every running ffmpeg. Called right before the process re-execs itself (/restart, watchdog):
-    os.exec* keeps child processes alive, so the old encodes kept eating the CPU while the restored queue
-    started the very same encodes again – a duplicate *and* a slowdown."""
+    """SIGKILL every running media/transfer subprocess before exec restart."""
     n = 0
     for job in list(_JOBS.values()):
+        job.paused = False
+        job._pause_ev.set()
         proc = job.proc
         try:
             if proc is not None and proc.returncode is None:
+                if _SIGCONT is not None:
+                    _signal_proc(proc, _SIGCONT)
                 proc.kill()
                 n += 1
         except (ProcessLookupError, OSError):
@@ -219,10 +322,8 @@ def kill_all() -> int:
     return n
 
 
-def reap_orphans(names=("ffmpeg", "ffprobe", "mkvextract"), proc_root: str = "/proc") -> int:
-    """At startup: kill media tools that are still our children (left over from before an exec restart)."""
-    import os
-    import signal
+def reap_orphans(names=("ffmpeg", "ffprobe", "mkvextract", "rclone"), proc_root: str = "/proc") -> int:
+    """At startup: kill media/transfer tools that are still our children (left over from before an exec restart)."""
     me, n = os.getpid(), 0
     try:
         pids = [p for p in os.listdir(proc_root) if p.isdigit()]
