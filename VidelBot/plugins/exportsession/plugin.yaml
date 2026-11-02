@@ -1,0 +1,13 @@
+name: exportsession
+version: 1.0.0
+author: Videl
+description: Secure owner-only WzGram session string exporter with confirmation gate & auto-destruct
+entry: plugin.py
+min_bot_version: 3.0.0
+permissions:
+  - owner
+commands:
+  - name: exportsession
+    description: Export WzGram session string safely in private owner DM
+  - name: gensession
+    description: Alias for /exportsession (owner DM)

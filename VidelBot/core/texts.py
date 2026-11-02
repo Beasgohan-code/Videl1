@@ -62,8 +62,8 @@ HELP_TXT = f"""<b>📚 Comprehensive Help &amp; User Guide</b>
 ABOUT_TXT = """<b>ℹ️ About {first_name}</b>
 <blockquote><b>╭────[ 🧩 Overview ]────⍟</b>
 <b>├⍟ 🤖 Bot : <a href=https://t.me/{username}>@{username}</a></b>
-<b>├⍟ 🧩 Modules : Saver · Encoder · Auto-Rename · Clone · Tools</b>
-<b>├⍟ 📡 Protocol : MTProto (Pyrofork) + Bot API {api}</b>
+<b>├⍟ 🧩 Modules : Saver · Encoder · Auto-Rename · Clone · Plugins</b>
+<b>├⍟ 📡 Protocol : MTProto (WzGram Layer 232) + Richgram + Bot API {api}</b>
 <b>├⍟ 🐍 Language : <a href='https://www.python.org/'>Python 3.11</a></b>
 <b>├⍟ 🗄 Database : <a href='https://www.mongodb.com/'>MongoDB</a></b>
 <b>├⍟ 🎞 Engine : <a href='https://ffmpeg.org/'>FFmpeg</a></b>

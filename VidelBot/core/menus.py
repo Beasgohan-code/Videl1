@@ -116,7 +116,11 @@ def help_doc():
 def tools_doc(username: str):
     doc = Doc("🧰", "Tools", "handy utilities – reply to a file or send text")
     doc.table([
-        ("/mediainfo", "Reply to a file: codecs, resolution, bitrate, tracks"),
+        ("/mediainfo", "Reply to media or pass a direct HTTP link: codecs, tracks, bitrate"),
+        ("/imdb", "Movie & TV series cards with ratings, cast & trailers"),
+        ("/anime", "AniList anime, /manga & /character cards"),
+        ("/mdl", "MyDramaList Asian drama search & cast"),
+        ("/checklist", "Interactive task checklists (DM, group & Business)"),
         ("/rename", "Reply to a file with a new name to re-upload it"),
         ("/upload", "Reply to a file (≤ 200 MB) for a public download link"),
         ("/short", "Shorten a long link"),
@@ -144,8 +148,8 @@ async def about_doc(client):
     doc = Doc("ℹ️", f"About {b['first_name']}")
     doc.table([
         ("🤖 Bot", link(f"@{b['username']}", f"https://t.me/{b['username']}")),
-        ("🧩 Modules", "Saver · Encoder · Auto-Rename · Clone · Tools"),
-        ("📡 Protocol", f"MTProto (Pyrofork) + Bot API {api}"),
+        ("🧩 Modules", "Saver · Encoder · Auto-Rename · Clone · Plugins"),
+        ("📡 Protocol", f"MTProto (WzGram Layer 232) + Richgram + Bot API {api}"),
         ("🐍 Language", link("Python 3.11", "https://www.python.org/")),
         ("🗄 Database", link("MongoDB", "https://www.mongodb.com/")),
         ("🎞 Engine", link("FFmpeg", "https://ffmpeg.org/")),

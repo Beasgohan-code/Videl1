@@ -203,21 +203,92 @@ def _fmt_stream(st: dict, details_only: bool = False) -> str:
     return " · ".join(b for b in bits if b)
 
 
+def _extract_media_url(message: Message) -> str:
+    if message.command and len(message.command) > 1:
+        cand = (message.text or "").split(None, 1)[1].strip()
+        if cand.startswith(("http://", "https://")):
+            return cand
+    rep = message.reply_to_message
+    if rep and (rep.text or rep.caption):
+        for tok in (rep.text or rep.caption).split():
+            if tok.startswith(("http://", "https://")):
+                return tok
+    return ""
+
+
+async def _probe_http_header(url: str, path: str, max_bytes: int = 8 * 1024 * 1024) -> dict:
+    """Download up to *max_bytes* of a public HTTP(S) media link via Range request."""
+    from urllib.parse import unquote, urlparse
+    from VideoEncoder.utils.leech import check_public
+
+    await check_public(url)
+    headers = {"Range": f"bytes=0-{max_bytes - 1}", "User-Agent": "VidelMediaInfo/3.2"}
+    total_size = 0
+    mime_type = ""
+    fname = os.path.basename(unquote(urlparse(url).path)) or "remote_media"
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35)) as session:
+        async with session.get(url, headers=headers, allow_redirects=True) as resp:
+            if resp.status not in (200, 206):
+                raise RuntimeError(f"HTTP {resp.status} while reading media URL")
+            await check_public(str(resp.url))
+            mime_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+            cd = resp.headers.get("Content-Disposition") or ""
+            if "filename=" in cd:
+                fname = cd.split("filename=", 1)[1].strip().strip('"\'') or fname
+            cr = resp.headers.get("Content-Range") or ""
+            if "/" in cr:
+                tail = cr.rsplit("/", 1)[-1].strip()
+                if tail.isdigit():
+                    total_size = int(tail)
+            if not total_size:
+                cl = resp.headers.get("Content-Length") or ""
+                if cl.isdigit():
+                    total_size = int(cl)
+            written = 0
+            with open(path, "wb") as fp:
+                async for chunk in resp.content.iter_chunked(65536):
+                    take = chunk[: max_bytes - written]
+                    if take:
+                        fp.write(take)
+                        written += len(take)
+                    if written >= max_bytes:
+                        break
+            if not total_size:
+                total_size = written
+    return {"file_name": fname, "file_size": total_size, "mime_type": mime_type}
+
+
 @Client.on_message(filters.command("mediainfo"))
 async def mediainfo_cmd(client: Client, message: Message):
     r = message.reply_to_message
     media = _media(r)
-    if not media or not getattr(media, "file_id", None):
-        return await message.reply_text("↩️ Reply to a video / audio / document with <code>/mediainfo</code>")
+    url = _extract_media_url(message) if not (media and getattr(media, "file_id", None)) else ""
+    if not (media and getattr(media, "file_id", None)) and not url:
+        return await message.reply_text(
+            "↩️ Reply to a video / audio / document with <code>/mediainfo</code> "
+            "or send <code>/mediainfo https://example.com/video.mkv</code>"
+        )
     if not shutil.which("ffprobe"):
         return await message.reply_text("❌ ffprobe is not installed on the server.")
-    status = await message.reply_text("🔎 <i>Reading file header…</i>")
+    status = await message.reply_text(
+        "🌐 <i>Reading remote media header…</i>" if url else "🔎 <i>Reading file header…</i>"
+    )
     path = os.path.join(TMP, f"mi_{message.id}_{int(time.time())}")
     try:
-        # Only the first ~8 MB is needed for container / stream info.
-        with open(path, "wb") as f:
-            async for chunk in client.stream_media(r, limit=8):
-                f.write(chunk)
+        if url:
+            remote_meta = await _probe_http_header(url, path)
+            name = remote_meta["file_name"]
+            size = remote_meta["file_size"]
+            mime = remote_meta["mime_type"] or "?"
+        else:
+            # Only the first ~8 MB is needed for container / stream info.
+            with open(path, "wb") as f:
+                async for chunk in client.stream_media(r, limit=8):
+                    f.write(chunk)
+            name = getattr(media, "file_name", None) or "file"
+            size = getattr(media, "file_size", 0)
+            mime = getattr(media, "mime_type", None) or "?"
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -231,24 +302,30 @@ async def mediainfo_cmd(client: Client, message: Message):
         info = json.loads(out or b"{}")
         fmt = info.get("format", {})
         streams = info.get("streams", [])
-        name = getattr(media, "file_name", None) or "file"
-        size = getattr(media, "file_size", 0)
-        duration = float(fmt.get("duration") or getattr(media, "duration", 0) or 0)
+        duration = float(fmt.get("duration") or (getattr(media, "duration", 0) if media else 0) or 0)
         doc = Doc("🔎", "Media info", name)
-        doc.table([
+        gen_rows = [
             ("📦 Size", humanbytes(size)),
             ("🗂 Container", fmt.get("format_long_name") or fmt.get("format_name", "?")),
             ("⏱ Duration", time.strftime("%H:%M:%S", time.gmtime(duration)) if duration else "?"),
-            ("🧾 Mime", getattr(media, "mime_type", None) or "?"),
+            ("🧾 Mime", mime),
             ("📶 Bitrate", f"{int(fmt['bit_rate']) // 1000} kb/s" if str(fmt.get("bit_rate", "")).isdigit() else "?"),
-        ], header=("General", "Value"))
+        ]
+        if url:
+            gen_rows.append(("🌐 Source", "Direct HTTP Range Probe"))
+        doc.table(gen_rows, header=("General", "Value"))
         doc.h("🎛", f"Streams ({len(streams)})")
         if streams:
             doc.table([_stream_row(i, st) for i, st in enumerate(streams, 1)],
                       header=("#", "Type", "Codec", "Details", "Language / title"), compact=True)
+            tags_fmt = fmt.get("tags") or {}
+            if tags_fmt:
+                meta_rows = [(str(k), str(v)[:80]) for k, v in list(tags_fmt.items())[:8]]
+                doc.details("🏷 Container Metadata", Doc().table(meta_rows, header=("Tag", "Value")))
         else:
             doc.text("<i>No streams detected in the header.</i>")
-        await rich.edit(status, doc)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Direct Link", url=url)]]) if url else None
+        await rich.edit(status, doc, reply_markup=kb)
     except Exception as e:
         await status.edit_text(f"❌ mediainfo failed: <code>{html.escape(str(e))}</code>")
     finally:

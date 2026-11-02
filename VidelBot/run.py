@@ -33,6 +33,7 @@ PLUGIN_ROOTS = [
     "VideoEncoder/plugins",
     "filestore/main_bot/plugins",
     "renamer",
+    "plugins",
 ]
 SKIP = {"__init__", "ui", "db", "texts", "botapi"}
 
@@ -158,9 +159,13 @@ async def main():
     from core.admins import load_db_admins
     await load_db_admins()
 
-    from client import app
+    from client import app, runtime_stack
+    st = runtime_stack()
+    log.info(f"🛰 Runtime: {st['engine']} {st['version']} (layer {st['layer']}) · richgram={st.get('richgram')}")
     n = load_plugins(app)
-    log.info(f"🧩 registered {n} handlers")
+    from core.plugin_manager import plugin_manager
+    n_plg = await plugin_manager.initialize(app)
+    log.info(f"🧩 registered {n} handlers ({n_plg} modular plugins active)")
 
     from pyrogram import idle
 
@@ -210,6 +215,7 @@ async def main():
         f"<b>🤖 Bot:</b> @{me.username}\n<b>⏱ Was up since:</b> {started.strftime('%d %b %Y · %I:%M %p')}\n"
         f"<b>🤖 Clone bots stopped:</b> {worker_engine.active_count}</blockquote>"), client=app)
     await botlog.flush(10)
+    await plugin_manager.unload_all(app)
     await worker_engine.stop_all_workers()
     await keep_alive.stop_server()
     from core import botapi

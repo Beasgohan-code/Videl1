@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "plugins": [
+    {
+      "name": "imdb",
+      "version": "1.2.0",
+      "author": "Videl",
+      "description": "Rich IMDb movie & series search with posters, cast, ratings & trailers",
+      "commands": ["imdb"]
+    },
+    {
+      "name": "anilist",
+      "version": "1.2.0",
+      "author": "Videl",
+      "description": "AniList GraphQL anime, manga & character cards with HD banners & tabs",
+      "commands": ["anime", "manga", "character"]
+    },
+    {
+      "name": "mydramalist",
+      "version": "1.1.0",
+      "author": "Videl",
+      "description": "MyDramaList Asian drama & movie metadata search with cast & ratings",
+      "commands": ["mdl"]
+    },
+    {
+      "name": "exportsession",
+      "version": "1.0.0",
+      "author": "Videl",
+      "description": "Secure owner-only WzGram session string exporter with auto-destruct",
+      "commands": ["exportsession", "gensession"]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+name: anilist
+version: 1.2.0
+author: Videl
+description: AniList GraphQL v2 anime, manga & character cards with HD banners and interactive tabs
+entry: plugin.py
+min_bot_version: 3.0.0
+dependencies:
+  - aiohttp>=3.9.0
+permissions:
+  - network
+commands:
+  - name: anime
+    description: Search anime on AniList with scores, airing status & studios
+  - name: manga
+    description: Search manga, manhwa & light novels on AniList
+  - name: character
+    description: Search anime/manga characters on AniList

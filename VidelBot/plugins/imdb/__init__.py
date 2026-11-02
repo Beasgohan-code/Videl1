@@ -1,0 +1,1 @@
+"""IMDb modular plugin."""
