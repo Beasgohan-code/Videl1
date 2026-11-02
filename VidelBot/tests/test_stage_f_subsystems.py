@@ -367,3 +367,24 @@ def test_db_doctor_merges_duplicates_preserving_entitlements_and_secrets():
     assert merged_enc["crf"] == 18
     assert merged_enc["codec"] == "libx265"
     assert merged_enc["encodes"] == 19
+
+
+# ───────────────────── 9. VideoEncoder hw.has_filter supports FFmpeg 4..9 ─────────────────────
+def test_hw_has_filter_parses_both_legacy_and_modern_ffmpeg_columns(monkeypatch):
+    from VideoEncoder.utils import hw
+
+    sample_out = (
+        b"Filters:\n"
+        b"  T.. = Timeline support\n"
+        b"  ------\n"
+        b" ... scale             V->V       Scale the input video size (FFmpeg 4-6 3-flag format).\n"
+        b" .. zscale            V->V       Apply resizing, colorspace and bit depth (FFmpeg 7-9 2-flag format).\n"
+        b" TS hstack            N->V       Stack video inputs horizontally.\n"
+    )
+    hw._FILTERS.clear()
+    monkeypatch.setattr(hw.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=sample_out))
+    assert hw.has_filter("scale") is True
+    assert hw.has_filter("zscale") is True
+    assert hw.has_filter("hstack") is True
+    assert hw.has_filter("T..") is False
+    hw._FILTERS.clear()
