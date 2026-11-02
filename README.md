@@ -29,9 +29,9 @@ Telegram Cloud (MTProto Layer 232 + Bot API 10.3)
 ```
 
 - **Single Update Consumer:** Only `WzGram` receives updates (no `aiogram.Dispatcher` polling/webhook). `core/instance.py` maintains a **fail-closed** MongoDB heartbeat lease (`InstanceLeaseError` on unreachable DB or timeout) so zero-downtime PaaS deploys never process updates twice.
-- **Unified Task Telemetry & Rich UI (`core/rich.py`, `core/progress.py`, `VideoEncoder/utils/jobs.py`):** One centralized `richgram`-compatible `Doc` builder renders across Bot API 10.3 `sendRichMessage`, native WzGram `InputRichMessage`, and classic HTML fallback, powering live paginated `/status` cards (filters, progress bars, speed, ETA, inline per-task cancel) and the responsive `/admin` web console.
+- **Unified Task Telemetry & Rich UI (`core/rich.py`, `core/progress.py`, `VideoEncoder/utils/jobs.py`):** One centralized `richgram`-compatible `Doc` builder renders across Bot API 10.3 `sendRichMessage`, native WzGram `InputRichMessage`, and classic HTML fallback, powering live paginated `/status` cards (filters, progress bars, speed, ETA, inline per-task pause/resume/boost/cancel across Encoder, Auto-Rename, and Content Saver) and the responsive `/admin` web console.
 - **Clone Worker Engine (`filestore/worker_bot/`):** User-created FileStore clone bots run as isolated in-memory `WzGram` clients with encrypted tokens, per-clone `bot_<id>_*` collections, and atomic Stars payment idempotency.
-- **Resilient Storage & Secret-Free Diagnostics (`VideoEncoder/utils/uploads/`, `core/diagnostics.py`):** Pluggable storage status registry (`Telegram`, `Google Drive` with headless Service Account + OAuth JSON + exponential backoff + per-chunk cancel, `Google Index`, optional `Rclone`), container cgroup v1/v2 resource telemetry (`core/sysinfo.py`), and secret-free feature diagnostics.
+- **Resilient Storage, Settings Portal & Secret-Free Diagnostics (`VideoEncoder/utils/uploads/`, `core/settings_portal.py`, `core/diagnostics.py`):** Pluggable storage registry (`Telegram`, `Google Drive`, `Rclone`, `GoFile`, `DDL Mirrors`) with automatic Telegram fallback, portable user settings export/import/reset (`/vset export` · `/vset import`), container cgroup v1/v2 resource & memory-backpressure telemetry (`core/sysinfo.py`), and secret-free feature diagnostics.
 
 ---
 

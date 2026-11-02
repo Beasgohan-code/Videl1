@@ -511,11 +511,16 @@ Inside clones: `-10` Stars payments (atomic `charge_id` idempotency) → `-3` an
   2. If legacy duplicate `id` rows are found in `saver.users` or `encoder.users`, tap **🧹 Merge Duplicate Row(s)** (`bkr:dedupe_ok`) to merge them non-destructively (preserving Lifetime or latest `premium_expiry`, user `/login` `session`s, custom thumbnails, captions, word filters, encoder settings, and max save/encode counters).
   3. When `ENCRYPTION_KEY` is configured, personal user `/login` sessions (`saver.users.session`) and clone tokens are stored encrypted at rest (`enc:<fernet>`), and **🔐 Encrypt Legacy Secret(s)** (`bkr:encrypt_ok`) upgrades any pre-existing plaintext records in place without interrupting active sessions.
 
-### 5. Web Console (`/admin`) & Storage Backends
-- **Responsive `/admin` Console (`keep_alive.py`):** Open via `/dashboard` (one-time single-use Telegram login link) or `X-Admin-Token`. Features KPI metric cards, 4 interactive tabs (**Overview & Charts**, **Live Tasks & Queue** with inline per-task cancel & queue purge, **Storage & Plugins** readiness matrix, **Config & Security** secret-free diagnostics), confirmation modals, toast notifications, and full mobile layout support.
-- **Google Drive & Storage Registry (`VideoEncoder/utils/uploads/`):**
-  - Headless containers can authenticate via **Google Service Account** (`GDRIVE_SA_FILE=/path/to/sa.json`) or pre-authorized OAuth JSON (`GDRIVE_TOKEN_FILE=token.json`). Interactive browser OAuth is never triggered in headless environments; if Drive is unconfigured while a user has Drive mode toggled on in `/vsettings`, `storage.dispatch_upload()` automatically falls back to Telegram upload instead of failing the encode.
-  - Optional Cloudflare/GDIndex links (`INDEX_URL`) and Rclone readiness detection (`RCLONE_CONFIG_PATH`) are surfaced in `/stats` (`🩺 Health`) and `/admin` without exposing credentials.
+### 5. Web Console (`/admin`), Storage Backends & Portable Settings
+- **Responsive `/admin` Console (`keep_alive.py`):** Open via `/dashboard` (one-time single-use Telegram login link) or `X-Admin-Token`. Features KPI metric cards, WAI-ARIA accessible tabs (**Overview**, **Tasks & Queue** with inline **Pause / Resume / Boost / Stop** & queue purge, **Workspace Files** sandboxed multi-select orphan-file cleaner with active-task lock protection, and **Storage & Config** secret-free diagnostics), confirmation dialogs, and toast notifications.
+- **Cloud Storage Backends (`VideoEncoder/utils/uploads/`):**
+  - **Google Drive (`drive/`):** Headless Service Account (`GDRIVE_SA_FILE`) or pre-authorized OAuth JSON (`GDRIVE_TOKEN_FILE`), optional Cloudflare/GDIndex links (`INDEX_URL`), exponential backoff, and per-chunk cancellation.
+  - **Rclone (`rclone.py`):** Optional `rclone copy` integration (`RCLONE_CONFIG_PATH`, `RCLONE_DEFAULT_REMOTE`) with strict `remote:folder` validation, live progress/speed/ETA, POSIX pause/resume/cancel, optional `rclone link`, and credential redaction.
+  - **GoFile (`gofile.py`):** Optional streaming 512 KiB chunked GoFile uploader (`GOFILE_TOKEN` / `GOFILE_FOLDER_ID` or guest mode) with pause/cancel and transient HTTP retry.
+  - If a selected external destination is unconfigured on the server, `storage.dispatch_upload()` automatically falls back to Telegram upload instead of failing the encode.
+- **Portable User Settings Portal (`core/settings_portal.py`, `/vset`):**
+  - Run `/vset export` (or tap **📤 Export JSON** on `/vset`) to export a portable, secret-free `videl-user-settings/1` JSON bundle covering Encoder, Auto-Rename, and Saver preferences.
+  - Reply `/vset import` to restore validated preferences on any Videl instance (sessions, privileges, and quotas are strictly excluded and never overwritten), or use the two-step confirmed **♻️ Reset…** button on `/vset`.
 
 ### 6. Troubleshooting
 - **`ImportError` or `RICH_AVAILABLE == False` after installing packages:** `richgram` lists `kurigram` in its package metadata, which shares the `pyrogram` import namespace with `wzgram`. Run `pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6` (already automated in the root `Dockerfile` and `.github/workflows/ci.yml`).

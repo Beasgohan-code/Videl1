@@ -583,3 +583,326 @@ def test_diagnostics_secret_hygiene_and_admin_web_task_endpoints(monkeypatch):
             await client.close()
 
     run(web_scenario())
+
+
+# ─── 9. Subprocess Pause/Resume (`SIGSTOP`/`SIGCONT`), cancel-while-paused & queue Boost ───
+def test_pause_resume_boost_and_subproc_sigstop_sigcont():
+    import sys
+    import config
+    from VideoEncoder import data as enc_queue
+    from VideoEncoder.plugins import status as status_mod
+    from VideoEncoder.utils import jobs, scheduler
+
+    async def subproc_lifecycle():
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(30)")
+        jobs.register(99201, 444, 444, name="pause_test.mkv", stage="Encoding", engine="FFmpeg")
+        jobs.attach(99201, proc)
+        try:
+            assert jobs.pause(99201) is True
+            assert jobs.is_paused(99201) is True
+            # wait_if_paused times out quickly while paused
+            resumed = False
+
+            async def waiter():
+                nonlocal resumed
+                ok = await jobs.wait_if_paused(99201)
+                resumed = ok
+
+            w_task = asyncio.create_task(waiter())
+            await asyncio.sleep(0.03)
+            assert resumed is False
+            assert jobs.resume(99201) is True
+            assert jobs.is_paused(99201) is False
+            await asyncio.wait_for(w_task, timeout=1.0)
+            assert resumed is True
+
+            # Pause again, then verify cancel() wakes SIGSTOPped process and terminates cleanly
+            jobs.pause(99201)
+            assert await asyncio.wait_for(jobs.cancel(99201, grace=1.5), timeout=2.5) is True
+            assert proc.returncode is not None
+        finally:
+            jobs.unregister(99201)
+            if proc.returncode is None:
+                proc.kill()
+
+    run(subproc_lifecycle())
+
+    # Queue Boost authorization & reordering
+    enc_queue.clear()
+    scheduler._running.clear()
+    try:
+        m1 = FakeMsg("/dl a.mkv", uid=10)
+        m2 = FakeMsg("/dl b.mkv", uid=20)
+        m3 = FakeMsg("/dl c.mkv", uid=30)
+        enc_queue.extend([m1, m2, m3])
+        scheduler.mark_running(m1)
+
+        c = FakeClient()
+        card = FakeMsg("status", uid=20, client=c)
+        # Non-admin rejected
+        q_user = FakeQuery("status boost 3", uid=20, message=card)
+        run(status_mod.status_pages(c, q_user))
+        assert enc_queue[1] is m2
+        assert any("admin" in a[0].lower() for a in q_user.answers)
+
+        # Owner promotes #3 (`m3`) ahead of waiting `#2` (`m2`), while running `m1` stays at #1
+        q_owner = FakeQuery("status boost 3", uid=config.OWNERS[0], message=card)
+        run(status_mod.status_pages(c, q_owner))
+        assert list(enc_queue) == [m1, m3, m2]
+    finally:
+        scheduler._running.clear()
+        enc_queue.clear()
+
+
+# ─── 10. Optional Rclone & GoFile cloud backends: validation, redaction, streaming & retries ───
+def test_rclone_validation_redaction_and_gofile_streaming(monkeypatch, tmp_path):
+    from aiohttp import web
+    from VideoEncoder.utils.uploads import gofile as gofile_mod
+    from VideoEncoder.utils.uploads import rclone as rclone_mod
+
+    # 10a. Rclone remote validation & secret redaction
+    rc_conf = tmp_path / "rclone.conf"
+    rc_conf.write_text("[mycloud]\ntype = drive\ntoken = {\"access_token\":\"SUPER_SECRET_TOK\"}\n", encoding="utf-8")
+    remotes = rclone_mod.list_rclone_remotes(str(rc_conf))
+    assert remotes == ["mycloud"]
+    assert "SUPER_SECRET_TOK" not in json.dumps(remotes)
+
+    assert rclone_mod.validate_rclone_remote("mycloud:Videl/Encodes", allowed_remotes=remotes) == (
+        "mycloud",
+        "mycloud:Videl/Encodes",
+    )
+    with pytest.raises(ValueError):
+        rclone_mod.validate_rclone_remote("/etc/passwd", allowed_remotes=remotes)
+    with pytest.raises(ValueError):
+        rclone_mod.validate_rclone_remote("mycloud:../../etc", allowed_remotes=remotes)
+    with pytest.raises(ValueError):
+        rclone_mod.validate_rclone_remote("other:folder", allowed_remotes=remotes)
+
+    redacted = rclone_mod.redact_rclone_error("failed: client_secret=my_s3cr3t token: abc123xyz")
+    assert "my_s3cr3t" not in redacted and "abc123xyz" not in redacted
+
+    # 10b. Fake rclone executable end-to-end test
+    fake_bin = tmp_path / "rclone"
+    fake_bin.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "if 'copy' in sys.argv:\n"
+        "    print('Transferred: 1.0 MiB / 1.0 MiB, 100%, 2.0 MiB/s, ETA 0s', flush=True)\n"
+        "elif 'link' in sys.argv:\n"
+        "    print('https://cloud.example.com/s/rc999', flush=True)\n",
+        encoding="utf-8",
+    )
+    fake_bin.chmod(0o755)
+    media_file = tmp_path / "out.mkv"
+    media_file.write_bytes(b"v" * 2048)
+
+    monkeypatch.setattr("shutil.which", lambda name: str(fake_bin) if name == "rclone" else None)
+    monkeypatch.setattr(rclone_mod.config, "RCLONE_CONFIG_PATH", str(rc_conf))
+    c = FakeClient()
+    umsg = FakeMsg("/gupload rclone", uid=77, client=c)
+    smsg = FakeMsg("Uploading...", uid=77, client=c)
+    rc_link = run(rclone_mod.upload_with_rclone(str(media_file), umsg, smsg, remote_spec="mycloud:Movies"))
+    assert rc_link == "https://cloud.example.com/s/rc999"
+
+    # 10c. GoFile streaming upload with transient 503 retry against local aiohttp server
+    calls = {"upload": 0, "bytes": 0}
+
+    async def gofile_e2e():
+        async def servers_ep(_req):
+            return web.json_response({"status": "ok", "data": {"servers": [{"name": "srv1"}]}})
+
+        async def upload_ep(req):
+            calls["upload"] += 1
+            reader = await req.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                if part.name == "file":
+                    data = await part.read()
+                    calls["bytes"] = len(data)
+            if calls["upload"] == 1:
+                return web.Response(status=503, text="busy")
+            return web.json_response({"status": "ok", "data": {"downloadPage": "https://gofile.io/d/VIDEL123"}})
+
+        app = web.Application()
+        app.router.add_get("/servers", servers_ep)
+        app.router.add_post("/contents/uploadfile", upload_ep)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        base = f"http://127.0.0.1:{port}"
+        try:
+            monkeypatch.setattr(gofile_mod, "GOFILE_API_BASE", base)
+            orig_post = gofile_mod.aiohttp.ClientSession.post
+
+            def local_post(self, url, *a, **kw):
+                return orig_post(self, f"{base}/contents/uploadfile", *a, **kw)
+
+            monkeypatch.setattr(gofile_mod.aiohttp.ClientSession, "post", local_post)
+            gf_link = await gofile_mod.upload_to_gofile(
+                str(media_file), umsg, smsg, token="tok_secret", retry_delay=0.0
+            )
+            assert gf_link == "https://gofile.io/d/VIDEL123"
+            assert calls["upload"] == 2 and calls["bytes"] == 2048
+        finally:
+            await runner.cleanup()
+
+    run(gofile_e2e())
+
+
+# ─── 11. Settings Portal: secret-free export, validated import & caller-authorized reset ───
+def test_settings_portal_export_import_validation_and_confirmed_reset():
+    from core import settings_portal as sp
+    from database.db import db as saver_db
+    from renamer import store as rn_store
+    import VideoEncoder.plugins.settings as vset_plugin
+    from VideoEncoder.utils.database.access_db import db as enc_db
+
+    uid = 90311
+    run(enc_db.add_user(uid))
+    run(enc_db.update_settings(uid, crf=26, preset="s", hevc=True))
+    run(rn_store.update(uid, template="{title} [{quality}]", mkv=True))
+    run(
+        saver_db.col.update_one(
+            {"id": uid},
+            {"$set": {"id": uid, "caption": "<b>{filename}</b>", "session": "enc:TOP_SECRET_SESS", "is_premium": True}},
+            upsert=True,
+        )
+    )
+
+    exported = run(sp.export_user_settings(uid))
+    exported_txt = exported.decode("utf-8")
+    assert "TOP_SECRET_SESS" not in exported_txt
+    assert "is_premium" not in exported_txt
+    parsed = json.loads(exported_txt)
+    assert parsed["encoder"]["crf"] == 26 and parsed["renamer"]["template"] == "{title} [{quality}]"
+
+    # Tampered import: attempts privilege escalation + out-of-range CRF + valid portable updates
+    tampered = {
+        "format": sp.FORMAT,
+        "version": 1,
+        "encoder": {"crf": 999, "preset": "vf", "sudo": True},
+        "renamer": {"template": "S{season}E{episode} {title}", "adult_ok": True},
+        "saver": {"caption": "<i>{filename}</i>", "is_premium": False, "session": "hijacked"},
+    }
+    res = run(sp.import_user_settings(uid, json.dumps(tampered)))
+    assert res["applied"] == 3
+    assert "encoder.crf" in res["skipped"] and "encoder.sudo" in res["skipped"] and "saver.session" in res["skipped"]
+
+    # Verify DB state: valid changes applied, protected session & premium untouched!
+    assert run(enc_db.get_settings(uid))["preset"] == "vf"
+    assert run(enc_db.get_settings(uid))["crf"] == 26
+    sv_after = run(saver_db.col.find_one({"id": uid}))
+    assert sv_after["caption"] == "<i>{filename}</i>"
+    assert sv_after["session"] == "enc:TOP_SECRET_SESS" and sv_after["is_premium"] is True
+
+    # Two-step reset callback rejects other users and preserves session/premium for owner
+    c = FakeClient()
+    card = FakeMsg("vset", uid=uid, client=c)
+    q_intruder = FakeQuery(f"uset:ok:{uid}", uid=999999, message=card)
+    run(vset_plugin.user_settings_portal_cb(c, q_intruder))
+    assert any("Only the owner" in a[0] for a in q_intruder.answers)
+    assert run(enc_db.get_settings(uid))["preset"] == "vf"
+
+    q_owner = FakeQuery(f"uset:ok:{uid}", uid=uid, message=card)
+    run(vset_plugin.user_settings_portal_cb(c, q_owner))
+    assert run(enc_db.get_settings(uid))["preset"] == "sf"  # default restored
+    sv_reset = run(saver_db.col.find_one({"id": uid}))
+    assert sv_reset["session"] == "enc:TOP_SECRET_SESS" and sv_reset["is_premium"] is True
+
+
+# ─── 12. Memory backpressure, deleted-message circuit breaker & web workspace sandbox ───
+def test_memory_backpressure_dead_msg_breaker_and_web_workspace_sandbox(monkeypatch, tmp_path):
+    from aiohttp.test_utils import TestClient, TestServer
+    from pyrogram.errors import MessageIdInvalid
+    import config
+    import keep_alive
+    from core import progress as prog_mod
+    from VideoEncoder import data as enc_queue
+    from VideoEncoder.utils import jobs, scheduler
+
+    # 12a. Memory backpressure holds 2nd parallel slot when RAM >= threshold, never starves 1st slot
+    enc_queue.clear()
+    scheduler._running.clear()
+    monkeypatch.setattr(config, "ENCODER_WORKERS", 2)
+    monkeypatch.setattr(config, "MEMORY_PAUSE_NEW_TASKS_PCT", 90)
+    monkeypatch.setattr("core.sysinfo.memory_pressure", lambda _pct: (True, 94.5))
+    try:
+        assert scheduler.slots_free() == 2, "Idle queue must never starve even under high host RAM"
+        m1 = FakeMsg("/dl first.mkv", uid=1)
+        enc_queue.append(m1)
+        scheduler.mark_running(m1)
+        assert scheduler.slots_free() == 0, "Extra parallel worker slot must hold back under RAM pressure"
+    finally:
+        scheduler._running.clear()
+        enc_queue.clear()
+
+    # 12b. Deleted status message circuit breaker stops hammering Telegram while keeping jobs updated
+    edit_attempts = {"n": 0}
+
+    class DeletedMsg:
+        id = 55101
+        chat = types.SimpleNamespace(id=777)
+
+        async def edit_text(self, *a, **k):
+            edit_attempts["n"] += 1
+            raise MessageIdInvalid()
+
+    jobs.register(55101, 777, 777, name="big.mkv", stage="Download")
+    try:
+        lp = prog_mod.LiveProgress(DeletedMsg(), "⬇️ Downloading", every=0.0, job_key=55101)
+        run(lp.update(100, 1000))
+        run(lp.update(500, 1000))
+        run(lp.update(1000, 1000))
+        assert edit_attempts["n"] == 1, "Deleted status message must trip circuit breaker after first error"
+        assert jobs.get(55101).progress == 100.0
+    finally:
+        jobs.unregister(55101)
+
+    # 12c. Web workspace explorer sandbox: protects active task dirs & blocks traversal, cleans orphans
+    dl_root = tmp_path / "dl"
+    dl_root.mkdir()
+    orphan = dl_root / "orphan_clip.mkv"
+    orphan.write_bytes(b"o" * 512)
+    locked_dir = dl_root / "801_999"
+    locked_dir.mkdir()
+    (locked_dir / "active.mkv").write_bytes(b"a" * 512)
+
+    active_msg = FakeMsg("/dl active.mkv", uid=801, chat_id=801)
+    active_msg.id = 999
+    enc_queue.append(active_msg)
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(dl_root) + "/")
+    monkeypatch.setattr(config, "ADMIN_WEB_TOKEN", "ws-admin-tok")
+
+    async def ws_scenario():
+        client = TestClient(TestServer(keep_alive.make_app()))
+        await client.start_server()
+        try:
+            hdrs = {"X-Admin-Token": "ws-admin-tok"}
+            r_list = await client.get("/admin/api/workspace", headers=hdrs)
+            assert r_list.status == 200
+            items = {it["name"]: it for it in (await r_list.json())["items"]}
+            assert items["orphan_clip.mkv"]["locked"] is False
+            assert items["801_999"]["locked"] is True
+
+            # Attempt to delete orphan + locked dir + path traversal simultaneously
+            r_clean = await client.post(
+                "/admin/api/workspace/clean",
+                headers=hdrs,
+                json={"ids": ["downloads:orphan_clip.mkv", "downloads:801_999", "downloads:../outside"]},
+            )
+            c_json = await r_clean.json()
+            assert c_json["removed"] == 1 and c_json["skipped"] == 2
+            assert not orphan.exists()
+            assert (locked_dir / "active.mkv").exists(), "Active task directory must never be deleted"
+        finally:
+            await client.close()
+
+    try:
+        run(ws_scenario())
+    finally:
+        enc_queue.clear()
+
