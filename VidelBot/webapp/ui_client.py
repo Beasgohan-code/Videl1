@@ -712,7 +712,6 @@ CLIENT_JS = r"""
                 bot_token: w.bot_token,
                 features: w.features,
                 tags: w.tags.split(",").map((s) => s.trim()).filter(Boolean),
-                allow_unverified_offline: true,
               },
             });
             S.wizard = { step: 1, display_name: "", username: "", description: "", template: "filestore", bot_token: "", tokenDiag: null, features: {}, tags: "" };
@@ -2159,7 +2158,7 @@ CLIENT_JS = r"""
     if (!raw) return;
     $("auth-error").hidden = true;
     try {
-      const body = raw.startsWith("l.") || raw.length === 32 ? { link: raw } : { admin_token: raw, link: raw };
+      const body = raw.startsWith("l.") || raw.length === 32 ? { link: raw } : { admin_token: raw };
       const res = await api("/api/v1/auth/login", { method: "POST", body });
       saveSession(res.session_token, res.csrf_token);
       await bootstrapSession();

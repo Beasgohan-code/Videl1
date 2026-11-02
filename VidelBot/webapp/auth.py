@@ -193,6 +193,27 @@ async def authenticate_request(request: web.Request, *, require_csrf: bool | Non
             {"key_id": kdoc["key_id"]},
             {"$inc": {"usage_count": 1}, "$set": {"last_used_at": db_models.utcnow_iso(), "last_used_ts": now}},
         )
+        # API keys are capability tokens, not interchangeable user sessions.  Deny
+        # account, administration, key-management, and unclassified routes; only
+        # explicitly mapped workspace endpoints may be used by a scoped key.
+        parts = request.path.strip("/").split("/")
+        endpoint = parts[4] if len(parts) >= 5 and parts[:3] == ["api", "v1", "workspaces"] else ""
+        scope_map = {
+            "bots": "bot_settings", "fleet": "bot_settings", "clones": "cloning",
+            "filestore": "filestore", "file-intelligence": "analytics",
+            "downloads": "filestore", "studio": "filestore", "analytics": "analytics",
+            "analytics.csv": "analytics", "health": "logs", "automations": "automation",
+            "schedules": "automation", "templates": "templates", "integrations": "integrations",
+            "bundle": "bot_settings", "notifications": "logs",
+        }
+        required = scope_map.get(endpoint)
+        # Bot subresources have their own permission domains.
+        if endpoint == "bots" and len(parts) >= 7 and parts[6] == "commands":
+            required = "commands"
+        if endpoint == "health" and request.method != "GET":
+            required = "integrations"
+        if not required or required not in set(kdoc.get("scopes") or []):
+            raise web.HTTPForbidden(text='{"error":"API key is not permitted for this endpoint."}', content_type="application/json")
         uid = int(kdoc["owner_id"])
         return AuthContext(
             user_id=uid,

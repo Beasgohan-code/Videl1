@@ -310,6 +310,18 @@ async def list_workspace_team(workspace_id: str) -> dict[str, Any]:
     return {"members": mems, "pending_invites": invites}
 
 
+async def _validate_delegated_permissions(workspace_id: str, actor_id: int, actor_role: str, permissions: dict[str, bool]) -> None:
+    """A member cannot grant a capability they do not themselves possess."""
+    if actor_role == "owner":
+        return
+    actor = await db_models.get_membership(workspace_id, actor_id)
+    if not actor:
+        raise PermissionError("Workspace membership required.")
+    actor_permissions = actor.get("permissions") or {}
+    if any(enabled and not actor_permissions.get(scope, False) for scope, enabled in permissions.items()):
+        raise PermissionError("Cannot delegate permissions you do not possess.")
+
+
 async def invite_team_member(
     workspace_id: str,
     actor_id: int,
@@ -328,11 +340,17 @@ async def invite_team_member(
     if t_uid <= 0:
         raise SaaSValidationError("Provide a valid numeric Telegram user ID.")
 
+    # An invitation must never overwrite an existing membership, especially the
+    # owner or a peer. Role changes use the separate, rank-checked operation.
+    existing = await db_models.memberships_col().find_one({"workspace_id": workspace_id, "user_id": t_uid})
+    if existing:
+        raise SaaSValidationError("User is already a workspace member; use the role management operation.")
     base_perms = dict(db_models.DEFAULT_ROLE_PERMISSIONS[role])
     if isinstance(permissions, dict):
         for sc, val in permissions.items():
             if sc in db_models.PERMISSION_SCOPES:
                 base_perms[sc] = bool(val)
+    await _validate_delegated_permissions(workspace_id, actor_id, actor_role, base_perms)
 
     now = time.time()
     inv_doc = {
@@ -405,6 +423,7 @@ async def update_member_role(
             if sc in db_models.PERMISSION_SCOPES:
                 perms[sc] = bool(val)
 
+    await _validate_delegated_permissions(workspace_id, actor_id, actor_role, perms)
     await db_models.memberships_col().update_one(
         {"workspace_id": workspace_id, "user_id": int(target_user_id)},
         {"$set": {"role": new_role, "permissions": perms, "updated_ts": time.time()}},
@@ -623,9 +642,10 @@ async def verify_telegram_token_diagnostic(raw_token: str) -> dict[str, Any]:
     try:
         from filestore.utils.helpers import validate_bot_token
         info = await validate_bot_token(tok)
-    except Exception as exc:
+    except Exception:
         info = None
-        err = str(exc)[:180]
+        # Network exception strings can contain Telegram URLs with bot tokens.
+        err = "Telegram credential verification is unavailable."
     else:
         err = ""
 
@@ -696,9 +716,11 @@ async def create_or_register_bot(
             raise SaaSValidationError(diag["diagnostic"])
         tg_bot_id = int(diag["telegram_bot_id"])
         # Prevent cross-owner hijack of an already registered Telegram bot ID
-        clash = await db_models.bots_col().find_one({"telegram_bot_id": tg_bot_id, "deleted": {"$ne": True}})
-        if clash and int(clash["owner_id"]) != int(owner_id):
-            raise SaaSValidationError("This Telegram bot is already registered to another account.")
+        clash = await db_models.bots_col().find_one({"telegram_bot_id": tg_bot_id})
+        if clash:
+            raise SaaSValidationError("This Telegram bot is already registered in a workspace.")
+        if not security.is_encryption_enabled():
+            raise SaaSValidationError("A valid ENCRYPTION_KEY is required before storing bot credentials.")
         if diag.get("username"):
             username = diag["username"]
         if diag.get("first_name") and not payload.get("display_name"):
@@ -832,9 +854,13 @@ async def update_bot_profile_or_state(
         upd["token_masked"] = ""
         upd["has_credentials"] = False
     if patch.get("rotate_token"):
+        if not security.is_encryption_enabled():
+            raise SaaSValidationError("A valid ENCRYPTION_KEY is required before storing bot credentials.")
         diag = await verify_telegram_token_diagnostic(str(patch["rotate_token"]))
-        if not diag["verified_with_telegram"] and not patch.get("allow_unverified_offline"):
-            raise SaaSValidationError(diag["diagnostic"])
+        if not diag["verified_with_telegram"]:
+            raise SaaSValidationError("Telegram could not verify the supplied credentials.")
+        if int(diag["telegram_bot_id"]) != int(doc.get("telegram_bot_id") or 0):
+            raise SaaSValidationError("The replacement token does not belong to this bot.")
         upd["token_sealed"] = security.encrypt_token(str(patch["rotate_token"]).strip())
         upd["token_masked"] = diag["token_masked"]
         upd["has_credentials"] = True

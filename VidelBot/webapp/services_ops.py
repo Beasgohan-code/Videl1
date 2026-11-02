@@ -345,6 +345,8 @@ async def upsert_automation_workflow(
     trigger, conds, actions = validate_automation_workflow(payload)
     wf_id = str(payload.get("workflow_id") or f"wf_{secrets.token_hex(6)}")
     existing = await db_models.automations_col().find_one({"workflow_id": wf_id, "workspace_id": workspace_id})
+    if payload.get("workflow_id") and not existing:
+        raise KeyError("Workflow not found in this workspace.")
     version = (int(existing.get("version") or 1) + 1) if existing else 1
     now = time.time()
     doc = {
@@ -363,7 +365,7 @@ async def upsert_automation_workflow(
         "created_ts": float(existing.get("created_ts", now)) if existing else now,
         "updated_ts": now,
     }
-    await db_models.automations_col().update_one({"workflow_id": wf_id}, {"$set": doc}, upsert=True)
+    await db_models.automations_col().update_one({"workflow_id": wf_id, "workspace_id": workspace_id}, {"$set": doc}, upsert=True)
     await models_db.log_audit(actor_id, "automation_upsert", target=f"{workspace_id}:{wf_id}", detail=f"v{version}")
     doc.pop("_id", None)
     return doc

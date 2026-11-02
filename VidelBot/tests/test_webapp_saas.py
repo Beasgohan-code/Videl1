@@ -18,7 +18,8 @@ import config  # noqa: E402
 import keep_alive  # noqa: E402
 from platform_core import destinations  # noqa: E402
 from webapp import auth as saas_auth  # noqa: E402
-from webapp import db_models, services_ops  # noqa: E402
+from webapp import db_models, services_bots, services_ops  # noqa: E402
+from cryptography.fernet import Fernet  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +31,15 @@ def reset_saas_state(monkeypatch):
     saas_auth.reset_auth_state()
     services_ops._automation_seen_keys.clear()
     monkeypatch.setattr(config, "ADMIN_WEB_TOKEN", "test_super_admin_secret_token_999")
+    monkeypatch.setenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    async def verified_token(token):
+        bot_id = int(token.split(":", 1)[0])
+        return {"verified_with_telegram": True, "telegram_bot_id": bot_id,
+                "username": "", "first_name": "", "token_masked": "masked",
+                "diagnostic": "Verified by test stub."}
+
+    monkeypatch.setattr(services_bots, "verify_telegram_token_diagnostic", verified_token)
     yield
 
 
@@ -395,4 +405,76 @@ def test_automation_idempotency_loop_guard_api_keys_bundle_and_admin():
             r_adm = await cli.get("/api/v1/admin/overview", headers={"Authorization": f"Bearer {adm_tok}"})
             assert r_adm.status == 200
 
+    run(go())
+
+
+def test_scoped_keys_cannot_escalate_or_read_other_domains():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            hdr, ws = await _login_link(cli, 81001, "Owner")
+            key_res = await cli.post(f"/api/v1/workspaces/{ws}/api-keys", headers=hdr,
+                                     json={"name": "Analytics", "scopes": ["analytics"]})
+            key = (await key_res.json())["raw_key_once"]
+            kh = {"Authorization": f"Bearer {key}"}
+            assert (await cli.get(f"/api/v1/workspaces/{ws}/analytics", headers=kh)).status == 200
+            for path in (f"/api/v1/workspaces/{ws}/bots", f"/api/v1/workspaces/{ws}/filestore",
+                         f"/api/v1/workspaces/{ws}/api-keys", "/api/v1/auth/me", "/api/v1/workspaces"):
+                assert (await cli.get(path, headers=kh)).status == 403
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/api-keys", headers=kh,
+                                   json={"name": "Escalation", "scopes": ["team_management"]})).status == 403
+    run(go())
+
+
+def test_invite_cannot_overwrite_owner_or_delegate_unheld_permissions():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 82001, "Owner")
+            admin, _ = await _login_link(cli, 82002, "Admin")
+            r = await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                               json={"user_id": 82002, "role": "administrator", "permissions": {"bot_settings": False}})
+            assert r.status == 201
+            r = await cli.post(f"/api/v1/workspaces/{ws}/team", headers=admin,
+                               json={"user_id": 82001, "role": "viewer"})
+            assert r.status == 400
+            membership = await db_models.get_membership(ws, 82001)
+            assert membership["role"] == "owner"
+            r = await cli.post(f"/api/v1/workspaces/{ws}/team", headers=admin,
+                               json={"user_id": 82003, "role": "developer"})
+            assert r.status == 403
+    run(go())
+
+
+def test_workflow_id_cannot_move_another_workspaces_record():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            ha, wa = await _login_link(cli, 83001, "Alice")
+            hb, wb = await _login_link(cli, 83002, "Bob")
+            body = {"name": "private workflow", "trigger": "bot_error", "actions": [{"type": "create_notification"}]}
+            r = await cli.post(f"/api/v1/workspaces/{wa}/automations", headers=ha, json=body)
+            workflow = (await r.json())["workflow"]
+            body["workflow_id"] = workflow["workflow_id"]
+            r = await cli.post(f"/api/v1/workspaces/{wb}/automations", headers=hb, json=body)
+            assert r.status == 404
+            assert await db_models.automations_col().find_one({"workspace_id": wa, "workflow_id": workflow["workflow_id"]})
+    run(go())
+
+
+def test_secret_storage_requires_encryption_and_token_verification(monkeypatch):
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            hdr, ws = await _login_link(cli, 84001, "Owner")
+            monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
+            bot_body = {"display_name": "Test bot", "bot_token": "123456:xxxxxxxxxxxxxxxxxxxxxxxxx"}
+            r = await cli.post(f"/api/v1/workspaces/{ws}/bots", headers=hdr, json=bot_body)
+            assert r.status == 400
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/integrations", headers=hdr,
+                                   json={"provider": "dropbox", "access_token": "secret"})).status == 400
+            monkeypatch.setenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+            async def unverified(_token):
+                return {"verified_with_telegram": False, "diagnostic": "offline", "telegram_bot_id": 123456}
+            monkeypatch.setattr(services_bots, "verify_telegram_token_diagnostic", unverified)
+            bot_body["allow_unverified_offline"] = True
+            r = await cli.post(f"/api/v1/workspaces/{ws}/bots", headers=hdr, json=bot_body)
+            assert r.status == 400
     run(go())

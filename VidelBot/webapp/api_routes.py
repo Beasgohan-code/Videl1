@@ -108,7 +108,9 @@ async def api_auth_demo(request: web.Request) -> web.Response:
     if not demo_enabled:
         raise PermissionError("Interactive Demo Workspace is disabled on this server.")
     auth.check_login_rate_limit(request)
-    demo_uid = 880_000_000 + (int(time.time() * 1000) % 999_999)
+    # Keep synthetic principals outside Telegram's positive user-id namespace.
+    import secrets
+    demo_uid = -secrets.randbits(62) - 1
     sess = auth.create_session(demo_uid, display_name="Demo Evaluator", is_demo=True)
     ws = await db_models.ensure_default_workspace(demo_uid, display_name="Demo Evaluator", is_demo=True)
     await services_ops.seed_demo_workspace_if_empty(ws["workspace_id"], demo_uid)
@@ -307,7 +309,7 @@ async def api_bots_collection(request: web.Request) -> web.Response:
         ws_id,
         ctx.user_id,
         body,
-        allow_unverified_offline=bool(body.get("allow_unverified_offline")),
+        allow_unverified_offline=False,
     )
     return _ok({"bot": bot}, status=201)
 
@@ -778,8 +780,11 @@ async def api_templates(request: web.Request) -> web.Response:
         await db_models.templates_col().delete_one({"template_id": str(body.get("template_id") or ""), "workspace_id": ws_id})
         return _ok({"deleted": True})
     if body.get("action") == "report":
-        await db_models.templates_col().update_one({"template_id": str(body.get("template_id") or "")}, {"$inc": {"reports": 1}})
-        return _ok({"reported": True})
+        result = await db_models.templates_col().update_one(
+            {"template_id": str(body.get("template_id") or ""), "workspace_id": ws_id},
+            {"$inc": {"reports": 1}},
+        )
+        return _ok({"reported": bool(result.matched_count)})
     tpl = await services_ops.upsert_template(ws_id, ctx.user_id, body)
     return _ok({"template": tpl})
 
@@ -797,6 +802,9 @@ async def api_integrations(request: web.Request) -> web.Response:
     if body.get("action") == "disconnect":
         ok = await models_db.remove_storage_connection(ctx.user_id, str(body.get("provider") or ""))
         return _ok({"disconnected": ok})
+    from filestore.utils import security
+    if body.get("access_token") and not security.is_encryption_enabled():
+        raise services_bots.SaaSValidationError("A valid ENCRYPTION_KEY is required before storing integration credentials.")
     saved = await models_db.save_storage_connection(
         ctx.user_id,
         str(body.get("provider") or ""),
