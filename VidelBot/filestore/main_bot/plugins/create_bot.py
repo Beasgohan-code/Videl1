@@ -320,22 +320,21 @@ async def handle_creation_input(client: Client, message: Message):
         bot_info = state["data"]["bot_info"]
         channel_title = str(channel_id)
 
+        import html
+        temp_client = Client(
+            name=f"verify_{bot_info['id']}",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            bot_token=token,
+            in_memory=True,
+            no_updates=True,
+        )
         try:
-            # Create a temporary Pyrogram client to verify channel access
-            temp_client = Client(
-                name=f"verify_{bot_info['id']}",
-                api_id=API_ID,
-                api_hash=API_HASH,
-                bot_token=token,
-                in_memory=True,
-            )
-
             await temp_client.start()
 
             try:
                 chat = await temp_client.get_chat(channel_id)
                 channel_title = chat.title or str(channel_id)
-                # Try sending a test message
                 test_msg = await temp_client.send_message(
                     chat_id=channel_id, text="✅ Channel verified for FileStore bot."
                 )
@@ -345,28 +344,30 @@ async def handle_creation_input(client: Client, message: Message):
                     f"<b>❌ Cannot access channel!</b>\n\n"
                     f"<blockquote>Make sure:\n"
                     f"1. The channel ID is correct\n"
-                    f"2. The bot (@{bot_info.get('username', '')}) is an admin in the channel\n"
+                    f"2. The bot (@{html.escape(str(bot_info.get('username', '')))}) is an admin in the channel\n"
                     f"3. The bot has permission to send messages\n\n"
-                    f"Error: <code>{str(e)[:100]}</code></blockquote>",
+                    f"Error: <code>{html.escape(str(e))[:100]}</code></blockquote>",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
                     ]),
                 )
-                await temp_client.stop()
                 return
-
-            await temp_client.stop()
-
         except Exception as e:
             log.error(f"Channel validation error: {e}")
             await status_msg.edit_text(
                 f"<b>❌ Verification failed!</b>\n\n"
-                f"<blockquote>Error: <code>{str(e)[:150]}</code></blockquote>",
+                f"<blockquote>Error: <code>{html.escape(str(e))[:150]}</code></blockquote>",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
                 ]),
             )
             return
+        finally:
+            if getattr(temp_client, "is_connected", False):
+                try:
+                    await temp_client.stop(block=False)
+                except Exception:
+                    pass
 
         # Everything valid — save to database
         encrypted_token = encrypt_token(token)

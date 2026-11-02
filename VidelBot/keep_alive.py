@@ -173,7 +173,11 @@ def _authorised(request) -> bool | None:
             return True
         sess = _sessions.get(_h(given))
         if sess and sess[0] > now:
-            return True
+            sess_uid = int(sess[1] or 0)
+            if sess_uid == 0 or sess_uid in set(config.ADMINS):
+                return True
+            # Admin privilege was revoked (/deladmin) after login → invalidate session immediately
+            _sessions.pop(_h(given), None)
     _failed(ip, now)
     return False
 
@@ -261,7 +265,7 @@ def _live() -> list:
             media = getattr(src, "video", None) or getattr(src, "document", None)
             name = getattr(media, "file_name", None) or ""
             out.append({"pos": i + 1, "state": "running" if any(m is r for r in run) else "waiting",
-                        "mode": scheduler.MODES.get(id(m)) or "?", "user": scheduler.uid_of(m),
+                        "mode": scheduler.mode_of(m) or "?", "user": scheduler.uid_of(m),
                         "file": str(name)[:60], "size": int(getattr(media, "file_size", 0) or 0)})
     except Exception:
         pass
@@ -413,10 +417,14 @@ async def self_ping_loop():
 
 def keep_alive(loop: asyncio.AbstractEventLoop = None):
     """Start server + pinger as background tasks on the running loop."""
-    loop = loop or asyncio.get_event_loop()
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
     from core.bg import track
-    track(loop.create_task(start_server(), name="web-server"))
-    track(loop.create_task(self_ping_loop(), name="keepalive-ping"))
+    track(loop.create_task(start_server()), name="web-server")
+    track(loop.create_task(self_ping_loop()), name="keepalive-ping")
 
 
 async def stop_server():

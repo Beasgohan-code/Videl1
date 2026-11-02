@@ -191,8 +191,9 @@ async def apply_word_filters(user_id: int, text: str) -> str:
 async def build_caption(user_id: int, filename: str, size: int, original: str) -> str:
     custom = await db.get_caption(user_id)
     if custom:
+        safe_fn = html.escape(str(filename or ""), quote=False)
         try:
-            cap = custom.format(filename=filename, size=humanbytes(size))
+            cap = custom.format(filename=safe_fn, size=humanbytes(size))
         except (KeyError, IndexError, ValueError):
             cap = custom
     else:
@@ -228,8 +229,19 @@ async def save(client: Client, message: Message):
             parse_mode=enums.ParseMode.HTML,
         )
 
-    link = re.search(r"https?://t\.me/\S+", message.text).group(0)
+    link = re.search(r"https?://t\.me/\S+", message.text).group(0).rstrip("/")
     datas = link.split("/")
+    is_private_link = "t.me/c/" in link
+    is_batch = "t.me/b/" in link
+    is_public_link = not is_private_link and not is_batch
+    min_parts = 6 if (is_private_link or is_batch) else 5
+    if len(datas) < min_parts or not datas[3]:
+        return await message.reply_text("❌ <b>Invalid post link.</b>", parse_mode=enums.ParseMode.HTML)
+    if is_private_link and not datas[4].isdigit():
+        return await message.reply_text("❌ <b>Invalid private channel link.</b>", parse_mode=enums.ParseMode.HTML)
+    if is_batch and not datas[4]:
+        return await message.reply_text("❌ <b>Invalid bot post link.</b>", parse_mode=enums.ParseMode.HTML)
+
     temp = datas[-1].replace("?single", "").split("?")[0].split("-")
     try:
         fromID = int(temp[0].strip())
@@ -240,6 +252,11 @@ async def save(client: Client, message: Message):
     except (IndexError, ValueError):
         toID = fromID
 
+    if fromID < 1 or toID < fromID:
+        return await message.reply_text("❌ <b>Invalid message range in link.</b>", parse_mode=enums.ParseMode.HTML)
+
+    from config import env_int
+    max_batch = max(5, env_int("MAX_SAVER_BATCH", 200))
     is_premium = await db.check_premium(user_id)
     if not is_premium and toID - fromID + 1 > 5:
         await message.reply_text(
@@ -247,11 +264,14 @@ async def save(client: Client, message: Message):
             parse_mode=enums.ParseMode.HTML,
         )
         toID = fromID + 4
+    elif toID - fromID + 1 > max_batch:
+        await message.reply_text(
+            f"<i>ℹ️ Batch capped at {max_batch} posts per request – saving {fromID}–{fromID + max_batch - 1}.</i>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        toID = fromID + max_batch - 1
 
     batch_temp.IS_BATCH[user_id] = False
-    is_private_link = "t.me/c/" in link
-    is_batch = "t.me/b/" in link
-    is_public_link = not is_private_link and not is_batch
     acc = None
 
     try:

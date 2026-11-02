@@ -83,19 +83,32 @@ async def handle_log_channel_input(client: Client, message: Message, state: dict
         await message.reply("<b>❌ Invalid channel ID. Send a number like <code>-1001234567890</code></b>")
         return
 
-    # Validate access
+    # Validate ownership & access
+    import html
     bot = await main_db.get_bot(bot_id)
+    if not bot or bot.get("owner_id") != user_id:
+        _get_state().pop(user_id, None)
+        await message.reply("<b>❌ Access denied!</b>")
+        return
     token = decrypt_token(bot["bot_token_encrypted"])
 
+    temp_client = Client(
+        f"verify_{bot_id}", api_id=API_ID, api_hash=API_HASH,
+        bot_token=token, in_memory=True, no_updates=True,
+    )
     try:
-        temp_client = Client(f"verify_{bot_id}", api_id=API_ID, api_hash=API_HASH, bot_token=token, in_memory=True)
         await temp_client.start()
         test = await temp_client.send_message(channel_id, "✅ Channel verified.")
         await test.delete()
-        await temp_client.stop()
     except Exception as e:
-        await message.reply(f"<b>❌ Cannot access channel!</b>\n<code>{str(e)[:100]}</code>")
+        await message.reply(f"<b>❌ Cannot access channel!</b>\n<code>{html.escape(str(e))[:100]}</code>")
         return
+    finally:
+        if getattr(temp_client, "is_connected", False):
+            try:
+                await temp_client.stop(block=False)
+            except Exception:
+                pass
 
     await main_db.update_log_channel(bot_id, channel_id)
 
@@ -421,43 +434,53 @@ async def handle_fsub_channel_input(client: Client, message: Message, state: dic
     status_msg = await message.reply("<b>⏳ Verifying channel access...</b>")
 
     # Verify that the cloned bot has access and can create invite links
+    import html
     bot = await main_db.get_bot(bot_id)
+    if not bot or bot.get("owner_id") != user_id:
+        _get_state().pop(user_id, None)
+        await status_msg.edit_text("<b>❌ Access denied!</b>")
+        return
     token = decrypt_token(bot["bot_token_encrypted"])
 
+    temp_client = Client(
+        name=f"verify_fsub_{bot_id}",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        bot_token=token,
+        in_memory=True,
+        no_updates=True,
+    )
     try:
-        temp_client = Client(
-            name=f"verify_fsub_{bot_id}",
-            api_id=API_ID,
-            api_hash=API_HASH,
-            bot_token=token,
-            in_memory=True
-        )
         await temp_client.start()
-        
+
         # 1. Check access
-        chat = await temp_client.get_chat(channel_id)
-        
+        await temp_client.get_chat(channel_id)
+
         # 2. Check ability to create join request links (needed for request mode)
         invite = await temp_client.create_chat_invite_link(
             chat_id=channel_id,
-            creates_join_request=True
+            creates_join_request=True,
         )
         await temp_client.revoke_chat_invite_link(channel_id, invite.invite_link)
-        
-        await temp_client.stop()
     except Exception as e:
         await status_msg.edit_text(
             f"<b>❌ Verification Failed!</b>\n\n"
             f"<blockquote>Make sure:\n"
             f"1. The channel ID is correct (<code>{channel_id}</code>)\n"
-            f"2. The bot (@{bot.get('bot_username', 'unknown')}) is an admin in the channel\n"
+            f"2. The bot (@{html.escape(str(bot.get('bot_username', 'unknown')))}) is an admin in the channel\n"
             f"3. The bot has 'Invite Users via Link' admin rights\n\n"
-            f"<b>Error:</b> <code>{str(e)[:100]}</code></blockquote>",
+            f"<b>Error:</b> <code>{html.escape(str(e))[:100]}</code></blockquote>",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back", callback_data=f"fsub_{bot_id}")],
             ])
         )
         return
+    finally:
+        if getattr(temp_client, "is_connected", False):
+            try:
+                await temp_client.stop(block=False)
+            except Exception:
+                pass
 
     worker_db = WorkerDB(bot_id)
     await worker_db.add_channel(channel_id, mode="off")
@@ -869,10 +892,11 @@ async def handle_botphoto_input(client: Client, message: Message, state: dict):
         _get_state().pop(user_id, None)
         return await message.reply("<b>🔴 The bot is not running – start it and try again.</b>", reply_markup=back)
     if message.text and message.text.strip() == "0":
+        import html
         try:
             await remove_bot_photo(worker, token=token)
         except Exception as e:
-            return await message.reply(f"<b>❌ Couldn't remove the photo:</b> <code>{str(e)[:150]}</code>", reply_markup=back)
+            return await message.reply(f"<b>❌ Couldn't remove the photo:</b> <code>{html.escape(str(e))[:150]}</code>", reply_markup=back)
         _get_state().pop(user_id, None)
         return await message.reply("<b>🗑 Bot profile photo removed.</b>", reply_markup=back)
     if not (message.photo or (message.document and (message.document.mime_type or "").startswith("image/"))):
@@ -882,7 +906,8 @@ async def handle_botphoto_input(client: Client, message: Message, state: dict):
     try:
         await set_bot_photo(worker, path, token=token)
     except Exception as e:
-        return await status.edit_text(f"<b>❌ Telegram rejected the photo:</b>\n<code>{str(e)[:200]}</code>", reply_markup=back)
+        import html
+        return await status.edit_text(f"<b>❌ Telegram rejected the photo:</b>\n<code>{html.escape(str(e))[:200]}</code>", reply_markup=back)
     finally:
         if path and os.path.exists(path):
             os.remove(path)

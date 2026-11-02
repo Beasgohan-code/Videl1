@@ -12,6 +12,7 @@ import itertools
 import json
 import logging
 import os
+import re
 
 from config import env_int
 import shutil
@@ -471,7 +472,9 @@ async def process(client, job: Job):
     os.makedirs(workdir, exist_ok=True)
     try:
         # 1. download
-        src = os.path.join(workdir, "src" + (os.path.splitext(old_name)[1] or ""))
+        raw_ext = os.path.splitext(os.path.basename(old_name.replace("\\", "/")))[1]
+        safe_ext = raw_ext if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", raw_ext or "") else ""
+        src = os.path.join(workdir, "src" + safe_ext)
         try:
             from core import fastdl
             path = await fastdl.download(client, message, file_name=src,
@@ -567,7 +570,7 @@ async def process(client, job: Job):
     except Exception as e:
         log.warning(f"rename failed for {uid}: {e}")
         try:
-            await job.status.edit_text(f"❌ <b>Rename failed:</b> <code>{str(e)[:300]}</code>")
+            await job.status.edit_text(f"❌ <b>Rename failed:</b> <code>{html.escape(str(e))[:300]}</code>")
         except Exception:
             pass
     finally:

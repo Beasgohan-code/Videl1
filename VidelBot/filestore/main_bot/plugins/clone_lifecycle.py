@@ -168,9 +168,13 @@ async def reactivate_cb(client: Client, query: CallbackQuery):
         try:
             await worker_engine.start_worker(bot)
         except Exception as e:
-            return await smart_edit(query.message, f"<b>❌ Couldn't start @{name}:</b> <code>{str(e)[:200]}</code>\n"
-                                                   "<i>If you revoked the token in @BotFather, add the bot again.</i>",
-                                    _dash_kb(bot_id))
+            import html
+            return await smart_edit(
+                query.message,
+                f"<b>❌ Couldn't start @{html.escape(str(name))}:</b> <code>{html.escape(str(e))[:200]}</code>\n"
+                "<i>If you revoked the token in @BotFather, add the bot again.</i>",
+                _dash_kb(bot_id),
+            )
         if not worker_engine.get_worker(bot_id):
             return await smart_edit(query.message, f"<b>❌ @{name} didn't come online.</b> Check its token in "
                                                    "@BotFather and try again.", _dash_kb(bot_id))

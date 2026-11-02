@@ -22,19 +22,24 @@ def _done(task: asyncio.Task) -> None:
         log.error("background task %r crashed: %s", task.get_name(), exc, exc_info=exc)
 
 
+def track(task: asyncio.Task, *, name: str | None = None) -> asyncio.Task:
+    """Register an already-created `asyncio.Task` for strong-reference tracking and crash logging."""
+    if name:
+        try:
+            task.set_name(name)
+        except AttributeError:
+            pass
+    _TASKS.add(task)
+    task.add_done_callback(_done)
+    return task
+
+
 def spawn(coro, *, name: str = "bg") -> asyncio.Task:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = asyncio.get_event_loop()
-    task = loop.create_task(coro)
-    try:
-        task.set_name(name)
-    except AttributeError:
-        pass
-    _TASKS.add(task)
-    task.add_done_callback(_done)
-    return task
+    return track(loop.create_task(coro), name=name)
 
 
 def running() -> int:
