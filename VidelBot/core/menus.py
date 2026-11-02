@@ -536,3 +536,28 @@ async def noop_callback(client: Client, query: CallbackQuery):
         await query.answer()
     except Exception:
         pass
+
+
+@Client.on_message(filters.command(["web", "studio"]) & filters.private)
+async def web_studio_cmd(client: Client, message: Message):
+    """Issue a single-use 10-minute sign-in token for the Multi-Bot SaaS Studio (`/app`)."""
+    import config as cfg
+    from webapp.auth import issue_saas_link
+
+    user = message.from_user
+    if not user:
+        return
+    token = issue_saas_link(user.id, username=user.username or "", first_name=user.first_name or "")
+    base_url = (getattr(cfg, "KEEP_ALIVE_URL", "") or "").rstrip("/")
+    kb = None
+    if base_url.startswith("https://"):
+        kb = InlineKeyboardMarkup([[Btn("🚀 Launch SaaS Studio", url=f"{base_url}/app#{token}")]])
+    await message.reply_text(
+        f"<b>🚀 {html.escape(cfg.BOT_NAME)} Multi-Bot SaaS Studio</b>\n\n"
+        f"Your single-use sign-in key (expires in 10 minutes):\n"
+        f"<code>{html.escape(token)}</code>\n\n"
+        "<i>Open <code>/app</code> on your web host and paste this key, or tap the button below if HTTPS is configured.</i>",
+        reply_markup=kb,
+        disable_web_page_preview=True,
+    )
+

@@ -48,12 +48,14 @@ def collect_diagnostics() -> dict[str, Any]:
     from core import bg, botapi, instance
     from core.plugin_manager import plugin_manager
     from filestore.utils import security
-    from VideoEncoder.utils.uploads.storage import storage_backends_status
-
     st = client_mod.runtime_stack()
     res = system_snapshot(getattr(config, "DOWNLOAD_DIR", "."))
     bins = binary_status()
-    storage = storage_backends_status()
+    try:
+        from VideoEncoder.utils.uploads.storage import storage_backends_status
+        storage = storage_backends_status()
+    except Exception:
+        storage = []
     plugins = plugin_manager.health_report()
 
     enc_active = bool(security.is_encryption_enabled())
