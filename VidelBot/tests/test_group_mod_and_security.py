@@ -432,3 +432,32 @@ def test_group_warns_tags_reactions_topics_locks_filters_and_greetings():
     run(gmod.group_member_greeting_handler(c, upd))
     sent_welcome = c.called("send_message")[-1][1][1]
     assert "Videl &lt;3" in sent_welcome and "Dev &lt;Hub&gt;" in sent_welcome
+
+
+def test_rich_admin_and_owner_telemetry_commands():
+    from core.admin import stats_cmd, users_cmd
+    from filestore.database.main_db import MainDB
+    from filestore.main_bot.plugins.owner_cmds import list_all_bots, platform_stats, system_stats
+
+    c = FakeClient()
+    run(MainDB().bots.insert_one({"_id": 501, "bot_username": "alpha_clone_bot", "is_active": True, "owner_id": 5}))
+
+    m_stats = FakeMsg("/stats", uid=111, client=c)
+    run(stats_cmd(c, m_stats))
+    assert m_stats.replies or m_stats.edits
+
+    m_users = FakeMsg("/users", uid=111, client=c)
+    run(users_cmd(c, m_users))
+    assert "𝗨𝗦𝗘𝗥 𝗗𝗜𝗥𝗘𝗖𝗧𝗢𝗥𝗬 𝗦𝗨𝗠𝗠𝗔𝗥𝗬" in m_users.replies[-1]
+
+    m_fs = FakeMsg("/clonestats", uid=111, client=c)
+    run(platform_stats(c, m_fs))
+    assert "𝗖𝗟𝗢𝗡𝗘 𝗣𝗟𝗔𝗧𝗙𝗢𝗥𝗠 𝗦𝗧𝗔𝗧𝗦" in m_fs.replies[-1]
+
+    m_bots = FakeMsg("/bots", uid=111, client=c)
+    run(list_all_bots(c, m_bots))
+    assert "@alpha_clone_bot" in m_bots.replies[-1]
+
+    m_sys = FakeMsg("/sys", uid=111, client=c)
+    run(system_stats(c, m_sys))
+    assert "𝗦𝗬𝗦𝗧𝗘𝗠 𝗥𝗘𝗦𝗢𝗨𝗥𝗖𝗘𝗦" in m_sys.replies[-1] and "CPU" in m_sys.replies[-1]

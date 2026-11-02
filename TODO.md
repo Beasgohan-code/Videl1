@@ -1,7 +1,7 @@
 # Videl1 — Upgrade Roadmap & Status (`TODO.md`)
 
-> Active codebase: **`VidelBot/`** (deployed via root `Dockerfile` and `VidelBot/Dockerfile`).  
-> Legacy files in repository root (`modules/`, `helper/`, `info/`) are retained untouched as historical prototype artifacts and are not imported by `VidelBot/`.
+> Active codebase: **`VidelBot/`** (deployed via the single root **`Dockerfile`** outside `VidelBot/`).
+> Legacy files in repository root (`modules/`, `helper/`, `info/`) are retained untouched as historical prototype artifacts and are excluded from Docker images via root-anchored rules in `.dockerignore`.
 
 ---
 
@@ -9,8 +9,8 @@
 
 ### Phase 1 — Repository, Dependency & API Audit
 - [x] Audited `VidelBot/` runtime, MongoDB schemas, 21 existing test suites, and deploy manifests.
+- [x] Consolidated Docker deployment to a single root **`Dockerfile`** and **`.dockerignore`** outside `VidelBot/` (removing the duplicate `VidelBot/Dockerfile` and `VidelBot/.dockerignore`) with root-anchored `.dockerignore` rules and build-time `compileall` + runtime-stack verification.
 - [x] Verified compatibility between **`wzgram==3.1.6`** (MTProto Layer 232 + `WarpCrypto==2.1.0`), **`richgram==0.2.0`**, and **`aiogram==3.31.0`** (Bot API 10.3).
-- [x] Resolved `richgram` → `kurigram` PyPI install collision in both `Dockerfile`s (`pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6`) so `pyrogram` resolves cleanly to `wzgram` with a single update consumer per token.
 - [x] Audited `SilentDemonSD/WZML-X` (`wzv3-dev`) plugin manifests, installer safeguards, and reference plugins.
 
 ### Phase 2 — Centralized Richgram Presentation & Bot API 10.3 Bridge

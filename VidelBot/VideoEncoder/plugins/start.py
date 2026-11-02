@@ -1,5 +1,6 @@
 
 
+import asyncio
 import os
 import shutil
 from time import time
@@ -83,6 +84,7 @@ async def stats_doc(_):
     net = net_io_counters()
     swap = swap_memory()
     memory = virtual_memory()
+    cpu_load = await asyncio.to_thread(cpu_percent, 0.2)
     total_users = await db.total_users_count()
     doc = Doc("📊", "Bot statistics", "live server numbers")
     doc.table([
@@ -92,7 +94,7 @@ async def stats_doc(_):
     ], header=("Overview", "Value"))
     doc.h("⚙️", "CPU & memory")
     doc.table([
-        ("CPU", f"{cpu_percent(interval=0.5)} %", f"{cpu_count(logical=False)} physical · {cpu_count(logical=True)} total cores"),
+        ("CPU", f"{cpu_load} %", f"{cpu_count(logical=False)} physical · {cpu_count(logical=True)} total cores"),
         ("RAM", f"{memory.percent} %", f"{humanbytes(memory.used)} used · {humanbytes(memory.available)} free of {humanbytes(memory.total)}"),
         ("Swap", f"{swap.percent} %", humanbytes(swap.total) if swap.total else "—"),
     ], header=("Resource", "Load", "Details"), align=("left", "right", "left"))
@@ -115,7 +117,7 @@ async def showw_status(_):
     total = humanbytes(total)
     used = humanbytes(used)
     free = humanbytes(free)
-    cpuUsage = cpu_percent(interval=0.5)
+    cpuUsage = await asyncio.to_thread(cpu_percent, 0.2)
     total_users = await db.total_users_count()
 
     text = f"""Uptime of Bot: {currentTime}

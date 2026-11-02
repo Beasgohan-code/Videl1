@@ -84,39 +84,41 @@ async def _stats(message: Message, msg):
 
     du = shutil.disk_usage(".")
     mem = psutil.virtual_memory()
-    text = (
-        f"<b>📊 {BOT_NAME} Statistics</b>\n\n"
-        "<b>👥 Users</b>\n"
-        f"<blockquote>Total: <code>{videl_users}</code> · Banned: <code>{banned}</code>\n"
-        f"Saver: <code>{saver_users}</code> (💎 <code>{premium}</code> premium)\n"
-        f"Encoder: <code>{enc_users}</code> · Queue: <code>{queue}</code></blockquote>\n"
-        "<b>🤖 Clone bots</b>\n"
-        f"<blockquote>Registered: <code>{clones}</code> · Active: <code>{active_clones}</code> · "
-        f"Running now: <code>{running}</code></blockquote>\n"
-        "<b>✏️ Auto-Rename</b>\n"
-        f"<blockquote>Files renamed: <code>{renames}</code> · Users with a template: <code>{renamers}</code></blockquote>\n"
-        "<b>🖥 Server</b>\n"
-        f"<blockquote>CPU: <code>{psutil.cpu_percent(interval=0.5)}%</code> · "
-        f"RAM: <code>{mem.percent}%</code> ({humanbytes(mem.used)} / {humanbytes(mem.total)})\n"
-        f"Disk: <code>{humanbytes(du.used)}</code> / <code>{humanbytes(du.total)}</code> "
-        f"(free {humanbytes(du.free)})\n"
-        f"Uptime: <code>{readable_time(time.time() - BOOT_TIME)}</code></blockquote>"
-    )
-    await msg.finish(text)
+    cpu_pct = await asyncio.to_thread(psutil.cpu_percent, 0.2)
+    from core.rich import Doc
+    doc = Doc("📊", f"{BOT_NAME} Statistics", "admin telemetry")
+    doc.h("👥", "Users & modules").kv_table([
+        ("👥 Total users", f"{videl_users:,} (🚫 {banned} banned)"),
+        ("📥 Saver users", f"{saver_users:,} (💎 {premium:,} premium)"),
+        ("🎬 Encoder", f"{enc_users:,} users · {queue} queued"),
+        ("🤖 Clone bots", f"{clones} total · {active_clones} active · 🟢 {running} running"),
+        ("✏️ Auto-Rename", f"{renames:,} renamed · {renamers:,} templated"),
+    ], key_header="Module", val_header="Metrics")
+    doc.h("🖥", "Server resources").kv_table([
+        ("⚙️ CPU", f"{cpu_pct}%"),
+        ("🧠 RAM", f"{mem.percent}% ({humanbytes(mem.used)} / {humanbytes(mem.total)})"),
+        ("💽 Disk", f"{humanbytes(du.used)} / {humanbytes(du.total)} (free {humanbytes(du.free)})"),
+        ("⏱ Uptime", readable_time(time.time() - BOOT_TIME)),
+    ], key_header="Resource", val_header="Usage")
+    await msg.finish_doc(doc)
 
 
 # ─────────────────────────── /users ───────────────────────────
 @Client.on_message(filters.command("users") & admin_filter)
 async def users_cmd(client: Client, message: Message):
+    from core import rich
+    from core.rich import Doc
     total = await vdb.total_users()
     blocked = await vdb.users.count_documents({"blocked": True})
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     new_today = await vdb.users.count_documents({"joined": {"$gte": today}})
-    await message.reply_text(
-        f"<b>👥 Users</b>\n\n<blockquote>Total: <code>{total}</code>\n"
-        f"New today: <code>{new_today}</code>\nBlocked the bot: <code>{blocked}</code>\n"
-        f"Banned: <code>{len(vdb._banned)}</code></blockquote>"
-    )
+    doc = Doc("👥", "User Directory Summary", BOT_NAME).kv_table([
+        ("👥 Total users", f"{total:,}"),
+        ("🆕 Joined today", f"{new_today:,}"),
+        ("🔕 Blocked bot", f"{blocked:,}"),
+        ("🚫 Banned", f"{len(vdb._banned):,}"),
+    ], key_header="Metric", val_header="Count")
+    await rich.reply(message, doc)
 
 
 # ─────────────────────────── /broadcast ───────────────────────────

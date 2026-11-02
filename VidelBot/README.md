@@ -30,7 +30,7 @@ Videl runs on **WzGram v3.1.6** (MTProto Layer 232 + **WarpCrypto**), **Richgram
 | Role | receives **all updates**, pooled multi-DC 4 GB up/downloads, clone workers, user sessions, **native Layer 232 RichMessage** | optional **outgoing** Bot API HTTP bridge (`core/botapi.py`) |
 | Used for | `InputRichMessage` · `ButtonStyle` · `DisabledButton` · `CopyTextButton` · `ReplyParameters` · `LinkPreviewOptions` · `EphemeralMessageParameters` · `send_rich_message_draft` + `MessageGenerationStopped` · `ManagedBotUpdated` · `get_upgraded_gift` | outgoing Bot API 10.3 HTTP calls for the primary bot token (shared message IDs with WzGram) |
 
-> **Manual local `pip install` note:** `richgram==0.2.0` declares `kurigram` as an install dependency on PyPI. Both `Dockerfile`s automatically strip `kurigram` and keep `wzgram==3.1.6` as the `pyrogram` provider; when installing manually into a virtualenv, run:
+> **Manual local `pip install` note:** `richgram==0.2.0` declares `kurigram` as an install dependency on PyPI. The root `Dockerfile` automatically strips `kurigram` and keeps `wzgram==3.1.6` as the `pyrogram` provider; when installing manually into a virtualenv, run:
 > ```bash
 > pip install -r VidelBot/requirements.txt
 > pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6
@@ -121,7 +121,7 @@ All platforms build the **root `Dockerfile`** (Python 3.11 + ffmpeg/ffprobe, med
 | **Koyeb / Northflank / Fly.io** | Create a service from the GitHub repo with the **Dockerfile** builder, port `8080`, health check path `/health`. |
 | **VPS with Docker** | `cp VidelBot/config.env.sample VidelBot/config.env` → edit → `docker compose up -d --build` (logs: `docker compose logs -f`). |
 | **VPS without Docker** | `sudo apt install ffmpeg mediainfo mkvtoolnix p7zip-full` → `cd VidelBot && python3.11 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt` → create `config.env` → `python3 run.py` (systemd unit below). |
-| **Any Dockerfile path / root dir** | `Dockerfile` and `VidelBot/Dockerfile` are the **same universal file**: it works with the repo root *or* `VidelBot/` as build context, so either Dockerfile path is fine. |
+| **Root Dockerfile** | The single canonical **`Dockerfile`** lives outside `VidelBot/` at the repository root (`./Dockerfile`), so all PaaS auto-detectors and `docker compose` build from the repo root without duplicate-Dockerfile ambiguity (also falls back cleanly if invoked with `VidelBot/` as build context). |
 
 > ⚠️ Run **exactly one** instance per bot token (keep replicas at 1). Two copies would steal each other's updates.
 
