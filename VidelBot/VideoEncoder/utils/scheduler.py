@@ -18,6 +18,7 @@ import logging
 import os
 import shutil
 import time
+import weakref
 from datetime import datetime, timedelta
 
 import config
@@ -32,6 +33,7 @@ EXTRA: dict = {}         # id(message) → extra dict (mux track, merge parts, c
 PRIO: set = set()        # id(message) of priority tasks
 SRC: dict = {}           # id(message) → source signature (duplicate guard)
 NOTES: dict = {}         # id(message) → its "Added to the queue" message, reused as the status card
+_REFS: dict = {}         # id(message) → weakref.ref(message) to detect CPython id() reuse after GC
 
 COMMAND_MODES = {"/ddl": "url", "/batch": "batch", "/sample": "sample", "/trim": "trim", "/screens": "screens",
                  "/dl": "tg", "/af": "af", "/mux": "mux", "/merge": "merge", "/convert": "convert",
@@ -125,15 +127,34 @@ def find_duplicate(message, mode: str, extra: dict | None = None) -> tuple:
     return 0, False
 
 
+def _evict_if_reused(message) -> int:
+    """Return `id(message)` after evicting stale metadata if CPython reused a GC'd Message's address."""
+    mid = id(message)
+    ref = _REFS.get(mid)
+    if ref is not None and ref() is not message:
+        MODES.pop(mid, None)
+        EXTRA.pop(mid, None)
+        SRC.pop(mid, None)
+        NOTES.pop(mid, None)
+        PRIO.discard(mid)
+        _REFS.pop(mid, None)
+    return mid
+
+
 def add(message, mode: str, *, priority: bool = False, extra: dict | None = None) -> int:
     """Queue a task. Returns its 1-based position in the queue."""
-    MODES[id(message)] = mode
-    EXTRA[id(message)] = dict(extra or {})
+    mid = _evict_if_reused(message)
+    try:
+        _REFS[mid] = weakref.ref(message)
+    except TypeError:
+        _REFS.pop(mid, None)
+    MODES[mid] = mode
+    EXTRA[mid] = dict(extra or {})
     sig = signature(message, mode, extra)
     if sig is not None:
-        SRC[id(message)] = sig
+        SRC[mid] = sig
     if priority:
-        PRIO.add(id(message))
+        PRIO.add(mid)
         run = running()
         for i, m in enumerate(data):
             if not any(m is r for r in run) and id(m) not in PRIO:
@@ -157,13 +178,15 @@ def mark_running(message):
 
 def finish(message):
     """Remove a finished / failed task from the queue."""
+    mid = id(message)
     data[:] = [m for m in data if m is not message]
     _running[:] = [m for m in _running if m is not message]
-    MODES.pop(id(message), None)
-    EXTRA.pop(id(message), None)
-    SRC.pop(id(message), None)
-    NOTES.pop(id(message), None)
-    PRIO.discard(id(message))
+    MODES.pop(mid, None)
+    EXTRA.pop(mid, None)
+    SRC.pop(mid, None)
+    NOTES.pop(mid, None)
+    PRIO.discard(mid)
+    _REFS.pop(mid, None)
 
 
 def parse_mode(message) -> str | None:
@@ -178,11 +201,13 @@ def parse_mode(message) -> str | None:
 
 
 def mode_of(message) -> str | None:
-    return MODES.get(id(message)) or parse_mode(message)
+    mid = _evict_if_reused(message)
+    return MODES.get(mid) or parse_mode(message)
 
 
 def extra_of(message) -> dict:
-    return EXTRA.get(id(message)) or {}
+    mid = _evict_if_reused(message)
+    return EXTRA.get(mid) or {}
 
 
 # ─────────────────────────── per-task folders ───────────────────────────

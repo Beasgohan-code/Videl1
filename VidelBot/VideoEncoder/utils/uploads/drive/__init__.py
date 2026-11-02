@@ -3,12 +3,12 @@
 from __future__ import print_function
 
 import os.path
-import pickle
 import re
 import urllib.parse as urlparse
 from urllib.parse import parse_qs
 
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
@@ -41,36 +41,21 @@ class DriveAPI:
         # If no valid token found
         # we will create one.
         self.creds = None
+        token_file = "token.json"
 
-        # The file token.pickle stores the
-        # user's access and refresh tokens. It is
-        # created automatically when the authorization
-        # flow completes for the first time.
+        # Load OAuth credentials safely from JSON (never pickle.load).
+        if os.path.exists(token_file):
+            self.creds = Credentials.from_authorized_user_file(token_file, SCOPES)
 
-        # Check if file token.pickle exists
-        if os.path.exists('token.pickle'):
-            # Read the token from the file and
-            # store it in the variable self.creds
-            with open('token.pickle', 'rb') as token:
-                self.creds = pickle.load(token)
-
-        # If no valid credentials are available,
-        # request the user to log in.
         if not self.creds or not self.creds.valid:
-
-            # If token is expired, it will be refreshed,
-            # else, we will request a new one.
             if self.creds and self.creds.expired and self.creds.refresh_token:
                 self.creds.refresh(Request())
             else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    "credentials.json", SCOPES)
-                self.creds = flow.run_console(port=0)
+                flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
+                self.creds = flow.run_local_server(port=0, open_browser=False)
 
-            # Save the access token in token.pickle
-            # file for future usage
-            with open('token.pickle', 'wb') as token:
-                pickle.dump(self.creds, token)
+            with open(token_file, "w", encoding="utf-8") as token:
+                token.write(self.creds.to_json())
 
         # Connect to the API service
         self.service = build('drive', 'v3', credentials=self.creds)

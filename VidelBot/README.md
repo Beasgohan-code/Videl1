@@ -463,8 +463,54 @@ tests/            offline test-suite
 * The watchdog also trims per-user caches (rename settings, locks, log/error de-dupe) so memory stays flat.
 
 ### Handler order
-`-10` payments (never blocked) → `-4` user tracking (+ referral credit) → `-3` ban / maintenance → `-2` force-subscribe → `-1` reply routers (support inbox, gift picker, rename-settings input) → `0` modules → `1–2` clone link generators.  
-Inside clones: `-10` Stars payments → `-3` anti-flood → `-2` password / request-reply input → `-1` activity → `0` commands → `1–2` link generators → `3` storage-channel indexer.
+`-20` update deduplication (`SEEN`, 15 min window) → `-10` Stars payments (atomic `charge_id` idempotency, never blocked) → `-4` user tracking (+ referral credit) → `-3` ban / maintenance → `-2` force-subscribe → `-1` reply routers (support inbox, gift picker, rename-settings input) → `0` modules & modular plugins → `1–2` clone link generators.
+Inside clones: `-10` Stars payments (atomic `charge_id` idempotency) → `-3` anti-flood → `-2` password / request-reply input → `-1` activity → `0` commands → `1–2` link generators → `3` storage-channel indexer.
+
+---
+
+## 🏗 Engineering Architecture, Operations & Reference
+
+### 1. Startup & Graceful Shutdown Lifecycle (`run.py`)
+1. **Boot validation:** `config.missing_required()` verifies required credentials (`API_ID`, `API_HASH`, `BOT_TOKEN`, `DB_URI`, `OWNER_ID`) before network initialization.
+2. **Health & Dashboard server:** `keep_alive.start_server()` binds `0.0.0.0:$PORT` (`/`, `/health`, `/admin`) and spawns `self-ping` via `core.bg.spawn`.
+3. **Shared MongoDB pool & indexes:** `get_motor_client()` connects with bounded timeouts (`serverSelectionTimeoutMS=10s`, `connectTimeoutMS=10s`, `socketTimeoutMS=30s`) and is shared across `VidelDB`, `saver` (`database/db.py`), `VideoEncoder`, and `filestore`. `vdb.warm_up()`, `MainDB().ensure_indexes()`, and `ensure_module_indexes()` build indexes and hydrate `_banned` / `_settings`.
+4. **Single-instance lease & orphan reaping:** `core.instance.acquire()` acquires the MongoDB lease + starts its heartbeat; `VideoEncoder.utils.jobs.reap_orphans()` terminates stray child media processes after `exec` restarts.
+5. **Dynamic admins & idempotent plugin loading:** `load_db_admins()` merges persisted admins before filter compilation; `load_plugins(app)` registers module handlers through `register_handler_once()` (preventing duplicate handler registration) and records any import errors into `boot_import_errors` / `plugin_manager.load_errors`.
+6. **Client & clone worker startup:** `start_with_retry(app)` connects `WzGram`, registers scoped command menus (`USER` / `GROUP` / `ADMIN` / `OWNER`, each ≤ 100 Telegram commands), starts active FileStore clone workers (rolling back cleanly if post-start setup fails), and arms `watchdog.start(app)`.
+7. **Graceful shutdown:** Unloads modular plugins (`plugin_manager.unload_all`), stops all clone workers (`worker_engine.stop_all_workers`), stops `watchdog` (`watchdog.stop`), cancels & drains tracked background tasks (`core.bg.cancel_all`), stops `keep_alive`, closes the outgoing `aiogram` session (`botapi.close`), stops `app`, releases the MongoDB instance lease (`instance.release`), and closes the Motor pool (`close_motor_client`).
+
+### 2. Telegram Bot API Compatibility Matrix (`WzGram 3.1.6` + `aiogram 3.31`)
+| Capability | Classification | Implementation Details |
+|---|---|---|
+| Rich messages (`sendRichMessage`, tables, code, details, pull quotes, math) | **Supported and implemented** | Centralized `core/rich.py` (`Doc`) with 3-tier delivery: Bot API 10.3 → WzGram `InputRichMessage` → classic HTML fallback |
+| Coloured buttons (`ButtonStyle`), `CopyTextButton`, `DisabledButton` | **Supported and implemented** | `core/ui.py` (`btn`, `styled_button`, `copy_button`) across Bot API 10.3 & WzGram Layer 232 |
+| Ephemeral group replies (`sendEphemeralMessage`, edit, delete) | **Partially supported (with safe fallback)** | Implemented in `core/botapi.py` & `core/rich.py`; Telegram forbids `callback_data` buttons on ephemeral messages, so interactive keyboards automatically fall back to standard replies |
+| Stoppable streaming drafts (`sendMessageDraft` / `send_rich_message_draft`) | **Supported and implemented** | `core/stream.py` with `MessageGenerationStopped` cancellation |
+| Telegram Stars (`XTR`) one-time plans, 30-day subscriptions, gifts, refunds | **Supported and implemented** | `core/payments.py` + clone `extras.py` with unique `charge_id` atomic idempotency & post-checkout currency/amount/payer verification |
+| Member tags (`setChatMemberTag`), forum topics, checklists, managed bots | **Supported and implemented** | `core/botapi.py` + `plugins/group_mod/plugin.py` + `filestore/main_bot/plugins/managed_bots.py` |
+| Enumerating all members of a group via Bot API | **Unsupported by Telegram Bot API** | Bot API only exposes `getChatAdministrators`, `getChatMemberCount`, and individual `getChatMember(user_id)`. Videl never fakes full member enumeration |
+| Custom Stars subscription billing intervals (≠ 30 days) | **Unsupported by Telegram API** | Telegram enforces `subscription_period = 2592000` (30 days); other durations use one-time Stars plans |
+
+### 3. MongoDB Databases, Collections & Indexes
+| Logical Key | Default DB Name | Key Collections & Indexes |
+|---|---|---|
+| `videl` | `VIDEL_DB_NAME` (`videl_core`) | `videl_users` (`id` unique, `referred_by` sparse), `videl_settings`, `videl_admins`, `videl_instance` (single-instance lease), `payments` (`charge_id` **unique sparse**, `user`, `date`), `subscriptions` (`user`), `plans`, `codes` (`code` unique), `support_map` (`(chat, msg)`, 30d TTL on `date`), `fsub_requests` (`(chat, user)`), `group_settings`, `group_warns` (`(chat_id, user_id)`), `group_filters`, `checklists` (`owner`), `plugins`, `plugin_settings` |
+| `saver` | `DB_NAME` | `users` (`id` indexed; per-user session, premium status/expiry, daily saves, traffic) |
+| `encoder` | `SESSION_NAME` | `users` (`id` indexed; atomic `$setOnInsert` creation), `enc_queue` (persistent encode queue) |
+| `filestore` | `MONGO_DB_NAME` | `bots` (`owner_id`, `is_active`, `(is_active, last_active)`), plus per-clone `bot_<id>_users`, `bot_<id>_admins`, `bot_<id>_fsub`, `bot_<id>_links`, `bot_<id>_purchases` (`(code, user)` unique), `bot_<id>_payments` (`charge_id` **unique sparse**), `bot_<id>_premium`, `bot_<id>_files` (`name_lc`), `bot_<id>_requests`, `bot_<id>_schedules` (`run_at`) |
+
+### 4. Backup, Validation & Dry-Run Restore Guide (`core/backup.py`)
+- **Create backup now:** Send `/backup` as a bot owner (or enable automatic daily backups via `BACKUP_ENABLED=true`, `BACKUP_HOUR`, `BACKUP_CHAT`).
+- **Secret stripping:** User `/login` string sessions, API hashes, passwords, and 2FA fields are stripped (`null`) unless `BACKUP_INCLUDE_SECRETS=true`. Clone bot tokens remain encrypted with `ENCRYPTION_KEY`.
+- **Dry-Run & Non-Destructive Restore:**
+  1. Reply `/backup` to any `.json.gz` Videl backup document.
+  2. Tap **🔍 Dry-Run** (`bkr:dry`) first: Videl streams and validates the archive (capped at 256 MiB uncompressed to prevent gzip bombs), checks schema integrity, and displays exact **New inserts**, **Updates**, **Live secrets preserved**, and **Invalid rows skipped** without modifying MongoDB.
+  3. Tap **♻️ Apply Restore Now** (`bkr:yes`): Documents are upserted by `_id` (existing records are never deleted, and live user sessions are never overwritten by `null` backup placeholders), followed by automatic `vdb.warm_up()` and `load_db_admins()` cache refresh.
+
+### 5. Troubleshooting
+- **`ImportError` or `RICH_AVAILABLE == False` after installing packages:** `richgram` lists `kurigram` in its package metadata, which shares the `pyrogram` import namespace with `wzgram`. Run `pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6` (already automated in the root `Dockerfile` and `.github/workflows/ci.yml`).
+- **Second container waits on startup (`waiting for previous instance lease`):** Expected during rolling deploys (`SINGLE_INSTANCE=true`). The new container serves `/health` immediately and acquires the lease as soon as the old container stops or its 60s lease expires.
+- **Plugin shows `⚠️ Error` in `/plugins`:** Open `/plugins info <name>` to view the captured manifest or import diagnostic stored in `plugin_manager.load_errors` / `manifest_errors`, install any missing dependency, and tap **🔄 Reload**.
 
 ## 📜 Licence
 

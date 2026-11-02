@@ -42,6 +42,12 @@
   - Managed clone bot push onboarding (`@Client.on_managed_bot()`) + token rotation + `BotAccessSettings` helpers,
   - Interactive & Business checklists (`/checklist`) and upgraded collectible gift inspection (`/nftgift`).
 
+### Phase 5 — Codebase Audit, Security Hardening, CI & Reliability (Stages A–E)
+- [x] **Atomic Stars Payment Idempotency & Validation:** Added atomic `charge_id` claiming (`_claim_payment` / `CloneExtras.claim_payment`), unique sparse `charge_id` indexes, and post-checkout currency/amount/payer verification across both main-bot (`core/payments.py`) and clone-worker (`filestore/worker_bot/extras.py`) Stars flows.
+- [x] **SSRF, Subprocess & HTML Escaping Hardening:** Added DNS/IP public-endpoint SSRF validation (`validate_public_endpoint`), redirect blocking, and scheme validation in `filestore/utils/shortener.py`; replaced shell execution in `/update` (`core/admin.py`) with `create_subprocess_exec` + credential redaction + `html.escape`; escaped untrusted names/errors in `/admins`, `watchdog`, and clone `/id`; and added orphan clone-worker disconnect cleanup when `after_start` fails.
+- [x] **MongoDB Pool Sharing, Task Drain & Backup Dry-Run:** Shared the singleton `AsyncIOMotorClient` pool across `VidelDB`, `saver`, `VideoEncoder`, and `filestore`; made `VideoEncoder` `add_user` atomic (`$setOnInsert`); added `core.bg.cancel_all()` + `watchdog.stop()` shutdown draining; and upgraded `core/backup.py` with 256 MiB decompression caps, schema validation, interactive `🔍 Dry-Run` (`bkr:dry`), and post-restore cache reload.
+- [x] **Plugin Health Diagnostics, Scheduler GC Guard, Safe OAuth JSON, CI & Regression Tests:** Added `register_handler_once()` duplicate-registration protection, `plugin_manager.health_report()` / `load_errors` diagnostics in `/plugins`, `weakref`-guarded `id(message)` collision eviction in `VideoEncoder/utils/scheduler.py`, safe JSON OAuth storage replacing `pickle.load` in `VideoEncoder/utils/uploads/drive/__init__.py`, `.github/workflows/ci.yml`, and `tests/test_stage_b_d_regressions.py` (`733 passed, 33 skipped, 0 failed`).
+
 ---
 
 ## Remaining Platform Constraints & Future Follow-Ups

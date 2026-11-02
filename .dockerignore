@@ -7,6 +7,9 @@
 **/*.session-journal
 **/config.env
 **/.env
+**/token.pickle
+**/token.json
+**/credentials.json
 **/.pytest_cache
 VidelBot/tests
 VidelBot/pytest.ini
