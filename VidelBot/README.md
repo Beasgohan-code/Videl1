@@ -12,21 +12,29 @@ Videl is **one** Telegram bot that combines:
 | 🤝 **Growth** (`core/growth.py`) | `/refer` invite links (every `REFERRAL_TARGET` new users → `REFERRAL_REWARD_DAYS` Premium), `/redeem` codes (`/gencode`, `/codes`, `/delcode`), one-time `/trial` |
 | 💬 **Support inbox** (`core/support.py`) | `/support` delivers text or media to the owners' DM – owners just **reply** to answer, users reply to follow up |
 | 🔒 **Force Subscribe** (`core/fsub.py`) | Require joining one or more channels, manage with `/add_fsub`, `/del_fsub`, `/fsub_list`; `/fsub_mode` switches **join-request** mode per channel; leaving a channel re-locks the user |
-| 🧰 **Tools** (`core/`) | `/mediainfo`, `/rename`, `/upload` (public link), `/short`, `/qr`, `/id`, `/info`, `/json`, `/ping`, **inline mode** (`@bot <url or text>` → short links + QR) |
-| 👮 **Admin** (`core/`) | runtime admins (`/add_admin`, `/deladmin`, `/admins` – owners only, no redeploy), `/user <id\|@name>` (full profile + ban / premium buttons), `/msg`, `/export` (CSV), `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/logtest`, `/report`, `/setcommands`, `/restart`, `/update`; clone owners' panel `/clonestats`, `/bots`, `/check [fix]`, `/sys` |
+| 🧰 **Tools & Checklists** (`core/`) | `/mediainfo` (reply **or** direct HTTP Range URL), `/checklist` (interactive task checklists + Business native), `/nftgift` (collectible gift inspector), `/rename`, `/upload`, `/short`, `/qr`, `/id`, `/info`, `/json`, `/ping`, **inline mode** (`@bot <url or text>`) |
+| 🧩 **Modular Plugins** (`plugins/`, `core/plugin_manager.py`) | WZML-X-inspired YAML-manifest plugin architecture (`plugin.yaml` & `wzml_plugin.yml`, `/plugins` owner-governed toggle/reload/settings, **staged AST security scan + SHA-256 + explicit owner approval** before remote/archive install) with 5 bundled rich plugins: **`/imdb`**, **`/anime`** / **`/manga`** / **`/character`**, **`/mdl`**, **`/exportsession`**, and **`group_mod`** |
+| 🛡 **Group Moderation** (`plugins/group_mod/`) | Live Telegram permission-verified group suite (`/gsettings`, `/gban`, `/gunban`, `/kick`, `/mute`, `/unmute`, `/warn`, `/warns`, Bot API 10.3 **`/tag`** / **`/deltag`**, **`/clearreactions`**, **`/topic`**, **`/joinmode`**, `/rules`, `/welcome`, `/goodbye`, `/lock`, `/unlock`, `/gfilter`, `/antiraid`, `/modreport`) |
+| 👮 **Admin** (`core/`) | runtime admins (`/add_admin`, `/deladmin`, `/admins` – owners only, no redeploy), `/plugins`, `/speedtest` (rich card + masked IP), `/user <id\|@name>` (full profile + ban / premium buttons), `/msg`, `/export` (CSV), `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/logtest`, `/report`, `/setcommands`, `/restart`, `/update`; clone owners' panel `/clonestats`, `/bots`, `/check [fix]`, `/sys` |
 | 📝 **Owner log channel** (`core/botlog.py`) | Every event tagged in `LOG_CHANNEL` – who started the bot, who cloned which bot, logins, payments, bans, restarts… – boot/shutdown/clone reports also in the owners' DM, plus a daily activity report |
 | 🐕 **Keep-alive + Watchdog** | Health server + self-ping for free hosts; automatic temp-file cleanup, low-disk rescue, stuck-flow expiry, clone-bot self-healing, hang detection & auto-restart |
 
 Everything runs in a single process on a single bot token; clone bots are extra
 Pyrogram clients started by the worker engine.
 
-## 🛰 Pyrofork + aiogram (Bot API 10.3)
-Videl uses **both** libraries, each for what it does best:
+## 🛰 WzGram (Layer 232) + Richgram + aiogram (Bot API 10.3)
+Videl runs on **WzGram v3.1.6** (MTProto Layer 232 + **WarpCrypto**), **Richgram v0.2.0**, and **aiogram 3.31** (Bot API 10.3):
 
-| | Pyrofork (MTProto, layer 220) | aiogram 3.31 (Bot API 10.3) |
+| | WzGram 3.1.6 + Richgram 0.2.0 (MTProto Layer 232) | aiogram 3.31 (Bot API 10.3) |
 |---|---|---|
-| Role | receives **all updates**, runs handlers, clone workers, user sessions | **outgoing** Bot API client (`core/botapi.py`) |
-| Used for | 4 GB up/downloads, restricted-content saver, encoder, raw API | 🎨 coloured buttons · 👻 ephemeral group replies · 📖 rich messages · ⚡ managed bots · ⭐ Stars subscriptions/ledger · 🎁 Premium & gifts · 🖼 profile photos · ✍️ drafts |
+| Role | receives **all updates**, pooled multi-DC 4 GB up/downloads, clone workers, user sessions, **native Layer 232 RichMessage** | optional **outgoing** Bot API HTTP bridge (`core/botapi.py`) |
+| Used for | `InputRichMessage` · `ButtonStyle` · `DisabledButton` · `CopyTextButton` · `ReplyParameters` · `LinkPreviewOptions` · `EphemeralMessageParameters` · `send_rich_message_draft` + `MessageGenerationStopped` · `ManagedBotUpdated` · `get_upgraded_gift` | outgoing Bot API 10.3 HTTP calls for the primary bot token (shared message IDs with WzGram) |
+
+> **Manual local `pip install` note:** `richgram==0.2.0` declares `kurigram` as an install dependency on PyPI. Both `Dockerfile`s automatically strip `kurigram` and keep `wzgram==3.1.6` as the `pyrogram` provider; when installing manually into a virtualenv, run:
+> ```bash
+> pip install -r VidelBot/requirements.txt
+> pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6
+> ```
 
 aiogram never polls (two consumers on one token would split the updates), message IDs are shared so either
 library can edit what the other sent, and **every aiogram call falls back to MTProto** – if the Bot API is
@@ -65,7 +73,9 @@ unreachable (3 network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, Vid
 * **Disabled buttons** (Bot API 10.3 `DisabledButton`) – status chips such as *✅ Premium · active* on the Premium
   screen and *🔒 Limit reached* in My Bots are greyed out and not tappable. Any button with `callback_data`
   `noop` / `noop:<x>` is sent this way; the MTProto fallback answers it silently.
-* **Streaming replies** (Bot API 9.5 `sendMessageDraft`) – /start shows a live draft while the home screen is built, slow commands (`/stats`, `/report`, `/check`, `/user`, `/stars`, `/export`) show Telegram's native **“Thinking…”** placeholder (`STREAM_REPLIES`)
+* **Streaming replies & stoppable rich drafts** (Bot API 9.5+ `sendMessageDraft` + WzGram `send_rich_message_draft` / `MessageGenerationStopped`) – `/start` shows a live draft while the home screen is built; slow commands and plugin lookups (`/imdb`, `/anime`, `/mdl`, `/mediainfo`, `/speedtest`) stream rich progress stages and honour Telegram's native **Stop** button (`STREAM_REPLIES`)
+* **Interactive checklists & upgraded NFT gifts** – `/checklist Title :: Task 1 | Task 2` (native Business checklist or interactive inline checklist) and `/nftgift <t.me/nft/slug>` (WzGram `get_upgraded_gift` collectible rarity & floor inspector)
+* **Instant managed clone onboarding** – `@Client.on_managed_bot()` (`ManagedBotUpdated`) auto-connects new BotFather managed clones on push without waiting for polling
 * **Bot profile photo** (Bot API 9.4 `setMyProfilePhoto`) – owners: `/setbotpic` · `/delbotpic`; clone owners: dashboard → 📩 Start cfg → 🤖 Bot profile photo
 * **Stars subscriptions** (30-day auto-renew, cancel / resume) and **Premium gifts**
 * **Native pickers** (`request_chat` / `request_user` keyboard buttons) – 📢 *Select channel* when creating a clone / changing its log or force-sub channel, 👤 *Choose a friend* for gifts
@@ -241,21 +251,16 @@ normal letters so they remain readable and copyable. Admin, owner and log messag
 
 - `core/style.py` – `sc()` small caps (keeps HTML tags, entities, `{placeholders}`, `/commands`,
   `@mentions`, links, `<code>` and ACRONYMS; escapes bare `& < >`), `hdr()`, `sec()`, `row()`, `quote()`.
-- `core/rich.py` – `Doc` builds a screen once (`.h()`, `.table()`, `.items()`, `.details()`, `.footer()`)
-  and renders it two ways:
-  - **native rich message** (Bot API 10.1+ `sendRichMessage` / `editMessageText(rich_message=…)`): `<h1>`
-    title, small-caps `<h3>` sections, bordered + striped `<table>`s, `<details>` and a `<footer>`;
-  - **classic HTML** (FileStore look): 2-column tables become `◈ ʟᴀʙᴇʟ: value` rows in a quote, wider
-    tables become `◈ a · b · c` rows, `<details>` becomes an expandable quote.
+- `core/rich.py` – `Doc` (backed by **`richgram`** + 3-tier delivery) builds a screen once (`.h()`, `.table()`, `.kv_table()`, `.items()`, `.details()`, `.pull_quote()`, `.pre()`, `.math()`, `.buttons_row()`, `.slideshow()`, `.footer()`) and renders it across three tiers:
+  1. **Bot API 10.3 `sendRichMessage`** (via `aiogram` bridge on the primary bot),
+  2. **WzGram Layer 232 native `send_rich_message(InputRichMessage)`** (works in every clone worker too, with zero Bot API HTTP round-trips),
+  3. **Classic FileStore HTML fallback** (`◈ ʟᴀʙᴇʟ: value` rows, expandable `<blockquote expandable>` details, plain text helper `.plain()`).
 
-  The rich form is used in private chats of the main bot whenever the aiogram bridge is on. Because
-  pyrofork can't read rich messages, a rich screen only carries buttons whose handlers edit through the
-  Bot API (`rich.SAFE_CALLBACKS`); any other keyboard automatically gets the classic rendering. Groups
-  get the classic form as an ephemeral reply, and if Telegram refuses to turn a rich screen back into a
-  text one, the helpers send the new screen and delete the old message.
+  Rich screens only carry buttons whose handlers edit through `rich.SAFE_CALLBACKS`; any other keyboard automatically gets the classic rendering. Groups get an ephemeral reply (`EphemeralMessageParameters` / Bot API `ephemeral_user_id`), and if Telegram refuses to turn a rich screen back into a text one, the helpers send the new screen and delete the old message.
 
 Rich screens: `/help`, `/about`, `/commands` (one table per section), `/stats`, `/status`, `/mediainfo`
-(streams table), `/id`, `/info`, `/ping`, `/myplan`, `/premium` (Free vs Premium table + Stars prices),
+(streams + container tables, reply or direct HTTP Range URL), `/speedtest`, `/checklist`, `/nftgift`, `/plugins`,
+`/imdb`, `/anime` / `/manga` / `/character`, `/mdl`, `/id`, `/info`, `/ping`, `/myplan`, `/premium` (Free vs Premium table + Stars prices),
 `/mysub`, `/refer`, `/verify`, `/testrename`, `/leaderboard` and the 🧰 Tools help. Restyled
 classic screens (photo / preview based): home, settings hub, encoder help, premium banner and the
 Auto-Rename panel.

@@ -370,7 +370,7 @@ class Doc:
     def classic(self) -> str:
         parts = []
         if self.title:
-            parts.append(style.hdr(self.emoji, self.title))
+            parts.append(style.hdr(self.emoji, esc(self.title)))
         if self.sub:
             parts.append(f"<i>{style.sc(esc(self.sub))}</i>")
         parts += self._classic_blocks()
