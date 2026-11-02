@@ -64,6 +64,8 @@ async def check_chat(message, chat):
 
 
 async def handle_url(url, filepath, msg):
+    from .leech import check_public
+    await check_public(url)
     # SmartDL's constructor probes the URL synchronously – keep it off the event loop
     downloader = await asyncio.to_thread(SmartDL, url, filepath, progress_bar=False, threads=10)
     await asyncio.to_thread(downloader.start, blocking=False)
@@ -189,14 +191,117 @@ async def _safe_edit(msg, text, markup=None) -> bool:
         return False
 
 
+MAX_BATCH_EXTRACT_BYTES = int(os.environ.get("MAX_BATCH_EXTRACT_BYTES", str(4 * 1024 ** 3)))
+EXTRACT_TIMEOUT_SEC = int(os.environ.get("EXTRACT_TIMEOUT_SEC", "600"))
+
+
+def validate_archive_safety(archive_path: str, max_bytes: int | None = None) -> None:
+    """Pre-extraction Zip-Slip / Tar-Slip & decompression-bomb check for zip/tar archives."""
+    import tarfile
+    import zipfile
+
+    limit = max_bytes if max_bytes is not None else MAX_BATCH_EXTRACT_BYTES
+    if not os.path.isfile(archive_path):
+        return
+    total = 0
+    if zipfile.is_zipfile(archive_path):
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            for info in zf.infolist():
+                parts = info.filename.replace("\\", "/").split("/")
+                if info.filename.startswith(("/", "\\")) or ".." in parts:
+                    raise RuntimeError(f"Unsafe archive entry path rejected: {info.filename!r}")
+                # Unix symlink mode inside zip external_attr (0o120000)
+                if ((info.external_attr >> 16) & 0o170000) == 0o120000:
+                    raise RuntimeError(f"Symlink archive entry rejected: {info.filename!r}")
+                total += max(0, int(info.file_size or 0))
+                if total > limit:
+                    raise RuntimeError(f"Archive uncompressed size exceeds {limit // (1024 ** 2)} MiB limit")
+    elif tarfile.is_tarfile(archive_path):
+        with tarfile.open(archive_path, "r:*") as tf:
+            for m in tf.getmembers():
+                parts = m.name.replace("\\", "/").split("/")
+                if m.name.startswith(("/", "\\")) or ".." in parts:
+                    raise RuntimeError(f"Unsafe tar entry path rejected: {m.name!r}")
+                if m.issym() or m.islnk() or m.isdev() or m.isfifo():
+                    raise RuntimeError(f"Special/symlink tar entry rejected: {m.name!r}")
+                total += max(0, int(m.size or 0))
+                if total > limit:
+                    raise RuntimeError(f"Archive uncompressed size exceeds {limit // (1024 ** 2)} MiB limit")
+
+
+def scrub_extracted_tree(dest_dir: str, max_bytes: int | None = None) -> int:
+    """Post-extraction guard: remove any symlink or realpath escape and enforce byte cap."""
+    limit = max_bytes if max_bytes is not None else MAX_BATCH_EXTRACT_BYTES
+    if not os.path.isdir(dest_dir):
+        return 0
+    root_real = os.path.realpath(dest_dir)
+    removed = 0
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(dest_dir, topdown=True, followlinks=False):
+        keep_dirs = []
+        for d in dirnames:
+            full_d = os.path.join(dirpath, d)
+            real_d = os.path.realpath(full_d)
+            if os.path.islink(full_d) or (real_d != root_real and not real_d.startswith(root_real + os.sep)):
+                try:
+                    os.unlink(full_d)
+                except OSError:
+                    shutil.rmtree(full_d, ignore_errors=True)
+                removed += 1
+            else:
+                keep_dirs.append(d)
+        dirnames[:] = keep_dirs
+
+        for fn in filenames:
+            full_f = os.path.join(dirpath, fn)
+            real_f = os.path.realpath(full_f)
+            if os.path.islink(full_f) or (real_f != root_real and not real_f.startswith(root_real + os.sep)):
+                try:
+                    os.unlink(full_f)
+                except OSError:
+                    pass
+                removed += 1
+                continue
+            try:
+                sz = os.path.getsize(full_f)
+            except OSError:
+                continue
+            total += sz
+            if total > limit:
+                shutil.rmtree(dest_dir, ignore_errors=True)
+                raise RuntimeError(f"Extracted archive exceeded {limit // (1024 ** 2)} MiB limit")
+    return removed
+
+
 async def handle_extract(archieve):
-    # get current directory
     path = os.getcwd()
-    archieve = os.path.join(path, archieve)
-    cmd = [f'./extract', archieve]
+    archieve_abs = archieve if os.path.isabs(archieve) else os.path.join(path, archieve)
+    await asyncio.to_thread(validate_archive_safety, archieve_abs)
+    dest_folder = None
+    try:
+        dest_folder = await get_zip_folder(archieve_abs)
+    except Exception:
+        dest_folder = None
+    cmd = ['./extract', archieve_abs]
     rio = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    await rio.communicate()
-    os.remove(archieve)
+    try:
+        await asyncio.wait_for(rio.communicate(), timeout=EXTRACT_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        rio.kill()
+        await rio.wait()
+        if os.path.exists(archieve_abs):
+            try:
+                os.remove(archieve_abs)
+            except OSError:
+                pass
+        raise RuntimeError("Archive extraction timed out")
+    if os.path.exists(archieve_abs):
+        try:
+            os.remove(archieve_abs)
+        except OSError:
+            pass
+    if dest_folder and os.path.isdir(dest_folder):
+        await asyncio.to_thread(scrub_extracted_tree, dest_folder)
     return path
 
 
@@ -214,7 +319,7 @@ async def get_zip_folder(orig_path: str):
     elif orig_path.endswith(".tar"):
         return orig_path.rsplit(".tar", 1)[0]
     elif orig_path.endswith(".tbz2"):
-        return orig_path.rsplit("tbz2", 1)[0]
+        return orig_path.rsplit(".tbz2", 1)[0]
     elif orig_path.endswith(".tgz"):
         return orig_path.rsplit(".tgz", 1)[0]
     elif orig_path.endswith(".zip"):

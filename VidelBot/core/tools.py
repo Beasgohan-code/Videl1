@@ -43,12 +43,16 @@ def _progress_cb(status: Message, action: str):
 # ─────────────────────────── /ping ───────────────────────────
 @Client.on_message(filters.command("ping"))
 async def ping_cmd(client: Client, message: Message):
+    from core.menus import BOOT_TIME
+    from core.ui import readable_time
+
     t = time.perf_counter()
     m = await message.reply_text("🏓 Pinging…")
     ms = (time.perf_counter() - t) * 1000
     doc = Doc("🏓", "Pong!").table([
         ("Round trip", rich.code(f"{ms:.0f} ms")),
         ("Speed", "⚡ Excellent" if ms < 300 else "👍 Good" if ms < 800 else "🐢 Slow"),
+        ("Uptime", readable_time(time.time() - BOOT_TIME)),
     ])
     if message.chat.id < 0:
         return await m.edit_text(doc.classic())
@@ -111,7 +115,7 @@ async def json_cmd(client: Client, message: Message):
     target = message.reply_to_message or message
     raw = str(target)
     if len(raw) < 3900:
-        return await message.reply_text(f"<pre language='json'>{raw.replace('<', '&lt;')}</pre>")
+        return await message.reply_text(f"<pre language='json'>{html.escape(raw, quote=False)}</pre>")
     f = io.BytesIO(raw.encode())
     f.name = f"message_{target.id}.json"
     await message.reply_document(f, caption="📄 Message JSON")
@@ -120,10 +124,16 @@ async def json_cmd(client: Client, message: Message):
 # ─────────────────────────── /short ───────────────────────────
 @Client.on_message(filters.command(["short", "shorten"]))
 async def short_cmd(client: Client, message: Message):
+    from VideoEncoder.utils import leech
+
     url = message.command[1] if len(message.command) > 1 else (
         message.reply_to_message.text.strip() if message.reply_to_message and message.reply_to_message.text else "")
     if not url.startswith(("http://", "https://")):
         return await message.reply_text("<b>Usage:</b> <code>/short https://example.com/very/long/link</code>")
+    try:
+        await leech.check_public(url)
+    except leech.LeechError as e:
+        return await message.reply_text(f"❌ {html.escape(str(e), quote=False)}")
     results = []
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
         for name, api in (("is.gd", "https://is.gd/create.php?format=simple&url="),
@@ -131,14 +141,15 @@ async def short_cmd(client: Client, message: Message):
             try:
                 async with s.get(api + quote(url, safe="")) as r:
                     t = (await r.text()).strip()
-                    if r.status == 200 and t.startswith("http"):
+                    if r.status == 200 and t.startswith(("http://", "https://")):
                         results.append((name, t))
             except Exception:
                 pass
     if not results:
         return await message.reply_text("❌ Shortening failed, try again later.")
     await message.reply_text(
-        "<b>🔗 Short links</b>\n\n" + "\n".join(f"<b>{n}:</b> <code>{u}</code>" for n, u in results),
+        "<b>🔗 Short links</b>\n\n"
+        + "\n".join(f"<b>{html.escape(n)}:</b> <code>{html.escape(u, quote=False)}</code>" for n, u in results),
         disable_web_page_preview=True,
     )
 
@@ -157,7 +168,7 @@ async def qr_cmd(client: Client, message: Message):
         img.save(bio, "PNG")
         bio.name = "qr.png"
         bio.seek(0)
-        await message.reply_photo(bio, caption=f"<b>🔳 QR for:</b>\n<code>{text[:900]}</code>")
+        await message.reply_photo(bio, caption=f"<b>🔳 QR for:</b>\n<code>{html.escape(text[:900], quote=False)}</code>")
     except Exception as e:
         log.warning(f"qr failed: {e}")
         await message.reply_text("❌ Couldn't create the QR code.")
@@ -376,7 +387,10 @@ async def rename_cmd(client: Client, message: Message):
     uid = message.from_user.id
     if not media or len(message.command) < 2:
         return await message.reply_text("<b>Usage:</b> reply to a file with <code>/rename New Name.mkv</code>")
-    new_name = message.text.split(None, 1)[1].strip().replace("/", "_")[:200]
+    raw_new = message.text.split(None, 1)[1].strip()
+    new_name = raw_new.replace("\\", "_").replace("/", "_").replace("\x00", "")[:200].strip()
+    if new_name in ("", ".", "..") or new_name.lstrip(".") == "":
+        new_name = "renamed_file"
     if any(getattr(r, k, None) for k in ("document", "video", "audio")):
         # Full rename pipeline: queue + progress/cancel, MKV & metadata settings, thumbnail
         # (custom or a frame), caption placeholders, history, leaderboard and dump channel.
@@ -388,9 +402,11 @@ async def rename_cmd(client: Client, message: Message):
         if pos > 1:
             await message.reply_text(f"🕒 Queued – position <b>#{pos}</b>.")
         return
-    old_name = getattr(media, "file_name", None) or ""
+    old_name = os.path.basename(str(getattr(media, "file_name", None) or "").replace("\\", "/"))
     if "." not in new_name and "." in old_name:
-        new_name += "." + old_name.rsplit(".", 1)[1]
+        ext = old_name.rsplit(".", 1)[1]
+        if ext.isalnum() and len(ext) <= 10:
+            new_name += "." + ext
     if uid in _busy:
         return await message.reply_text("⏳ Please wait for your previous job to finish.")
     _busy.add(uid)
