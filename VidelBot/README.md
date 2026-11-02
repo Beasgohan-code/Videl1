@@ -500,21 +500,27 @@ Inside clones: `-10` Stars payments (atomic `charge_id` idempotency) → `-3` an
 | `filestore` | `MONGO_DB_NAME` | `bots` (`owner_id`, `is_active`, `(is_active, last_active)`), plus per-clone `bot_<id>_users`, `bot_<id>_admins`, `bot_<id>_fsub`, `bot_<id>_links`, `bot_<id>_purchases` (`(code, user)` unique), `bot_<id>_payments` (`charge_id` **unique sparse**), `bot_<id>_premium`, `bot_<id>_files` (`name_lc`), `bot_<id>_requests`, `bot_<id>_schedules` (`run_at`) |
 
 ### 4. Backup, Validation & Dry-Run Restore Guide (`core/backup.py`)
-- **Create backup now:** Send `/backup` as a bot owner (or enable automatic daily backups via `BACKUP_ENABLED=true`, `BACKUP_HOUR`, `BACKUP_CHAT`).
+- **Create backup now:** Send `/backup` as a bot owner (or enable automatic daily backups via `BACKUP_ENABLED=true`, `BACKUP_HOUR`, `BACKUP_CHAT`). Every `.json.gz` archive embeds `integrity` metadata (`payload_sha256`, `total_docs`, `collections`), and the Telegram backup caption includes the archive's SHA-256 digest and uncompressed size.
 - **Secret stripping:** User `/login` string sessions, API hashes, passwords, and 2FA fields are stripped (`null`) unless `BACKUP_INCLUDE_SECRETS=true`. Clone bot tokens remain encrypted with `ENCRYPTION_KEY`.
 - **Dry-Run & Non-Destructive Restore:**
   1. Reply `/backup` to any `.json.gz` Videl backup document.
-  2. Tap **🔍 Dry-Run** (`bkr:dry`) first: Videl streams and validates the archive (capped at 256 MiB uncompressed to prevent gzip bombs), checks schema integrity, and displays exact **New inserts**, **Updates**, **Live secrets preserved**, and **Invalid rows skipped** without modifying MongoDB.
-  3. Tap **♻️ Restore** (`bkr:yes`): Documents are upserted by `_id` (existing records are never deleted, and live user sessions are never overwritten by `null` backup placeholders), followed by automatic `vdb.warm_up()` and `load_db_admins()` cache refresh.
+  2. Tap **🔍 Dry-Run** (`bkr:dry`) first: Videl streams and validates the archive (capped at 256 MiB uncompressed to prevent gzip bombs), verifies SHA-256 and `integrity` document/collection counts (`verify_backup_file()`), and displays exact **New inserts**, **Updates**, **Live secrets preserved**, and **Invalid rows skipped** without modifying MongoDB.
+  3. Tap **♻️ Restore** (`bkr:yes`): Documents are upserted by `_id` with per-collection error isolation (existing records are never deleted, and live user sessions are never overwritten by `null` backup placeholders), followed by automatic `vdb.warm_up()` and `load_db_admins()` cache refresh.
 - **Database Integrity & Legacy Duplicate-User Doctor (`core/db_doctor.py`):**
   1. Send `/backup check` (or `/backup doctor`) as a bot owner to run a read-only audit across `videl`, `saver`, `encoder`, and `filestore` without modifying MongoDB.
   2. If legacy duplicate `id` rows are found in `saver.users` or `encoder.users`, tap **🧹 Merge Duplicate Row(s)** (`bkr:dedupe_ok`) to merge them non-destructively (preserving Lifetime or latest `premium_expiry`, user `/login` `session`s, custom thumbnails, captions, word filters, encoder settings, and max save/encode counters).
   3. When `ENCRYPTION_KEY` is configured, personal user `/login` sessions (`saver.users.session`) and clone tokens are stored encrypted at rest (`enc:<fernet>`), and **🔐 Encrypt Legacy Secret(s)** (`bkr:encrypt_ok`) upgrades any pre-existing plaintext records in place without interrupting active sessions.
 
-### 5. Troubleshooting
+### 5. Web Console (`/admin`) & Storage Backends
+- **Responsive `/admin` Console (`keep_alive.py`):** Open via `/dashboard` (one-time single-use Telegram login link) or `X-Admin-Token`. Features KPI metric cards, 4 interactive tabs (**Overview & Charts**, **Live Tasks & Queue** with inline per-task cancel & queue purge, **Storage & Plugins** readiness matrix, **Config & Security** secret-free diagnostics), confirmation modals, toast notifications, and full mobile layout support.
+- **Google Drive & Storage Registry (`VideoEncoder/utils/uploads/`):**
+  - Headless containers can authenticate via **Google Service Account** (`GDRIVE_SA_FILE=/path/to/sa.json`) or pre-authorized OAuth JSON (`GDRIVE_TOKEN_FILE=token.json`). Interactive browser OAuth is never triggered in headless environments; if Drive is unconfigured while a user has Drive mode toggled on in `/vsettings`, `storage.dispatch_upload()` automatically falls back to Telegram upload instead of failing the encode.
+  - Optional Cloudflare/GDIndex links (`INDEX_URL`) and Rclone readiness detection (`RCLONE_CONFIG_PATH`) are surfaced in `/stats` (`🩺 Health`) and `/admin` without exposing credentials.
+
+### 6. Troubleshooting
 - **`ImportError` or `RICH_AVAILABLE == False` after installing packages:** `richgram` lists `kurigram` in its package metadata, which shares the `pyrogram` import namespace with `wzgram`. Run `pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6` (already automated in the root `Dockerfile` and `.github/workflows/ci.yml`).
-- **Second container waits on startup (`waiting for previous instance lease`):** Expected during rolling deploys (`SINGLE_INSTANCE=true`). The new container serves `/health` immediately and acquires the lease as soon as the old container stops or its 60s lease expires.
-- **Plugin shows `⚠️ Error` in `/plugins`:** Open `/plugins info <name>` to view the captured manifest or import diagnostic stored in `plugin_manager.load_errors` / `manifest_errors`, install any missing dependency, and tap **🔄 Reload**.
+- **Second container waits on startup (`waiting for previous instance lease`):** Expected during rolling deploys (`SINGLE_INSTANCE=true`). The new container serves `/health` immediately and acquires the lease as soon as the old container stops or its 60s lease expires. If MongoDB is unreachable or `SINGLE_INSTANCE_TIMEOUT` (>0) elapses, `instance.acquire()` now **fails closed** (`InstanceLeaseError`) so two containers never consume updates concurrently.
+- **Plugin shows `⚠️ Error` in `/plugins`:** Open `/plugins info <name>` to view the captured manifest, `required_env`, permission, or `startup()` timeout diagnostic stored in `plugin_manager.load_errors` / `manifest_errors`, supply any missing dependency/env var, and tap **🔄 Reload**.
 
 ## 📜 Licence
 
