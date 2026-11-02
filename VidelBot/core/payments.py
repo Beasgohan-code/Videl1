@@ -574,9 +574,12 @@ async def _product_paid(client, message, info, buyer_name=""):
     product, payer = info["product"], info["payer"]
     charge_id = (sp.telegram_payment_charge_id or "").strip()
     currency = getattr(sp, "currency", None) or "XTR"
+    provider_charge = (getattr(sp, "provider_payment_charge_id", "") or "").strip()
     claimed = await _claim_payment(charge_id, {
         "user": payer, "target": payer, "kind": "product", "product": product, "days": info["days"],
         "stars": sp.total_amount, "currency": currency, "expiry": None,
+        "payload": str(getattr(sp, "payload", "") or "")[:128],
+        "provider_charge_id": provider_charge,
         "date": datetime.now(timezone.utc), "refunded": False,
     })
     if not claimed:
@@ -624,10 +627,13 @@ async def successful_payment(client: Client, message: Message):
     if kind == "product":
         return await _product_paid(client, message, info, buyer_name)
     charge_id = (sp.telegram_payment_charge_id or "").strip()
+    provider_charge = (getattr(sp, "provider_payment_charge_id", "") or "").strip()
     currency = getattr(sp, "currency", None) or "XTR"
     claimed = await _claim_payment(charge_id, {
         "user": payer, "target": target, "kind": kind, "days": days, "stars": sp.total_amount,
         "currency": currency, "expiry": None,
+        "payload": str(getattr(sp, "payload", "") or "")[:128],
+        "provider_charge_id": provider_charge,
         "date": datetime.now(timezone.utc), "refunded": False,
     })
     if not claimed:

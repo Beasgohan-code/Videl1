@@ -2,15 +2,18 @@
 💾 Daily database backups & validated non-destructive restore (owners).
 
   • every day at BACKUP_HOUR (LOG_TZ) a gzip JSON of all four databases goes to BACKUP_CHAT (default: first owner)
-  • /backup                → create and send a backup right now
+  • /backup                → create and send a SHA-256 verified backup right now
+  • /backup doctor         → run database integrity, deduplication & secret-encryption inspection
   • reply /backup to a .json.gz backup file → preview + 🔍 Dry-Run / ♻️ Restore buttons (upserts by _id – never deletes)
 
 Secrets are stripped unless BACKUP_INCLUDE_SECRETS=true: saver login sessions (full account access!),
 API hashes, passwords. Clone bot tokens are kept – they're stored encrypted with SECRET_KEY / the env key.
-Documents are streamed to disk one by one, so memory stays flat even for big databases.
+Documents are streamed to disk one by one, so memory stays flat even for big databases, and per-collection
+errors are isolated and reported cleanly without aborting recovery of healthy collections.
 """
 import asyncio
 import gzip
+import hashlib
 import html
 import json
 import logging
@@ -50,70 +53,173 @@ def scrub(doc: dict, include_secrets: bool) -> dict:
     return {k: (None if k in SECRET_FIELDS and v else v) for k, v in doc.items()}
 
 
-async def dump(path: str, include_secrets: bool | None = None) -> dict:
-    """Write the backup to `path` (gzip JSON). Returns {'db.collection': count}."""
+def compute_sha256(path: str) -> str:
+    """Return hex SHA-256 digest of a file on disk without loading it all into RAM."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+async def dump_with_report(path: str, include_secrets: bool | None = None) -> dict:
+    """Stream all databases to gzip JSON at `path` with per-collection error isolation and SHA-256 digest."""
     include = config.BACKUP_INCLUDE_SECRETS if include_secrets is None else include_secrets
-    counts = {}
+    counts: dict[str, int] = {}
+    errors: dict[str, str] = {}
     created_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload_hash = hashlib.sha256()
+
     with gzip.open(path, "wt", encoding="utf-8") as fh:
-        meta = {"format": FORMAT, "bot": config.BOT_NAME, "created": created_iso,
-                "secrets": bool(include)}
-        fh.write('{"meta": ' + json.dumps(meta) + ', "dbs": {')
+        def _write(chunk: str) -> None:
+            payload_hash.update(chunk.encode("utf-8"))
+            fh.write(chunk)
+
+        meta = {
+            "format": FORMAT,
+            "bot": config.BOT_NAME,
+            "created": created_iso,
+            "secrets": bool(include),
+        }
+        _write('{"meta": ' + json.dumps(meta) + ', "dbs": {')
         for di, (key, db) in enumerate(databases().items()):
-            fh.write(("," if di else "") + json.dumps(key) + ": {")
+            _write(("," if di else "") + json.dumps(key) + ": {")
             name = getattr(db, "name", key)
             try:
-                names = sorted(n for n in await db.list_collection_names() if n not in SKIP_COLLECTIONS
-                               and not n.startswith("system."))
+                names = sorted(
+                    n for n in await db.list_collection_names()
+                    if n not in SKIP_COLLECTIONS and not n.startswith("system.")
+                )
             except Exception as e:
                 log.warning(f"backup: can't list {name}: {e}")
+                errors[key] = f"list_collection_names: {type(e).__name__}: {e}"
                 names = []
-            for ci, coll in enumerate(names):
-                fh.write(("," if ci else "") + json.dumps(coll) + ": [")
+            written_colls = 0
+            for coll in names:
+                prefix = ("," if written_colls else "") + json.dumps(coll) + ": ["
+                _write(prefix)
+                written_colls += 1
                 n = 0
-                async for doc in db[coll].find({}):
-                    fh.write(("," if n else "") + json_util.dumps(scrub(doc, include)))
-                    n += 1
-                    if n % 2000 == 0:
-                        await asyncio.sleep(0)            # stay responsive on big collections
-                fh.write("]")
+                try:
+                    async for doc in db[coll].find({}):
+                        _write(("," if n else "") + json_util.dumps(scrub(doc, include)))
+                        n += 1
+                        if n % 2000 == 0:
+                            await asyncio.sleep(0)            # stay responsive on big collections
+                except Exception as e:
+                    log.warning(f"backup: error dumping {key}.{coll} after {n} doc(s): {e}")
+                    errors[f"{key}.{coll}"] = f"{type(e).__name__}: {e}"
+                _write("]")
                 counts[f"{key}.{coll}"] = n
-            fh.write("}")
-        fh.write("}}")
-    return counts
+            _write("}")
+        integrity = {
+            "total_docs": sum(counts.values()),
+            "collections": len(counts),
+            "dump_errors": errors,
+        }
+        _write('}, "integrity": ' + json.dumps(integrity) + "}")
+
+    gz_sha256 = await asyncio.to_thread(compute_sha256, path)
+    return {
+        "counts": counts,
+        "total_docs": sum(counts.values()),
+        "collections": len(counts),
+        "errors": errors,
+        "sha256": gz_sha256,
+        "payload_sha256": payload_hash.hexdigest(),
+        "created": created_iso,
+    }
 
 
-def validate_backup_payload(data: dict) -> None:
-    """Validate top-level backup envelope and `dbs` layout before touching MongoDB."""
+async def dump(path: str, include_secrets: bool | None = None) -> dict:
+    """Write the backup to `path` (gzip JSON). Returns {'db.collection': count}."""
+    rep = await dump_with_report(path, include_secrets=include_secrets)
+    return rep["counts"]
+
+
+def validate_backup_payload(data: dict, *, check_integrity: bool = False) -> None:
+    """Validate top-level backup envelope, `dbs` layout, and optional `integrity` counts before touching MongoDB."""
     if not isinstance(data, dict) or (data.get("meta") or {}).get("format") != FORMAT:
         raise ValueError("This isn't a Videl backup file.")
     dbs_payload = data.get("dbs")
     if dbs_payload is not None and not isinstance(dbs_payload, dict):
         raise ValueError("Invalid backup structure: 'dbs' must be a JSON object.")
+    actual_total = 0
+    actual_colls = 0
     for db_key, colls in (dbs_payload or {}).items():
         if not isinstance(db_key, str) or not isinstance(colls, dict):
             raise ValueError(f"Invalid collection map for database '{db_key}'.")
         for coll_name, docs in colls.items():
             if not isinstance(coll_name, str) or coll_name.startswith("system.") or not isinstance(docs, list):
                 raise ValueError(f"Invalid document list for '{db_key}.{coll_name}'.")
+            actual_colls += 1
+            actual_total += len(docs)
+    integrity = data.get("integrity")
+    if check_integrity and isinstance(integrity, dict):
+        expected_total = integrity.get("total_docs")
+        if isinstance(expected_total, int) and expected_total != actual_total:
+            raise ValueError(
+                f"Backup integrity mismatch: expected {expected_total} document(s), found {actual_total}."
+            )
+        expected_colls = integrity.get("collections")
+        if isinstance(expected_colls, int) and expected_colls != actual_colls:
+            raise ValueError(
+                f"Backup integrity mismatch: expected {expected_colls} collection(s), found {actual_colls}."
+            )
 
 
-def load(path: str, max_bytes: int = MAX_UNCOMPRESSED_BYTES) -> dict:
-    """Safely decompress and parse a `.json.gz` backup with an uncompressed size cap."""
+def load(path: str, max_bytes: int = MAX_UNCOMPRESSED_BYTES, expected_sha256: str | None = None) -> dict:
+    """Safely decompress, optionally verify SHA-256, and parse a `.json.gz` backup with a size cap."""
+    if expected_sha256:
+        actual_sha = compute_sha256(path)
+        if actual_sha.lower() != expected_sha256.strip().lower():
+            raise ValueError(
+                f"Backup SHA-256 mismatch (expected {expected_sha256[:12]}…, got {actual_sha[:12]}…)."
+            )
     chunks: list[str] = []
     total = 0
-    with gzip.open(path, "rt", encoding="utf-8") as fh:
-        while True:
-            piece = fh.read(1024 * 1024)
-            if not piece:
-                break
-            total += len(piece.encode("utf-8"))
-            if total > max_bytes:
-                raise ValueError(f"Backup exceeds maximum uncompressed size ({max_bytes // (1024 * 1024)} MiB).")
-            chunks.append(piece)
-    data = json_util.loads("".join(chunks))
-    validate_backup_payload(data)
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            while True:
+                piece = fh.read(1024 * 1024)
+                if not piece:
+                    break
+                total += len(piece.encode("utf-8"))
+                if total > max_bytes:
+                    raise ValueError(f"Backup exceeds maximum uncompressed size ({max_bytes // (1024 * 1024)} MiB).")
+                chunks.append(piece)
+    except (OSError, EOFError) as exc:
+        raise ValueError(f"Corrupt or truncated gzip backup archive: {exc}") from exc
+    try:
+        data = json_util.loads("".join(chunks))
+    except Exception as exc:
+        raise ValueError(f"Invalid JSON inside backup archive: {exc}") from exc
+    validate_backup_payload(data, check_integrity=True)
     return data
+
+
+def verify_backup_file(path: str, expected_sha256: str | None = None) -> dict:
+    """Validate a `.json.gz` backup file without modifying MongoDB and return an integrity summary."""
+    sha = compute_sha256(path)
+    data = load(path, expected_sha256=expected_sha256)
+    dbs_payload = data.get("dbs") or {}
+    counts = {
+        f"{db_key}.{coll}": len(docs)
+        for db_key, colls in dbs_payload.items()
+        for coll, docs in colls.items()
+    }
+    return {
+        "valid": True,
+        "sha256": sha,
+        "meta": data.get("meta") or {},
+        "counts": counts,
+        "total_docs": sum(counts.values()),
+        "collections": len(counts),
+        "dump_errors": (data.get("integrity") or {}).get("dump_errors") or {},
+    }
 
 
 async def restore_with_report(data: dict, *, dry_run: bool = False) -> dict:
@@ -121,6 +227,7 @@ async def restore_with_report(data: dict, *, dry_run: bool = False) -> dict:
     validate_backup_payload(data)
     dbs = databases()
     counts: dict[str, int] = {}
+    errors: dict[str, str] = {}
     inserts = 0
     updates = 0
     skipped = 0
@@ -136,32 +243,36 @@ async def restore_with_report(data: dict, *, dry_run: bool = False) -> dict:
             if coll in SKIP_COLLECTIONS or coll.startswith("system."):
                 continue
             n = 0
-            for doc in docs:
-                if not isinstance(doc, dict) or "_id" not in doc:
-                    skipped += 1
-                    continue
-                stripped_here = sum(1 for k, v in doc.items() if k in SECRET_FIELDS and v is None)
-                preserved_secrets += stripped_here
-                clean = {k: v for k, v in doc.items()
-                         if k != "_id" and not (k in SECRET_FIELDS and v is None)}      # keep live sessions
-                if not clean:
-                    skipped += 1
-                    continue
-                if dry_run:
-                    exists = await db[coll].find_one({"_id": doc["_id"]}, {"_id": 1})
-                    if exists:
-                        updates += 1
+            try:
+                for doc in docs:
+                    if not isinstance(doc, dict) or "_id" not in doc:
+                        skipped += 1
+                        continue
+                    stripped_here = sum(1 for k, v in doc.items() if k in SECRET_FIELDS and v is None)
+                    preserved_secrets += stripped_here
+                    clean = {k: v for k, v in doc.items()
+                             if k != "_id" and not (k in SECRET_FIELDS and v is None)}      # keep live sessions
+                    if not clean:
+                        skipped += 1
+                        continue
+                    if dry_run:
+                        exists = await db[coll].find_one({"_id": doc["_id"]}, {"_id": 1})
+                        if exists:
+                            updates += 1
+                        else:
+                            inserts += 1
                     else:
-                        inserts += 1
-                else:
-                    res = await db[coll].update_one({"_id": doc["_id"]}, {"$set": clean}, upsert=True)
-                    if res.upserted_id is not None:
-                        inserts += 1
-                    else:
-                        updates += 1
-                n += 1
-                if n % 500 == 0:
-                    await asyncio.sleep(0)
+                        res = await db[coll].update_one({"_id": doc["_id"]}, {"$set": clean}, upsert=True)
+                        if res.upserted_id is not None:
+                            inserts += 1
+                        else:
+                            updates += 1
+                    n += 1
+                    if n % 500 == 0:
+                        await asyncio.sleep(0)
+            except Exception as exc:
+                log.error(f"backup restore error in {key}.{coll} after {n} doc(s): {exc}")
+                errors[f"{key}.{coll}"] = f"{type(exc).__name__}: {exc}"
             counts[f"{key}.{coll}"] = n
 
     if not dry_run:
@@ -181,6 +292,7 @@ async def restore_with_report(data: dict, *, dry_run: bool = False) -> dict:
     return {
         "dry_run": dry_run,
         "counts": counts,
+        "errors": errors,
         "would_insert": inserts,
         "would_update": updates,
         "skipped_invalid": skipped,
@@ -208,12 +320,19 @@ async def send_backup(client, chat_id: int, reason: str = "daily") -> bool:
     path = os.path.join(tempfile.gettempdir(), f"videl-backup-{stamp}.json.gz")
     t0 = time.time()
     try:
-        counts = await dump(path)
+        rep = await dump_with_report(path)
+        counts = rep["counts"]
         size = os.path.getsize(path)
-        cap = (f"💾 <b>{html.escape(config.BOT_NAME)} backup</b> · {reason}\n"
-               f"<blockquote>{_summary(counts)} documents\n{size / 1048576:.2f} MB · {time.time() - t0:.1f}s · "
-               f"secrets {'included ⚠️' if config.BACKUP_INCLUDE_SECRETS else 'stripped'}</blockquote>\n"
-               "<i>Restore: reply /backup to this file.</i>")
+        sha_short = rep["sha256"][:16]
+        err_note = f"\n⚠️ Collection warnings: {len(rep['errors'])}" if rep["errors"] else ""
+        cap = (
+            f"💾 <b>{html.escape(config.BOT_NAME)} backup</b> · {html.escape(reason)}\n"
+            f"<blockquote>{_summary(counts)} documents\n"
+            f"{size / 1048576:.2f} MB · {time.time() - t0:.1f}s · "
+            f"secrets {'included ⚠️' if config.BACKUP_INCLUDE_SECRETS else 'stripped'}\n"
+            f"🔑 SHA-256: <code>{sha_short}…</code>{err_note}</blockquote>\n"
+            "<i>Restore: reply /backup to this file.</i>"
+        )
         await client.send_document(chat_id, path, caption=cap, file_name=os.path.basename(path))
         return True
     except Exception as e:
@@ -361,13 +480,16 @@ async def backup_restore_cb(client: Client, query: CallbackQuery):
     try:
         src = await client.get_messages(pending[0], pending[1])
         path = await src.download(file_name=os.path.join(tempfile.gettempdir(), ""))
+        sha_hex = await asyncio.to_thread(compute_sha256, path)
         data = await asyncio.to_thread(load, path)
         rep = await restore_with_report(data, dry_run=is_dry)
         meta = data.get("meta") or {}
         created = html.escape(str(meta.get("created", "?")))
+        err_count = len(rep.get("errors") or {})
+        err_line = f"\n<b>Collection errors:</b> <code>{err_count}</code> ⚠️" if err_count else ""
         if is_dry:
             _pending[uid] = (pending[0], pending[1], time.time())  # refresh confirmation window
-            from core.ui import btn
+            from core.ui import styled_button as btn
             await query.message.edit_text(
                 f"🔍 <b>Backup Dry-Run Preview</b> <i>(no database changes made)</i>\n"
                 f"<blockquote><b>Summary:</b> {_summary(rep['counts'])} documents\n"
@@ -375,7 +497,8 @@ async def backup_restore_cb(client: Client, query: CallbackQuery):
                 f"<b>Updates:</b> <code>{rep['would_update']:,}</code>\n"
                 f"<b>Live secrets preserved:</b> <code>{rep['preserved_secrets']:,}</code> · "
                 f"<b>Invalid skipped:</b> <code>{rep['skipped_invalid']:,}</code>\n"
-                f"<b>Created:</b> {created}</blockquote>",
+                f"<b>SHA-256:</b> <code>{sha_hex[:16]}…</code>\n"
+                f"<b>Created:</b> {created}{err_line}</blockquote>",
                 reply_markup=InlineKeyboardMarkup([
                     [btn("♻️ Apply Restore Now", callback_data="bkr:yes", style="success"),
                      btn("✖️ Cancel", callback_data="bkr:no", style="danger")],
@@ -386,7 +509,7 @@ async def backup_restore_cb(client: Client, query: CallbackQuery):
                 f"✅ <b>Restore complete</b>\n"
                 f"<blockquote>{_summary(rep['counts'])} documents upserted "
                 f"(<code>{rep['would_insert']:,}</code> inserted, <code>{rep['would_update']:,}</code> updated)\n"
-                f"from {created}</blockquote>"
+                f"🔑 SHA-256: <code>{sha_hex[:16]}…</code> · from {created}{err_line}</blockquote>"
             )
     except Exception as e:
         log.error(f"restore failed: {e}")

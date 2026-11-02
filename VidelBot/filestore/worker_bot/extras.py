@@ -782,8 +782,8 @@ def setup_extras(app: Client, ctx):
                     raise StopPropagation
                 days = int(parts[1])
                 cur_stars = int((await settings_now()).get("premium_stars") or 0)
-                if cur_stars and cur_stars != stars:
-                    log.warning(f"[clone {bot_id}] premium payment amount mismatch (charge={charge})")
+                if cur_stars <= 0 or cur_stars != stars:
+                    log.warning(f"[clone {bot_id}] premium payment amount mismatch or disabled (charge={charge})")
                     raise StopPropagation
                 if not await xdb.claim_payment(uid, "premium", stars, charge, str(days)):
                     log.info(f"[clone {bot_id}] duplicate premium payment ignored (charge={charge})")

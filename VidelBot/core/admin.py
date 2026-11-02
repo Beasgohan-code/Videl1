@@ -71,7 +71,7 @@ async def _build_stats_doc(tab: str = "main"):
 
         st = client_mod.runtime_stack()
         plg = plugin_manager.health_report()
-        bg_tasks = len(getattr(bg, "_tasks", ()))
+        bg_tasks = bg.running()
         enc_workers = int(getattr(__import__("config"), "ENCODER_WORKERS", 1))
         doc = Doc("⚡", f"{BOT_NAME} Runtime & Plugins", "engine & plugin telemetry")
         doc.h("🚀", "Transport & rich stack").kv_table([
@@ -90,17 +90,18 @@ async def _build_stats_doc(tab: str = "main"):
         return doc
 
     if tab == "health":
-        from core import db_doctor
+        from core import db_doctor, diagnostics
 
         rep = await db_doctor.inspect_and_deduplicate(dry_run=True)
-        exec_on = os.environ.get("ENABLE_OWNER_EXEC", "true").strip().lower() not in ("0", "false", "no", "off")
+        diag = diagnostics.collect_diagnostics()
+        exec_on = diag["security"]["owner_exec_enabled"]
         pt_sec = rep.get("plaintext_secrets", 0)
         enc_state = (
             f"🟢 Fernet ({'all encrypted' if pt_sec == 0 else f'{pt_sec} legacy plaintext'})"
             if rep.get("encryption_enabled")
             else f"⚪ ENCRYPTION_KEY unset ({pt_sec} plaintext)"
         )
-        doc = Doc("🩺", f"{BOT_NAME} DB & Security Health", "read-only integrity snapshot")
+        doc = Doc("🩺", f"{BOT_NAME} DB, Storage & Security Health", "read-only integrity snapshot")
         doc.h("🗄", "Database integrity").kv_table([
             ("📥 Saver duplicates", f"{rep['saver_duplicate_users']} user(s) ({rep['saver_redundant_docs']} extra)"),
             ("🎬 Encoder duplicates", f"{rep['encoder_duplicate_users']} user(s) ({rep['encoder_redundant_docs']} extra)"),
@@ -108,11 +109,26 @@ async def _build_stats_doc(tab: str = "main"):
             ("⭐ Stars payments", f"{rep['payments_total']} recorded ({rep['payments_missing_charge']} missing id)"),
             ("🔁 Subscriptions", f"{rep['active_subscriptions']} active"),
         ], key_header="Check", val_header="Result")
-        doc.h("🛡", "Security posture").kv_table([
+        storage_rows = [
+            (
+                f"{'🟢' if s['available'] else ('⚪' if s['optional'] else '🔴')} {s['label']}",
+                s["detail"],
+            )
+            for s in diag["storage"]
+        ]
+        doc.h("☁️", "Storage & transfer backends").kv_table(storage_rows, key_header="Backend", val_header="Readiness")
+        bin_summary = " · ".join(
+            f"{'✅' if b['available'] else '⚪'} {b['cmd']}" for b in diag["binaries"]
+        )
+        doc.h("🛡", "Security & runtime checks").kv_table([
             ("🔐 Secret encryption", enc_state),
+            ("🔒 Single-instance lease", "🟢 Active" if diag["security"]["single_instance"] else "⚠️ Disabled"),
+            ("🧰 Native binaries", bin_summary),
             ("💻 Owner /exec & /sh", "🟡 Enabled (owners + redacted)" if exec_on else "🟢 Disabled"),
-            ("🧰 Repair tool", "/backup check (owners)"),
+            ("🩺 Repair tool", "/backup check (owners)"),
         ], key_header="Control", val_header="State")
+        if diag["warnings"]:
+            doc.quote(" · ".join(diag["warnings"][:3]))
         return doc
 
     videl_users = await vdb.total_users()
@@ -158,9 +174,12 @@ async def _build_stats_doc(tab: str = "main"):
     except Exception as e:
         log.warning(f"rename stats: {e}")
 
-    du = shutil.disk_usage(".")
-    mem = psutil.virtual_memory()
+    from core.sysinfo import system_snapshot
+
+    snap = system_snapshot(".")
     cpu_pct = await asyncio.to_thread(psutil.cpu_percent, 0.2)
+    mem_tag = " (container quota)" if snap["container_mem"] else ""
+    cpu_tag = f" · {snap['cpu_cores']} vCPU"
     doc = Doc("📊", f"{BOT_NAME} Statistics", "admin telemetry")
     doc.h("👥", "Users & modules").kv_table([
         ("👥 Total users", f"{videl_users:,} (🚫 {banned} banned)"),
@@ -170,9 +189,10 @@ async def _build_stats_doc(tab: str = "main"):
         ("✏️ Auto-Rename", f"{renames:,} renamed · {renamers:,} templated"),
     ], key_header="Module", val_header="Metrics")
     doc.h("🖥", "Server resources").kv_table([
-        ("⚙️ CPU", f"{cpu_pct}%"),
-        ("🧠 RAM", f"{mem.percent}% ({humanbytes(mem.used)} / {humanbytes(mem.total)})"),
-        ("💽 Disk", f"{humanbytes(du.used)} / {humanbytes(du.total)} (free {humanbytes(du.free)})"),
+        ("⚙️ CPU", f"{cpu_pct}%{cpu_tag}"),
+        ("🧠 RAM", f"{snap['mem_percent']}% ({humanbytes(snap['mem_used_bytes'])} / {humanbytes(snap['mem_total_bytes'])}){mem_tag}"),
+        ("📦 Process RSS", humanbytes(snap["rss_bytes"])),
+        ("💽 Disk", f"{humanbytes(snap['disk_total_bytes'] - snap['disk_free_bytes'])} / {humanbytes(snap['disk_total_bytes'])} (free {humanbytes(snap['disk_free_bytes'])})"),
         ("⏱ Uptime", readable_time(time.time() - BOOT_TIME)),
     ], key_header="Resource", val_header="Usage")
     return doc

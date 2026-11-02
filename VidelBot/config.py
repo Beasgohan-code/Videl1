@@ -226,6 +226,9 @@ DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "VideoEncoder/utils/extras/downloa
 ENCODE_DIR = os.environ.get("ENCODE_DIR", "VideoEncoder/utils/extras/encodes/")
 DRIVE_DIR = os.environ.get("DRIVE_DIR", "")
 INDEX_URL = os.environ.get("INDEX_URL", "")
+GDRIVE_TOKEN_FILE = os.environ.get("GDRIVE_TOKEN_FILE", "token.json")
+GDRIVE_SA_FILE = os.environ.get("GDRIVE_SA_FILE", os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""))
+DRIVE_HTTP_TIMEOUT = max(10, env_int("DRIVE_HTTP_TIMEOUT", 60))
 
 # The original encoder code expects trailing slashes.
 if not DOWNLOAD_DIR.endswith("/"):
@@ -278,6 +281,7 @@ LEECH_FREE_GB = env_float("LEECH_FREE_GB", 2)
 LEECH_PRO_GB = env_float("LEECH_PRO_GB", 8)
 QUEUE_PERSIST = _bool("QUEUE_PERSIST", True)                    # encoder queue survives restarts
 SINGLE_INSTANCE = _bool("SINGLE_INSTANCE", True)                # one live copy per bot token (core/instance.py)
+SINGLE_INSTANCE_TIMEOUT = max(0, env_int("SINGLE_INSTANCE_TIMEOUT", 0))  # 0 = wait while holder is alive; >0 = fail closed after N s
 SOURCE_CACHE_MIN = max(0, env_int("SOURCE_CACHE_MIN", 60))     # reuse a downloaded source for N min (0 = off)
 SOURCE_CACHE_GB = max(1, env_int("SOURCE_CACHE_GB", 10))        # cache size cap
 FAST_DL = _bool("FAST_DL", True)                                # parallel Telegram downloads (core/fastdl.py)

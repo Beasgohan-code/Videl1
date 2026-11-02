@@ -5,16 +5,22 @@ Discovers, validates, loads, configures, enables/disables, and hot-reloads
 plugins stored under ``config.PLUGINS_DIR`` (``VidelBot/plugins/<name>/``).
 Supports both ``plugin.yaml`` / ``plugin.yml`` and WZML-X's ``wzml_plugin.yml`` /
 ``wzml_plugin.yaml`` manifests (including WZML-X key aliases, ``config_schema``,
-``callbacks``, ``tags``, ``min_bot_version`` / ``max_bot_version``, and
-dependency checks via ``importlib.metadata``).
+``callbacks``, ``tags``, ``required_env`` / ``optional_env``, ``permissions``,
+``min_bot_version`` / ``max_bot_version``, and dependency checks via
+``importlib.metadata``).
 
-Plugin enabled/disabled overrides and per-plugin configuration are persisted in
-MongoDB (``vdb.db["plugins"]`` and ``vdb.db["plugin_settings"]``) and cached in
-memory so ``plugin_enabled(name)`` checks run in O(1) without DB round-trips on
-incoming messages.
+Lifecycle & safety guarantees:
+  • In-memory caches (`_enabled`, `_configs`, `PluginBase.config`) mutate **only after**
+    MongoDB persistence succeeds.
+  • Both `on_load` / `startup` and `on_unload` / `shutdown` hooks run under bounded
+    `asyncio.wait_for(..., timeout=PLUGIN_HOOK_TIMEOUT)` so a hung plugin never stalls
+    bot startup or graceful shutdown.
+  • Missing Python packages or missing `required_env` variables isolate cleanly to
+    `load_errors[name]` without crashing sibling plugins or core handlers.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.metadata
 import importlib.util
@@ -35,9 +41,23 @@ from core.db import vdb
 log = logging.getLogger("videl.plugins")
 
 BOT_VERSION = "3.2.0"
+PLUGIN_HOOK_TIMEOUT = 10.0
 MANIFEST_NAMES = ("plugin.yaml", "plugin.yml", "wzml_plugin.yml", "wzml_plugin.yaml")
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,48}$")
+ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)")
+ALLOWED_PERMISSIONS = frozenset({
+    "network",
+    "filesystem",
+    "database",
+    "subprocess",
+    "media",
+    "admin",
+    "owner",
+    "user",
+    "telegram",
+    "group_admin_verification",
+})
 KEY_ALIASES = {
     "main_file": "entry",
     "min_wzml_version": "min_bot_version",
@@ -46,6 +66,7 @@ KEY_ALIASES = {
     "deps": "dependencies",
     "python_dependencies": "dependencies",
     "repository": "homepage",
+    "env": "required_env",
 }
 ACCESS_ALIASES = {
     "user": "user",
@@ -55,6 +76,10 @@ ACCESS_ALIASES = {
     "sudo": "admin",
     "owner": "owner",
 }
+
+
+class PluginConfigError(RuntimeError):
+    """Raised when a plugin's required environment or dependency prerequisites are missing."""
 
 
 def parse_semver(ver: str) -> tuple[int, int, int]:
@@ -97,6 +122,19 @@ def missing_dependencies(specs: list[str] | None) -> list[str]:
     return missing
 
 
+def missing_env_vars(names: list[str] | None) -> list[str]:
+    """Return environment variable names from `names` that are unset or blank (never returns values)."""
+    out: list[str] = []
+    for var in names or []:
+        key = str(var or "").strip()
+        if not key:
+            continue
+        val = os.environ.get(key, "") or str(getattr(config, key, "") or "")
+        if not str(val).strip():
+            out.append(key)
+    return out
+
+
 def coerce_config_value(raw_val: Any, schema_entry: dict[str, Any] | None = None) -> Any:
     """Coerce a string/CLI setting value according to ``config_schema`` entry type."""
     kind = str((schema_entry or {}).get("type", "")).lower()
@@ -126,6 +164,8 @@ class PluginManifest:
     callbacks: list[dict[str, str]] = field(default_factory=list)
     permissions: list[str] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
+    required_env: list[str] = field(default_factory=list)
+    optional_env: list[str] = field(default_factory=list)
     min_bot_version: str = ""
     max_bot_version: str = ""
     homepage: str = ""
@@ -158,6 +198,20 @@ class PluginManifest:
         if max_ver and not semver_le(BOT_VERSION, max_ver):
             raise ValueError(f"Plugin {name!r} supports bot <= {max_ver} (current {BOT_VERSION})")
 
+        perms = [str(x).strip().lower() for x in (norm.get("permissions") or []) if str(x).strip()]
+        bad_perms = [p for p in perms if p not in ALLOWED_PERMISSIONS]
+        if bad_perms:
+            raise ValueError(
+                f"Plugin {name!r} declares unsupported permission(s) {bad_perms!r}; "
+                f"allowed={sorted(ALLOWED_PERMISSIONS)}"
+            )
+
+        req_env = [str(x).strip() for x in (norm.get("required_env") or []) if str(x).strip()]
+        opt_env = [str(x).strip() for x in (norm.get("optional_env") or []) if str(x).strip()]
+        for env_key in (*req_env, *opt_env):
+            if not ENV_NAME_RE.match(env_key):
+                raise ValueError(f"Invalid environment variable name {env_key!r} in plugin {name!r}")
+
         raw_cmds = norm.get("commands") or []
         cmds: list[dict[str, Any]] = []
         if isinstance(raw_cmds, dict):
@@ -168,7 +222,10 @@ class PluginManifest:
                 if isinstance(item, str):
                     cmds.append({"name": item.lstrip("/"), "description": "", "aliases": [], "access": "user"})
                 elif isinstance(item, dict) and item.get("name"):
-                    raw_acc = str(item.get("access") or ("owner" if item.get("owner_only") else "admin" if item.get("sudo_only") else "user")).lower()
+                    raw_acc = str(
+                        item.get("access")
+                        or ("owner" if item.get("owner_only") else "admin" if item.get("sudo_only") else "user")
+                    ).lower()
                     aliases = [str(a).strip().lstrip("/") for a in (item.get("aliases") or []) if str(a).strip()]
                     cmds.append({
                         "name": str(item["name"]).strip().lstrip("/"),
@@ -209,8 +266,10 @@ class PluginManifest:
             description=str(norm.get("description", "")).strip(),
             commands=cmds,
             callbacks=callbacks,
-            permissions=[str(x) for x in (norm.get("permissions") or [])],
+            permissions=perms,
             dependencies=[str(x) for x in (norm.get("dependencies") or [])],
+            required_env=req_env,
+            optional_env=opt_env,
             min_bot_version=min_ver,
             max_bot_version=max_ver,
             homepage=str(norm.get("homepage", "")).strip(),
@@ -273,12 +332,18 @@ class PluginBase:
         return self.config.get(key, default)
 
     async def set_setting(self, key: str, value: Any) -> None:
-        self.config[key] = value
         await vdb.db["plugin_settings"].update_one(
             {"_id": f"{self.name}:{key}"},
             {"$set": {"plugin": self.name, "key": key, "value": value}},
             upsert=True,
         )
+        self.config[key] = value
+
+    async def startup(self, client=None) -> None:
+        pass
+
+    async def shutdown(self, client=None) -> None:
+        pass
 
     async def on_load(self, client=None) -> None:
         pass
@@ -294,6 +359,13 @@ class PluginBase:
 
     async def on_configure(self, config_map: dict[str, Any]) -> None:
         pass
+
+
+async def _run_hook(coro, *, plugin_name: str, hook_name: str, timeout: float = PLUGIN_HOOK_TIMEOUT) -> None:
+    try:
+        await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"Plugin {plugin_name!r} {hook_name}() timed out after {timeout:.1f}s") from exc
 
 
 def register_handler_once(client: Any, handler: Any, group: int = 0) -> bool:
@@ -341,6 +413,7 @@ class PluginManager:
         self._configs: dict[str, dict[str, Any]] = {}
         self.load_errors: dict[str, str] = {}
         self.manifest_errors: dict[str, str] = {}
+        self.hook_timeout: float = PLUGIN_HOOK_TIMEOUT
 
     @property
     def plugins_dir(self) -> Path:
@@ -438,7 +511,7 @@ class PluginManager:
         return defaults
 
     async def configure_plugin(self, name: str, key: str, raw_value: Any) -> Any:
-        """Validate & persist a plugin setting, notifying ``PluginBase.on_configure`` if loaded."""
+        """Validate & persist a plugin setting, mutating cache only after MongoDB write succeeds."""
         self.discover()
         m = self.manifests.get(name)
         if m is None:
@@ -447,34 +520,39 @@ class PluginManager:
         if m.config_schema and schema_entry is None:
             raise KeyError(f"Unknown config key {key!r} for plugin {name}")
         val = coerce_config_value(raw_value, schema_entry if isinstance(schema_entry, dict) else None)
-        self._configs.setdefault(name, {})[key] = val
         await vdb.db["plugin_settings"].update_one(
             {"_id": f"{name}:{key}"},
             {"$set": {"plugin": name, "key": key, "value": val}},
             upsert=True,
         )
+        self._configs.setdefault(name, {})[key] = val
         inst = self.instances.get(name)
         if inst is not None:
             inst.config = self.get_plugin_config(name)
-            await inst.on_configure(dict(inst.config))
+            await _run_hook(
+                inst.on_configure(dict(inst.config)),
+                plugin_name=name,
+                hook_name="on_configure",
+                timeout=self.hook_timeout,
+            )
         return val
 
     async def set_enabled(self, name: str, enabled: bool, client=None) -> bool:
         self.discover()
         if name not in self.manifests:
             raise KeyError(f"Unknown plugin: {name}")
-        self._enabled[name] = bool(enabled)
         await vdb.db["plugins"].update_one(
             {"_id": name},
             {"$set": {"name": name, "enabled": bool(enabled), "version": self.manifests[name].version}},
             upsert=True,
         )
+        self._enabled[name] = bool(enabled)
         inst = self.instances.get(name)
         if inst is not None:
             if enabled:
-                await inst.on_enable()
+                await _run_hook(inst.on_enable(), plugin_name=name, hook_name="on_enable", timeout=self.hook_timeout)
             else:
-                await inst.on_disable()
+                await _run_hook(inst.on_disable(), plugin_name=name, hook_name="on_disable", timeout=self.hook_timeout)
         if enabled and name not in self.modules:
             await self.load_plugin(name, client=client, register_handlers=client is not None)
         return self._enabled[name]
@@ -484,6 +562,12 @@ class PluginManager:
 
     async def disable(self, name: str, client=None) -> bool:
         return await self.set_enabled(name, False, client=client)
+
+    def validate_prerequisites(self, manifest: PluginManifest) -> None:
+        """Verify required environment variables before importing or starting a plugin."""
+        missing_env = missing_env_vars(manifest.required_env)
+        if missing_env:
+            raise PluginConfigError(f"Missing required environment variable(s): {', '.join(missing_env)}")
 
     def _module_for_manifest(self, manifest: PluginManifest):
         """Import or load a plugin's entry file."""
@@ -520,17 +604,23 @@ class PluginManager:
         if manifest is None:
             raise KeyError(f"Plugin {name!r} not found")
         try:
+            self.validate_prerequisites(manifest)
             mod, fresh = self._module_for_manifest(manifest)
-            self.modules[name] = mod
 
             plugin_cls = getattr(mod, "Plugin", None)
+            inst: PluginBase | None = None
             if isinstance(plugin_cls, type) and issubclass(plugin_cls, PluginBase) and plugin_cls is not PluginBase:
                 inst = plugin_cls(manifest)
                 inst.config = self.get_plugin_config(name)
+                await _run_hook(inst.on_load(client), plugin_name=name, hook_name="on_load", timeout=self.hook_timeout)
+                await _run_hook(inst.startup(client), plugin_name=name, hook_name="startup", timeout=self.hook_timeout)
                 self.instances[name] = inst
-                await inst.on_load(client)
-            else:
-                inst = None
+
+            mod_startup = getattr(mod, "startup", None)
+            if inst is None and callable(mod_startup) and asyncio.iscoroutinefunction(mod_startup):
+                await _run_hook(mod_startup(client), plugin_name=name, hook_name="startup", timeout=self.hook_timeout)
+
+            self.modules[name] = mod
 
             if register_handlers and client is not None and hasattr(client, "add_handler"):
                 added: list[tuple[Any, int]] = []
@@ -558,24 +648,36 @@ class PluginManager:
     async def unload_plugin(self, name: str, client=None) -> bool:
         inst = self.instances.pop(name, None)
         if inst is not None:
-            try:
-                await inst.on_unload(client)
-            except Exception as e:
-                log.warning(f"Plugin {name} on_unload error: {e}")
+            for hook_name, fn in (("shutdown", inst.shutdown), ("on_unload", inst.on_unload)):
+                try:
+                    await _run_hook(fn(client), plugin_name=name, hook_name=hook_name, timeout=self.hook_timeout)
+                except Exception as e:
+                    log.warning(f"Plugin {name} {hook_name} error: {e}")
+
+        mod = self.modules.pop(name, None)
+        if inst is None and mod is not None:
+            mod_shutdown = getattr(mod, "shutdown", None)
+            if callable(mod_shutdown) and asyncio.iscoroutinefunction(mod_shutdown):
+                try:
+                    await _run_hook(
+                        mod_shutdown(client), plugin_name=name, hook_name="shutdown", timeout=self.hook_timeout
+                    )
+                except Exception as e:
+                    log.warning(f"Plugin {name} module shutdown error: {e}")
+
         if client is not None and hasattr(client, "remove_handler"):
             for h, g in self._dynamic_handlers.pop(name, []):
                 unregister_handler_tracked(client, h, g)
         else:
             self._dynamic_handlers.pop(name, None)
-        mod = self.modules.pop(name, None)
         if mod is not None and mod.__name__.startswith("videl_ext_plugin_"):
             sys.modules.pop(mod.__name__, None)
         return mod is not None or inst is not None
 
     async def unload_all(self, client=None) -> int:
-        """Cleanly unload all active plugins on shutdown."""
+        """Cleanly unload all active plugins on shutdown in reverse load order."""
         count = 0
-        for name in list(self.modules.keys() | self.instances.keys()):
+        for name in reversed(list(dict.fromkeys([*self.modules.keys(), *self.instances.keys()]))):
             if await self.unload_plugin(name, client=client):
                 count += 1
         return count
@@ -626,6 +728,8 @@ class PluginManager:
                 "homepage": m.homepage,
                 "dependencies": m.dependencies,
                 "missing_dependencies": missing_dependencies(m.dependencies),
+                "required_env": m.required_env,
+                "missing_env": missing_env_vars(m.required_env),
                 "permissions": m.permissions,
                 "tags": m.tags,
             })
@@ -637,10 +741,15 @@ class PluginManager:
         return {
             "total": len(items),
             "enabled": sum(1 for p in items if p["enabled"]),
+            "disabled": sum(1 for p in items if not p["enabled"]),
             "loaded": sum(1 for p in items if p["loaded"]),
             "healthy": sum(1 for p in items if p["enabled"] and p["loaded"] and not p["error"]),
             "errors": dict(self.load_errors),
             "manifest_errors": dict(self.manifest_errors),
+            "missing_dependencies": {
+                p["name"]: p["missing_dependencies"] for p in items if p["missing_dependencies"]
+            },
+            "missing_env": {p["name"]: p["missing_env"] for p in items if p["missing_env"]},
         }
 
 

@@ -36,6 +36,14 @@ def runtime_stack() -> dict:
         rich_ver = getattr(richgram, "__version__", "0.2.0")
     except Exception:
         pass
+    has_aiogram = False
+    aiogram_ver = ""
+    try:
+        import aiogram
+        has_aiogram = True
+        aiogram_ver = getattr(aiogram, "__version__", "")
+    except Exception:
+        pass
     layer = getattr(getattr(raw, "all", None), "layer", 0)
     if not is_wzgram:
         _log.warning(
@@ -53,6 +61,8 @@ def runtime_stack() -> dict:
         "richgram": rich_ver if has_richgram else None,
         "rich_available": rich_avail,
         "native_rich": bool(is_wzgram and hasattr(Client, "send_rich_message")),
+        "botapi_engine": "aiogram" if has_aiogram else None,
+        "botapi_version": aiogram_ver if has_aiogram else None,
     }
 
 

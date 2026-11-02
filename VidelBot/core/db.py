@@ -60,7 +60,6 @@ class VidelDB:
         """Insert user if unseen. Returns True when the user is brand new."""
         if user.id in self._known:
             return False
-        self._known.add(user.id)
         res = await self.users.update_one(
             {"id": user.id},
             {
@@ -69,6 +68,7 @@ class VidelDB:
             },
             upsert=True,
         )
+        self._known.add(user.id)
         return res.upserted_id is not None
 
     async def total_users(self) -> int:
@@ -92,16 +92,16 @@ class VidelDB:
         return user_id in self._banned
 
     async def ban(self, user_id: int, reason: str = ""):
-        self._banned.add(user_id)
         await self.users.update_one(
             {"id": user_id},
             {"$set": {"banned": True, "ban_reason": reason, "banned_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
+        self._banned.add(user_id)
 
     async def unban(self, user_id: int):
-        self._banned.discard(user_id)
         await self.users.update_one({"id": user_id}, {"$set": {"banned": False}, "$unset": {"ban_reason": ""}})
+        self._banned.discard(user_id)
 
     async def banned_users(self) -> list:
         return [d async for d in self.users.find({"banned": True})]

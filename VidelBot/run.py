@@ -150,7 +150,11 @@ async def main():
 
     # One live copy per bot token – a zero-downtime redeploy must not answer every update twice
     from core import instance
-    await instance.acquire()
+    try:
+        await instance.acquire()
+    except instance.InstanceLeaseError as e:
+        log.error(f"🔒 Single-instance lease acquisition failed (fail-closed): {e}")
+        sys.exit(1)
     instance.start_heartbeat()
     try:
         from VideoEncoder.utils import jobs
