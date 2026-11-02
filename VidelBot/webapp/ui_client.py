@@ -1216,7 +1216,7 @@ CLIENT_JS = r"""
         <div class="page-header">
           <div>
             <h1 class="page-title">File Store Studio</h1>
-            <p class="page-subtitle">Workspace-isolated file vault with table/grid views, metadata & tags, share links, trash recovery, and storage policies.</p>
+            <p class="page-subtitle">File vault with table/grid views, metadata, trash recovery, and storage policies. Web share links are not yet supported.</p>
           </div>
           <div class="toolbar-group">
             <label class="btn btn-primary" style="cursor:pointer">
@@ -1262,7 +1262,7 @@ CLIENT_JS = r"""
         const rows = items.filter((f) => !q || `${f.filename} ${f.file_uid} ${(f.tags || []).join(" ")}`.toLowerCase().includes(q));
         const box = $("fs-items-box");
         if (!rows.length) {
-          box.innerHTML = `<div class="empty-state"><h4>No files in this File Store yet</h4><p>Upload files above or enqueue remote URLs from Downloads Studio.</p></div>`;
+          box.innerHTML = `<div class="empty-state"><h4>No files in this File Store yet</h4><p>Upload files above. Downloads are managed separately.</p></div>`;
           return;
         }
         if (S.fsViewMode === "grid") {
@@ -1270,10 +1270,8 @@ CLIENT_JS = r"""
             <div class="card">
               <div style="font-weight:600">${esc(f.filename)}</div>
               <div class="stat-meta">${fmtBytes(f.size_bytes)} · ${esc(f.category)} · ${f.deleted ? "TRASH" : "Active"}</div>
-              ${f.share_code ? `<div class="mono" style="margin-top:6px;color:var(--accent)">Share: ${esc(f.share_code)}</div>` : ""}
               <div class="toolbar-group" style="margin-top:10px">
-                ${!f.deleted ? `<button class="btn btn-sm" data-fs-act="share_link" data-id="${esc(f.file_uid)}">Share</button>
-                <button class="btn btn-sm" data-fs-act="rename" data-id="${esc(f.file_uid)}">Rename</button>
+                ${!f.deleted ? `<button class="btn btn-sm" data-fs-act="rename" data-id="${esc(f.file_uid)}">Rename</button>
                 <button class="btn btn-sm btn-danger" data-fs-act="soft_delete" data-id="${esc(f.file_uid)}">Trash</button>`
                 : `<button class="btn btn-sm btn-primary" data-fs-act="restore" data-id="${esc(f.file_uid)}">Restore</button>`}
               </div>
@@ -1281,18 +1279,16 @@ CLIENT_JS = r"""
           `).join("")}</div>`;
         } else {
           box.innerHTML = `<div class="table-wrap"><table class="data-table">
-            <thead><tr><th>Filename</th><th>Size</th><th>Type</th><th>Share</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Filename</th><th>Size</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>${rows.map((f) => `
               <tr>
                 <td><strong>${esc(f.filename)}</strong><div class="mono" style="color:var(--text-muted)">${esc(f.file_uid)}</div></td>
                 <td>${fmtBytes(f.size_bytes)}</td>
                 <td><span class="badge badge-neutral">${esc(f.category)}</span></td>
-                <td class="mono">${esc(f.share_code || "—")}</td>
                 <td>${f.deleted ? `<span class="badge badge-warning">In Trash</span>` : `<span class="badge badge-success">Stored</span>`}</td>
                 <td><div class="toolbar-group">
                   ${!f.deleted ? `
                     <button class="btn btn-sm" data-fs-act="rename" data-id="${esc(f.file_uid)}">Rename</button>
-                    <button class="btn btn-sm" data-fs-act="share_link" data-id="${esc(f.file_uid)}">Share Link</button>
                     <button class="btn btn-sm btn-danger" data-fs-act="soft_delete" data-id="${esc(f.file_uid)}">Delete</button>
                   ` : `
                     <button class="btn btn-sm btn-primary" data-fs-act="restore" data-id="${esc(f.file_uid)}">Restore</button>

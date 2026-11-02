@@ -771,25 +771,32 @@ async def global_workspace_search(workspace_id: str, user_id: int, query: str) -
     if not q:
         return {"query": "", "results": []}
 
+    membership = await db_models.get_membership(workspace_id, user_id)
+    if not membership:
+        raise PermissionError("Workspace membership required.")
+    permissions = membership.get("permissions") or {}
     results: list[dict[str, Any]] = []
-    bots = await services_bots.list_workspace_bots(workspace_id, user_id=user_id, search=q)
-    for b in bots[:8]:
-        results.append({"type": "bot", "id": b["bot_id"], "title": b["display_name"], "subtitle": f"@{b['username']} · {b['category']}", "studio": "bots"})
-        for c in (await services_bots.list_bot_commands(workspace_id, b["bot_id"], search=q))[:5]:
-            results.append({"type": "command", "id": c["command"], "title": f"/{c['command']}", "subtitle": f"{b['display_name']} · {c['description']}", "studio": "commands"})
+    bots = await services_bots.list_workspace_bots(workspace_id, user_id=user_id)
+    for b in bots[:300]:
+        if q in f"{b['display_name']} {b['username']} {b['category']}".lower():
+            results.append({"type": "bot", "id": b["bot_id"], "title": b["display_name"], "subtitle": f"@{b['username']} · {b['category']}", "studio": "bots"})
+        if permissions.get("commands"):
+            for c in (await services_bots.list_bot_commands(workspace_id, b["bot_id"], search=q))[:5]:
+                results.append({"type": "command", "id": c["command"], "title": f"/{c['command']}", "subtitle": f"{b['display_name']} · {c['description']}", "studio": "commands"})
 
-    files = await services_clone_files.query_filestore_files(workspace_id, user_id=user_id, search=q, page_size=8)
-    for f in files["items"]:
-        results.append({"type": "file", "id": f["file_uid"], "title": f["filename"], "subtitle": f"{f['category']} · {f['size_bytes']} B", "studio": "filestore"})
+    if permissions.get("filestore"):
+        files = await services_clone_files.query_filestore_files(workspace_id, user_id=user_id, search=q, page_size=8)
+        for f in files["items"]:
+            results.append({"type": "file", "id": f["file_uid"], "title": f["filename"], "subtitle": f"{f['category']} · {f['size_bytes']} B", "studio": "filestore"})
 
-    tpls = await list_templates(workspace_id)
-    for t in [*tpls["official"], *tpls["workspace_templates"]]:
-        if q in t["name"].lower() or q in t.get("description", "").lower():
-            results.append({"type": "template", "id": t["template_id"], "title": t["name"], "subtitle": t["category"], "studio": "templates"})
+    if permissions.get("templates"):
+        tpls = await list_templates(workspace_id)
+        for t in [*tpls["official"], *tpls["workspace_templates"]]:
+            if q in t["name"].lower() or q in t.get("description", "").lower():
+                results.append({"type": "template", "id": t["template_id"], "title": t["name"], "subtitle": t["category"], "studio": "templates"})
 
-    for tk in download_engine.engine.list_tasks(user_id=user_id, search=q)[:6]:
-        results.append({"type": "task", "id": tk["task_id"], "title": tk["filename"], "subtitle": f"{tk['status']} · {tk['provider']}", "studio": "downloads"})
-
+    # User-scoped download tasks have no workspace ownership field, so they
+    # cannot safely be surfaced in a workspace search.
     return {"query": query, "results": results[:30]}
 
 

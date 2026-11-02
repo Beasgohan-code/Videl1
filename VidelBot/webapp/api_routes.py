@@ -474,7 +474,7 @@ async def api_filestore_list_or_create(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="filestore")
         q = request.query
         res = await services_clone_files.query_filestore_files(
             ws_id,
@@ -497,53 +497,55 @@ async def api_filestore_list_or_create(request: web.Request) -> web.Response:
     await auth.require_workspace_access(ctx, ws_id, scope="filestore")
     ct = (request.headers.get("Content-Type") or "").lower()
     if ct.startswith("multipart/form-data"):
+        import hashlib
+        import secrets
+        import shutil
+
         reader = await request.multipart()
-        udir = destinations.user_workspace_dir(ctx.user_id)
         saved_entries = []
         bot_id = request.query.get("bot_id", "default")
+        if bot_id != "default":
+            await services_bots.get_owned_workspace_bot(ws_id, bot_id)
         while True:
             part = await reader.next()
             if part is None:
                 break
-            if part.filename:
-                fname = providers.sanitize_filename(part.filename)
-                out_path = os.path.join(udir, fname)
-                if os.path.exists(out_path):
-                    stem, ext = os.path.splitext(fname)
-                    fname = f"{stem}_{int(time.time())}{ext}"
-                    out_path = os.path.join(udir, fname)
-                size = 0
-                import hashlib
-                sha = hashlib.sha256()
-                with open(out_path, "wb") as fp:
+            if not part.filename:
+                continue
+            fname = providers.sanitize_filename(part.filename)
+            relative_dir = services_clone_files.workspace_file_prefix(ws_id) + secrets.token_hex(16)
+            relative_path = relative_dir + "/" + fname
+            out_path = services_clone_files.resolve_workspace_file(ws_id, ctx.user_id, relative_path, must_exist=False)
+            file_dir = os.path.dirname(out_path)
+            os.makedirs(file_dir, exist_ok=False)
+            size = 0
+            sha = hashlib.sha256()
+            try:
+                with open(out_path, "xb") as fp:
                     while True:
                         chunk = await part.read_chunk(65536)
                         if not chunk:
                             break
                         size += len(chunk)
                         if size > 512 * 1024 * 1024:
-                            fp.close()
-                            os.remove(out_path)
                             raise services_bots.SaaSValidationError("Direct browser upload capped at 512 MiB.")
                         sha.update(chunk)
                         fp.write(chunk)
                 entry = await services_clone_files.register_filestore_entry(
-                    ws_id,
-                    ctx.user_id,
-                    {
-                        "bot_id": bot_id,
-                        "filename": fname,
-                        "local_rel_path": fname,
-                        "size_bytes": size,
-                        "sha256": sha.hexdigest(),
-                    },
+                    ws_id, ctx.user_id,
+                    {"bot_id": bot_id, "filename": fname, "local_rel_path": relative_path,
+                     "size_bytes": size, "sha256": sha.hexdigest()},
                 )
-                saved_entries.append(entry)
+            except BaseException:
+                # Includes cancellation and database errors; never leave an unindexed upload.
+                shutil.rmtree(file_dir, ignore_errors=True)
+                raise
+            saved_entries.append(entry)
         return _ok({"uploaded": saved_entries}, status=201)
 
-    body = await _json_body(request)
-    entry = await services_clone_files.register_filestore_entry(ws_id, ctx.user_id, body)
-    return _ok({"file": entry}, status=201)
+    # A caller-supplied local path could reference another workspace's files and
+    # fabricated metadata would pollute analytics. Only real uploads are accepted.
+    raise services_bots.SaaSValidationError("Use multipart upload to add a file.")
 
 
 @_api
@@ -564,12 +566,16 @@ async def api_filestore_config(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     bot_id = request.query.get("bot_id", "default")
-    if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
-        return _ok(await services_clone_files.get_filestore_config(ws_id, bot_id))
     await auth.require_workspace_access(ctx, ws_id, scope="filestore")
+    if bot_id != "default":
+        await services_bots.get_owned_workspace_bot(ws_id, bot_id)
+    if request.method == "GET":
+        return _ok(await services_clone_files.get_filestore_config(ws_id, bot_id))
     body = await _json_body(request)
-    return _ok(await services_clone_files.update_filestore_config(ws_id, str(body.get("bot_id") or bot_id), ctx.user_id, body))
+    target_bot = str(body.get("bot_id") or bot_id)
+    if target_bot != "default":
+        await services_bots.get_owned_workspace_bot(ws_id, target_bot)
+    return _ok(await services_clone_files.update_filestore_config(ws_id, target_bot, ctx.user_id, body))
 
 
 @_api
@@ -577,6 +583,7 @@ async def api_file_intelligence(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     await auth.require_workspace_access(ctx, ws_id, scope="analytics")
+    await auth.require_workspace_access(ctx, ws_id, scope="filestore")
     return _ok(await services_clone_files.compute_file_intelligence(ws_id, ctx.user_id))
 
 

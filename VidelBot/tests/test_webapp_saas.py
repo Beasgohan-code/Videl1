@@ -478,3 +478,133 @@ def test_secret_storage_requires_encryption_and_token_verification(monkeypatch):
             r = await cli.post(f"/api/v1/workspaces/{ws}/bots", headers=hdr, json=bot_body)
             assert r.status == 400
     run(go())
+
+
+def test_filestore_workspace_storage_rejects_unsafe_paths_and_bot_ids(tmp_path, monkeypatch):
+    from webapp import services_clone_files as fs
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            hdr, a = await _login_link(cli, 15001, "Owner")
+            b = (await services_bots.create_workspace(15001, name="Second"))["workspace_id"]
+            old = tmp_path / "platform_files" / "u_15001" / "legacy.txt"
+            old.parent.mkdir(parents=True, exist_ok=True)
+            old.write_text("private legacy content")
+            assert (await (await cli.get(f"/api/v1/workspaces/{b}/filestore", headers=hdr)).json())["items"] == []
+            form = FormData()
+            form.add_field("file", b"workspace A only", filename="secret.txt", content_type="text/plain")
+            up = await cli.post(f"/api/v1/workspaces/{a}/filestore", headers=hdr, data=form)
+            assert up.status == 201
+            entry = (await up.json())["uploaded"][0]
+            physical = fs.resolve_workspace_file(a, 15001, entry["local_rel_path"])
+            assert open(physical, "rb").read() == b"workspace A only"
+            assert destinations.list_user_files(15001)["files"][0]["name"] == "legacy.txt"
+            assert (await (await cli.get(f"/api/v1/workspaces/{b}/filestore", headers=hdr)).json())["items"] == []
+            assert (await cli.post(f"/api/v1/workspaces/{b}/filestore", headers=hdr,
+                                   json={"filename": "stolen.txt", "local_rel_path": entry["local_rel_path"]})).status == 400
+            assert (await cli.post(f"/api/v1/workspaces/{b}/filestore/{entry['file_uid']}", headers=hdr,
+                                   json={"action": "rename", "new_name": "stolen.txt"})).status == 404
+            bot = await services_bots.create_or_register_bot(a, 15001, {"display_name": "A bot"}, allow_unverified_offline=True)
+            bot_id = bot["bot_id"]
+            invalid = FormData()
+            invalid.add_field("file", b"no", filename="no.txt", content_type="text/plain")
+            assert (await cli.post(f"/api/v1/workspaces/{b}/filestore?bot_id={bot_id}", headers=hdr, data=invalid)).status == 404
+            assert (await cli.post(f"/api/v1/workspaces/{a}/filestore/{entry['file_uid']}", headers=hdr,
+                                   json={"action": "move", "target_bot_id": "not_a_bot"})).status == 404
+            assert (await cli.post(f"/api/v1/workspaces/{a}/filestore/{entry['file_uid']}", headers=hdr,
+                                   json={"action": "copy"})).status == 400
+            assert (await cli.post(f"/api/v1/workspaces/{a}/filestore/{entry['file_uid']}", headers=hdr,
+                                   json={"action": "share_link"})).status == 400
+
+            alias = dict(entry, file_uid="legacy_alias")
+            await db_models.files_col().insert_one(alias)
+            assert (await cli.post(f"/api/v1/workspaces/{a}/filestore/{entry['file_uid']}", headers=hdr,
+                                   json={"action": "rename", "new_name": "renamed.txt"})).status == 400
+            assert (await cli.post(f"/api/v1/workspaces/{a}/filestore/{entry['file_uid']}", headers=hdr,
+                                   json={"action": "soft_delete", "confirmed": True})).status == 200
+            assert (await cli.post(f"/api/v1/workspaces/{a}/filestore/{entry['file_uid']}", headers=hdr,
+                                   json={"action": "purge", "confirmed": True})).status == 400
+            assert open(physical, "rb").read() == b"workspace A only"
+            await db_models.files_col().delete_one({"file_uid": "legacy_alias"})
+            assert (await cli.post(f"/api/v1/workspaces/{a}/filestore/{entry['file_uid']}", headers=hdr,
+                                   json={"action": "purge", "confirmed": True})).status == 200
+            assert not __import__("os").path.exists(physical)
+            assert old.read_text() == "private legacy content"
+
+    run(go())
+
+
+def test_filestore_rejected_upload_cleanup_and_demo_upload(tmp_path, monkeypatch):
+    from webapp import services_clone_files as fs
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            hdr, ws = await _login_link(cli, 15002)
+            await fs.update_filestore_config(ws, "default", 15002, {"allowed_types": ["video"]})
+            form = FormData()
+            form.add_field("file", b"not allowed", filename="blocked.txt", content_type="text/plain")
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/filestore", headers=hdr, data=form)).status == 400
+            assert not [p for p in tmp_path.rglob("*") if p.is_file()]
+            demo = await (await cli.post("/api/v1/auth/demo", json={})).json()
+            uid = demo["user"]["user_id"]
+            assert uid < 0
+            dh = {"Authorization": f"Bearer {demo['session_token']}", "X-CSRF-Token": demo["csrf_token"]}
+            dws = demo["workspaces"][0]["workspace_id"]
+            form = FormData()
+            form.add_field("file", b"demo", filename="demo.txt", content_type="text/plain")
+            response = await cli.post(f"/api/v1/workspaces/{dws}/filestore", headers=dh, data=form)
+            assert response.status == 201
+            entry = (await response.json())["uploaded"][0]
+            assert open(fs.resolve_workspace_file(dws, uid, entry["local_rel_path"]), "rb").read() == b"demo"
+            assert destinations.user_workspace_dir(uid).endswith(f"u_{uid}")
+
+    run(go())
+
+
+def test_filestore_permissions_search_and_path_escape(tmp_path, monkeypatch):
+    from webapp import services_clone_files as fs
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 15003)
+            viewer, _ = await _login_link(cli, 15004)
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                                   json={"user_id": 15004, "role": "viewer"})).status == 201
+            form = FormData()
+            form.add_field("file", b"private", filename="uniquefilename.txt", content_type="text/plain")
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/filestore", headers=owner, data=form)).status == 201
+            assert (await cli.get(f"/api/v1/workspaces/{ws}/filestore", headers=viewer)).status == 403
+            assert (await cli.get(f"/api/v1/workspaces/{ws}/file-intelligence", headers=viewer)).status == 403
+            search = await services_ops.global_workspace_search(ws, 15004, "uniquefilename")
+            assert not any(r["type"] == "file" for r in search["results"])
+            with pytest.raises(services_bots.SaaSValidationError):
+                fs.resolve_workspace_file(ws, 15003, fs.workspace_file_prefix(ws) + "../escape", must_exist=False)
+            base = __import__("pathlib").Path(fs.workspace_storage_user_dir(15003))
+            root = base / fs.workspace_file_prefix(ws)
+            outside = tmp_path / "outside"
+            outside.mkdir()
+            (root / "linked").symlink_to(outside, target_is_directory=True)
+            with pytest.raises(PermissionError):
+                fs.resolve_workspace_file(ws, 15003, fs.workspace_file_prefix(ws) + "linked/evil", must_exist=False)
+
+    run(go())
+
+
+def test_filestore_failed_database_write_cleans_upload(tmp_path, monkeypatch):
+    from webapp import services_clone_files as fs
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            hdr, ws = await _login_link(cli, 15005)
+            async def broken_insert(*args, **kwargs):
+                raise RuntimeError("simulated database failure")
+            monkeypatch.setattr(fs, "register_filestore_entry", broken_insert)
+            form = FormData()
+            form.add_field("file", b"never leave this behind", filename="error.txt", content_type="text/plain")
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/filestore", headers=hdr, data=form)).status == 500
+            assert not [p for p in tmp_path.rglob("*") if p.is_file()]
+    run(go())

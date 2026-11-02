@@ -52,8 +52,8 @@ def workspace_root() -> str:
 
 def user_workspace_dir(user_id: int) -> str:
     uid = int(user_id)
-    if uid < 0:
-        raise ValueError("Invalid user_id for workspace directory.")
+    # Demo principals use negative IDs, which are disjoint from Telegram users.
+    # The integer conversion keeps the directory name free of path components.
     udir = os.path.realpath(os.path.join(workspace_root(), f"u_{uid}"))
     os.makedirs(udir, exist_ok=True)
     return udir

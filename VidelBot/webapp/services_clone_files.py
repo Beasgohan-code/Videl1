@@ -5,6 +5,7 @@ File Intelligence Center & Bot/Owner Analytics (`VidelBot/webapp/services_clone_
 from __future__ import annotations
 
 import copy
+import hashlib
 import csv
 import io
 import mimetypes
@@ -14,7 +15,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from platform_core import destinations, models_db, providers
+from platform_core import models_db, providers
 from webapp import db_models, services_bots
 
 CLONEABLE_SECTIONS = (
@@ -380,40 +381,50 @@ async def update_filestore_config(
     return current
 
 
-async def sync_disk_and_clone_files(workspace_id: str, user_id: int, bot_id: str = "default") -> None:
-    """Import real files from user's workspace disk directory into `saas_files` metadata index idempotently."""
-    ws = await db_models.workspaces_col().find_one({"workspace_id": workspace_id})
-    if not ws or int(ws.get("owner_id", 0)) != int(user_id) or ws.get("is_demo"):
-        return
-    disk_listing = destinations.list_user_files(user_id)
-    for f in disk_listing["files"]:
-        fuid = f"disk_{user_id}_{f['path']}"
-        exists = await db_models.files_col().find_one(
-            {"$or": [{"file_uid": fuid}, {"workspace_id": workspace_id, "local_rel_path": f["path"]}]}
+def workspace_file_prefix(workspace_id: str) -> str:
+    """Return a filesystem-safe namespace, distinct from legacy user-wide files."""
+    digest = hashlib.sha256(workspace_id.encode("utf-8")).hexdigest()
+    return f"_saas/{digest}/"
+
+
+def workspace_storage_user_dir(owner_id: int) -> str:
+    # Deliberately separate from the legacy user-wide download file manager.
+    import config
+    base = os.path.realpath(os.path.join(getattr(config, "DOWNLOAD_DIR", "download") or "download", "saas_files"))
+    user_dir = os.path.join(base, f"u_{int(owner_id)}")
+    if os.path.realpath(user_dir) != user_dir:
+        raise PermissionError("Invalid File Store storage directory.")
+    os.makedirs(user_dir, exist_ok=True)
+    return user_dir
+
+
+def resolve_workspace_file(workspace_id: str, owner_id: int, path: str, *, must_exist: bool = True) -> str:
+    require_workspace_file_path(workspace_id, owner_id, path)
+    candidate = os.path.join(workspace_storage_user_dir(owner_id), *path.split("/"))
+    if must_exist and not os.path.isfile(candidate):
+        raise FileNotFoundError("File Store file not found.")
+    return candidate
+
+
+def require_workspace_file_path(workspace_id: str, owner_id: int, path: str) -> None:
+    # Legacy user-wide files cannot safely be attributed to a workspace.
+    # Reject rather than guessing and potentially deleting another workspace's data.
+    parts = path.replace("\\", "/").split("/")
+    if ("\\" in path or any(part in ("", ".", "..") for part in parts)
+            or not path.startswith(workspace_file_prefix(workspace_id))):
+        raise services_bots.SaaSValidationError(
+            "This legacy file is not in workspace-isolated storage; physical operations require migration."
         )
-        if exists:
-            continue
-        mime = mimetypes.guess_type(f["name"])[0] or "application/octet-stream"
-        await db_models.files_col().insert_one({
-            "file_uid": fuid,
-            "workspace_id": workspace_id,
-            "bot_id": str(bot_id or "default"),
-            "owner_id": int(user_id),
-            "filename": f["name"],
-            "local_rel_path": f["path"],
-            "size_bytes": int(f["size_bytes"]),
-            "mime_type": mime,
-            "category": f["category"],
-            "tags": [],
-            "description": "",
-            "sha256": "",
-            "destination": "local",
-            "share_code": "",
-            "access_count": 0,
-            "deleted": False,
-            "uploaded_at": db_models.utcnow_iso(),
-            "uploaded_ts": float(f["modified_ts"]),
-        })
+    base = workspace_storage_user_dir(owner_id)
+    root = os.path.join(base, *workspace_file_prefix(workspace_id).strip("/").split("/"))
+    full = os.path.join(base, *parts)
+    if os.path.realpath(root) != root or not os.path.realpath(full).startswith(root + os.sep):
+        raise PermissionError("File path escapes its workspace storage namespace.")
+
+
+async def sync_disk_and_clone_files(workspace_id: str, user_id: int, bot_id: str = "default") -> None:
+    """Do not automatically index user-wide disk files into arbitrary workspaces."""
+    return None
 
 
 async def register_filestore_entry(
@@ -423,6 +434,10 @@ async def register_filestore_entry(
 ) -> dict[str, Any]:
     fname = providers.sanitize_filename(str(payload.get("filename") or "file.bin"))
     bot_id = str(payload.get("bot_id") or "default")
+    if bot_id not in ("default", "all", ""):
+        await services_bots.get_owned_workspace_bot(workspace_id, bot_id)
+    if bot_id == "all":
+        raise services_bots.SaaSValidationError("Choose a specific bot or default File Store.")
     fs_cfg = await get_filestore_config(workspace_id, bot_id)
     size_bytes = max(0, int(payload.get("size_bytes") or 0))
     if size_bytes > int(fs_cfg["max_file_mb"]) * 1024 * 1024:
@@ -551,17 +566,28 @@ async def operate_filestore_file(
     act = action.strip().lower()
     now = time.time()
 
+    if act in ("rename", "purge") and fdoc.get("local_rel_path"):
+        aliases = await db_models.files_col().count_documents({
+            "owner_id": fdoc["owner_id"], "local_rel_path": fdoc["local_rel_path"],
+            "file_uid": {"$ne": fdoc["file_uid"]},
+        })
+        if aliases:
+            raise services_bots.SaaSValidationError("Shared physical paths require migration before rename or purge.")
+
     if act == "rename":
         new_name = providers.sanitize_filename(str(payload.get("new_name") or ""))
         if fdoc.get("local_rel_path"):
-            try:
-                res = destinations.rename_user_file(int(fdoc["owner_id"]), fdoc["local_rel_path"], new_name)
-                await db_models.files_col().update_one(
-                    {"file_uid": file_uid},
-                    {"$set": {"filename": res["name"], "local_rel_path": res["path"], "updated_ts": now}},
-                )
-            except FileNotFoundError:
-                await db_models.files_col().update_one({"file_uid": file_uid}, {"$set": {"filename": new_name, "updated_ts": now}})
+            owner_id = int(fdoc["owner_id"])
+            src = resolve_workspace_file(workspace_id, owner_id, fdoc["local_rel_path"])
+            new_path = fdoc["local_rel_path"].rsplit("/", 1)[0] + "/" + new_name
+            dst = resolve_workspace_file(workspace_id, owner_id, new_path, must_exist=False)
+            if os.path.exists(dst) and dst != src:
+                raise FileExistsError("A file with that name already exists.")
+            os.replace(src, dst)
+            await db_models.files_col().update_one(
+                {"file_uid": file_uid, "workspace_id": workspace_id},
+                {"$set": {"filename": new_name, "local_rel_path": new_path, "updated_ts": now}},
+            )
         else:
             await db_models.files_col().update_one({"file_uid": file_uid}, {"$set": {"filename": new_name, "updated_ts": now}})
 
@@ -576,27 +602,15 @@ async def operate_filestore_file(
         await db_models.files_col().update_one({"file_uid": file_uid}, {"$set": upd})
 
     elif act == "share_link":
-        code = fdoc.get("share_code") or f"sh_{secrets.token_urlsafe(8)}"
-        await db_models.files_col().update_one(
-            {"file_uid": file_uid},
-            {"$set": {"share_code": code, "updated_ts": now}},
-        )
+        raise services_bots.SaaSValidationError("Web File Store sharing is not implemented.")
 
     elif act == "copy":
-        target_bot = str(payload.get("target_bot_id") or fdoc.get("bot_id") or "default")
-        cloned = dict(fdoc)
-        cloned.pop("_id", None)
-        cloned["file_uid"] = f"fsf_{secrets.token_hex(6)}"
-        cloned["bot_id"] = target_bot
-        cloned["filename"] = f"Copy of {fdoc['filename']}"[:190]
-        cloned["uploaded_ts"] = now
-        cloned["uploaded_at"] = db_models.utcnow_iso()
-        await db_models.files_col().insert_one(cloned)
-        cloned.pop("_id", None)
-        return {"action": "copy", "file": cloned}
+        raise services_bots.SaaSValidationError("Copying stored files is not implemented safely yet.")
 
     elif act == "move":
         target_bot = str(payload.get("target_bot_id") or "default")
+        if target_bot != "default":
+            await services_bots.get_owned_workspace_bot(workspace_id, target_bot)
         await db_models.files_col().update_one(
             {"file_uid": file_uid}, {"$set": {"bot_id": target_bot, "updated_ts": now}}
         )
@@ -618,11 +632,12 @@ async def operate_filestore_file(
     elif act == "purge":
         if not payload.get("confirmed"):
             raise services_bots.SaaSValidationError("Permanent deletion requires explicit confirmation.")
+        if not fdoc.get("deleted"):
+            raise services_bots.SaaSValidationError("Move the file to trash before permanent deletion.")
         if fdoc.get("local_rel_path"):
-            try:
-                destinations.delete_user_file(int(fdoc["owner_id"]), fdoc["local_rel_path"])
-            except Exception:
-                pass
+            target = resolve_workspace_file(workspace_id, int(fdoc["owner_id"]), fdoc["local_rel_path"])
+            # Do not discard the record if deleting the physical file fails.
+            os.remove(target)
         await db_models.files_col().delete_one({"file_uid": file_uid})
         await models_db.log_audit(actor_id, "filestore_purge", target=f"{workspace_id}:{file_uid}")
         return {"action": "purge", "deleted": True, "file_uid": file_uid}
