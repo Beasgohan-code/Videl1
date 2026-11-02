@@ -434,6 +434,23 @@ class Watchdog:
 def start(app) -> Watchdog:
     global dog
     dog = Watchdog(app)
-    dog._task = asyncio.get_event_loop().create_task(dog.run_forever())
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+    dog._task = loop.create_task(dog.run_forever())
     log.info(f"🐕 watchdog armed (every {config.WATCHDOG_INTERVAL}s, cleanup after {config.CLEANUP_AFTER_HOURS}h)")
     return dog
+
+
+async def stop() -> None:
+    """Cancel the background watchdog sweep loop cleanly on shutdown."""
+    global dog
+    if dog and dog._task:
+        dog._task.cancel()
+        try:
+            await dog._task
+        except (asyncio.CancelledError, Exception):
+            pass
+        dog._task = None
+    dog = None

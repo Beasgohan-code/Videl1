@@ -217,12 +217,17 @@ async def main():
     await botlog.flush(10)
     await plugin_manager.unload_all(app)
     await worker_engine.stop_all_workers()
+    await watchdog.stop()
+    from core import bg as bg_tasks
+    await bg_tasks.cancel_all()
     await keep_alive.stop_server()
     from core import botapi
     await botapi.close()
     await app.stop()
     instance.stop_heartbeat()
     await instance.release()                  # the next deploy can start right away
+    from filestore.database.mongo import close_motor_client
+    close_motor_client()
 
 
 if __name__ == "__main__":

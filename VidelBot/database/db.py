@@ -9,7 +9,11 @@ class Database:
     # and their saves were never counted against the daily limit.
    
     def __init__(self, uri, database_name):
-        self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
+        from filestore.database.mongo import CLIENT_TIMEOUT_KW, MONGO_URI, get_motor_client
+        if uri == MONGO_URI:
+            self._client = get_motor_client()
+        else:
+            self._client = motor.motor_asyncio.AsyncIOMotorClient(uri, **CLIENT_TIMEOUT_KW)
         self.db = self._client[database_name]
         self.col = self.db.users
     def new_user(self, id, name):

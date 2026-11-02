@@ -1,9 +1,9 @@
 """
-💾 Daily database backups (owners).
+💾 Daily database backups & validated non-destructive restore (owners).
 
   • every day at BACKUP_HOUR (LOG_TZ) a gzip JSON of all four databases goes to BACKUP_CHAT (default: first owner)
-  • /backup            → a backup right now
-  • reply /backup to a backup file → preview + ♻️ Restore button (upsert by _id – never deletes anything)
+  • /backup                → create and send a backup right now
+  • reply /backup to a .json.gz backup file → preview + 🔍 Dry-Run / ♻️ Restore buttons (upserts by _id – never deletes)
 
 Secrets are stripped unless BACKUP_INCLUDE_SECRETS=true: saver login sessions (full account access!),
 API hashes, passwords. Clone bot tokens are kept – they're stored encrypted with SECRET_KEY / the env key.
@@ -17,7 +17,7 @@ import logging
 import os
 import tempfile
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from bson import json_util
 from pyrogram import Client, filters
@@ -28,6 +28,7 @@ import config
 log = logging.getLogger("videl.backup")
 
 FORMAT = "videl-backup/1"
+MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024  # 256 MiB decompression cap (gzip-bomb guard)
 SECRET_FIELDS = {"session", "string_session", "session_string", "api_hash", "password", "phone_code_hash",
                  "two_fa", "otp"}
 SKIP_COLLECTIONS = {"stats_active", "support_map", "enc_queue"}       # recomputable / short-lived
@@ -53,8 +54,9 @@ async def dump(path: str, include_secrets: bool | None = None) -> dict:
     """Write the backup to `path` (gzip JSON). Returns {'db.collection': count}."""
     include = config.BACKUP_INCLUDE_SECRETS if include_secrets is None else include_secrets
     counts = {}
+    created_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     with gzip.open(path, "wt", encoding="utf-8") as fh:
-        meta = {"format": FORMAT, "bot": config.BOT_NAME, "created": datetime.utcnow().isoformat() + "Z",
+        meta = {"format": FORMAT, "bot": config.BOT_NAME, "created": created_iso,
                 "secrets": bool(include)}
         fh.write('{"meta": ' + json.dumps(meta) + ', "dbs": {')
         for di, (key, db) in enumerate(databases().items()):
@@ -81,37 +83,116 @@ async def dump(path: str, include_secrets: bool | None = None) -> dict:
     return counts
 
 
-def load(path: str) -> dict:
-    with gzip.open(path, "rt", encoding="utf-8") as fh:
-        data = json_util.loads(fh.read())
+def validate_backup_payload(data: dict) -> None:
+    """Validate top-level backup envelope and `dbs` layout before touching MongoDB."""
     if not isinstance(data, dict) or (data.get("meta") or {}).get("format") != FORMAT:
         raise ValueError("This isn't a Videl backup file.")
+    dbs_payload = data.get("dbs")
+    if dbs_payload is not None and not isinstance(dbs_payload, dict):
+        raise ValueError("Invalid backup structure: 'dbs' must be a JSON object.")
+    for db_key, colls in (dbs_payload or {}).items():
+        if not isinstance(db_key, str) or not isinstance(colls, dict):
+            raise ValueError(f"Invalid collection map for database '{db_key}'.")
+        for coll_name, docs in colls.items():
+            if not isinstance(coll_name, str) or coll_name.startswith("system.") or not isinstance(docs, list):
+                raise ValueError(f"Invalid document list for '{db_key}.{coll_name}'.")
+
+
+def load(path: str, max_bytes: int = MAX_UNCOMPRESSED_BYTES) -> dict:
+    """Safely decompress and parse a `.json.gz` backup with an uncompressed size cap."""
+    chunks: list[str] = []
+    total = 0
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        while True:
+            piece = fh.read(1024 * 1024)
+            if not piece:
+                break
+            total += len(piece.encode("utf-8"))
+            if total > max_bytes:
+                raise ValueError(f"Backup exceeds maximum uncompressed size ({max_bytes // (1024 * 1024)} MiB).")
+            chunks.append(piece)
+    data = json_util.loads("".join(chunks))
+    validate_backup_payload(data)
     return data
 
 
-async def restore(data: dict) -> dict:
-    """Upsert every document by _id. Returns {'db.collection': count}. Never deletes."""
+async def restore_with_report(data: dict, *, dry_run: bool = False) -> dict:
+    """Validate and optionally upsert every document by `_id`. Never deletes existing documents."""
+    validate_backup_payload(data)
     dbs = databases()
-    counts = {}
+    counts: dict[str, int] = {}
+    inserts = 0
+    updates = 0
+    skipped = 0
+    preserved_secrets = 0
+    unknown_dbs: list[str] = []
+
     for key, colls in (data.get("dbs") or {}).items():
         if key not in dbs:
+            unknown_dbs.append(key)
             continue
         db = dbs[key]
         for coll, docs in colls.items():
+            if coll in SKIP_COLLECTIONS or coll.startswith("system."):
+                continue
             n = 0
             for doc in docs:
-                if "_id" not in doc:
+                if not isinstance(doc, dict) or "_id" not in doc:
+                    skipped += 1
                     continue
+                stripped_here = sum(1 for k, v in doc.items() if k in SECRET_FIELDS and v is None)
+                preserved_secrets += stripped_here
                 clean = {k: v for k, v in doc.items()
                          if k != "_id" and not (k in SECRET_FIELDS and v is None)}      # keep live sessions
                 if not clean:
+                    skipped += 1
                     continue
-                await db[coll].update_one({"_id": doc["_id"]}, {"$set": clean}, upsert=True)
+                if dry_run:
+                    exists = await db[coll].find_one({"_id": doc["_id"]}, {"_id": 1})
+                    if exists:
+                        updates += 1
+                    else:
+                        inserts += 1
+                else:
+                    res = await db[coll].update_one({"_id": doc["_id"]}, {"$set": clean}, upsert=True)
+                    if res.upserted_id is not None:
+                        inserts += 1
+                    else:
+                        updates += 1
                 n += 1
                 if n % 500 == 0:
                     await asyncio.sleep(0)
             counts[f"{key}.{coll}"] = n
-    return counts
+
+    if not dry_run:
+        # Refresh in-memory ban list, global settings, and DB admins so restored state takes effect immediately
+        try:
+            from core.db import vdb
+            await vdb.warm_up()
+            vdb._known.clear()
+        except Exception as exc:
+            log.warning(f"backup post-restore warm_up warning: {exc}")
+        try:
+            from core.admins import load_db_admins
+            await load_db_admins()
+        except Exception as exc:
+            log.warning(f"backup post-restore admin reload warning: {exc}")
+
+    return {
+        "dry_run": dry_run,
+        "counts": counts,
+        "would_insert": inserts,
+        "would_update": updates,
+        "skipped_invalid": skipped,
+        "preserved_secrets": preserved_secrets,
+        "unknown_dbs": unknown_dbs,
+    }
+
+
+async def restore(data: dict, *, dry_run: bool = False) -> dict:
+    """Upsert every document by _id. Returns {'db.collection': count}. Never deletes."""
+    report = await restore_with_report(data, dry_run=dry_run)
+    return report["counts"]
 
 
 def _summary(counts: dict) -> str:
@@ -123,7 +204,7 @@ def _summary(counts: dict) -> str:
 
 
 async def send_backup(client, chat_id: int, reason: str = "daily") -> bool:
-    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     path = os.path.join(tempfile.gettempdir(), f"videl-backup-{stamp}.json.gz")
     t0 = time.time()
     try:
@@ -185,12 +266,17 @@ async def backup_cmd(client: Client, message: Message):
         if not (doc.file_name or "").endswith(".json.gz"):
             return await message.reply_text("⚠️ Reply to a <code>.json.gz</code> Videl backup file.")
         _pending[message.from_user.id] = (message.chat.id, message.reply_to_message.id, time.time())
+        from core.ui import btn
         return await message.reply_text(
             f"♻️ <b>Restore this backup?</b>\n<code>{html.escape(doc.file_name)}</code> · {doc.file_size / 1048576:.2f} MB\n\n"
             "<blockquote>Every document is <b>upserted</b> by its id – existing data is updated, nothing is deleted. "
-            "Stripped secrets (login sessions) are left as they are now.</blockquote>",
-            reply_markup=InlineKeyboardMarkup([[Btn("♻️ Restore", callback_data="bkr:yes"),
-                                                Btn("✖️ Cancel", callback_data="bkr:no")]]))
+            "Stripped secrets (login sessions) are left as they are now.\n"
+            "Use <b>🔍 Dry-Run</b> first to validate and preview exact insert/update counts without modifying MongoDB.</blockquote>",
+            reply_markup=InlineKeyboardMarkup([
+                [btn("🔍 Dry-Run", callback_data="bkr:dry", style="primary"),
+                 btn("♻️ Restore", callback_data="bkr:yes", style="success")],
+                [btn("✖️ Cancel", callback_data="bkr:no", style="danger")],
+            ]))
     wait = await message.reply_text("💾 <i>Creating a backup…</i>")
     ok = await send_backup(client, message.chat.id, reason="manual")
     try:
@@ -199,26 +285,51 @@ async def backup_cmd(client: Client, message: Message):
         pass
 
 
-@Client.on_callback_query(filters.regex(r"^bkr:(yes|no)$"))
+@Client.on_callback_query(filters.regex(r"^bkr:(yes|no|dry)$"))
 async def backup_restore_cb(client: Client, query: CallbackQuery):
     uid = query.from_user.id
     if uid not in config.OWNERS:
         return await query.answer("Owners only.", show_alert=True)
-    pending = _pending.pop(uid, None)
+    is_dry = query.data == "bkr:dry"
+    pending = _pending.get(uid) if is_dry else _pending.pop(uid, None)
     if query.data == "bkr:no" or not pending or time.time() - pending[2] > 600:
+        _pending.pop(uid, None)
         await query.answer("Cancelled." if query.data == "bkr:no" else "Expired – reply /backup again.")
         return await query.message.edit_text("✖️ Restore cancelled.")
-    await query.answer("Restoring…")
-    await query.message.edit_text("♻️ <i>Downloading and restoring…</i>")
+    await query.answer("Running dry-run…" if is_dry else "Restoring…")
+    await query.message.edit_text("🔍 <i>Downloading and validating (dry-run)…</i>" if is_dry
+                                  else "♻️ <i>Downloading and restoring…</i>")
     path = None
     try:
         src = await client.get_messages(pending[0], pending[1])
         path = await src.download(file_name=os.path.join(tempfile.gettempdir(), ""))
         data = await asyncio.to_thread(load, path)
-        counts = await restore(data)
+        rep = await restore_with_report(data, dry_run=is_dry)
         meta = data.get("meta") or {}
-        await query.message.edit_text(f"✅ <b>Restore complete</b>\n<blockquote>{_summary(counts)} documents upserted\n"
-                                      f"from {html.escape(str(meta.get('created', '?')))}</blockquote>")
+        created = html.escape(str(meta.get("created", "?")))
+        if is_dry:
+            _pending[uid] = (pending[0], pending[1], time.time())  # refresh confirmation window
+            from core.ui import btn
+            await query.message.edit_text(
+                f"🔍 <b>Backup Dry-Run Preview</b> <i>(no database changes made)</i>\n"
+                f"<blockquote><b>Summary:</b> {_summary(rep['counts'])} documents\n"
+                f"<b>New inserts:</b> <code>{rep['would_insert']:,}</code> · "
+                f"<b>Updates:</b> <code>{rep['would_update']:,}</code>\n"
+                f"<b>Live secrets preserved:</b> <code>{rep['preserved_secrets']:,}</code> · "
+                f"<b>Invalid skipped:</b> <code>{rep['skipped_invalid']:,}</code>\n"
+                f"<b>Created:</b> {created}</blockquote>",
+                reply_markup=InlineKeyboardMarkup([
+                    [btn("♻️ Apply Restore Now", callback_data="bkr:yes", style="success"),
+                     btn("✖️ Cancel", callback_data="bkr:no", style="danger")],
+                ]),
+            )
+        else:
+            await query.message.edit_text(
+                f"✅ <b>Restore complete</b>\n"
+                f"<blockquote>{_summary(rep['counts'])} documents upserted "
+                f"(<code>{rep['would_insert']:,}</code> inserted, <code>{rep['would_update']:,}</code> updated)\n"
+                f"from {created}</blockquote>"
+            )
     except Exception as e:
         log.error(f"restore failed: {e}")
         await query.message.edit_text(f"⚠️ <b>Restore failed:</b> <code>{html.escape(str(e))[:300]}</code>")
