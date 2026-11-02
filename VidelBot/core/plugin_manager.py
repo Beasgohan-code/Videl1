@@ -296,6 +296,38 @@ class PluginBase:
         pass
 
 
+def register_handler_once(client: Any, handler: Any, group: int = 0) -> bool:
+    """Register `(handler, group)` on `client` at most once to prevent duplicate dispatch."""
+    if client is None or not hasattr(client, "add_handler"):
+        return False
+    seen = getattr(client, "_videl_registered_handlers", None)
+    if seen is None:
+        seen = set()
+        try:
+            setattr(client, "_videl_registered_handlers", seen)
+        except Exception:
+            seen = None
+    key = (id(handler), int(group))
+    if seen is not None and key in seen:
+        return False
+    client.add_handler(handler, int(group))
+    if seen is not None:
+        seen.add(key)
+    return True
+
+
+def unregister_handler_tracked(client: Any, handler: Any, group: int = 0) -> None:
+    """Remove `(handler, group)` from `client` and clear its duplicate-guard entry."""
+    seen = getattr(client, "_videl_registered_handlers", None)
+    if isinstance(seen, set):
+        seen.discard((id(handler), int(group)))
+    if client is not None and hasattr(client, "remove_handler"):
+        try:
+            client.remove_handler(handler, int(group))
+        except Exception:
+            pass
+
+
 class PluginManager:
     """Central registry for discovering, toggling, configuring, and hot-reloading plugins."""
 
@@ -307,6 +339,8 @@ class PluginManager:
         self._dynamic_handlers: dict[str, list[tuple[Any, int]]] = {}
         self._enabled: dict[str, bool] = {}
         self._configs: dict[str, dict[str, Any]] = {}
+        self.load_errors: dict[str, str] = {}
+        self.manifest_errors: dict[str, str] = {}
 
     @property
     def plugins_dir(self) -> Path:
@@ -318,9 +352,11 @@ class PluginManager:
     def discover(self) -> dict[str, PluginManifest]:
         """Scan ``plugins_dir`` for ``*/plugin.yaml`` (or ``wzml_plugin.yml``)."""
         found: dict[str, PluginManifest] = {}
+        m_errors: dict[str, str] = {}
         base = self.plugins_dir
         if not base.is_dir():
             self.manifests = found
+            self.manifest_errors = m_errors
             return found
         for sub in sorted(base.iterdir()):
             if not sub.is_dir() or sub.name.startswith((".", "_")):
@@ -333,8 +369,11 @@ class PluginManager:
                 found[manifest.name] = manifest
                 self._enabled.setdefault(manifest.name, manifest.enabled_by_default)
             except Exception as e:
+                err_msg = f"{type(e).__name__}: {e}"
+                m_errors[sub.name] = err_msg
                 log.warning(f"Skipping invalid plugin manifest {yml}: {e}")
         self.manifests = found
+        self.manifest_errors = m_errors
         return found
 
     def taken_commands(self, skip: str | None = None) -> dict[str, str]:
@@ -480,37 +519,41 @@ class PluginManager:
         manifest = self.manifests.get(name)
         if manifest is None:
             raise KeyError(f"Plugin {name!r} not found")
-        mod, fresh = self._module_for_manifest(manifest)
-        self.modules[name] = mod
+        try:
+            mod, fresh = self._module_for_manifest(manifest)
+            self.modules[name] = mod
 
-        plugin_cls = getattr(mod, "Plugin", None)
-        if isinstance(plugin_cls, type) and issubclass(plugin_cls, PluginBase) and plugin_cls is not PluginBase:
-            inst = plugin_cls(manifest)
-            inst.config = self.get_plugin_config(name)
-            self.instances[name] = inst
-            await inst.on_load(client)
-        else:
-            inst = None
+            plugin_cls = getattr(mod, "Plugin", None)
+            if isinstance(plugin_cls, type) and issubclass(plugin_cls, PluginBase) and plugin_cls is not PluginBase:
+                inst = plugin_cls(manifest)
+                inst.config = self.get_plugin_config(name)
+                self.instances[name] = inst
+                await inst.on_load(client)
+            else:
+                inst = None
 
-        if register_handlers and client is not None and hasattr(client, "add_handler"):
-            added: list[tuple[Any, int]] = []
-            if fresh:
-                for attr_name in vars(mod):
-                    obj = getattr(mod, attr_name)
-                    hs = getattr(obj, "handlers", None)
-                    if not isinstance(hs, list) or getattr(obj, "__module__", None) != mod.__name__:
-                        continue
-                    for h, g in hs:
-                        if isinstance(g, int):
-                            client.add_handler(h, g)
+            if register_handlers and client is not None and hasattr(client, "add_handler"):
+                added: list[tuple[Any, int]] = []
+                if fresh:
+                    for attr_name in vars(mod):
+                        obj = getattr(mod, attr_name)
+                        hs = getattr(obj, "handlers", None)
+                        if not isinstance(hs, list) or getattr(obj, "__module__", None) != mod.__name__:
+                            continue
+                        for h, g in hs:
+                            if isinstance(g, int) and register_handler_once(client, h, g):
+                                added.append((h, g))
+                if inst is not None:
+                    for h, g in inst._handlers:
+                        if register_handler_once(client, h, g):
                             added.append((h, g))
-            if inst is not None:
-                for h, g in inst._handlers:
-                    client.add_handler(h, g)
-                    added.append((h, g))
-            if added:
-                self._dynamic_handlers[name] = added
-        return manifest
+                if added:
+                    self._dynamic_handlers[name] = added
+            self.load_errors.pop(name, None)
+            return manifest
+        except Exception as e:
+            self.load_errors[name] = f"{type(e).__name__}: {e}"
+            raise
 
     async def unload_plugin(self, name: str, client=None) -> bool:
         inst = self.instances.pop(name, None)
@@ -521,10 +564,7 @@ class PluginManager:
                 log.warning(f"Plugin {name} on_unload error: {e}")
         if client is not None and hasattr(client, "remove_handler"):
             for h, g in self._dynamic_handlers.pop(name, []):
-                try:
-                    client.remove_handler(h, g)
-                except Exception:
-                    pass
+                unregister_handler_tracked(client, h, g)
         else:
             self._dynamic_handlers.pop(name, None)
         mod = self.modules.pop(name, None)
@@ -565,6 +605,7 @@ class PluginManager:
                     await self.load_plugin(name, client=client, register_handlers=False)
                     loaded += 1
                 except Exception as e:
+                    self.load_errors[name] = f"{type(e).__name__}: {e}"
                     log.warning(f"Failed initializing plugin {name}: {e}")
         return loaded
 
@@ -581,6 +622,7 @@ class PluginManager:
                 "commands": m.command_names,
                 "enabled": self.is_enabled(name),
                 "loaded": name in self.modules,
+                "error": self.load_errors.get(name, ""),
                 "homepage": m.homepage,
                 "dependencies": m.dependencies,
                 "missing_dependencies": missing_dependencies(m.dependencies),
@@ -588,6 +630,18 @@ class PluginManager:
                 "tags": m.tags,
             })
         return out
+
+    def health_report(self) -> dict[str, Any]:
+        """Structured health report of modular plugins, load failures, and manifest errors."""
+        items = self.summary()
+        return {
+            "total": len(items),
+            "enabled": sum(1 for p in items if p["enabled"]),
+            "loaded": sum(1 for p in items if p["loaded"]),
+            "healthy": sum(1 for p in items if p["enabled"] and p["loaded"] and not p["error"]),
+            "errors": dict(self.load_errors),
+            "manifest_errors": dict(self.manifest_errors),
+        }
 
 
 plugin_manager = PluginManager()

@@ -36,11 +36,14 @@ PLUGIN_ROOTS = [
     "plugins",
 ]
 SKIP = {"__init__", "ui", "db", "texts", "botapi"}
+boot_import_errors: dict[str, str] = {}
 
 
 def load_plugins(app) -> int:
-    """Import every module under PLUGIN_ROOTS and register its decorated handlers."""
+    """Import every module under PLUGIN_ROOTS and register its decorated handlers (idempotent per client)."""
+    from core.plugin_manager import plugin_manager, register_handler_once
     count = 0
+    boot_import_errors.clear()
     for root in PLUGIN_ROOTS:
         for path in sorted(Path(root).rglob("*.py")):
             if path.stem in SKIP or "__pycache__" in path.parts:
@@ -48,7 +51,11 @@ def load_plugins(app) -> int:
             mod_name = ".".join(path.with_suffix("").parts)
             try:
                 module = importlib.import_module(mod_name)
-            except Exception:
+            except Exception as exc:
+                err_txt = f"{type(exc).__name__}: {exc}"
+                boot_import_errors[mod_name] = err_txt
+                if root == "plugins" and len(path.parts) >= 2:
+                    plugin_manager.load_errors[path.parts[1]] = err_txt
                 log.exception(f"❌ failed to import {mod_name}")
                 continue
             for name in vars(module):
@@ -58,14 +65,19 @@ def load_plugins(app) -> int:
                 if not isinstance(handlers, list) or getattr(obj, "__module__", None) != mod_name:
                     continue
                 for handler, group in handlers:
-                    if isinstance(group, int):
-                        app.add_handler(handler, group)
+                    if isinstance(group, int) and register_handler_once(app, handler, group):
                         count += 1
     # last group-0 handler: the "what can I do with this file?" hint for files no plugin claimed
     try:
         from core import filehint
-        count += filehint.register(app)
-    except Exception:
+        if not getattr(app, "_videl_filehint_registered", False):
+            count += filehint.register(app)
+            try:
+                setattr(app, "_videl_filehint_registered", True)
+            except Exception:
+                pass
+    except Exception as exc:
+        boot_import_errors["core.filehint"] = f"{type(exc).__name__}: {exc}"
         log.exception("❌ file hint not registered")
     return count
 

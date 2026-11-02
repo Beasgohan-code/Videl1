@@ -42,14 +42,20 @@ log = logging.getLogger("videl.plugins_cmd")
 
 def plugins_list_doc() -> tuple[Doc, InlineKeyboardMarkup]:
     items = plugin_manager.summary()
-    active = sum(1 for p in items if p["enabled"])
-    doc = Doc("🧩", "Plugin Manager", f"{active}/{len(items)} active · YAML manifest engine")
+    health = plugin_manager.health_report()
+    active = sum(1 for p in items if p["enabled"] and not p.get("error"))
+    doc = Doc("🧩", "Plugin Manager", f"{active}/{len(items)} healthy · YAML manifest engine")
     if not items:
         doc.status("empty", "No modular plugins installed", "Place plugin folders under plugins/")
     else:
         rows = []
         for p in items:
-            badge = "🟢 On" if p["enabled"] else "🔴 Off"
+            if p.get("error"):
+                badge = "⚠️ Error"
+            elif p["enabled"]:
+                badge = "🟢 On"
+            else:
+                badge = "🔴 Off"
             cmds = ", ".join(f"/{c}" for c in p["commands"][:3]) or "—"
             rows.append((
                 rich.bold(p["name"]),
@@ -58,6 +64,13 @@ def plugins_list_doc() -> tuple[Doc, InlineKeyboardMarkup]:
                 cmds,
             ))
         doc.table(rows, header=("Plugin", "Ver", "State", "Commands"))
+    alerts = {**health["manifest_errors"], **health["errors"]}
+    if alerts:
+        err_doc = Doc().table(
+            [(rich.code(k), str(v)[:120]) for k, v in sorted(alerts.items())],
+            header=("Plugin", "Failure diagnostic"),
+        )
+        doc.details(f"⚠️ Plugin health alerts ({len(alerts)})", err_doc, open_=True)
     doc.h("⚡", "Owner CLI shortcuts").items([
         rich.Raw("<code>/plugins enable|disable|reload &lt;name&gt;</code>"),
         rich.Raw("<code>/plugins set &lt;name&gt; &lt;key&gt; &lt;value&gt;</code>"),
@@ -92,9 +105,12 @@ def plugin_info_doc(name: str) -> tuple[Doc, InlineKeyboardMarkup]:
     if miss:
         dep_txt += f" (⚠️ missing: {', '.join(miss)})"
 
+    err_txt = plugin_manager.load_errors.get(name, "")
+    status_label = "⚠️ Load Error" if err_txt else ("🟢 Enabled" if on else "🔴 Disabled")
     doc = Doc("🧩", f"Plugin · {m.name}", m.description or "modular extension")
     doc.kv_table([
-        ("📶 Status", "🟢 Enabled" if on else "🔴 Disabled"),
+        ("📶 Status", status_label),
+        ("⚠️ Diagnostic", err_txt[:160] if err_txt else None),
         ("🏷 Version", rich.code(m.version)),
         ("✍️ Author", m.author),
         ("📄 Entry", rich.code(m.entry)),
