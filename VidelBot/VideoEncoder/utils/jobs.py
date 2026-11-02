@@ -1,34 +1,139 @@
 """
-Running encoder jobs – lets ❌ Cancel really stop ffmpeg.
+Running encoder & transfer jobs – unified live telemetry and hard cancellation.
 
 The original cancel only flipped a flag in status.json that nothing read, so ffmpeg kept
-running until the end. Every ffmpeg process is registered here; cancelling terminates it
-(then kills it after a grace period) and the encode returns cleanly.
+running until the end. Every active download, ffmpeg encode, split, Google Drive transfer,
+and Telegram upload registers here:
+  • live progress (`pct`, `processed`, `total`, `speed`, `speed_label`, `eta`, `engine`, `stage`)
+    feeds `/status`, `/queue`, and the `/admin` web console without extra disk polling,
+  • cancelling terminates child subprocesses (`SIGTERM` → `SIGKILL` after grace) and signals
+    chunked upload/download loops via `jobs.is_cancelled(key)`.
 """
 import asyncio
 import time
 from collections import deque
 
-_JOBS: dict = {}          # status-message id → Job
+_JOBS: dict = {}              # status-message id → Job
 _RECENT = deque(maxlen=200)   # keys cancelled lately (the job may already be unregistered)
 
 
 class Job:
-    __slots__ = ("key", "user_id", "chat_id", "proc", "started", "cancelled", "stage", "name")
+    __slots__ = (
+        "key",
+        "user_id",
+        "chat_id",
+        "proc",
+        "started",
+        "cancelled",
+        "stage",
+        "name",
+        "engine",
+        "mode",
+        "progress",
+        "processed",
+        "total",
+        "speed",
+        "speed_label",
+        "eta",
+        "updated_at",
+    )
 
-    def __init__(self, key, user_id, chat_id, name="", stage="encode"):
-        self.key, self.user_id, self.chat_id, self.name, self.stage = key, user_id, chat_id, name, stage
+    def __init__(self, key, user_id, chat_id, name="", stage="encode", engine="", mode=""):
+        self.key = key
+        self.user_id = user_id
+        self.chat_id = chat_id
+        self.name = name
+        self.stage = stage
+        self.engine = engine
+        self.mode = mode
         self.proc = None
         self.started = time.time()
         self.cancelled = False
+        self.progress = 0.0
+        self.processed = 0
+        self.total = 0
+        self.speed = 0.0
+        self.speed_label = ""
+        self.eta = 0.0
+        self.updated_at = self.started
+
+    def to_dict(self) -> dict:
+        now = time.time()
+        return {
+            "key": self.key,
+            "user_id": self.user_id,
+            "chat_id": self.chat_id,
+            "name": self.name or "",
+            "stage": self.stage or "running",
+            "engine": self.engine or "",
+            "mode": self.mode or "",
+            "progress": round(float(self.progress or 0.0), 1),
+            "processed": int(self.processed or 0),
+            "total": int(self.total or 0),
+            "speed": float(self.speed or 0.0),
+            "speed_label": self.speed_label or "",
+            "eta": max(0, int(round(self.eta or 0))),
+            "elapsed": max(0, int(now - self.started)),
+            "cancelled": bool(self.cancelled),
+        }
 
 
-def register(key, user_id, chat_id, name="", stage="encode") -> Job:
+def register(key, user_id, chat_id, name="", stage="encode", *, engine="", mode="") -> Job:
     job = _JOBS.get(key)
     if job is None:
-        job = _JOBS[key] = Job(key, user_id, chat_id, name, stage)
+        job = _JOBS[key] = Job(key, user_id, chat_id, name, stage, engine=engine, mode=mode)
     else:
         job.stage = stage
+        if name:
+            job.name = name
+        if engine:
+            job.engine = engine
+        if mode:
+            job.mode = mode
+        job.updated_at = time.time()
+    return job
+
+
+def update_progress(
+    key,
+    *,
+    current: int | None = None,
+    total: int | None = None,
+    pct: float | None = None,
+    speed: float | None = None,
+    speed_label: str | None = None,
+    eta: float | None = None,
+    stage: str | None = None,
+    engine: str | None = None,
+    name: str | None = None,
+):
+    """Update live transfer/encode metrics on a registered job (no-op if unregistered)."""
+    job = _JOBS.get(key)
+    if job is None:
+        return None
+    if current is not None:
+        job.processed = max(0, int(current))
+    if total is not None:
+        job.total = max(0, int(total))
+    if pct is not None:
+        job.progress = max(0.0, min(100.0, float(pct)))
+    elif job.total > 0 and current is not None:
+        job.progress = max(0.0, min(100.0, job.processed * 100.0 / job.total))
+    if speed is not None:
+        job.speed = max(0.0, float(speed))
+        if speed_label is None:
+            job.speed_label = ""
+    if speed_label is not None:
+        job.speed_label = str(speed_label)
+    if eta is not None:
+        job.eta = max(0.0, float(eta))
+    if stage:
+        job.stage = stage
+    if engine:
+        job.engine = engine
+    if name:
+        job.name = name
+    job.updated_at = time.time()
     return job
 
 
@@ -58,6 +163,11 @@ def active() -> list:
     return list(_JOBS.values())
 
 
+def snapshot() -> dict:
+    """Return `{key: job.to_dict()}` snapshot of all currently running jobs."""
+    return {k: j.to_dict() for k, j in list(_JOBS.items())}
+
+
 def latest():
     return next(reversed(_JOBS.values()), None) if _JOBS else None
 
@@ -71,7 +181,7 @@ def _terminate_now(proc):
 
 
 async def cancel(key, grace: float = 5.0) -> bool:
-    """Mark the job cancelled and stop its ffmpeg (SIGTERM → SIGKILL)."""
+    """Mark the job cancelled and stop its subprocess (`SIGTERM` → `SIGKILL`)."""
     job = _JOBS.get(key)
     if not job:
         return False

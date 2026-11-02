@@ -1,14 +1,22 @@
 """
-Keep-alive for free / sleeping hosts (Render, Koyeb, Railway, Heroku, Replit …).
+Keep-alive & responsive `/admin` operator console (Render, Koyeb, Railway, Heroku, VPS …).
 
-  • Serves a tiny web app on 0.0.0.0:PORT
-      GET /          → "Videl is running ✨"
-      GET /health    → JSON: status, uptime, clone bots, encoder queue, last watchdog sweep
-      GET /admin     → owner web dashboard (open it from Telegram with /dashboard)
+  • Serves an async aiohttp web app on 0.0.0.0:PORT
+      GET  /                         → status landing / plain-text keep-alive ("<BOT> is running ✨")
+      GET  /ping                     → lightweight plain-text keep-alive probe
+      GET  /health                   → JSON: status, uptime, clone bots, encoder queue, container resources
+      GET  /admin                    → responsive owner/admin web console (open via /dashboard in Telegram)
+      POST /admin/api/login          → exchange one-time link or Telegram Mini App initData for session
+      GET  /admin/api/stats          → time-series analytics, totals, live tasks, health & diagnostics
+      GET  /admin/api/diagnostics    → secret-free runtime, storage, binary, plugin & security diagnostics
+      POST /admin/api/tasks/cancel   → cancel a running task by job key (authenticated admin only)
+      POST /admin/api/tasks/clear    → purge waiting tasks from encoder queue (authenticated admin only)
+      GET  /admin/chart/{users|jobs}.png → server-rendered analytics charts
   • Pings KEEP_ALIVE_URL (auto-detected on most hosts) every KEEP_ALIVE_INTERVAL
-    seconds so the platform never idles the process.
+    seconds so sleeping platforms stay awake.
 """
 import asyncio
+import html
 import logging
 import time
 
@@ -22,15 +30,27 @@ _runner = None
 
 
 def _health() -> dict:
-    data = {"status": "ok", "bot": config.BOT_NAME, "uptime_s": int(time.time() - _started)}
+    data: dict = {"status": "ok", "bot": config.BOT_NAME, "uptime_s": int(time.time() - _started)}
     try:
         from filestore.worker_bot.engine import worker_engine
         data["clone_bots_running"] = worker_engine.active_count
     except Exception:
-        pass
+        data["clone_bots_running"] = 0
     try:
         from VideoEncoder import data as enc_queue
         data["encoder_queue"] = len(enc_queue)
+    except Exception:
+        data["encoder_queue"] = 0
+    try:
+        from core.sysinfo import system_snapshot
+        snap = system_snapshot(".")
+        data["resources"] = {
+            "cpu_percent": snap["cpu_percent"],
+            "cpu_cores": snap["cpu_cores"],
+            "mem_percent": snap["mem_percent"],
+            "rss_mb": round(snap["rss_bytes"] / 1048576, 1),
+            "disk_free_gb": round(snap["disk_free_bytes"] / 1073741824, 2),
+        }
     except Exception:
         pass
     try:
@@ -42,7 +62,38 @@ def _health() -> dict:
     return data
 
 
-async def _root(_):
+LANDING_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{BOT}} · Status</title><style>
+:root{color-scheme:dark;--bg:#0b0e17;--card:#141927;--line:#252d44;--fg:#f1f4fc;--mut:#949db8;--acc:#4f7cff;--ok:#34c759}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:radial-gradient(48rem 28rem at 50% -10%,rgba(79,124,255,.18),transparent 70%),var(--bg);color:var(--fg)}
+.box{max-width:460px;width:100%;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:32px 28px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+.badge{display:inline-flex;align-items:center;gap:8px;padding:5px 12px;border-radius:99px;background:rgba(52,199,89,.12);color:#6ee792;font-size:13px;font-weight:600;margin-bottom:14px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px var(--ok)}
+h1{margin:0 0 8px;font-size:24px}p{margin:0 0 20px;color:var(--mut)}
+.actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+a{text-decoration:none;padding:9px 16px;border-radius:10px;font-weight:600;font-size:14px;border:1px solid var(--line);color:var(--fg);background:#1b2234}
+a.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+</style></head><body><div class="box">
+<div class="badge"><span class="dot"></span>Online</div>
+<h1>{{BOT}} is running ✨</h1>
+<p>Unified Telegram Media Suite · WzGram MTProto + Richgram UI</p>
+<div class="actions"><a class="pri" href="/admin">📊 Admin Console</a><a href="/health">🩺 Health JSON</a></div>
+</div></body></html>"""
+
+
+async def _ping(_):
+    return web.Response(text=f"{config.BOT_NAME} is running ✨")
+
+
+async def _root(request):
+    accept = (request.headers.get("Accept") or "").lower()
+    if "text/html" in accept:
+        return web.Response(
+            text=LANDING_HTML.replace("{{BOT}}", _html_escape(config.BOT_NAME)),
+            content_type="text/html",
+        )
     return web.Response(text=f"{config.BOT_NAME} is running ✨")
 
 
@@ -51,13 +102,6 @@ async def _health_handler(_):
 
 
 # ─────────────────────────── /admin web dashboard ───────────────────────────
-# Sign-in, three ways – none of them puts a secret where the server could log it:
-#   🌐 Mini App  /dashboard in Telegram → the page opens inside Telegram, which signs the launch data with the
-#               bot token (HMAC) → the page trades it for a session. Admins only (user id checked).
-#   🔗 link      /dashboard → one-time link /admin#l.<key> (10 min, single use) → session.
-#   🔑 token     /admin#<ADMIN_WEB_TOKEN> (optional, when that variable is set).
-# The secret always travels in the URL *fragment* (never sent to the server, never in logs / referrers) and the
-# page sends the session as the X-Admin-Token header. Wrong tries are rate-limited per client.
 _fails: dict = {}          # ip → [timestamps] of wrong tokens
 FAIL_WINDOW, FAIL_MAX = 600, 10
 LINK_TTL = 600             # one-time links from /dashboard
@@ -105,11 +149,7 @@ def _new_session(uid: int = 0) -> str:
 
 
 def check_init_data(init_data: str, bot_token: str, max_age: int = INIT_MAX_AGE) -> dict | None:
-    """Telegram Mini App launch data → the user dict when the signature is valid and fresh, else None.
-
-    hash = HMAC-SHA256(key=HMAC-SHA256("WebAppData", bot_token), data-check-string) over every field except
-    `hash`, sorted, one per line (core.telegram.org/bots/webapps). Some clients' docs also leave out the newer
-    `signature` field – both forms are accepted, each is still keyed by the bot token."""
+    """Telegram Mini App launch data → the user dict when the signature is valid and fresh, else None."""
     import hashlib
     import hmac
     import json
@@ -142,8 +182,6 @@ def check_init_data(init_data: str, bot_token: str, max_age: int = INIT_MAX_AGE)
 
 
 def _ip(request) -> str:
-    # The socket peer, NOT X-Forwarded-For (clients can forge it to dodge the limit). Behind a platform
-    # proxy every visitor shares one bucket – fine for a single-admin page.
     return request.remote or "?"
 
 
@@ -176,7 +214,6 @@ def _authorised(request) -> bool | None:
             sess_uid = int(sess[1] or 0)
             if sess_uid == 0 or sess_uid in set(config.ADMINS):
                 return True
-            # Admin privilege was revoked (/deladmin) after login → invalidate session immediately
             _sessions.pop(_h(given), None)
     _failed(ip, now)
     return False
@@ -213,7 +250,7 @@ async def _admin_page(request):
 
 
 async def _admin_slash(_):
-    raise web.HTTPFound("/admin")          # the page uses relative URLs (admin/api/…)
+    raise web.HTTPFound("/admin")
 
 
 async def _admin_login(request):
@@ -249,24 +286,71 @@ async def _admin_login(request):
 
 
 def _html_escape(s) -> str:
-    import html
     return html.escape(str(s))
 
 
 def _live() -> list:
-    """Encoder tasks right now: running first, then the queue."""
+    """Encoder & transfer tasks right now: running tasks with live telemetry + waiting queue."""
     out = []
     try:
         from VideoEncoder import data as q
-        from VideoEncoder.utils import scheduler
+        from VideoEncoder.utils import jobs, scheduler
+
+        snap = jobs.snapshot()
         run = scheduler.running()
+        matched_keys: set = set()
+        by_user: dict[int, list[dict]] = {}
+        for j in snap.values():
+            by_user.setdefault(int(j.get("user_id") or 0), []).append(j)
+
         for i, m in enumerate(list(q)[:50]):
             src = getattr(m, "reply_to_message", None) or m
             media = getattr(src, "video", None) or getattr(src, "document", None)
             name = getattr(media, "file_name", None) or ""
-            out.append({"pos": i + 1, "state": "running" if any(m is r for r in run) else "waiting",
-                        "mode": scheduler.mode_of(m) or "?", "user": scheduler.uid_of(m),
-                        "file": str(name)[:60], "size": int(getattr(media, "file_size", 0) or 0)})
+            uid = scheduler.uid_of(m) or 0
+            is_running = any(m is r for r in run) or (i == 0 and bool(snap) and not run)
+            j_info = None
+            if is_running:
+                cands = [j for j in by_user.get(int(uid), []) if j["key"] not in matched_keys]
+                if not cands:
+                    cands = [j for j in snap.values() if j["key"] not in matched_keys]
+                if cands:
+                    j_info = cands[0]
+                    matched_keys.add(j_info["key"])
+            out.append({
+                "pos": i + 1,
+                "state": "running" if is_running else "waiting",
+                "mode": (j_info.get("stage") if j_info and j_info.get("stage") else (scheduler.mode_of(m) or "encode")),
+                "engine": (j_info.get("engine") if j_info else "") or "",
+                "user": uid,
+                "file": str((j_info.get("name") if j_info and j_info.get("name") else name) or "")[:64],
+                "size": int((j_info.get("total") if j_info and j_info.get("total") else getattr(media, "file_size", 0)) or 0),
+                "processed": int(j_info.get("processed", 0) if j_info else 0),
+                "progress": float(j_info.get("progress", 0.0) if j_info else 0.0),
+                "speed": float(j_info.get("speed", 0.0) if j_info else 0.0),
+                "speed_label": str(j_info.get("speed_label", "") if j_info else ""),
+                "eta": int(j_info.get("eta", 0) if j_info else 0),
+                "key": j_info["key"] if j_info else None,
+            })
+
+        for k, j in snap.items():
+            if k in matched_keys:
+                continue
+            out.append({
+                "pos": len(out) + 1,
+                "state": "running",
+                "mode": j.get("stage") or "transfer",
+                "engine": j.get("engine") or "",
+                "user": j.get("user_id") or 0,
+                "file": str(j.get("name") or f"Task #{k}")[:64],
+                "size": int(j.get("total") or 0),
+                "processed": int(j.get("processed") or 0),
+                "progress": float(j.get("progress") or 0.0),
+                "speed": float(j.get("speed") or 0.0),
+                "speed_label": str(j.get("speed_label") or ""),
+                "eta": int(j.get("eta") or 0),
+                "key": k,
+            })
     except Exception:
         pass
     return out
@@ -274,13 +358,51 @@ def _live() -> list:
 
 async def _admin_stats(request):
     _guard(request)
-    from core import analytics
+    from core import analytics, diagnostics
     days = _days(request)
     data = await analytics.series(days)
-    return web.json_response({"days": days, "series": data, "totals": await analytics.totals(),
-                              "health": _health(), "live": _live(),
-                              "labels": {k: v[0] for k, v in analytics.METRICS.items()}},
-                             headers={"Cache-Control": "no-store"})
+    diag = diagnostics.collect_diagnostics()
+    return web.json_response(
+        {
+            "days": days,
+            "series": data,
+            "totals": await analytics.totals(),
+            "health": _health(),
+            "live": _live(),
+            "diagnostics": diag,
+            "labels": {k: v[0] for k, v in analytics.METRICS.items()},
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _admin_diagnostics(request):
+    _guard(request)
+    from core import diagnostics
+    return web.json_response(diagnostics.collect_diagnostics(), headers={"Cache-Control": "no-store"})
+
+
+async def _admin_cancel_task(request):
+    _guard(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw_key = (body if isinstance(body, dict) else {}).get("key")
+    if raw_key is None or str(raw_key).strip() == "":
+        raise web.HTTPBadRequest(text="missing task key")
+    s_key = str(raw_key).strip()
+    job_key = int(s_key) if s_key.lstrip("-").isdigit() else s_key
+    from VideoEncoder.utils import jobs
+    cancelled = await jobs.cancel(job_key)
+    return web.json_response({"ok": True, "cancelled": bool(cancelled), "key": job_key}, headers={"Cache-Control": "no-store"})
+
+
+async def _admin_clear_queue(request):
+    _guard(request)
+    from VideoEncoder.plugins.queue import purge_waiting
+    removed = await purge_waiting()
+    return web.json_response({"ok": True, "removed": int(removed)}, headers={"Cache-Control": "no-store"})
 
 
 async def _admin_chart(request):
@@ -293,36 +415,84 @@ async def _admin_chart(request):
 
 DASHBOARD_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
-<title>{{BOT}} · Admin</title><script src="https://telegram.org/js/telegram-web-app.js" async></script><style>
-:root{--bg:#12141c;--card:#1b1e29;--line:#2c3040;--fg:#eceef5;--mut:#969cb0;--acc:#5865f2;--ok:#3ba55d;--warn:#faa61a}
-*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
-header{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-h1{font-size:20px;margin:0}h2{font-size:15px;margin:22px 0 10px;color:var(--mut);font-weight:600;letter-spacing:.3px}
-main{padding:20px 24px;max-width:1200px;margin:auto}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:6px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
-.k{color:var(--mut);font-size:13px}.v{font-size:24px;font-weight:650;margin-top:4px}
-.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
-img{width:100%;border-radius:12px;border:1px solid var(--line);background:var(--card)}
-table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right}
-th:first-child,td:first-child{text-align:left}th{color:var(--mut);font-weight:600}td.l{text-align:left}
-.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;background:var(--line)}
-.pill.running{background:var(--ok)}.pill.waiting{background:#4f545c}
-button,select,input{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit}
-button{cursor:pointer}button.on{background:var(--acc);border-color:var(--acc)}#login{max-width:380px;margin:12vh auto;text-align:center;padding:0 16px}
-.err{color:#ff6b6b}.scroll{overflow-x:auto}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--ok);margin-right:6px}</style></head><body>
-<div id="login" hidden><h1>{{BOT}} · Admin</h1>
-<p class="k">Open this page from Telegram: send <b>/dashboard</b> to the bot and tap <b>🌐 Open dashboard</b>.</p>
-<p class="k">Or enter your ADMIN_WEB_TOKEN:</p>
-<form onsubmit="event.preventDefault();save(document.getElementById('t').value)"><input id="t" type="password" autocomplete="current-password" style="width:100%">
-<p><button type="submit">Open dashboard</button></p></form><p id="lerr" class="err"></p></div>
-<div id="app" hidden><header><h1>📊 {{BOT}} · Admin</h1><div id="ranges"></div></header><main>
-<div class="grid" id="cards"></div>
-<h2>⚙️ ENCODER – LIVE</h2><div class="card scroll"><table id="live"></table></div>
-<h2>📈 CHARTS</h2><div class="charts"><img id="c_users" alt="Users chart"><img id="c_jobs" alt="Jobs chart"></div>
-<h2>📅 DAY BY DAY</h2><div class="card scroll"><table id="tbl"></table></div><p class="k" id="upd"></p></main></div>
+<title>{{BOT}} · Admin Console</title><script src="https://telegram.org/js/telegram-web-app.js" async></script><style>
+:root{color-scheme:dark;--bg:#0d1018;--card:#161b28;--card2:#1c2334;--line:#29324a;--fg:#eef2fb;--mut:#949eb8;
+--acc:#4f7cff;--ok:#34c759;--warn:#f5a623;--bad:#ff5c6c}
+*{box-sizing:border-box}body{margin:0;font:14.5px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+background:radial-gradient(60rem 26rem at 50% -12%,rgba(79,124,255,.14),transparent 70%),var(--bg);color:var(--fg)}
+header{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--line);
+background:rgba(13,16,24,.82);backdrop-filter:blur(10px);position:sticky;top:0;z-index:10;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+h1{font-size:19px;margin:0}h2{font-size:13.5px;margin:24px 0 10px;color:var(--mut);font-weight:700;letter-spacing:.5px;text-transform:uppercase;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+main{padding:18px 22px 42px;max-width:1240px;margin:auto}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:11px;margin-bottom:10px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+.k{color:var(--mut);font-size:12.5px}.v{font-size:22px;font-weight:700;margin-top:3px}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+img{width:100%;border-radius:14px;border:1px solid var(--line);background:var(--card)}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px 9px;border-bottom:1px solid var(--line);text-align:right;vertical-align:middle}
+th:first-child,td:first-child{text-align:left}th{color:var(--mut);font-weight:600;white-space:nowrap}td.l{text-align:left}
+tr:last-child td{border-bottom:none}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:99px;font-size:11.5px;font-weight:600;background:var(--card2);border:1px solid var(--line)}
+.pill.running,.pill.ok{background:rgba(52,199,89,.15);border-color:rgba(52,199,89,.4);color:#6ee792}
+.pill.waiting{background:rgba(245,166,35,.14);border-color:rgba(245,166,35,.35);color:#ffd180}
+.pill.off{color:var(--mut)}
+.bar{height:7px;background:#0b0e16;border-radius:99px;overflow:hidden;border:1px solid var(--line);margin-top:6px;min-width:95px}
+.bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),#35c9ff);border-radius:99px;transition:width .35s ease}
+button,select,input{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:7px 11px;font:inherit;font-size:13px}
+button{cursor:pointer;transition:border-color .15s,background .15s}button:hover{border-color:var(--acc)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button.on{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+button.danger{background:rgba(255,92,108,.12);border-color:rgba(255,92,108,.4);color:#ff8a96;padding:4px 9px;font-size:12px}
+button.danger:hover{background:rgba(255,92,108,.24)}
+#login{max-width:400px;margin:11vh auto;text-align:center;padding:0 16px}
+.login-card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:28px 22px}
+.err{color:var(--bad)}.banner{background:rgba(245,166,35,.13);border:1px solid rgba(245,166,35,.4);color:#ffd48a;padding:10px 14px;border-radius:11px;margin-bottom:14px;font-size:13px}
+.toast{position:fixed;bottom:18px;right:18px;background:#1f2840;border:1px solid var(--acc);color:#fff;padding:10px 15px;border-radius:11px;font-size:13px;z-index:30;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid rgba(41,50,74,.6);font-size:13px}
+.kv:last-child{border-bottom:none}
+@media(max-width:640px){header,main{padding-left:14px;padding-right:14px}.grid{grid-template-columns:repeat(2,1fr)}}
+</style></head><body>
+<div id="login" hidden><div class="login-card"><h1>📊 {{BOT}} · Admin</h1>
+<p class="k">Open from Telegram: send <b>/dashboard</b> to the bot and tap <b>🌐 Open dashboard</b>.</p>
+<p class="k">Or sign in with your <code>ADMIN_WEB_TOKEN</code>:</p>
+<form onsubmit="event.preventDefault();save(document.getElementById('t').value)">
+<input id="t" type="password" aria-label="Admin Web Token" autocomplete="current-password" style="width:100%" placeholder="Enter ADMIN_WEB_TOKEN">
+<p style="margin:12px 0 0"><button class="on" type="submit" style="width:100%">Sign in</button></p></form>
+<p id="lerr" class="err" role="alert"></p></div></div>
+
+<div id="app" hidden>
+<header>
+  <div class="brand"><h1>📊 {{BOT}} · Admin</h1><span class="pill ok" id="rt_badge">Online</span></div>
+  <div class="toolbar"><span id="ranges"></span><button id="ref_btn" onclick="load(true)" title="Refresh now">↻ Refresh</button><button onclick="signout()">Sign out</button></div>
+</header>
+<main>
+  <div id="net_err" class="banner" role="status" hidden></div>
+  <div id="warn_box" class="banner" hidden></div>
+  <div class="grid3" id="meters" style="margin-bottom:12px"></div>
+  <div class="grid" id="cards"></div>
+
+  <h2><span>🎬 Live Tasks &amp; Encoder Queue</span><button id="clr_btn" class="danger" onclick="clearWaiting()" hidden>🧹 Purge Waiting</button></h2>
+  <div class="card scroll"><table id="live"></table></div>
+
+  <h2><span>🩺 Storage, Binaries &amp; Plugins</span></h2>
+  <div class="grid3" id="diag"></div>
+
+  <h2><span>📈 Activity Charts</span></h2>
+  <div class="charts"><img id="c_users" alt="Users chart"><img id="c_jobs" alt="Jobs chart"></div>
+
+  <h2><span>📅 Day-by-Day Breakdown</span></h2>
+  <div class="card scroll"><table id="tbl"></table></div>
+  <p class="k" id="upd" aria-live="polite"></p>
+</main></div>
+<div id="toast" class="toast" hidden></div>
+
 <script>
-let token=sessionStorage.getItem('vt')||'',days=30,boot=null;
+let token=sessionStorage.getItem('vt')||'',days=30,boot=null,busy=false;
 const H=location.hash.slice(1);
 if(H){history.replaceState(null,'',location.pathname);
  const p=new URLSearchParams(H);
@@ -330,43 +500,114 @@ if(H){history.replaceState(null,'',location.pathname);
  else if(H.startsWith('l.'))boot={link:decodeURIComponent(H.slice(2))};
  else{token=decodeURIComponent(H);sessionStorage.setItem('vt',token)}}
 function tg(){return window.Telegram&&Telegram.WebApp}
-function save(t){token=t;sessionStorage.setItem('vt',t);load()}
+function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.hidden=false;clearTimeout(el._t);el._t=setTimeout(()=>el.hidden=true,3200)}
+function save(t){token=(t||'').trim();if(!token)return;sessionStorage.setItem('vt',token);load(true)}
+function signout(){sessionStorage.removeItem('vt');token='';document.getElementById('app').hidden=true;document.getElementById('login').hidden=false;document.getElementById('lerr').textContent='Signed out.'}
 function fail(msg){sessionStorage.removeItem('vt');token='';document.getElementById('app').hidden=true;document.getElementById('login').hidden=false;document.getElementById('lerr').textContent=msg}
-async function signin(body){const r=await fetch('admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'});
- if(!r.ok){fail(r.status==429?'Too many attempts – wait 10 minutes.':r.status==403?'This dashboard is for the bot admins only.':'This link expired or was already used – send /dashboard again.');return false}
+async function signin(body){
+ const r=await fetch('admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'});
+ if(!r.ok){fail(r.status==429?'Too many attempts – wait 10 minutes.':r.status==403?'This console is restricted to bot admins.':'This sign-in link expired or was already used – send /dashboard again.');return false}
  token=(await r.json()).session;sessionStorage.setItem('vt',token);return true}
-async function get(u){const r=await fetch(u,{headers:{'X-Admin-Token':token},cache:'no-store'});if(!r.ok)throw new Error(r.status+' '+await r.text());return r}
-function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-function sum(a){return a.reduce((x,y)=>x+y,0)}
-function mb(n){return n?(n/1048576).toFixed(n>=1073741824?0:1)+' MB':''}
-async function img(id,name){const b=await (await get('admin/chart/'+name+'.png?days='+days)).blob();const el=document.getElementById(id);if(el.src)URL.revokeObjectURL(el.src);el.src=URL.createObjectURL(b)}
-async function load(){
+async function api(u,opts={}){
+ const headers=Object.assign({'X-Admin-Token':token},opts.headers||{});
+ const r=await fetch(u,Object.assign({},opts,{headers,cache:'no-store'}));
+ if(!r.ok){const err=new Error(r.status+' '+await r.text());err.status=r.status;throw err}
+ return r}
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function sum(a){return (a||[]).reduce((x,y)=>x+y,0)}
+function bytes(n){n=Number(n||0);if(!n)return '—';const u=['B','KB','MB','GB','TB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i>1?1:0)+' '+u[i]}
+function secs(s){s=Math.max(0,Math.round(Number(s||0)));if(!s)return '—';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),r=s%60;return (h?h+'h ':'')+(m?m+'m ':'')+(h?'':r+'s')}
+async function img(id,name){try{const b=await (await api('admin/chart/'+name+'.png?days='+days)).blob();const el=document.getElementById(id);if(el.src)URL.revokeObjectURL(el.src);el.src=URL.createObjectURL(b)}catch(_){}}
+
+async function cancelTask(key,file){
+ if(!confirm('Cancel active task "'+(file||key)+'"?'))return;
+ try{await api('admin/api/tasks/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
+  toast('Task cancellation requested.');load(true)}catch(e){toast('Cancel failed: '+e.message)}}
+
+async function clearWaiting(){
+ if(!confirm('Purge all waiting tasks in the encoder queue? Running encodes will continue.'))return;
+ try{const d=await (await api('admin/api/tasks/clear',{method:'POST'})).json();
+  toast('Purged '+d.removed+' waiting task(s).');load(true)}catch(e){toast('Purge failed: '+e.message)}}
+
+function renderDiag(dg){
+ if(!dg)return;
+ const rt=dg.runtime||{},rs=dg.resources||{},pl=dg.plugins||{},sec=dg.security||{};
+ document.getElementById('rt_badge').textContent=(rt.engine||'WzGram')+' '+(rt.version||'')+(rt.layer?' · L'+rt.layer:'');
+ document.getElementById('meters').innerHTML=[
+  ['⚙️ Container CPU',rs.cpu_percent+'% · '+(rs.cpu_cores||1)+' vCPU',rs.cpu_percent||0],
+  ['🧠 Memory'+(rs.container_mem?' (Quota)':''),rs.mem_percent+'% · '+bytes(rs.mem_used_bytes)+' / '+bytes(rs.mem_total_bytes)+' (RSS '+bytes(rs.rss_bytes)+')',rs.mem_percent||0],
+  ['💽 Storage Disk',(100-(rs.disk_percent||0)).toFixed(1)+'% free · '+bytes(rs.disk_free_bytes)+' available',rs.disk_percent||0]
+ ].map(m=>'<div class="card"><div class="k">'+esc(m[0])+'</div><div style="font-weight:600;margin-top:4px;font-size:13.5px">'+esc(m[1])+'</div><div class="bar"><i style="width:'+Math.min(100,Math.max(2,Number(m[2])))+'%"></i></div></div>').join('');
+
+ const wb=document.getElementById('warn_box');
+ if(dg.warnings&&dg.warnings.length){wb.hidden=false;wb.innerHTML='<b>⚠️ Configuration notes:</b> '+dg.warnings.map(esc).join(' · ')}else wb.hidden=true;
+
+ const stRows=(dg.storage||[]).map(s=>'<div class="kv"><span>'+esc(s.label)+'</span><span class="pill '+(s.available?'ok':'off')+'">'+(s.available?'Ready':'Optional')+'</span></div>').join('');
+ const binRows=(dg.binaries||[]).map(b=>'<div class="kv"><span><code>'+esc(b.cmd)+'</code> · '+esc(b.label)+'</span><span class="pill '+(b.available?'ok':(b.required?'waiting':'off'))+'">'+(b.available?'Installed':(b.required?'Missing':'Optional'))+'</span></div>').join('');
+ const secRows=[
+  ['Fernet secret encryption',sec.encryption_active],
+  ['Single-instance MongoDB lease',sec.single_instance],
+  ['Daily automated backups',sec.backup_enabled],
+  ['Bot API 10.3 bridge (aiogram)',rt.botapi_enabled],
+  ['Modular plugins ('+(pl.healthy||0)+'/'+(pl.enabled||0)+' healthy)',(pl.errors&&Object.keys(pl.errors).length===0)]
+ ].map(r=>'<div class="kv"><span>'+esc(r[0])+'</span><span class="pill '+(r[1]?'ok':'off')+'">'+(r[1]?'Active':'Off')+'</span></div>').join('');
+ document.getElementById('diag').innerHTML=
+  '<div class="card"><div class="k" style="margin-bottom:6px;font-weight:600">☁️ STORAGE DESTINATIONS</div>'+stRows+'</div>'+
+  '<div class="card"><div class="k" style="margin-bottom:6px;font-weight:600">🧰 MEDIA &amp; ARCHIVE TOOLS</div>'+binRows+'</div>'+
+  '<div class="card"><div class="k" style="margin-bottom:6px;font-weight:600">🛡 RUNTIME &amp; PLUGINS</div>'+secRows+'</div>';
+}
+
+async function load(manual){
  if(!token){document.getElementById('login').hidden=false;return}
- try{const d=await (await get('admin/api/stats?days='+days)).json();
+ if(busy)return;busy=true;
+ const rb=document.getElementById('ref_btn');if(rb)rb.textContent='⏳…';
+ try{
+  const d=await (await api('admin/api/stats?days='+days)).json();
+  document.getElementById('net_err').hidden=true;
   document.getElementById('login').hidden=true;document.getElementById('app').hidden=false;
+  renderDiag(d.diagnostics);
   const t=d.totals,s=d.series,L=d.labels;
   const cards=[['Total users',t.users],['Active ('+days+'d)',sum(s.active)],['New ('+days+'d)',sum(s.new)],['Encodes',sum(s.encode)],
    ['Renames',sum(s.rename)],['Saves',sum(s.save)],['Leeches',sum(s.leech)],['Stars',sum(s.stars)+' ⭐'],
    ['Clone bots',t.clones_running+' / '+t.clones],['Encoder queue',t.queue],['Uptime',Math.round(d.health.uptime_s/3600)+' h']];
   document.getElementById('cards').innerHTML=cards.map(c=>'<div class="card"><div class="k">'+esc(c[0])+'</div><div class="v">'+esc(c[1].toLocaleString())+'</div></div>').join('');
+
   const lv=d.live||[];
-  document.getElementById('live').innerHTML=lv.length?'<tr><th>#</th><th class="l">State</th><th class="l">Task</th><th class="l">File</th><th>Size</th><th>User</th></tr>'+
-   lv.map(x=>'<tr><td>'+x.pos+'</td><td class="l"><span class="pill '+esc(x.state)+'">'+esc(x.state)+'</span></td><td class="l">'+esc(x.mode)+'</td><td class="l">'+esc(x.file)+'</td><td>'+mb(x.size)+'</td><td>'+esc(x.user)+'</td></tr>').join('')
-   :'<tr><td class="l"><span class="dot"></span>Idle – nothing in the encoder queue.</td></tr>';
+  const waitingCount=lv.filter(x=>x.state==='waiting').length;
+  document.getElementById('clr_btn').hidden=waitingCount===0;
+  document.getElementById('live').innerHTML=lv.length?
+   '<tr><th>#</th><th class="l">State</th><th class="l">Stage / Engine</th><th class="l">File &amp; Progress</th><th>Speed</th><th>ETA</th><th>Size</th><th>User</th><th>Action</th></tr>'+
+   lv.map(x=>{
+    const pct=Math.min(100,Math.max(0,Number(x.progress||0)));
+    const spd=x.speed_label||(x.speed?bytes(x.speed)+'/s':'—');
+    const eng=x.engine?' <span class="pill off">'+esc(x.engine)+'</span>':'';
+    const pbar=x.state==='running'?'<div class="bar"><i style="width:'+Math.max(3,pct)+'%"></i></div><span class="k">'+pct.toFixed(1)+'%</span>':'';
+    const act=x.key!=null?'<button class="danger" data-k="'+esc(x.key)+'" data-f="'+esc(x.file)+'" onclick="cancelTask(this.dataset.k,this.dataset.f)">✖ Cancel</button>':'—';
+    return '<tr><td>'+x.pos+'</td><td class="l"><span class="pill '+esc(x.state)+'">'+esc(x.state)+'</span></td>'+
+     '<td class="l">'+esc(x.mode)+eng+'</td><td class="l"><div>'+esc(x.file||'Media')+'</div>'+pbar+'</td>'+
+     '<td>'+esc(spd)+'</td><td>'+secs(x.eta)+'</td><td>'+bytes(x.size)+'</td><td>'+esc(x.user)+'</td><td>'+act+'</td></tr>'}).join('')
+   :'<tr><td class="l"><span class="dot"></span>Idle – no active encodes or transfers right now.</td></tr>';
+
   const keys=['active','new','encode','rename','save','leech','tool','clone','stars'];
   let h='<tr><th>Day</th>'+keys.map(k=>'<th>'+esc(L[k])+'</th>').join('')+'</tr>';
-  for(let i=s.days.length-1;i>=0;i--)h+='<tr><td>'+s.days[i]+'</td>'+keys.map(k=>'<td>'+s[k][i]+'</td>').join('')+'</tr>';
+  for(let i=s.days.length-1;i>=0;i--)h+='<tr><td>'+esc(s.days[i])+'</td>'+keys.map(k=>'<td>'+esc(s[k][i])+'</td>').join('')+'</tr>';
   document.getElementById('tbl').innerHTML=h;
-  document.getElementById('ranges').innerHTML=[7,30,90].map(n=>'<button class="'+(n==days?'on':'')+'" onclick="days='+n+';load()">'+n+' days</button>').join(' ');
-  document.getElementById('upd').textContent='Updated '+new Date().toLocaleString()+' · refreshes every 30 s';
+  document.getElementById('ranges').innerHTML=[7,30,90].map(n=>'<button class="'+(n==days?'on':'')+'" onclick="days='+n+';load(true)">'+n+'d</button>').join(' ');
+  document.getElementById('upd').textContent='Last updated '+new Date().toLocaleTimeString()+' · auto-refreshes every 15s';
   img('c_users','users');img('c_jobs','jobs');
- }catch(e){fail(String(e.message).startsWith('429')?'Too many attempts – wait 10 minutes.':'Signed out – open it again from /dashboard.')}}
+  if(manual)toast('Dashboard refreshed.');
+ }catch(e){
+  if(e.status===401||e.status===403)fail(e.status===403?'This console is restricted to bot admins.':'Session expired – open it again from /dashboard.');
+  else if(e.status===429)fail('Too many attempts – wait 10 minutes.');
+  else{const nb=document.getElementById('net_err');nb.hidden=false;nb.textContent='⚠️ Temporary connection issue ('+e.message+'). Retrying automatically…';if(document.getElementById('app').hidden)fail('Connection failed – check server status.')}
+ }finally{busy=false;if(rb)rb.textContent='↻ Refresh'}}
+
 (async()=>{
  await new Promise(r=>setTimeout(r,150));
- const w=tg();if(w){try{w.ready();w.expand()}catch(e){}if(!boot&&!token&&w.initData)boot={init:w.initData}}
+ const w=tg();if(w){try{w.ready();w.expand()}catch(_){}if(!boot&&!token&&w.initData)boot={init:w.initData}}
  if(boot&&!(await signin(boot)))return;
  load()})();
-setInterval(()=>{if(token&&!document.hidden)load()},30000);
+setInterval(()=>{if(token&&!document.hidden)load()},15000);
 </script></body></html>"""
 
 
@@ -374,11 +615,14 @@ def make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", _root)
     app.router.add_get("/health", _health_handler)
-    app.router.add_get("/ping", _root)
+    app.router.add_get("/ping", _ping)
     app.router.add_get("/admin", _admin_page)
     app.router.add_get("/admin/", _admin_slash)
     app.router.add_post("/admin/api/login", _admin_login)
     app.router.add_get("/admin/api/stats", _admin_stats)
+    app.router.add_get("/admin/api/diagnostics", _admin_diagnostics)
+    app.router.add_post("/admin/api/tasks/cancel", _admin_cancel_task)
+    app.router.add_post("/admin/api/tasks/clear", _admin_clear_queue)
     app.router.add_get("/admin/chart/{name:users|jobs}.png", _admin_chart)
     return app
 

@@ -56,7 +56,7 @@ SAFE_CALLBACKS = re.compile(
     r"^(close_btn|start_btn|help_btn|about_btn|settings_btn|v_settings|hub_save|buy_premium|back_menu|help_enc|"
     r"help_tools|help_admin|help_clone|clone_help|clone_about|help_saver|help_rename|cmd_list_btn|"
     r"premium_plans_btn|myplan_back_btn|settings_back_btn|dump_chat_btn|thumb_btn|caption_btn|user_stats_btn|"
-    r"rn:[\w:]+|rnlb:\w+|status ref|refer_btn|noop(:.*)?|stars_buy:\d+|stars_sub|sub_toggle:(cancel|resume)|"
+    r"rn:[\w:]+|rnlb:\w+|status( (ref|page \d+ \w+|filter \w+|cancel \w+))?|refer_btn|noop(:.*)?|stars_buy:\d+|stars_sub|sub_toggle:(cancel|resume)|"
     r"plg_mgr:(list|(info|tog|rel):[\w_-]+)|plg_stg:(ok|no):[\w_-]+|plg_imdb:(pick|back):[\w:_-]+|"
     r"plg_ani:v:\w+:\d+:\w+:\d+|plg_mdl:(pick|back):[\w:/._-]+|"
     r"plg_sess:(export|cancel)|plg_gmod:[\w:_-]+|chk_(tog|all|del):[\w:_-]+|spd_rerun|"
