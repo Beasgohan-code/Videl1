@@ -126,13 +126,49 @@ async def _scan_duplicates(col) -> dict[int, list[dict[str, Any]]]:
     return {uid: rows for uid, rows in by_uid.items() if len(rows) > 1}
 
 
-async def inspect_and_deduplicate(*, dry_run: bool = True) -> dict[str, Any]:
-    """Inspect all Videl databases and optionally deduplicate `saver.users` & `encoder.users`."""
+async def _audit_or_encrypt_secrets(saver_col, bots_col, *, apply_encryption: bool = False) -> dict[str, Any]:
+    from filestore.utils.security import encrypt_token, is_encryption_enabled
+
+    enc_on = is_encryption_enabled()
+    pt_sessions = 0
+    pt_tokens = 0
+    upgraded = 0
+
+    async for doc in saver_col.find({"session": {"$exists": True, "$ne": None}}):
+        s = doc.get("session")
+        if isinstance(s, str) and s and not s.startswith("enc:"):
+            if apply_encryption and enc_on:
+                await saver_col.update_one({"_id": doc["_id"]}, {"$set": {"session": encrypt_token(s)}})
+                upgraded += 1
+            else:
+                pt_sessions += 1
+
+    async for doc in bots_col.find({"bot_token_encrypted": {"$exists": True, "$ne": None}}):
+        t = doc.get("bot_token_encrypted")
+        if isinstance(t, str) and t and not t.startswith("enc:"):
+            if apply_encryption and enc_on:
+                await bots_col.update_one({"_id": doc["_id"]}, {"$set": {"bot_token_encrypted": encrypt_token(t)}})
+                upgraded += 1
+            else:
+                pt_tokens += 1
+
+    return {
+        "encryption_enabled": enc_on,
+        "plaintext_saver_sessions": pt_sessions,
+        "plaintext_clone_tokens": pt_tokens,
+        "plaintext_secrets": pt_sessions + pt_tokens,
+        "encrypted_upgraded": upgraded,
+    }
+
+
+async def inspect_and_deduplicate(*, dry_run: bool = True, encrypt_secrets: bool = False) -> dict[str, Any]:
+    """Inspect all Videl databases and optionally deduplicate users & encrypt legacy secrets."""
     from core.db import vdb
     from database.db import db as saver_db
     from filestore.database.main_db import MainDB
     from VideoEncoder.utils.database.access_db import db as enc_db
 
+    mdb = MainDB()
     saver_dups = await _scan_duplicates(saver_db.col)
     enc_dups = await _scan_duplicates(enc_db.col)
     videl_dups = await _scan_duplicates(vdb.users)
@@ -161,15 +197,21 @@ async def inspect_and_deduplicate(*, dry_run: bool = True) -> dict[str, Any]:
                 removed_docs += res.deleted_count
             merged_users += 1
 
+    sec_info = await _audit_or_encrypt_secrets(
+        saver_db.col,
+        mdb.bots,
+        apply_encryption=(not dry_run or encrypt_secrets),
+    )
+
     payments_total = await vdb.db["payments"].count_documents({})
     payments_missing_charge = await vdb.db["payments"].count_documents(
         {"$or": [{"charge_id": {"$exists": False}}, {"charge_id": ""}, {"charge_id": None}]}
     )
     active_subs = await vdb.db["subscriptions"].count_documents({"active": True})
-    clones_total = await MainDB().bots.count_documents({"is_deleted": {"$ne": True}})
+    clones_total = await mdb.bots.count_documents({"is_deleted": {"$ne": True}})
 
     return {
-        "dry_run": dry_run,
+        "dry_run": dry_run and not encrypt_secrets,
         "saver_duplicate_users": len(saver_dups),
         "saver_redundant_docs": saver_redundant,
         "encoder_duplicate_users": len(enc_dups),
@@ -183,4 +225,5 @@ async def inspect_and_deduplicate(*, dry_run: bool = True) -> dict[str, Any]:
         "payments_missing_charge": payments_missing_charge,
         "active_subscriptions": active_subs,
         "clones_total": clones_total,
+        **sec_info,
     }

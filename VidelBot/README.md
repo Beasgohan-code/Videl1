@@ -509,6 +509,7 @@ Inside clones: `-10` Stars payments (atomic `charge_id` idempotency) → `-3` an
 - **Database Integrity & Legacy Duplicate-User Doctor (`core/db_doctor.py`):**
   1. Send `/backup check` (or `/backup doctor`) as a bot owner to run a read-only audit across `videl`, `saver`, `encoder`, and `filestore` without modifying MongoDB.
   2. If legacy duplicate `id` rows are found in `saver.users` or `encoder.users`, tap **🧹 Merge Duplicate Row(s)** (`bkr:dedupe_ok`) to merge them non-destructively (preserving Lifetime or latest `premium_expiry`, user `/login` `session`s, custom thumbnails, captions, word filters, encoder settings, and max save/encode counters).
+  3. When `ENCRYPTION_KEY` is configured, personal user `/login` sessions (`saver.users.session`) and clone tokens are stored encrypted at rest (`enc:<fernet>`), and **🔐 Encrypt Legacy Secret(s)** (`bkr:encrypt_ok`) upgrades any pre-existing plaintext records in place without interrupting active sessions.
 
 ### 5. Troubleshooting
 - **`ImportError` or `RICH_AVAILABLE == False` after installing packages:** `richgram` lists `kurigram` in its package metadata, which shares the `pyrogram` import namespace with `wzgram`. Run `pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6` (already automated in the root `Dockerfile` and `.github/workflows/ci.yml`).
