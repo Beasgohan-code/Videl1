@@ -18,6 +18,7 @@ Keep-alive & responsive `/admin` operator console (Render, Koyeb, Railway, Herok
 import asyncio
 import html
 import logging
+import os
 import time
 
 from aiohttp import ClientSession, ClientTimeout, web
@@ -319,7 +320,8 @@ def _live() -> list:
                     matched_keys.add(j_info["key"])
             out.append({
                 "pos": i + 1,
-                "state": "running" if is_running else "waiting",
+                "state": ("paused" if (j_info and j_info.get("paused")) else ("running" if is_running else "waiting")),
+                "paused": bool(j_info and j_info.get("paused")),
                 "mode": (j_info.get("stage") if j_info and j_info.get("stage") else (scheduler.mode_of(m) or "encode")),
                 "engine": (j_info.get("engine") if j_info else "") or "",
                 "user": uid,
@@ -338,7 +340,8 @@ def _live() -> list:
                 continue
             out.append({
                 "pos": len(out) + 1,
-                "state": "running",
+                "state": "paused" if j.get("paused") else "running",
+                "paused": bool(j.get("paused")),
                 "mode": j.get("stage") or "transfer",
                 "engine": j.get("engine") or "",
                 "user": j.get("user_id") or 0,
@@ -405,6 +408,188 @@ async def _admin_clear_queue(request):
     return web.json_response({"ok": True, "removed": int(removed)}, headers={"Cache-Control": "no-store"})
 
 
+async def _admin_task_action(request):
+    _guard(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    payload = body if isinstance(body, dict) else {}
+    action = str(payload.get("action") or "").strip().lower()
+    if action not in ("cancel", "pause", "resume", "boost"):
+        raise web.HTTPBadRequest(text="unsupported task action")
+
+    from VideoEncoder.utils import jobs, scheduler
+
+    if action == "boost":
+        pos = int(payload.get("pos") or 0)
+        if pos <= 0:
+            raise web.HTTPBadRequest(text="invalid queue position")
+        ok = scheduler.promote_to_front(pos)
+        return web.json_response({"ok": True, "action": "boost", "applied": bool(ok), "pos": pos}, headers={"Cache-Control": "no-store"})
+
+    raw_key = payload.get("key")
+    if raw_key is None or str(raw_key).strip() == "":
+        raise web.HTTPBadRequest(text="missing task key")
+    s_key = str(raw_key).strip()
+    job_key = int(s_key) if s_key.lstrip("-").isdigit() else s_key
+    if action == "cancel":
+        applied = await jobs.cancel(job_key)
+    elif action == "pause":
+        applied = jobs.pause(job_key)
+    else:
+        applied = jobs.resume(job_key)
+    return web.json_response(
+        {"ok": True, "action": action, "applied": bool(applied), "key": job_key},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _workspace_roots() -> dict[str, str]:
+    roots = {
+        "downloads": os.path.realpath(getattr(config, "DOWNLOAD_DIR", "VideoEncoder/utils/extras/downloads")),
+        "encodes": os.path.realpath(getattr(config, "ENCODE_DIR", "VideoEncoder/utils/extras/encodes")),
+        "rename": os.path.realpath("downloads/rename"),
+    }
+    return roots
+
+
+def _active_workspace_locks() -> set[str]:
+    """Return directory/file basenames currently owned by queued or running tasks so cleanup cannot touch them."""
+    locked: set[str] = set()
+    try:
+        from VideoEncoder import data as enc_q
+        from VideoEncoder.utils import jobs, scheduler
+        for m in list(enc_q):
+            tk = scheduler.task_key(m)
+            if tk:
+                locked.add(tk)
+        for j in jobs.active():
+            if j.name:
+                locked.add(os.path.basename(j.name))
+    except Exception:
+        pass
+    try:
+        from renamer import engine as rn
+        for j in list(rn._jobs.values()):
+            locked.add(f"{j.uid}_{j.id}_")
+    except Exception:
+        pass
+    return locked
+
+
+def _list_workspace_Sync() -> list[dict]:
+    import os
+    roots = _workspace_roots()
+    locks = _active_workspace_locks()
+    now = time.time()
+    items: list[dict] = []
+    for bucket, rpath in roots.items():
+        if not os.path.isdir(rpath):
+            continue
+        for entry in sorted(os.listdir(rpath))[:100]:
+            if entry.startswith("."):
+                continue
+            full = os.path.realpath(os.path.join(rpath, entry))
+            if os.path.commonpath([rpath, full]) != rpath or full == rpath:
+                continue
+            try:
+                is_dir = os.path.isdir(full)
+                mtime = os.path.getmtime(full)
+                if is_dir:
+                    sz = 0
+                    for wr, _, files in os.walk(full):
+                        for fn in files:
+                            try:
+                                sz += os.path.getsize(os.path.join(wr, fn))
+                            except OSError:
+                                pass
+                else:
+                    sz = os.path.getsize(full)
+            except OSError:
+                continue
+            is_locked = (
+                entry in locks
+                or entry.startswith("process")
+                or entry == "_srccache"
+                or any(entry.startswith(lk) for lk in locks if lk.endswith("_"))
+            )
+            items.append({
+                "id": f"{bucket}:{entry}",
+                "bucket": bucket,
+                "name": entry,
+                "kind": "folder" if is_dir else "file",
+                "size": int(sz),
+                "age_min": max(0, int((now - mtime) // 60)),
+                "locked": bool(is_locked),
+            })
+    return items
+
+
+async def _admin_workspace(request):
+    _guard(request)
+    items = await asyncio.to_thread(_list_workspace_Sync)
+    return web.json_response({"items": items}, headers={"Cache-Control": "no-store"})
+
+
+def _clean_workspace_sync(ids: list[str]) -> tuple[int, int, int]:
+    import os
+    import shutil
+    roots = _workspace_roots()
+    locks = _active_workspace_locks()
+    removed = skipped = freed = 0
+    for raw_id in ids[:100]:
+        bucket, sep, entry = str(raw_id or "").partition(":")
+        if not sep or bucket not in roots or not entry or "/" in entry or "\\" in entry or entry in (".", ".."):
+            skipped += 1
+            continue
+        if (
+            entry in locks
+            or entry.startswith((".", "process"))
+            or entry == "_srccache"
+            or any(entry.startswith(lk) for lk in locks if lk.endswith("_"))
+        ):
+            skipped += 1
+            continue
+        rpath = roots[bucket]
+        full = os.path.realpath(os.path.join(rpath, entry))
+        if os.path.commonpath([rpath, full]) != rpath or full == rpath or not os.path.exists(full):
+            skipped += 1
+            continue
+        try:
+            if os.path.isdir(full) and not os.path.islink(full):
+                for wr, _, files in os.walk(full):
+                    for fn in files:
+                        try:
+                            freed += os.path.getsize(os.path.join(wr, fn))
+                        except OSError:
+                            pass
+                shutil.rmtree(full, ignore_errors=True)
+            else:
+                freed += os.path.getsize(full)
+                os.remove(full)
+            removed += 1
+        except OSError:
+            skipped += 1
+    return removed, freed, skipped
+
+
+async def _admin_workspace_clean(request):
+    _guard(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ids = (body if isinstance(body, dict) else {}).get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        raise web.HTTPBadRequest(text="no workspace items selected")
+    removed, freed, skipped = await asyncio.to_thread(_clean_workspace_sync, [str(x) for x in ids])
+    return web.json_response(
+        {"ok": True, "removed": removed, "freed_bytes": freed, "skipped": skipped},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def _admin_chart(request):
     _guard(request)
     from core import analytics
@@ -437,8 +622,14 @@ th:first-child,td:first-child{text-align:left}th{color:var(--mut);font-weight:60
 tr:last-child td{border-bottom:none}
 .pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:99px;font-size:11.5px;font-weight:600;background:var(--card2);border:1px solid var(--line)}
 .pill.running,.pill.ok{background:rgba(52,199,89,.15);border-color:rgba(52,199,89,.4);color:#6ee792}
-.pill.waiting{background:rgba(245,166,35,.14);border-color:rgba(245,166,35,.35);color:#ffd180}
+.pill.waiting,.pill.paused{background:rgba(245,166,35,.14);border-color:rgba(245,166,35,.35);color:#ffd180}
 .pill.off{color:var(--mut)}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 18px;border-bottom:1px solid var(--line);padding-bottom:10px}
+.tabs button[aria-selected="true"]{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+.modal-bg{position:fixed;inset:0;background:rgba(6,8,14,.74);display:flex;align-items:center;justify-content:center;z-index:40;padding:16px}
+.modal-bg[hidden]{display:none}
+.modal{background:var(--card);border:1px solid var(--line);border-radius:16px;max-width:420px;width:100%;padding:20px}
+button.sm{padding:4px 9px;font-size:12px}
 .bar{height:7px;background:#0b0e16;border-radius:99px;overflow:hidden;border:1px solid var(--line);margin-top:6px;min-width:95px}
 .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),#35c9ff);border-radius:99px;transition:width .35s ease}
 button,select,input{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:7px 11px;font:inherit;font-size:13px}
@@ -474,21 +665,56 @@ button.danger:hover{background:rgba(255,92,108,.24)}
   <div id="net_err" class="banner" role="status" hidden></div>
   <div id="warn_box" class="banner" hidden></div>
   <div class="grid3" id="meters" style="margin-bottom:12px"></div>
-  <div class="grid" id="cards"></div>
 
-  <h2><span>🎬 Live Tasks &amp; Encoder Queue</span><button id="clr_btn" class="danger" onclick="clearWaiting()" hidden>🧹 Purge Waiting</button></h2>
-  <div class="card scroll"><table id="live"></table></div>
+  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+    <button role="tab" id="tab_overview" aria-selected="true" onclick="switchTab('overview')">📊 Overview</button>
+    <button role="tab" id="tab_tasks" aria-selected="false" onclick="switchTab('tasks')">🎬 Tasks &amp; Queue</button>
+    <button role="tab" id="tab_files" aria-selected="false" onclick="switchTab('files')">🗂 Workspace Files</button>
+    <button role="tab" id="tab_diag" aria-selected="false" onclick="switchTab('diag')">🩺 Storage &amp; Config</button>
+  </nav>
 
-  <h2><span>🩺 Storage, Binaries &amp; Plugins</span></h2>
-  <div class="grid3" id="diag"></div>
+  <section id="sec_overview" role="tabpanel" aria-labelledby="tab_overview">
+    <div class="grid" id="cards"></div>
+    <h2><span>📈 Activity Charts</span></h2>
+    <div class="charts"><img id="c_users" alt="Users chart"><img id="c_jobs" alt="Jobs chart"></div>
+    <h2><span>📅 Day-by-Day Breakdown</span></h2>
+    <div class="card scroll"><table id="tbl"></table></div>
+  </section>
 
-  <h2><span>📈 Activity Charts</span></h2>
-  <div class="charts"><img id="c_users" alt="Users chart"><img id="c_jobs" alt="Jobs chart"></div>
+  <section id="sec_tasks" role="tabpanel" aria-labelledby="tab_tasks" hidden>
+    <h2><span>🎬 Live Tasks &amp; Queue</span><button id="clr_btn" class="danger" onclick="clearWaiting()" hidden>🧹 Purge Waiting</button></h2>
+    <div class="card scroll"><table id="live"></table></div>
+  </section>
 
-  <h2><span>📅 Day-by-Day Breakdown</span></h2>
-  <div class="card scroll"><table id="tbl"></table></div>
+  <section id="sec_files" role="tabpanel" aria-labelledby="tab_files" hidden>
+    <h2>
+      <span>🗂 Media Workspace Scratch Files</span>
+      <span class="toolbar">
+        <button class="sm" onclick="toggleAllFiles()">☑️ Toggle Unlocked</button>
+        <button class="sm" onclick="loadWorkspace()">↻ Scan</button>
+        <button class="danger" id="del_sel_btn" onclick="cleanSelectedFiles()">🗑 Delete Selected</button>
+      </span>
+    </h2>
+    <div class="card scroll"><table id="ws_tbl"><tr><td class="l">Click Scan or open this tab to inspect workspace files.</td></tr></table></div>
+  </section>
+
+  <section id="sec_diag" role="tabpanel" aria-labelledby="tab_diag" hidden>
+    <h2><span>🩺 Storage, Binaries &amp; Runtime Readiness</span></h2>
+    <div class="grid3" id="diag"></div>
+  </section>
+
   <p class="k" id="upd" aria-live="polite"></p>
 </main></div>
+<div id="modal_bg" class="modal-bg" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal_title">
+    <h1 id="modal_title" style="font-size:16.5px;margin-bottom:8px">Confirm Action</h1>
+    <p id="modal_body" class="k" style="margin:0 0 16px;font-size:13.5px"></p>
+    <div class="toolbar" style="justify-content:flex-end">
+      <button id="modal_cancel" onclick="closeModal(false)">Cancel</button>
+      <button id="modal_ok" class="danger" onclick="closeModal(true)">Confirm</button>
+    </div>
+  </div>
+</div>
 <div id="toast" class="toast" hidden></div>
 
 <script>
@@ -520,14 +746,64 @@ function secs(s){s=Math.max(0,Math.round(Number(s||0)));if(!s)return '—';const
 async function img(id,name){try{const b=await (await api('admin/chart/'+name+'.png?days='+days)).blob();const el=document.getElementById(id);if(el.src)URL.revokeObjectURL(el.src);el.src=URL.createObjectURL(b)}catch(_){}}
 
 async function cancelTask(key,file){
- if(!confirm('Cancel active task "'+(file||key)+'"?'))return;
+ if(!(await askConfirm('Stop Task','Cancel active task "'+(file||key)+'"?')))return;
  try{await api('admin/api/tasks/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
   toast('Task cancellation requested.');load(true)}catch(e){toast('Cancel failed: '+e.message)}}
 
+async function taskAction(action,key,pos){
+ try{const body=action==='boost'?{action,pos:Number(pos)}:{action,key};
+  await api('admin/api/tasks/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  toast('Task '+action+' applied.');load(true)}catch(e){toast('Action failed: '+e.message)}}
+
 async function clearWaiting(){
- if(!confirm('Purge all waiting tasks in the encoder queue? Running encodes will continue.'))return;
+ if(!(await askConfirm('Purge Waiting Queue','Remove all waiting tasks from the encoder queue? Running tasks will continue.')))return;
  try{const d=await (await api('admin/api/tasks/clear',{method:'POST'})).json();
   toast('Purged '+d.removed+' waiting task(s).');load(true)}catch(e){toast('Purge failed: '+e.message)}}
+
+let _modalResolve=null,curTab='overview';
+function askConfirm(title,msg){
+ document.getElementById('modal_title').textContent=title;
+ document.getElementById('modal_body').textContent=msg;
+ document.getElementById('modal_bg').hidden=false;
+ document.getElementById('modal_ok').focus();
+ return new Promise(res=>{_modalResolve=res})}
+function closeModal(ok){
+ document.getElementById('modal_bg').hidden=true;
+ if(_modalResolve){const fn=_modalResolve;_modalResolve=null;fn(Boolean(ok))}}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.getElementById('modal_bg').hidden)closeModal(false)});
+
+function switchTab(name){
+ curTab=name;
+ ['overview','tasks','files','diag'].forEach(t=>{
+  document.getElementById('sec_'+t).hidden=(t!==name);
+  document.getElementById('tab_'+t).setAttribute('aria-selected',String(t===name))});
+ if(name==='files')loadWorkspace()}
+
+async function loadWorkspace(){
+ const tb=document.getElementById('ws_tbl');
+ try{
+  const d=await (await api('admin/api/workspace')).json();
+  const items=d.items||[];
+  tb.innerHTML=items.length?
+   '<tr><th class="l">Select</th><th class="l">Bucket</th><th class="l">Name</th><th>Type</th><th>Size</th><th>Age</th><th>State</th></tr>'+
+   items.map(x=>'<tr><td class="l"><input type="checkbox" class="ws_cb" value="'+esc(x.id)+'" '+(x.locked?'disabled':'')+'></td>'+
+    '<td class="l"><code>'+esc(x.bucket)+'</code></td><td class="l">'+esc(x.name)+'</td><td>'+esc(x.kind)+'</td>'+
+    '<td>'+bytes(x.size)+'</td><td>'+x.age_min+'m</td>'+
+    '<td><span class="pill '+(x.locked?'waiting':'ok')+'">'+(x.locked?'In Use':'Orphan/Idle')+'</span></td></tr>').join('')
+   :'<tr><td class="l"><span class="dot"></span>Workspace directories are completely clean.</td></tr>';
+ }catch(e){tb.innerHTML='<tr><td class="l err">Failed to load workspace: '+esc(e.message)+'</td></tr>'}}
+
+function toggleAllFiles(){
+ const boxes=[...document.querySelectorAll('.ws_cb:not(:disabled)')];
+ const anyUnchecked=boxes.some(b=>!b.checked);
+ boxes.forEach(b=>b.checked=anyUnchecked)}
+
+async function cleanSelectedFiles(){
+ const ids=[...document.querySelectorAll('.ws_cb:checked')].map(b=>b.value);
+ if(!ids.length){toast('Select at least one unlocked workspace item first.');return}
+ if(!(await askConfirm('Delete Workspace Files','Delete '+ids.length+' selected scratch item(s)? Active tasks are protected.')))return;
+ try{const d=await (await api('admin/api/workspace/clean',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})})).json();
+  toast('Deleted '+d.removed+' item(s), freed '+bytes(d.freed_bytes)+'.');loadWorkspace()}catch(e){toast('Cleanup failed: '+e.message)}}
 
 function renderDiag(dg){
  if(!dg)return;
@@ -581,8 +857,15 @@ async function load(manual){
     const pct=Math.min(100,Math.max(0,Number(x.progress||0)));
     const spd=x.speed_label||(x.speed?bytes(x.speed)+'/s':'—');
     const eng=x.engine?' <span class="pill off">'+esc(x.engine)+'</span>':'';
-    const pbar=x.state==='running'?'<div class="bar"><i style="width:'+Math.max(3,pct)+'%"></i></div><span class="k">'+pct.toFixed(1)+'%</span>':'';
-    const act=x.key!=null?'<button class="danger" data-k="'+esc(x.key)+'" data-f="'+esc(x.file)+'" onclick="cancelTask(this.dataset.k,this.dataset.f)">✖ Cancel</button>':'—';
+    const pbar=(x.state==='running'||x.state==='paused')?'<div class="bar"><i style="width:'+Math.max(3,pct)+'%"></i></div><span class="k">'+pct.toFixed(1)+'%</span>':'';
+    let act='—';
+    if(x.key!=null){
+     const prBtn=x.paused?'<button class="sm" data-k="'+esc(x.key)+'" onclick="taskAction(\'resume\',this.dataset.k)">▶ Resume</button>'
+                         :'<button class="sm" data-k="'+esc(x.key)+'" onclick="taskAction(\'pause\',this.dataset.k)">⏸ Pause</button>';
+     act='<span class="toolbar" style="justify-content:flex-end">'+prBtn+'<button class="danger" data-k="'+esc(x.key)+'" data-f="'+esc(x.file)+'" onclick="cancelTask(this.dataset.k,this.dataset.f)">✖ Stop</button></span>';
+    }else if(x.state==='waiting'&&x.pos>1){
+     act='<button class="sm" onclick="taskAction(\'boost\',null,'+Number(x.pos)+')">⚡ Boost</button>';
+    }
     return '<tr><td>'+x.pos+'</td><td class="l"><span class="pill '+esc(x.state)+'">'+esc(x.state)+'</span></td>'+
      '<td class="l">'+esc(x.mode)+eng+'</td><td class="l"><div>'+esc(x.file||'Media')+'</div>'+pbar+'</td>'+
      '<td>'+esc(spd)+'</td><td>'+secs(x.eta)+'</td><td>'+bytes(x.size)+'</td><td>'+esc(x.user)+'</td><td>'+act+'</td></tr>'}).join('')
@@ -622,7 +905,10 @@ def make_app() -> web.Application:
     app.router.add_get("/admin/api/stats", _admin_stats)
     app.router.add_get("/admin/api/diagnostics", _admin_diagnostics)
     app.router.add_post("/admin/api/tasks/cancel", _admin_cancel_task)
+    app.router.add_post("/admin/api/tasks/action", _admin_task_action)
     app.router.add_post("/admin/api/tasks/clear", _admin_clear_queue)
+    app.router.add_get("/admin/api/workspace", _admin_workspace)
+    app.router.add_post("/admin/api/workspace/clean", _admin_workspace_clean)
     app.router.add_get("/admin/chart/{name:users|jobs}.png", _admin_chart)
     return app
 

@@ -1,13 +1,14 @@
 """
-Clean Videl1-native storage destination registry & readiness checks.
+Clean Videl1-native storage destination registry, readiness inspection & upload dispatcher.
 
-Provides a unified status and dispatch layer across Videl1's upload destinations:
+Supported storage destinations:
   • `telegram` — Telegram Cloud via WzGram (automatic playable keyframe / archive part splitting)
-  • `gdrive`   — Google Drive API v3 (OAuth `token.json` or Service Account `GDRIVE_SA_FILE`)
-  • `ddl`      — Ephemeral/public DDL mirrors (`GoFile` / `Catbox` / `Litterbox` via `core.ui.upload_to_host`)
-  • `rclone`   — Optional Rclone cloud remote check (only reported ready when `rclone` binary + `rclone.conf` exist)
+  • `gdrive`   — Google Drive API v3 (OAuth `token.json` or Service Account `GDRIVE_SA_FILE` + optional `INDEX_URL`)
+  • `rclone`   — Optional Rclone cloud remotes (`rclone` binary + `RCLONE_CONFIG_PATH` / `rclone.conf`)
+  • `gofile`   — Optional streaming GoFile direct cloud upload (`GOFILE_TOKEN` or guest upload server)
+  • `ddl`      — Ephemeral/public DDL mirrors (`Catbox` / `Litterbox` via `core.ui.upload_to_host`)
 
-Never exposes tokens, OAuth JSONs, or Rclone remote secrets in status output.
+Never exposes tokens, OAuth JSONs, or Rclone remote secrets in status output or error messages.
 """
 from __future__ import annotations
 
@@ -18,6 +19,9 @@ from typing import Any
 
 import config
 from .drive import DriveNotConfiguredError, is_drive_configured
+from .rclone import RcloneNotConfiguredError, list_rclone_remotes, rclone_config_file
+
+VALID_UPLOAD_DESTS = ("telegram", "gdrive", "rclone", "gofile")
 
 
 @dataclass(frozen=True)
@@ -39,12 +43,15 @@ class StorageBackendStatus:
 
 
 def is_rclone_configured() -> tuple[bool, str]:
-    """Check whether optional `rclone` binary and config file are present without reading secrets."""
+    """Check whether optional `rclone` binary, `rclone.conf`, and >=1 remote exist without reading secrets."""
     binary = shutil.which("rclone")
-    cfg_path = os.environ.get("RCLONE_CONFIG", "rclone.conf").strip()
+    cfg_path = rclone_config_file()
     has_cfg = bool(cfg_path) and os.path.isfile(cfg_path)
     if binary and has_cfg:
-        return True, "rclone binary + config present"
+        remotes = list_rclone_remotes(cfg_path)
+        if remotes:
+            return True, f"Ready ({len(remotes)} remote{'s' if len(remotes) != 1 else ''})"
+        return False, "rclone.conf has no remotes"
     if binary and not has_cfg:
         return False, "rclone installed (no rclone.conf)"
     return False, "not installed (optional)"
@@ -75,14 +82,6 @@ def storage_backends_status() -> list[dict[str, Any]]:
         ),
     )
 
-    ddl = StorageBackendStatus(
-        key="ddl",
-        label="DDL Mirrors (Catbox / Litterbox)",
-        available=True,
-        optional=True,
-        detail="HTTPS multipart upload with timeout",
-    )
-
     rc_ok, rc_detail = is_rclone_configured()
     rc = StorageBackendStatus(
         key="rclone",
@@ -92,18 +91,67 @@ def storage_backends_status() -> list[dict[str, Any]]:
         detail=rc_detail,
     )
 
-    return [b.to_dict() for b in (tg, gd, ddl, rc)]
+    gf_tok = bool((getattr(config, "GOFILE_TOKEN", "") or "").strip())
+    gf = StorageBackendStatus(
+        key="gofile",
+        label="GoFile Cloud",
+        available=True,
+        optional=True,
+        detail="Authenticated API token configured" if gf_tok else "Ready (guest server mode)",
+    )
+
+    ddl = StorageBackendStatus(
+        key="ddl",
+        label="DDL Mirrors (Catbox / Litterbox)",
+        available=True,
+        optional=True,
+        detail="HTTPS multipart upload with timeout",
+    )
+
+    return [b.to_dict() for b in (tg, gd, rc, gf, ddl)]
 
 
-async def dispatch_upload(new_file: str, message, msg, *, force_telegram: bool = False) -> str | None:
-    """Upload `new_file` to the user's selected backend, falling back cleanly to Telegram if Drive is unconfigured."""
+async def resolve_user_destination(uid: int) -> str:
+    """Resolve user's preferred upload destination (`upload_dest` string or legacy `drive` boolean)."""
     from ..database.access_db import db
+
+    try:
+        s = await db.get_settings(uid)
+        dest = str((s or {}).get("upload_dest") or "").strip().lower()
+        if dest in VALID_UPLOAD_DESTS:
+            return dest
+    except Exception:
+        pass
+    try:
+        if bool(await db.get_drive(uid)):
+            return "gdrive"
+    except Exception:
+        pass
+    return "telegram"
+
+
+async def dispatch_upload(
+    new_file: str,
+    message,
+    msg,
+    *,
+    force_telegram: bool = False,
+    backend: str | None = None,
+    rclone_remote: str | None = None,
+) -> str | None:
+    """Upload `new_file` to the requested/user-selected backend, falling back safely to Telegram if unconfigured."""
     from .drive.upload import Uploader
+    from .gofile import upload_to_gofile
+    from .rclone import upload_with_rclone
     from .telegram import upload_to_tg
 
+    if force_telegram:
+        return await upload_to_tg(new_file, message, msg)
+
     uid = getattr(getattr(message, "from_user", None), "id", 0)
-    use_drive = (not force_telegram) and bool(await db.get_drive(uid))
-    if use_drive:
+    target = (backend or await resolve_user_destination(uid)).strip().lower()
+
+    if target == "gdrive":
         if not is_drive_configured():
             try:
                 await msg.edit_text(
@@ -116,4 +164,26 @@ async def dispatch_upload(new_file: str, message, msg, *, force_telegram: bool =
             return await Uploader().upload_to_drive(new_file, message, msg)
         except DriveNotConfiguredError:
             return await upload_to_tg(new_file, message, msg)
+
+    if target == "rclone":
+        rc_ok, _ = is_rclone_configured()
+        if not rc_ok:
+            try:
+                await msg.edit_text(
+                    "ℹ️ <b>Rclone is not configured on this server</b> – uploading to Telegram instead…"
+                )
+            except Exception:
+                pass
+            return await upload_to_tg(new_file, message, msg)
+        try:
+            return await upload_with_rclone(new_file, message, msg, remote_spec=rclone_remote)
+        except RcloneNotConfiguredError:
+            return await upload_to_tg(new_file, message, msg)
+
+    if target == "gofile":
+        res = await upload_to_gofile(new_file, message, msg)
+        if res is not None:
+            return res
+        return None
+
     return await upload_to_tg(new_file, message, msg)

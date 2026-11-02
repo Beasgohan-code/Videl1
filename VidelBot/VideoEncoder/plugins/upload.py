@@ -98,7 +98,15 @@ async def driveupload(client, message):
     c = await check_chat(message, chat="Sudo")
     if c is None:
         return
-    new_file = os.path.expanduser(" ".join(message.command[1:]).strip())
+    args = list(message.command[1:])
+    backend = "gdrive"
+    rclone_remote = None
+    if args and args[0].lower() in ("gdrive", "drive", "rclone", "gofile"):
+        first = args.pop(0).lower()
+        backend = "gdrive" if first == "drive" else first
+        if backend == "rclone" and len(args) >= 2 and ":" in args[0] and not os.path.isfile(os.path.expanduser(args[0])):
+            rclone_remote = args.pop(0)
+    new_file = os.path.expanduser(" ".join(args).strip())
     if not new_file:
         await message.reply_text("you forgot to mention path!")
         return
@@ -108,10 +116,19 @@ async def driveupload(client, message):
     if _is_forbidden_upload_target(new_file):
         await message.reply_text("⚠️ Uploading credential or system files is blocked.")
         return
-    reply = await message.reply_text(f"☁️ Uploading <code>{html.escape(os.path.basename(new_file))}</code>…")
+    reply = await message.reply_text(
+        f"☁️ Uploading <code>{html.escape(os.path.basename(new_file))}</code> ({html.escape(backend)})…"
+    )
     try:
-        u = Uploader()
-        res = await u.upload_to_drive(new_file, message, reply)
+        if backend == "rclone":
+            from ..utils.uploads.rclone import RcloneNotConfiguredError, upload_with_rclone
+            res = await upload_with_rclone(new_file, message, reply, remote_spec=rclone_remote)
+        elif backend == "gofile":
+            from ..utils.uploads.gofile import upload_to_gofile
+            res = await upload_to_gofile(new_file, message, reply)
+        else:
+            u = Uploader()
+            res = await u.upload_to_drive(new_file, message, reply)
     except DriveNotConfiguredError as e:
         await reply.edit(f"ℹ️ <code>{html.escape(str(e))}</code>")
     except Exception as e:
