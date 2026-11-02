@@ -33,7 +33,11 @@ WORKDIR /app
 # ./requirements.txt and ./VidelBot/requirements.txt are identical copies, so this
 # line works whichever folder is the build context.
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt && rm /tmp/requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r /tmp/requirements.txt \
+    && (pip uninstall -y kurigram || true) \
+    && pip install --no-deps --force-reinstall wzgram==3.1.6 \
+    && rm /tmp/requirements.txt
 
 # Copy the code; if the context is the repo root, take only the VidelBot/ folder.
 COPY . /tmp/src

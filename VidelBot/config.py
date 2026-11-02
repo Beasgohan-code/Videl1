@@ -284,6 +284,17 @@ FAST_DL = _bool("FAST_DL", True)                                # parallel Teleg
 FAST_DL_WORKERS = max(1, min(16, env_int("FAST_DL_WORKERS", 6)))  # chunk requests in flight per download
 
 # ==============================
+# WzGram native rich UI & modular plugins
+# ==============================
+WZGRAM_NATIVE_RICH = _bool("WZGRAM_NATIVE_RICH", True)          # native MTProto RichMessage / ButtonStyle / Ephemeral via WzGram
+PLUGINS_ENABLED = _bool("PLUGINS_ENABLED", True)                # YAML-manifest plugin system (core/plugin_manager.py)
+PLUGINS_DIR = os.environ.get("PLUGINS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"))
+PLUGIN_INDEX_URL = os.environ.get(
+    "PLUGIN_INDEX_URL",
+    "https://raw.githubusercontent.com/SilentDemonSD/WZML-X/wzv3-dev/plugins/index.json",
+)
+
+# ==============================
 # Owner tools: web dashboard · backups · analytics
 # ==============================
 # Web dashboard at https://<your-app>/admin – owners/admins open it from Telegram with /dashboard

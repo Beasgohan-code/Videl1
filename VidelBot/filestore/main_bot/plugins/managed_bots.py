@@ -86,8 +86,16 @@ async def _resolve_bot(client, username: str):
     return u if (u and getattr(u, "is_bot", False)) else None
 
 
-async def _token_for(bot_id: int):
-    return await botapi.try_call(lambda b: b.get_managed_bot_token(user_id=bot_id))
+async def _token_for(bot_id: int, client=None):
+    if botapi.enabled():
+        return await botapi.try_call(lambda b: b.get_managed_bot_token(user_id=bot_id))
+    from core.ui import is_wzgram_client
+    if is_wzgram_client(client) and hasattr(client, "get_managed_bot_token"):
+        try:
+            return await client.get_managed_bot_token(bot_id)
+        except Exception as e:
+            log.debug(f"wzgram get_managed_bot_token({bot_id}) failed: {e}")
+    return None
 
 
 def _back_kb():
@@ -112,6 +120,7 @@ async def managed_new(client: Client, query: CallbackQuery):
     username = suggested_username(user.first_name)
     name = f"{(user.first_name or 'My')[:40]}'s FileStore"
     st["data"]["managed_username"] = username
+    st["data"]["managed_status_msg"] = query.message
     link = newbot_link(me.username, username, name)
     await query.message.edit_text(
         "<b>⚡ One-tap bot creation</b>\n\n"
@@ -145,7 +154,7 @@ async def watch_username(client, user_id: int, username: str, status_msg, timeou
         bot_user = await _resolve_bot(client, username)
         if not bot_user:
             continue
-        token = await _token_for(bot_user.id)
+        token = await _token_for(bot_user.id, client=client)
         if not token:
             await _safe_edit(status_msg, f"<b>⚠️ @{username} exists but Videl can't manage it.</b>\n\n"
                                          "Paste its token from @BotFather instead.", _back_kb())
@@ -178,7 +187,7 @@ async def claim_username(client, message, user_id: int, text: str) -> bool:
         return True
     status = await message.reply(f"<b>🔎 Looking up @{username}…</b>")
     bot_user = await _resolve_bot(client, username)
-    token = await _token_for(bot_user.id) if bot_user else None
+    token = await _token_for(bot_user.id, client=client) if bot_user else None
     if not token:
         await _safe_edit(status, f"<b>❌ @{username} wasn't created through Videl.</b>\n\n"
                                  "Use the one-tap button, or paste the bot token.", _back_kb())
@@ -223,6 +232,34 @@ async def _await_proof(client, user_id, username, token, code, status, timeout: 
     return False
 
 
+# ─────────────────────────── WzGram Layer 232 push hook ───────────────────────────
+@Client.on_managed_bot()
+async def on_managed_bot_updated(client: Client, update):
+    """Instant MTProto UpdateManagedBot hook — connects newly created managed bots with zero polling."""
+    from filestore.main_bot.plugins.create_bot import _creation_state, accept_token
+    user = getattr(update, "user", None)
+    bot_user = getattr(update, "bot", None)
+    if not (user and bot_user):
+        return
+    st = _creation_state.get(user.id)
+    if not st or st.get("step") != "awaiting_token" or not st.get("data", {}).get("managed_username"):
+        return
+    token = await _token_for(bot_user.id, client=client)
+    if not token:
+        return
+    # Clear managed_username so any background poll exits cleanly
+    st["data"].pop("managed_username", None)
+    status_msg = st["data"].pop("managed_status_msg", None)
+    if status_msg is None:
+        try:
+            status_msg = await client.send_message(user.id, f"<b>⏳ Connecting @{bot_user.username or 'bot'}…</b>")
+        except Exception:
+            return
+    else:
+        await _safe_edit(status_msg, f"<b>⏳ Connecting @{bot_user.username or 'bot'}…</b>")
+    await accept_token(client, user.id, token, status_msg, managed=True)
+
+
 # ─────────────────────────── token rotation ───────────────────────────
 def rotate_row(bot: dict):
     """Dashboard row for managed clones (empty list otherwise)."""
@@ -248,8 +285,14 @@ async def rotate_token(client: Client, query: CallbackQuery):
                 [InlineKeyboardButton("✅ Rotate now", callback_data=f"rotate_tok_do_{bot_id}")], back]))
         return await query.answer()
     await query.answer("🔁 Rotating…")
+    new_token = None
     try:
-        new_token = await botapi.call(lambda b: b.replace_managed_bot_token(user_id=bot_id))
+        if botapi.enabled():
+            new_token = await botapi.call(lambda b: b.replace_managed_bot_token(user_id=bot_id))
+        elif hasattr(client, "replace_managed_bot_token"):
+            new_token = await client.replace_managed_bot_token(bot_id)
+        else:
+            raise RuntimeError("managed bot token rotation unavailable")
     except Exception as e:
         return await query.message.edit_text(f"<b>❌ Rotation failed:</b> <code>{html.escape(str(e))}</code>",
                                              reply_markup=InlineKeyboardMarkup([back]))

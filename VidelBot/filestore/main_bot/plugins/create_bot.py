@@ -10,9 +10,9 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     KeyboardButton,
+    KeyboardButtonRequestChat,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
-    RequestPeerTypeChannel,
 )
 from filestore.fs_config import BOT_CREATION_COOLDOWN, API_ID, API_HASH, LOGGER, CLONE_ENABLED, OWNERS
 from filestore.database.main_db import MainDB
@@ -34,8 +34,15 @@ CHANNEL_STEPS = ("awaiting_channel", "awaiting_new_log_channel", "awaiting_fsub_
 
 def channel_picker_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("📢 Select channel",
-                         request_chat=RequestPeerTypeChannel(button_id=CHANNEL_PICKER_ID))]],
+        [[KeyboardButton(
+            "📢 Select channel",
+            request_chat=KeyboardButtonRequestChat(
+                button_id=CHANNEL_PICKER_ID,
+                chat_is_channel=True,
+                request_title=True,
+                request_username=True,
+            ),
+        )]],
         resize_keyboard=True, one_time_keyboard=True, placeholder="Pick a channel or type its ID",
     )
 
@@ -63,7 +70,7 @@ async def remove_channel_picker(client, user_id: int, state: dict = None, text: 
 
 
 async def _has_shared_chat(_, __, m: Message) -> bool:
-    return bool(getattr(m, "chats_shared", None))
+    return bool(getattr(m, "chat_shared", None) or getattr(m, "chats_shared", None))
 
 
 shared_chat_filter = filters.create(_has_shared_chat)
@@ -238,7 +245,7 @@ async def handle_creation_input(client: Client, message: Message):
     step = state["step"]
 
     # 📢 Channel shared through the native picker → treat it as a typed ID
-    if getattr(message, "chats_shared", None):
+    if getattr(message, "chat_shared", None) or getattr(message, "chats_shared", None):
         from core.payments import shared_ids
         picked = shared_ids(message)
         if step not in CHANNEL_STEPS or not picked:
