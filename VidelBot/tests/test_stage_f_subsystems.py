@@ -5,7 +5,7 @@ Stage F subsystem & database-integrity regression suite:
   3. FileStore `bot_settings` enforces owner check before decrypting token, sets `no_updates=True`,
      always stops `temp_client` in `finally`, and HTML-escapes Telegram RPC errors
   4. Saver `build_caption` HTML-escapes `{filename}` & `apply_word_filters` handles literal backslashes
-  5. Saver `save()` rejects malformed `/c/`, `/b/`, inverted ranges, and caps `MAX_SAVER_BATCH`
+  5. Saver `save()` rejects malformed `/c/`, `/b/`, and inverted ranges
   6. Renamer `engine.py` sanitizes temp file extensions & HTML-escapes download errors
   7. Codebase-wide AST check: zero unescaped `str(e)` passed inside HTML-parsed bot send/edit calls
   8. `core.db_doctor` read-only dry-run + non-destructive duplicate merge (preserving Lifetime,
@@ -204,18 +204,6 @@ def test_saver_caption_escaping_word_filter_backslashes_and_link_validation(monk
         assert m.replies or c.calls, f"Expected safe rejection reply for {bad_link}"
         assert saver_start.batch_temp.IS_BATCH.get(uid, True) is True
 
-    # Batch exceeding MAX_SAVER_BATCH rejected even for Premium users
-    async def _fast_sleep(_delay):
-        return None
-
-    monkeypatch.setattr(saver_start.asyncio, "sleep", _fast_sleep)
-    monkeypatch.setenv("MAX_SAVER_BATCH", "25")
-    run(saver_db.add_premium(uid, None))  # Lifetime premium
-    m_huge = FakeMsg("https://t.me/somechannel/1-500", uid=uid, client=c)
-    c.calls.clear()
-    run(saver_start.save(c, m_huge))
-    sent_texts = " ".join(str(r) for r in m_huge.replies) + " " + " ".join(str(c_call) for c_call in c.calls)
-    assert "25" in sent_texts
 
 
 # ───────────────────── 6. Renamer extension sanitization & HTML error escaping ─────────────────────
@@ -388,3 +376,70 @@ def test_hw_has_filter_parses_both_legacy_and_modern_ffmpeg_columns(monkeypatch)
     assert hw.has_filter("hstack") is True
     assert hw.has_filter("T..") is False
     hw._FILTERS.clear()
+
+
+def test_saver_premium_full_range_and_free_batch_limit(monkeypatch):
+    from database.db import db as saver_db
+    from saver import start as saver_start
+
+    async def fast_sleep(_delay):
+        return None
+
+    async def no_traffic(_user_id):
+        return None
+
+    monkeypatch.setattr(saver_start.asyncio, "sleep", fast_sleep)
+    monkeypatch.setattr(saver_db, "add_traffic", no_traffic)
+    # An old deployed setting must no longer silently truncate Premium requests.
+    monkeypatch.setenv("MAX_SAVER_BATCH", "25")
+    premium_uid, free_uid = 6110, 6111
+    run(saver_db.add_user(premium_uid, "Premium"))
+    run(saver_db.add_premium(premium_uid, None))
+    run(saver_db.add_user(free_uid, "Free"))
+
+    client = FakeClient()
+    premium = FakeMsg("https://t.me/somechannel/54550-54799", uid=premium_uid, client=client)
+    run(saver_start.save(client, premium))
+    ids = [call[2]["message_id"] for call in client.called("copy_message")]
+    assert ids == list(range(54550, 54800))
+    assert not any("capped" in str(reply).lower() for reply in premium.replies)
+    assert saver_start.batch_temp.IS_BATCH[premium_uid] is True
+
+    client.calls.clear()
+    free = FakeMsg("https://t.me/somechannel/54550-54799", uid=free_uid, client=client)
+    run(saver_start.save(client, free))
+    ids = [call[2]["message_id"] for call in client.called("copy_message")]
+    assert ids == list(range(54550, 54555))
+    assert any("Free users" in str(reply) for reply in free.replies)
+    assert saver_start.batch_temp.IS_BATCH[free_uid] is True
+
+
+def test_saver_premium_long_batch_can_be_cancelled(monkeypatch):
+    from database.db import db as saver_db
+    from saver import start as saver_start
+
+    async def fast_sleep(_delay):
+        return None
+
+    async def no_traffic(_user_id):
+        return None
+
+    monkeypatch.setattr(saver_start.asyncio, "sleep", fast_sleep)
+    monkeypatch.setattr(saver_db, "add_traffic", no_traffic)
+    uid = 6112
+    run(saver_db.add_user(uid, "Premium"))
+    run(saver_db.add_premium(uid, None))
+    client = FakeClient()
+    original_copy = client.copy_message
+
+    async def cancel_after_210(*args, **kwargs):
+        result = await original_copy(*args, **kwargs)
+        if len(client.called("copy_message")) == 210:
+            saver_start.batch_temp.IS_BATCH[uid] = True
+        return result
+
+    monkeypatch.setattr(client, "copy_message", cancel_after_210, raising=False)
+    message = FakeMsg("https://t.me/somechannel/1-500", uid=uid, client=client)
+    run(saver_start.save(client, message))
+    assert len(client.called("copy_message")) == 210
+    assert saver_start.batch_temp.IS_BATCH[uid] is True

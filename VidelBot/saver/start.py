@@ -267,8 +267,6 @@ async def save(client: Client, message: Message):
     if fromID < 1 or toID < fromID:
         return await message.reply_text("❌ <b>Invalid message range in link.</b>", parse_mode=enums.ParseMode.HTML)
 
-    from config import env_int
-    max_batch = max(5, env_int("MAX_SAVER_BATCH", 200))
     is_premium = await db.check_premium(user_id)
     if not is_premium and toID - fromID + 1 > 5:
         await message.reply_text(
@@ -276,12 +274,6 @@ async def save(client: Client, message: Message):
             parse_mode=enums.ParseMode.HTML,
         )
         toID = fromID + 4
-    elif toID - fromID + 1 > max_batch:
-        await message.reply_text(
-            f"<i>ℹ️ Batch capped at {max_batch} posts per request – saving {fromID}–{fromID + max_batch - 1}.</i>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        toID = fromID + max_batch - 1
 
     batch_temp.IS_BATCH[user_id] = False
     acc = None
