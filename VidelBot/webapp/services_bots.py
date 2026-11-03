@@ -801,11 +801,10 @@ async def list_workspace_bots(
     tag: str = "",
     include_archived: bool = False,
 ) -> list[dict[str, Any]]:
-    # Sync legacy `/clone` bots into the owner's primary workspace if owner matches
-    ws = await db_models.workspaces_col().find_one({"workspace_id": workspace_id})
-    if ws and int(ws.get("owner_id", 0)) == int(user_id) and not ws.get("is_demo"):
-        await sync_legacy_registered_bots(int(user_id), workspace_id)
-
+    # Legacy `/clone` bots have no workspace ID. Automatically importing them
+    # into whichever workspace is viewed first misattributes private bot data.
+    # Existing SaaS records remain available; legacy records require an explicit
+    # ownership-aware migration instead of being guessed here.
     q: dict[str, Any] = {"workspace_id": workspace_id, "deleted": {"$ne": True}}
     if not include_archived:
         q["archived"] = False

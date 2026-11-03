@@ -310,6 +310,8 @@ def test_filestore_upload_duplicate_intelligence_and_honest_analytics():
             assert r_intel.status == 200
             intel = await r_intel.json()
             assert intel["total_files"] == 2
+            assert intel["popular_files"] is None and intel["unused_files_count"] is None
+            assert intel["integrity_issues"] is None
             assert len(intel["duplicate_candidates"]) == 1
             assert intel["duplicate_reclaimable_bytes"] > 0
 
@@ -607,4 +609,139 @@ def test_filestore_failed_database_write_cleans_upload(tmp_path, monkeypatch):
             form.add_field("file", b"never leave this behind", filename="error.txt", content_type="text/plain")
             assert (await cli.post(f"/api/v1/workspaces/{ws}/filestore", headers=hdr, data=form)).status == 500
             assert not [p for p in tmp_path.rglob("*") if p.is_file()]
+    run(go())
+
+
+def test_domain_permissions_apply_to_reads_and_multi_domain_bundles():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 16001, "Owner")
+            viewer, _ = await _login_link(cli, 16002, "Viewer")
+            restricted, _ = await _login_link(cli, 16003, "Limited")
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                                   json={"user_id": 16002, "role": "viewer"})).status == 201
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                                   json={"user_id": 16003, "role": "developer", "permissions": {"templates": False}})).status == 201
+            bot = await services_bots.create_or_register_bot(ws, 16001, {"display_name": "Sample"}, allow_unverified_offline=True)
+            bid = bot["bot_id"]
+            for path in ("team", "clones", "downloads", "studio", "automations", "schedules", "templates", "integrations", "notifications",
+                         f"bots/{bid}/config", f"bots/{bid}/environments", f"bots/{bid}/commands"):
+                assert (await cli.get(f"/api/v1/workspaces/{ws}/{path}", headers=viewer)).status == 403, path
+            assert (await cli.get(f"/api/v1/workspaces/{ws}/bots/{bid}/commands", headers=owner)).status == 200
+            viewer_bot = (await (await cli.get(f"/api/v1/workspaces/{ws}/bots/{bid}", headers=viewer)).json())["bot"]
+            assert "settings" not in viewer_bot and "features" not in viewer_bot and "last_error" not in viewer_bot
+            owner_bot = (await (await cli.get(f"/api/v1/workspaces/{ws}/bots/{bid}", headers=owner)).json())["bot"]
+            assert "settings" in owner_bot and "features" in owner_bot
+            fleet = await (await cli.get(f"/api/v1/workspaces/{ws}/fleet", headers=viewer)).json()
+            assert fleet["config_drift_fields"] is None and fleet["recent_errors"] is None
+            assert "settings" not in fleet["bots"][0]
+            analyst, _ = await _login_link(cli, 16006, "Analyst")
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                                   json={"user_id": 16006, "role": "analyst"})).status == 201
+            await db_models.webhooks_col().insert_one({"workspace_id": ws, "webhook_id": "private_hook", "url": "https://example.com/private"})
+            health = await (await cli.get(f"/api/v1/workspaces/{ws}/health", headers=analyst)).json()
+            assert health["webhooks"]["availability"] == "permission required"
+            assert "private_hook" not in json.dumps(health)
+            for method in (cli.get, cli.post):
+                assert (await method(f"/api/v1/workspaces/{ws}/bundle", headers=restricted)).status == 403
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/schedules", headers=owner, json={"action": "run_due"})).status == 400
+            info = await (await cli.get(f"/api/v1/workspaces/{ws}", headers=viewer)).json()
+            assert info["recent_notifications"] == [] and info["usage"]["unread_notifications"] is None
+    run(go())
+
+
+def test_webhook_blocks_private_dns_redirects_and_url_disclosure(monkeypatch):
+    import socket
+    import aiohttp
+    from aiohttp import web
+    from webapp import safe_webhook
+    from platform_core import providers
+
+    async def go():
+        monkeypatch.setenv("LEECH_ALLOW_PRIVATE", "true")
+        for url in ("http://127.0.0.1/", "http://[::1]/", "https://user:secret@example.com/",
+                    "https://example.com/path?token=secret", "https://example.com/path#secret"):
+            with pytest.raises(providers.ProviderError):
+                safe_webhook.validate_webhook_url(url)
+        resolver = safe_webhook.PublicResolver()
+        async def mixed(host, port=0, family=socket.AF_UNSPEC):
+            return [{"hostname": host, "host": "8.8.8.8", "port": port, "family": socket.AF_INET, "proto": 0, "flags": 0},
+                    {"hostname": host, "host": "127.0.0.1", "port": port, "family": socket.AF_INET, "proto": 0, "flags": 0}]
+        monkeypatch.setattr(resolver._resolver, "resolve", mixed)
+        with pytest.raises(OSError):
+            await resolver.resolve("rebind.example", 80)
+        await resolver.close()
+
+        async def rebound(self, host, port=0, family=socket.AF_UNSPEC):
+            return [{"hostname": host, "host": "127.0.0.1", "port": port, "family": socket.AF_INET, "proto": 0, "flags": 0}]
+        with monkeypatch.context() as dns_patch:
+            dns_patch.setattr(safe_webhook.aiohttp.resolver.DefaultResolver, "resolve", rebound)
+            with pytest.raises(aiohttp.ClientError):
+                await safe_webhook.ping("http://rebind.invalid/hook", {})
+
+        calls = []
+        async def redirect(request):
+            calls.append("redirect")
+            raise web.HTTPFound(location="/private")
+        async def private(request):
+            calls.append("private")
+            return web.Response(text="must not be reached")
+        app = web.Application()
+        app.router.add_post("/hook", redirect)
+        app.router.add_get("/private", private)
+        async with TestServer(app) as server:
+            async def test_only_resolve(self, host, port=0, family=socket.AF_UNSPEC):
+                return [{"hostname": host, "host": "127.0.0.1", "port": port, "family": socket.AF_INET, "proto": 0, "flags": 0}]
+            # A local fake public host exercises redirect behavior without network access.
+            monkeypatch.setattr(safe_webhook.PublicResolver, "resolve", test_only_resolve)
+            assert await safe_webhook.ping(f"http://public.test:{server.port}/hook", {}) == 302
+            assert calls == ["redirect"]
+
+        hook = await services_ops.register_outbound_webhook("ws_test", 1, {"url": "https://example.com/secret-path"})
+        assert "url" not in hook
+        await db_models.webhook_events_col().insert_one({"workspace_id": "ws_test", "created_ts": 1,
+            "error": "https://example.com/?token=secret"})
+        listing = await services_ops.list_webhooks_and_events("ws_test")
+        assert "secret" not in json.dumps(listing)
+        async def failing_ping(url, body):
+            raise OSError("https://example.com/?token=secret")
+        monkeypatch.setattr(safe_webhook, "ping", failing_ping)
+        result = await services_ops.test_outbound_webhook("ws_test", hook["webhook_id"], 1)
+        assert result["status"] == "failed" and "secret" not in json.dumps(result)
+    run(go())
+
+
+def test_analytics_does_not_attribute_userwide_history_or_foreign_bots(monkeypatch):
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            hdr, a = await _login_link(cli, 16004, "Owner")
+            b = (await services_bots.create_workspace(16004, name="Second"))["workspace_id"]
+            bot = await services_bots.create_or_register_bot(a, 16004, {"display_name": "One"}, allow_unverified_offline=True)
+            async def forbidden_history(*args, **kwargs):
+                raise AssertionError("user-wide history must not be used for workspace analytics")
+            from platform_core import models_db
+            monkeypatch.setattr(models_db, "query_history", forbidden_history)
+            response = await cli.get(f"/api/v1/workspaces/{b}/analytics", headers=hdr)
+            assert response.status == 200
+            data = await response.json()
+            assert data["totals"]["period_downloads"] is None
+            assert data["totals"]["failed_uploads"] is None
+            assert data["series"]["downloads"] is None
+            assert data["command_usage"] is None
+            assert (await cli.get(f"/api/v1/workspaces/{b}/analytics?bot_id={bot['bot_id']}", headers=hdr)).status == 404
+            csv = await (await cli.get(f"/api/v1/workspaces/{b}/analytics.csv?days=1", headers=hdr)).text()
+            assert ",," in csv  # Missing download values are blank, not false zeroes.
+    run(go())
+
+
+def test_workspace_bot_listing_does_not_automatically_assign_legacy_bots(monkeypatch):
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            hdr, a = await _login_link(cli, 16005)
+            b = (await services_bots.create_workspace(16005, name="Other"))["workspace_id"]
+            async def unsafe_import(*args, **kwargs):
+                raise AssertionError("legacy bots must not be assigned to an arbitrary workspace")
+            monkeypatch.setattr(services_bots, "sync_legacy_registered_bots", unsafe_import)
+            assert (await cli.get(f"/api/v1/workspaces/{a}/bots", headers=hdr)).status == 200
+            assert (await cli.get(f"/api/v1/workspaces/{b}/bots", headers=hdr)).status == 200
     run(go())

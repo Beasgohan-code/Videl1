@@ -12,12 +12,11 @@ import secrets
 import time
 from typing import Any
 
-import aiohttp
 
 import config
 from core import diagnostics
-from platform_core import destinations, download_engine, models_db, providers
-from webapp import db_models, services_bots, services_clone_files
+from platform_core import destinations, download_engine, models_db
+from webapp import db_models, safe_webhook, services_bots, services_clone_files
 
 # ─────────────────────────── Supported Automation Catalog (Section 18) ───────────────────────────
 SUPPORTED_TRIGGERS = (
@@ -128,8 +127,6 @@ _automation_seen_keys: set[str] = set()
 # ─────────────────────────── 1. Bot Health & Webhook Diagnostics (Sections 15 & 17) ───────────────────────────
 async def bot_operations_health(workspace_id: str, user_id: int) -> dict[str, Any]:
     bots = await services_bots.list_workspace_bots(workspace_id, user_id=user_id, include_archived=False)
-    conns = await models_db.list_user_connections(user_id)
-    scheds = await models_db.list_scheduled_jobs(user_id=user_id)
     sys_diag = diagnostics.collect_diagnostics()
 
     alerts: list[dict[str, Any]] = []
@@ -169,21 +166,8 @@ async def bot_operations_health(workspace_id: str, user_id: int) -> dict[str, An
             "last_error": b.get("last_error", ""),
         })
 
-    for prov, cdoc in conns.items():
-        if cdoc.get("last_error"):
-            alerts.append({
-                "severity": "warning",
-                "code": "integration_failure",
-                "message": f"{prov.title()} storage connection error: {cdoc['last_error']}",
-            })
-
-    for sj in scheds:
-        if str(sj.get("last_status", "")).startswith("error:"):
-            alerts.append({
-                "severity": "error",
-                "code": "scheduled_job_failed",
-                "message": f"Scheduled job '{sj.get('title')}' failed: {sj['last_status']}",
-            })
+    # Legacy connections and scheduled jobs are user-scoped, not workspace-scoped.
+    # Do not attribute their errors to this workspace.
 
     if sys_diag["resources"]["disk_percent"] >= 85.0:
         alerts.append({
@@ -206,8 +190,8 @@ async def bot_operations_health(workspace_id: str, user_id: int) -> dict[str, An
 async def register_outbound_webhook(
     workspace_id: str, actor_id: int, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """Register an outbound event webhook (SSRF-validated; never creates a Telegram incoming webhook!)."""
-    url = await providers.check_public_url(str(payload.get("url") or ""))
+    """Register an outbound endpoint; DNS is validated when a connection is made."""
+    url = safe_webhook.validate_webhook_url(str(payload.get("url") or ""))
     events = [str(e).strip() for e in (payload.get("events") or ["download_completed", "bot_error"]) if str(e).strip()]
     now = time.time()
     doc = {
@@ -227,6 +211,7 @@ async def register_outbound_webhook(
     await db_models.webhooks_col().insert_one(dict(doc))
     await models_db.log_audit(actor_id, "webhook_register", target=f"{workspace_id}:{doc['webhook_id']}")
     doc.pop("_id", None)
+    doc.pop("url", None)
     return doc
 
 
@@ -238,8 +223,13 @@ async def list_webhooks_and_events(workspace_id: str, *, event_type: str = "") -
     events = await db_models.webhook_events_col().find(ev_q).sort("created_ts", -1).limit(50).to_list(length=50)
     for h in hooks:
         h.pop("_id", None)
+        # Older records can contain secret-bearing URLs; never reveal them again.
+        h.pop("url", None)
     for e in events:
         e.pop("_id", None)
+        # Historical exceptions may contain endpoint URLs or credentials.
+        if e.get("error"):
+            e["error"] = "Delivery failed; details withheld."
     return {
         "incoming_telegram_mode": "MTProto Long-Polling / Authoritative WzGram Receiver (No competing Telegram webhook)",
         "webhooks": hooks,
@@ -251,22 +241,20 @@ async def test_outbound_webhook(workspace_id: str, webhook_id: str, actor_id: in
     hook = await db_models.webhooks_col().find_one({"webhook_id": webhook_id, "workspace_id": workspace_id})
     if not hook:
         raise KeyError("Webhook not found in this workspace.")
-    await providers.check_public_url(hook["url"])
     now = time.time()
     body = {"event": "webhook.ping", "workspace_id": workspace_id, "timestamp": db_models.utcnow_iso()}
     http_code = 0
     err = ""
     try:
-        timeout = aiohttp.ClientTimeout(total=10, connect=5)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(hook["url"], json=body) as resp:
-                http_code = resp.status
-                ok = 200 <= resp.status < 300
-                if not ok:
-                    err = f"HTTP {resp.status}"
-    except Exception as exc:
+        http_code = await safe_webhook.ping(hook["url"], body)
+        ok = 200 <= http_code < 300
+        if not ok:
+            err = f"HTTP {http_code}"
+    except Exception:
         ok = False
-        err = str(exc)[:180]
+        # aiohttp exceptions can contain URLs, query strings and credentials.
+        err = "Delivery failed; verify the public endpoint configuration."
+
 
     ev_doc = {
         "event_id": f"whe_{secrets.token_hex(6)}",
@@ -282,7 +270,7 @@ async def test_outbound_webhook(workspace_id: str, webhook_id: str, actor_id: in
     }
     await db_models.webhook_events_col().insert_one(dict(ev_doc))
     await db_models.webhooks_col().update_one(
-        {"webhook_id": webhook_id},
+        {"webhook_id": webhook_id, "workspace_id": workspace_id},
         {
             "$set": {
                 "last_status": "ok" if ok else "failed",

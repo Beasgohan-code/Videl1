@@ -652,14 +652,16 @@ async def operate_filestore_file(
 async def compute_file_intelligence(workspace_id: str, user_id: int) -> dict[str, Any]:
     """Compute accurate File Intelligence insights strictly from collected records (zero auto-delete!)."""
     await sync_disk_and_clone_files(workspace_id, user_id)
-    files = await db_models.files_col().find({"workspace_id": workspace_id, "deleted": False}).to_list(length=5000)
+    query = {"workspace_id": workspace_id, "deleted": False}
+    files = await db_models.files_col().find(query).to_list(length=5000)
+    truncated = await db_models.files_col().count_documents(query) > len(files)
     for f in files:
         f.pop("_id", None)
 
     total_bytes = sum(int(f.get("size_bytes") or 0) for f in files)
     largest = sorted(files, key=lambda x: int(x.get("size_bytes") or 0), reverse=True)[:10]
     recent = sorted(files, key=lambda x: float(x.get("uploaded_ts") or 0), reverse=True)[:10]
-    popular = sorted(files, key=lambda x: int(x.get("access_count") or 0), reverse=True)[:10]
+    # Access counts are not instrumented, so popularity and unused status are unknown.
 
     # Duplicate candidates by SHA-256 (when known) or exact (lowercase filename, non-zero byte size)
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -687,9 +689,6 @@ async def compute_file_intelligence(workspace_id: str, user_id: int) -> dict[str
     by_category: dict[str, dict[str, int]] = {}
     by_destination: dict[str, int] = {}
     missing_metadata: list[dict[str, Any]] = []
-    integrity_issues: list[dict[str, Any]] = []
-    unused_files: list[dict[str, Any]] = []
-
     for f in files:
         cat = f.get("category") or "other"
         slot = by_category.setdefault(cat, {"count": 0, "bytes": 0})
@@ -701,11 +700,6 @@ async def compute_file_intelligence(workspace_id: str, user_id: int) -> dict[str
 
         if not f.get("description") and not f.get("tags"):
             missing_metadata.append({"file_uid": f["file_uid"], "filename": f["filename"]})
-        if int(f.get("size_bytes") or 0) == 0:
-            integrity_issues.append({"file_uid": f["file_uid"], "filename": f["filename"], "issue": "Zero-byte file"})
-        if int(f.get("access_count") or 0) == 0:
-            unused_files.append({"file_uid": f["file_uid"], "filename": f["filename"], "size_bytes": f.get("size_bytes", 0)})
-
     # Growth rate over the last 7 days (strictly observed uploads, never fabricated)
     cutoff_7d = time.time() - 7 * 86400
     bytes_last_7d = sum(int(f.get("size_bytes") or 0) for f in files if float(f.get("uploaded_ts") or 0) >= cutoff_7d)
@@ -716,16 +710,18 @@ async def compute_file_intelligence(workspace_id: str, user_id: int) -> dict[str
         "total_bytes": total_bytes,
         "largest_files": largest,
         "recent_files": recent,
-        "popular_files": popular,
+        "popular_files": None,
         "duplicate_candidates": duplicate_groups,
         "duplicate_reclaimable_bytes": reclaimable_bytes,
         "type_distribution": by_category,
         "destination_distribution": by_destination,
         "missing_metadata_count": len(missing_metadata),
         "missing_metadata": missing_metadata[:25],
-        "integrity_issues": integrity_issues[:25],
-        "unused_files_count": len(unused_files),
-        "unused_files": unused_files[:25],
+        "integrity_issues": None,
+        "unused_files_count": None,
+        "unused_files": None,
+        "unavailable_metrics": ["file_access", "integrity"],
+        "sample_truncated": truncated,
         "bytes_added_7d": bytes_last_7d,
         "projected_30d_growth_bytes": projected_30d_bytes,
         "auto_cleanup_note": "Recommendations are advisory only; Videl never deletes files automatically from estimates.",
@@ -762,11 +758,11 @@ async def compute_owner_and_bot_analytics(
 
     file_q: dict[str, Any] = {"workspace_id": workspace_id, "deleted": False}
     if bot_id and bot_id != "all":
+        if bot_id != "default":
+            await services_bots.get_owned_workspace_bot(workspace_id, bot_id)
         file_q["bot_id"] = str(bot_id)
     files = await db_models.files_col().find(file_q).to_list(length=5000)
-
-    dl_hist = await models_db.query_history("download", user_id=user_id, limit=200)
-    ul_hist = await models_db.query_history("upload", user_id=user_id, limit=200)
+    file_count = await db_models.files_col().count_documents(file_q)
 
     # Build daily buckets
     day_labels = [
@@ -774,7 +770,6 @@ async def compute_owner_and_bot_analytics(
         for i in range(span_days)
     ]
     uploads_by_day = {d: 0 for d in day_labels}
-    downloads_by_day = {d: 0 for d in day_labels}
     bytes_by_day = {d: 0 for d in day_labels}
 
     cur_files = prev_files = 0
@@ -789,60 +784,38 @@ async def compute_owner_and_bot_analytics(
         elif prev_s_ts <= ts < s_ts:
             prev_files += 1
 
-    cur_dl_ok = cur_dl_fail = prev_dl_ok = 0
-    for d in dl_hist["items"]:
-        ts = float(d.get("created_ts") or 0)
-        if s_ts <= ts <= e_ts:
-            if d.get("state") == "completed":
-                cur_dl_ok += 1
-                dk = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
-                if dk in downloads_by_day:
-                    downloads_by_day[dk] += 1
-            elif d.get("state") == "failed":
-                cur_dl_fail += 1
-        elif prev_s_ts <= ts < s_ts and d.get("state") == "completed":
-            prev_dl_ok += 1
-
-    cur_ul_ok = sum(1 for u in ul_hist["items"] if s_ts <= float(u.get("created_ts") or 0) <= e_ts and u.get("state") == "completed")
-    cur_ul_fail = sum(1 for u in ul_hist["items"] if s_ts <= float(u.get("created_ts") or 0) <= e_ts and u.get("state") == "failed")
-
-    cmds: list[dict[str, Any]] = []
-    if bot_id and bot_id != "all":
-        try:
-            cmds = await services_bots.list_bot_commands(workspace_id, bot_id)
-        except Exception:
-            cmds = []
+    # Legacy transfer histories and command counters are not workspace-scoped
+    # or comprehensively instrumented. Never attribute those values here.
 
     return {
         "range_days": span_days,
         "bot_id": bot_id or "all",
         "totals": {
-            "stored_files": len(files),
+            "stored_files": file_count,
             "storage_bytes": sum(int(f.get("size_bytes") or 0) for f in files),
-            "period_uploads": cur_files + cur_ul_ok,
-            "period_downloads": cur_dl_ok,
-            "failed_uploads": cur_ul_fail,
-            "failed_downloads": cur_dl_fail,
+            "period_uploads": cur_files,
+            "period_downloads": None,
+            "failed_uploads": None,
+            "failed_downloads": None,
             "telegram_impressions": None,  # Explicitly None ("unavailable"), never fabricated as 0!
         },
         "comparison_previous_period": {
             "files_delta": cur_files - prev_files,
-            "downloads_delta": cur_dl_ok - prev_dl_ok,
+            "downloads_delta": None,
         },
         "series": {
             "days": day_labels,
             "uploads": [uploads_by_day[d] for d in day_labels],
-            "downloads": [downloads_by_day[d] for d in day_labels],
+            "downloads": None,
             "storage_bytes_added": [bytes_by_day[d] for d in day_labels],
         },
-        "command_usage": [
-            {"command": c["command"], "usage_count": int(c.get("usage_count") or 0)}
-            for c in sorted(cmds, key=lambda x: int(x.get("usage_count") or 0), reverse=True)[:10]
-        ],
-        "unavailable_metrics": ["telegram_impressions"],
+        "command_usage": None,
+        "unavailable_metrics": ["telegram_impressions", "downloads", "failed_uploads", "failed_downloads", "command_usage"],
+        "file_sample_truncated": file_count > len(files),
         "data_availability": {
             "telegram_global_reach": "unavailable (Telegram Bot API does not expose passive channel impressions)",
-            "workspace_operations": "measured",
+            "workspace_operations": "transfer history unavailable: legacy records are not workspace-scoped",
+            "file_metrics": "sampled at 5000 active records" if file_count > len(files) else "active indexed File Store records only",
         },
     }
 
@@ -857,5 +830,5 @@ def export_analytics_csv(analytics_data: dict[str, Any]) -> str:
     dls = s.get("downloads") or []
     bts = s.get("storage_bytes_added") or []
     for i, d in enumerate(days):
-        writer.writerow([d, ups[i] if i < len(ups) else 0, dls[i] if i < len(dls) else 0, bts[i] if i < len(bts) else 0])
+        writer.writerow([d, ups[i] if i < len(ups) else 0, dls[i] if i < len(dls) else "", bts[i] if i < len(bts) else 0])
     return buf.getvalue()

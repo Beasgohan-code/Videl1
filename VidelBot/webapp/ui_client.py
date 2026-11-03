@@ -289,17 +289,14 @@ CLIENT_JS = r"""
   const RENDERERS = {
     /* 1. Workspace Overview & Custom Dashboard Builder */
     async overview(vp) {
-      const [wsData, layoutData, dlData, schedData] = await Promise.all([
+      const [wsData, layoutData] = await Promise.all([
         api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}`),
         api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/dashboard-layout`),
-        api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/downloads`),
-        api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/schedules`),
       ]);
       const u = wsData.usage || {};
       const checklistDone = [
         S.bots.length > 0,
         u.files_count > 0,
-        (schedData.schedules || []).length > 0,
       ];
 
       const widgetsHtml = (layoutData.widgets || []).map((wid, idx) => {
@@ -318,25 +315,22 @@ CLIENT_JS = r"""
           </div>`;
         }
         if (wid === "active_tasks") {
-          const active = (dlData.tasks || []).filter((t) => ["queued", "downloading", "uploading"].includes(t.status));
           return `<div class="card">
-            <div class="card-header"><h3 class="card-title">⬇ Active Transfer Queue</h3><button class="btn btn-sm" data-goto="downloads">Queue</button></div>
-            <div style="font-size:26px;font-weight:700">${active.length}</div>
-            <div class="stat-meta">${(dlData.history || []).length} historical transfers recorded</div>
+            <div class="card-header"><h3 class="card-title">⬇ Active Transfer Queue</h3></div>
+            <div class="stat-meta">Workspace-attributed transfers are not available yet.</div>
           </div>`;
         }
         if (wid === "notifications") {
           const ntfs = (wsData.recent_notifications || []).slice(0, 4);
           return `<div class="card">
-            <div class="card-header"><h3 class="card-title">🔔 Recent Alerts</h3><span class="badge badge-neutral">${u.unread_notifications || 0} unread</span></div>
-            ${ntfs.length ? ntfs.map((n) => `<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:12.5px"><strong>${esc(n.title)}</strong> — <span style="color:var(--text-secondary)">${esc(n.message)}</span></div>`).join("") : `<div class="stat-meta">No alerts recorded yet.</div>`}
+            <div class="card-header"><h3 class="card-title">🔔 Recent Alerts</h3><span class="badge badge-neutral">${u.unread_notifications == null ? "Permission required" : `${u.unread_notifications} unread`}</span></div>
+            ${ntfs.length ? ntfs.map((n) => `<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:12.5px"><strong>${esc(n.title)}</strong> — <span style="color:var(--text-secondary)">${esc(n.message)}</span></div>`).join("") : `<div class="stat-meta">${u.unread_notifications == null ? "Logs permission required." : "No alerts recorded yet."}</div>`}
           </div>`;
         }
         if (wid === "scheduled_jobs") {
           return `<div class="card">
-            <div class="card-header"><h3 class="card-title">⏱ Scheduled Jobs</h3><button class="btn btn-sm" data-goto="automation">Schedules</button></div>
-            <div style="font-size:26px;font-weight:700">${(schedData.schedules || []).length}</div>
-            <div class="stat-meta">Automated downloads & recurring tasks</div>
+            <div class="card-header"><h3 class="card-title">⏱ Scheduled Jobs</h3></div>
+            <div class="stat-meta">Workspace-attributed schedules are not available yet.</div>
           </div>`;
         }
         return `<div class="card">
@@ -363,12 +357,11 @@ CLIENT_JS = r"""
         <div class="card" style="margin-bottom:18px">
           <div class="card-header">
             <h3 class="card-title">Getting Started Checklist</h3>
-            <span class="badge badge-success">${checklistDone.filter(Boolean).length} / 3 Completed</span>
+            <span class="badge badge-success">${checklistDone.filter(Boolean).length} / 2 Completed</span>
           </div>
-          <div class="grid grid-3">
-            <div>${checklistDone[0] ? "✅" : "⬜"} <strong>1. Register or connect a Telegram bot</strong><div class="stat-meta">Use Bot Creation Studio or sync from /clone</div></div>
-            <div>${checklistDone[1] ? "✅" : "⬜"} <strong>2. Upload or index File Store items</strong><div class="stat-meta">Organize files & inspect duplicate intelligence</div></div>
-            <div>${checklistDone[2] ? "✅" : "⬜"} <strong>3. Configure an automation or schedule</strong><div class="stat-meta">Automate notifications, downloads, or reports</div></div>
+          <div class="grid grid-2">
+            <div>${checklistDone[0] ? "✅" : "⬜"} <strong>1. Register or connect a Telegram bot</strong><div class="stat-meta">Use Bot Creation Studio; legacy bots require migration.</div></div>
+            <div>${checklistDone[1] ? "✅" : "⬜"} <strong>2. Upload File Store items</strong><div class="stat-meta">Organize files & inspect duplicate candidates.</div></div>
           </div>
         </div>
 
@@ -743,7 +736,7 @@ CLIENT_JS = r"""
           <div class="stat-card"><div class="stat-label">Total Workspace Bots</div><div class="stat-value">${fleet.total_bots || 0}</div></div>
           <div class="stat-card"><div class="stat-label">Live Worker Processes</div><div class="stat-value">${sc.running || 0}</div><div class="stat-meta">Active MTProto workers</div></div>
           <div class="stat-card"><div class="stat-label">Credentials Valid · Idle</div><div class="stat-value">${sc.credentials_verified_idle || 0}</div><div class="stat-meta">Token verified, process stopped</div></div>
-          <div class="stat-card"><div class="stat-label">Config Drift Fields</div><div class="stat-value">${(fleet.config_drift_fields || []).length}</div><div class="stat-meta">${(fleet.config_drift_fields || []).join(", ") || "All bots aligned"}</div></div>
+          <div class="stat-card"><div class="stat-label">Config Drift Fields</div><div class="stat-value">${fleet.config_drift_fields == null ? "—" : fleet.config_drift_fields.length}</div><div class="stat-meta">${fleet.config_drift_fields == null ? "Bot settings permission required" : (fleet.config_drift_fields.join(", ") || "All bots aligned")}</div></div>
         </div>
 
         <div class="grid grid-2" style="margin-bottom:18px">
@@ -766,16 +759,19 @@ CLIENT_JS = r"""
 
           <div class="card">
             <div class="card-header"><h3 class="card-title">Outbound Integration Webhooks</h3></div>
+            ${ops.webhooks.availability ? `<div class="stat-meta">Integration permission required.</div>` : `
             <div style="display:flex;gap:8px;margin-bottom:10px">
-              <input id="wh-url" class="input" placeholder="https://example.com/webhook">
+              <input id="wh-url" class="input" placeholder="https://example.com/webhook" aria-label="Public webhook URL without credentials">
               <button id="btn-wh-add" class="btn btn-primary">Add</button>
             </div>
+            <div class="stat-meta">Use a public endpoint without credentials in the URL. Queries, fragments and redirects are not supported. Saved URLs are not displayed.</div>
             ${(ops.webhooks.webhooks || []).map((w) => `
               <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12.5px">
-                <span class="mono">${esc(w.url)} (${esc(w.last_status)})</span>
+                <span>${esc(w.name)} (${esc(w.last_status)})</span>
                 <button class="btn btn-sm" data-ping-wh="${esc(w.webhook_id)}">Ping</button>
               </div>
             `).join("") || `<div class="stat-meta">No outbound webhooks configured.</div>`}
+            `}
           </div>
         </div>
 
@@ -809,7 +805,7 @@ CLIENT_JS = r"""
         navigate("fleet", true);
       };
 
-      $("btn-wh-add").onclick = async () => {
+      if ($("btn-wh-add")) $("btn-wh-add").onclick = async () => {
         try {
           await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/health`, { method: "POST", body: { url: $("wh-url").value } });
           toast("Webhook registered", "success");
@@ -1365,13 +1361,13 @@ CLIENT_JS = r"""
         <div class="page-header">
           <div>
             <h1 class="page-title">File Intelligence Center</h1>
-            <p class="page-subtitle">${esc(intel.auto_cleanup_note)}</p>
+            <p class="page-subtitle">${esc(intel.auto_cleanup_note)} ${intel.sample_truncated ? "Results use a sample of 5,000 active records." : ""}</p>
           </div>
         </div>
 
         <div class="grid grid-4" style="margin-bottom:18px">
           <div class="stat-card"><div class="stat-label">Analyzed Files</div><div class="stat-value">${intel.total_files}</div></div>
-          <div class="stat-card"><div class="stat-label">Duplicate Reclaimable</div><div class="stat-value">${fmtBytes(intel.duplicate_reclaimable_bytes)}</div><div class="stat-meta">${intel.duplicate_candidates.length} duplicate group(s)</div></div>
+          <div class="stat-card"><div class="stat-label">Estimated Duplicate Space</div><div class="stat-value">${fmtBytes(intel.duplicate_reclaimable_bytes)}</div><div class="stat-meta">${intel.duplicate_candidates.length} duplicate group(s)</div></div>
           <div class="stat-card"><div class="stat-label">Missing Tags / Desc</div><div class="stat-value">${intel.missing_metadata_count}</div></div>
           <div class="stat-card"><div class="stat-label">Observed 30d Projection</div><div class="stat-value">${fmtBytes(intel.projected_30d_growth_bytes)}</div><div class="stat-meta">Based on ${fmtBytes(intel.bytes_added_7d)} in last 7d</div></div>
         </div>
@@ -1383,7 +1379,7 @@ CLIENT_JS = r"""
           </div>
           <div class="card">
             <h3 class="card-title" style="margin-bottom:10px">Duplicate Candidates (Advisory Only)</h3>
-            ${(intel.duplicate_candidates || []).map((g) => `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><strong>${g.count} copies (${esc(g.match_basis)})</strong> · Reclaimable: ${fmtBytes(g.reclaimable_bytes)}</div>`).join("") || `<div class="stat-meta">Zero duplicate candidates detected.</div>`}
+            ${(intel.duplicate_candidates || []).map((g) => `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><strong>${g.count} candidates (${esc(g.match_basis)})</strong> · Estimated: ${fmtBytes(g.reclaimable_bytes)}</div>`).join("") || `<div class="stat-meta">Zero duplicate candidates detected.</div>`}
           </div>
         </div>
       `;
@@ -1542,7 +1538,7 @@ CLIENT_JS = r"""
         <div class="page-header">
           <div>
             <h1 class="page-title">Bot & File Store Owner Analytics</h1>
-            <p class="page-subtitle">Measured workspace & per-bot metrics (${days}-day window). Unexposed passive Telegram metrics are explicitly marked Unavailable rather than faked as zero.</p>
+            <p class="page-subtitle">Active indexed File Store records (${days}-day window); deleted files and legacy transfers are excluded. ${data.file_sample_truncated ? "Storage and period values use a sample of 5,000 records." : ""}</p>
           </div>
           <div class="toolbar-group">
             ${[1, 7, 30, 90].map((d) => `<button class="btn btn-sm ${d === days ? "btn-primary" : ""}" data-days="${d}">${d === 1 ? "Today" : d + "d"}</button>`).join("")}
@@ -1553,18 +1549,18 @@ CLIENT_JS = r"""
         <div class="grid grid-4" style="margin-bottom:18px">
           <div class="stat-card"><div class="stat-label">Stored Files</div><div class="stat-value">${t.stored_files}</div><div class="stat-meta">Δ vs prev period: ${cmp.files_delta >= 0 ? "+" : ""}${cmp.files_delta}</div></div>
           <div class="stat-card"><div class="stat-label">Storage Consumed</div><div class="stat-value">${fmtBytes(t.storage_bytes)}</div></div>
-          <div class="stat-card"><div class="stat-label">Completed Transfers</div><div class="stat-value">${(t.period_uploads || 0) + (t.period_downloads || 0)}</div><div class="stat-meta">${t.failed_downloads + t.failed_uploads} failed</div></div>
+          <div class="stat-card"><div class="stat-label">Transfer History</div><div class="stat-value" style="font-size:16px;color:var(--text-muted)">Unavailable</div><div class="stat-meta">Legacy transfers lack workspace attribution</div></div>
           <div class="stat-card"><div class="stat-label">Passive TG Impressions</div><div class="stat-value" style="font-size:16px;color:var(--text-muted)">Unavailable</div><div class="stat-meta">Not exposed by Bot API</div></div>
         </div>
 
         <div class="grid grid-2">
           <div class="card">
-            <h3 class="card-title" style="margin-bottom:8px">Daily Upload Activity</h3>
+            <h3 class="card-title" style="margin-bottom:8px">Daily Added Active Files</h3>
             ${renderSvgBarChart(data.series.days, data.series.uploads, "#3b82f6")}
           </div>
           <div class="card">
             <h3 class="card-title" style="margin-bottom:8px">Daily Download Activity</h3>
-            ${renderSvgBarChart(data.series.days, data.series.downloads, "#10b981")}
+            <div class="stat-meta">Unavailable: download history is not attributed to a workspace.</div>
           </div>
         </div>
       `;
@@ -1599,7 +1595,7 @@ CLIENT_JS = r"""
         <div class="page-header">
           <div>
             <h1 class="page-title">Automation Studio & Scheduled Task Center</h1>
-            <p class="page-subtitle">Idempotent Trigger → Condition → Action workflows with recursion protection, plus scheduled downloads & announcements.</p>
+            <p class="page-subtitle">Workflow configuration and manual runs are available. Automatic triggers, durable idempotency and workspace-isolated schedules are not yet complete.</p>
           </div>
         </div>
 
@@ -1968,7 +1964,7 @@ CLIENT_JS = r"""
                 <div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
                   <code>${esc(a.action)}</code> · ${esc(a.target || "—")} · <span style="color:var(--text-muted)">${esc(a.created_at)}</span>
                 </div>
-              `).join("") || `<div class="stat-meta">No audit entries yet.</div>`}
+              `).join("") || `<div class="stat-meta">${esc(ntfRes.activity_logs_availability || "No audit entries yet.")}</div>`}
             </div>
           </div>
         </div>

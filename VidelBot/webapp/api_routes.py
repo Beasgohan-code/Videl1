@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 import config
-from platform_core import destinations, download_engine, media_studio, models_db, providers, scheduler_daemon
+from platform_core import destinations, download_engine, media_studio, models_db, providers
 from webapp import auth, db_models, services_bots, services_clone_files, services_ops
 
 log = logging.getLogger("videl.webapp.api")
@@ -48,6 +48,22 @@ def _security_headers(*, content_type: str = "application/json") -> dict[str, st
 
 def _ok(data: Any, status: int = 200) -> web.Response:
     return web.json_response(data, status=status, headers=_security_headers())
+
+
+def _can_read_scope(ctx: auth.AuthContext, membership: dict[str, Any], scope: str) -> bool:
+    return bool((membership.get("permissions") or {}).get(scope)) and (
+        ctx.auth_kind != "api_key" or scope in ctx.api_key_scopes
+    )
+
+
+def _bot_for_member(bot: dict[str, Any], ctx: auth.AuthContext, membership: dict[str, Any]) -> dict[str, Any]:
+    result = dict(bot)
+    if not _can_read_scope(ctx, membership, "bot_settings"):
+        result.pop("settings", None)
+        result.pop("features", None)
+    if not _can_read_scope(ctx, membership, "logs"):
+        result.pop("last_error", None)
+    return result
 
 
 def _api(fn: Callable[[web.Request], Awaitable[web.StreamResponse]]):
@@ -198,7 +214,8 @@ async def api_workspace_detail(request: web.Request) -> web.Response:
     if request.method == "GET":
         bots = await services_bots.list_workspace_bots(ws_id, user_id=ctx.user_id, include_archived=True)
         files = await services_clone_files.query_filestore_files(ws_id, user_id=ctx.user_id, page_size=5)
-        ntfs = await db_models.notifications_col().find({"workspace_id": ws_id}).sort("created_ts", -1).limit(10).to_list(length=10)
+        can_read_logs = (mem.get("permissions") or {}).get("logs", False)
+        ntfs = (await db_models.notifications_col().find({"workspace_id": ws_id}).sort("created_ts", -1).limit(10).to_list(length=10)) if can_read_logs else []
         for n in ntfs:
             n.pop("_id", None)
         return _ok({
@@ -209,7 +226,7 @@ async def api_workspace_detail(request: web.Request) -> web.Response:
                 "bots_count": len(bots),
                 "files_count": files["total"],
                 "storage_bytes": files["total_bytes"],
-                "unread_notifications": sum(1 for n in ntfs if not n.get("read")),
+                "unread_notifications": sum(1 for n in ntfs if not n.get("read")) if can_read_logs else None,
             },
             "recent_notifications": ntfs,
         })
@@ -238,7 +255,7 @@ async def api_workspace_team(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="team_management")
         return _ok(await services_bots.list_workspace_team(ws_id))
     mem = await auth.require_workspace_access(ctx, ws_id, scope="team_management")
     body = await _json_body(request)
@@ -292,7 +309,7 @@ async def api_bots_collection(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        mem = await auth.require_workspace_access(ctx, ws_id)
         bots = await services_bots.list_workspace_bots(
             ws_id,
             user_id=ctx.user_id,
@@ -302,7 +319,7 @@ async def api_bots_collection(request: web.Request) -> web.Response:
             tag=request.query.get("tag", ""),
             include_archived=request.query.get("include_archived", "").lower() in ("1", "true"),
         )
-        return _ok({"bots": bots})
+        return _ok({"bots": [_bot_for_member(b, ctx, mem) for b in bots]})
     await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
     body = await _json_body(request)
     bot = await services_bots.create_or_register_bot(
@@ -320,9 +337,9 @@ async def api_bot_item(request: web.Request) -> web.Response:
     ws_id = request.match_info["ws_id"]
     bot_id = request.match_info["bot_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        mem = await auth.require_workspace_access(ctx, ws_id)
         raw = await services_bots.get_owned_workspace_bot(ws_id, bot_id)
-        return _ok({"bot": services_bots._public_bot_doc(raw)})
+        return _ok({"bot": _bot_for_member(services_bots._public_bot_doc(raw), ctx, mem)})
     await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
     if request.method in ("PATCH", "PUT"):
         body = await _json_body(request)
@@ -338,9 +355,15 @@ async def api_bot_item(request: web.Request) -> web.Response:
 async def api_fleet(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
-    await auth.require_workspace_access(ctx, ws_id)
+    mem = await auth.require_workspace_access(ctx, ws_id)
     if request.method == "GET":
-        return _ok(await services_bots.fleet_summary_and_drift(ws_id, ctx.user_id))
+        data = await services_bots.fleet_summary_and_drift(ws_id, ctx.user_id)
+        data["bots"] = [_bot_for_member(b, ctx, mem) for b in data["bots"]]
+        if not _can_read_scope(ctx, mem, "bot_settings"):
+            data["config_drift_fields"] = None
+        if not _can_read_scope(ctx, mem, "logs"):
+            data["recent_errors"] = None
+        return _ok(data)
     await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
     body = await _json_body(request)
     res = await services_bots.fleet_bulk_operation(
@@ -361,7 +384,7 @@ async def api_bot_config(request: web.Request) -> web.Response:
     ws_id = request.match_info["ws_id"]
     bot_id = request.match_info["bot_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
         revs = await services_bots.list_bot_revisions(ws_id, bot_id)
         return _ok({"revisions": revs, "dependencies": services_bots.FEATURE_DEPENDENCIES})
     await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
@@ -387,7 +410,7 @@ async def api_bot_environments(request: web.Request) -> web.Response:
     ws_id = request.match_info["ws_id"]
     bot_id = request.match_info["bot_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
         return _ok({"environments": await services_bots.list_bot_environments(ws_id, bot_id)})
     await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
     body = await _json_body(request)
@@ -410,7 +433,7 @@ async def api_bot_commands(request: web.Request) -> web.Response:
     ws_id = request.match_info["ws_id"]
     bot_id = request.match_info["bot_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="commands")
         cmds = await services_bots.list_bot_commands(
             ws_id,
             bot_id,
@@ -433,7 +456,7 @@ async def api_clones(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="cloning")
         hist = await services_clone_files.list_clone_history(ws_id, kind=request.query.get("kind", ""))
         return _ok({"history": hist})
     await auth.require_workspace_access(ctx, ws_id, scope="cloning")
@@ -592,7 +615,7 @@ async def api_downloads(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="filestore")
         tasks = download_engine.engine.list_tasks(
             user_id=ctx.user_id,
             status=request.query.get("status", ""),
@@ -651,7 +674,7 @@ async def api_media_studio(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="filestore")
         return _ok({
             "catalog": media_studio.STUDIO_CATALOG,
             "workspace_files": destinations.list_user_files(ctx.user_id)["files"],
@@ -691,10 +714,11 @@ async def api_analytics(request: web.Request) -> web.Response:
 async def api_health_and_webhooks(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
-    await auth.require_workspace_access(ctx, ws_id, scope="logs")
+    mem = await auth.require_workspace_access(ctx, ws_id, scope="logs")
     if request.method == "GET":
         health = await services_ops.bot_operations_health(ws_id, ctx.user_id)
-        hooks = await services_ops.list_webhooks_and_events(ws_id, event_type=request.query.get("event_type", ""))
+        can_integrate = (mem.get("permissions") or {}).get("integrations") and (ctx.auth_kind != "api_key" or "integrations" in ctx.api_key_scopes)
+        hooks = (await services_ops.list_webhooks_and_events(ws_id, event_type=request.query.get("event_type", ""))) if can_integrate else {"webhooks": [], "recent_events": [], "availability": "permission required"}
         return _ok({"health": health, "webhooks": hooks})
     await auth.require_workspace_access(ctx, ws_id, scope="integrations")
     body = await _json_body(request)
@@ -713,7 +737,7 @@ async def api_automations(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="automation")
         wfs = await db_models.automations_col().find({"workspace_id": ws_id}).sort("created_ts", -1).to_list(length=100)
         runs = await db_models.automation_runs_col().find({"workspace_id": ws_id}).sort("created_ts", -1).limit(50).to_list(length=50)
         for w in wfs:
@@ -745,7 +769,7 @@ async def api_schedules(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="automation")
         return _ok({"schedules": await models_db.list_scheduled_jobs(user_id=ctx.user_id)})
     await auth.require_workspace_access(ctx, ws_id, scope="automation")
     body = await _json_body(request)
@@ -757,8 +781,7 @@ async def api_schedules(request: web.Request) -> web.Response:
         ok = await models_db.delete_scheduled_job(str(body.get("job_id") or ""), user_id=ctx.user_id)
         return _ok({"deleted": ok})
     if act == "run_due":
-        ran = await scheduler_daemon.tick_once()
-        return _ok({"executed": ran})
+        raise services_bots.SaaSValidationError("Manually running all users’ due jobs from a workspace is not supported.")
     delay_min = max(0, int(body.get("delay_minutes") or 60))
     job = await models_db.create_scheduled_job(
         user_id=ctx.user_id,
@@ -779,7 +802,7 @@ async def api_templates(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="templates")
         return _ok(await services_ops.list_templates(ws_id, category=request.query.get("category", "")))
     await auth.require_workspace_access(ctx, ws_id, scope="templates")
     body = await _json_body(request)
@@ -801,7 +824,7 @@ async def api_integrations(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id)
+        await auth.require_workspace_access(ctx, ws_id, scope="integrations")
         conns = await models_db.list_user_connections(ctx.user_id)
         return _ok({"connections": conns, "destinations": destinations.DESTINATION_CATALOG})
     await auth.require_workspace_access(ctx, ws_id, scope="integrations")
@@ -852,14 +875,14 @@ async def api_developer_keys(request: web.Request) -> web.Response:
 async def api_bundle_backup(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
+    for scope in ("bot_settings", "commands", "filestore", "templates", "automation"):
+        await auth.require_workspace_access(ctx, ws_id, scope=scope)
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
         bundle = await services_ops.export_workspace_bundle(ws_id, ctx.user_id)
         hist = await db_models.backups_meta_col().find({"workspace_id": ws_id}).sort("created_ts", -1).limit(20).to_list(length=20)
         for h in hist:
             h.pop("_id", None)
         return _ok({"bundle": bundle, "history": hist})
-    await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
     body = await _json_body(request)
     res = await services_ops.import_workspace_bundle(
         ws_id, ctx.user_id, body.get("bundle") or {}, confirmed=bool(body.get("confirmed", False))
@@ -886,7 +909,7 @@ async def api_dashboard_layout(request: web.Request) -> web.Response:
 async def api_notifications_and_activity(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
-    await auth.require_workspace_access(ctx, ws_id)
+    await auth.require_workspace_access(ctx, ws_id, scope="logs")
     if request.method == "GET":
         q: dict[str, Any] = {"workspace_id": ws_id}
         if request.query.get("unread_only") in ("1", "true"):
@@ -894,8 +917,8 @@ async def api_notifications_and_activity(request: web.Request) -> web.Response:
         ntfs = await db_models.notifications_col().find(q).sort("created_ts", -1).limit(80).to_list(length=80)
         for n in ntfs:
             n.pop("_id", None)
-        audits = await models_db.list_audit_logs(limit=60, actor_id=ctx.user_id)
-        return _ok({"notifications": ntfs, "activity_logs": audits})
+        return _ok({"notifications": ntfs, "activity_logs": [],
+                    "activity_logs_availability": "unavailable: legacy audit records are not workspace-scoped"})
     body = await _json_body(request)
     if body.get("mark_all_read"):
         await db_models.notifications_col().update_many({"workspace_id": ws_id}, {"$set": {"read": True}})
