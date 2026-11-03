@@ -701,7 +701,7 @@ async def import_workspace_bundle(
     existing_bots = {b["display_name"]: b for b in await services_bots.list_workspace_bots(workspace_id, user_id=actor_id, include_archived=True)}
     conflicts = [b.get("display_name") for b in bots_in if b.get("display_name") in existing_bots]
 
-    if not confirmed:
+    if confirmed is not True:
         return {
             "preview": True,
             "requires_confirmation": True,

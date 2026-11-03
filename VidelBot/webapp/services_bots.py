@@ -949,7 +949,7 @@ async def fleet_bulk_operation(
         doc = await get_owned_workspace_bot(workspace_id, bid)
         affected.append(_public_bot_doc(doc))
 
-    if not confirmed:
+    if confirmed is not True:
         return {
             "preview": True,
             "operation": operation,
@@ -1108,8 +1108,10 @@ async def update_or_promote_environment(
     if src_name not in ("development", "testing", "production"):
         raise SaaSValidationError("Environment must be development, testing, or production.")
 
-    # Direct edit of a single non-production (or confirmed production) environment
+    # A direct production edit is also a production change, not just promotion.
     if not target_env:
+        if src_name == "production" and confirmed is not True:
+            raise SaaSValidationError("Editing production requires explicit confirmation.")
         cur = await db_models.bot_envs_col().find_one({"bot_id": bot_id, "env": src_name}) or {}
         nf = dict(cur.get("features") or {})
         if isinstance(features, dict):
@@ -1137,7 +1139,7 @@ async def update_or_promote_environment(
         {"features": tgt_doc.get("features") or {}, "settings": tgt_doc.get("settings") or {}},
         {"features": src_doc.get("features") or {}, "settings": src_doc.get("settings") or {}},
     )
-    if not confirmed:
+    if confirmed is not True:
         return {"preview": True, "requires_confirmation": True, "source_env": src_name, "target_env": tgt_name, "diffs": diffs}
 
     await db_models.bot_envs_col().update_one(

@@ -213,9 +213,11 @@ async def api_workspace_detail(request: web.Request) -> web.Response:
     mem = await auth.require_workspace_access(ctx, ws_id)
     if request.method == "GET":
         bots = await services_bots.list_workspace_bots(ws_id, user_id=ctx.user_id, include_archived=True)
-        files = await services_clone_files.query_filestore_files(ws_id, user_id=ctx.user_id, page_size=5)
-        can_read_logs = (mem.get("permissions") or {}).get("logs", False)
+        can_read_files = _can_read_scope(ctx, mem, "filestore")
+        files = await services_clone_files.query_filestore_files(ws_id, user_id=ctx.user_id, page_size=5) if can_read_files else None
+        can_read_logs = _can_read_scope(ctx, mem, "logs")
         ntfs = (await db_models.notifications_col().find({"workspace_id": ws_id}).sort("created_ts", -1).limit(10).to_list(length=10)) if can_read_logs else []
+        unread = await db_models.notifications_col().count_documents({"workspace_id": ws_id, "read": False}) if can_read_logs else None
         for n in ntfs:
             n.pop("_id", None)
         return _ok({
@@ -224,9 +226,10 @@ async def api_workspace_detail(request: web.Request) -> web.Response:
             "my_permissions": mem["permissions"],
             "usage": {
                 "bots_count": len(bots),
-                "files_count": files["total"],
-                "storage_bytes": files["total_bytes"],
-                "unread_notifications": sum(1 for n in ntfs if not n.get("read")) if can_read_logs else None,
+                "files_count": files["total"] if files is not None else None,
+                "storage_bytes": files["total_bytes"] if files is not None else None,
+                "filestore_sample_limit": services_clone_files.FILESTORE_QUERY_LIMIT if files is not None else None,
+                "unread_notifications": unread,
             },
             "recent_notifications": ntfs,
         })
@@ -372,7 +375,7 @@ async def api_fleet(request: web.Request) -> web.Response:
         bot_ids=list(body.get("bot_ids") or []),
         operation=str(body.get("operation") or ""),
         value=body.get("value"),
-        confirmed=bool(body.get("confirmed", False)),
+        confirmed=body.get("confirmed") is True,
     )
     return _ok(res)
 
@@ -422,7 +425,7 @@ async def api_bot_environments(request: web.Request) -> web.Response:
         target_env=str(body.get("target_env") or ""),
         features=body.get("features"),
         settings=body.get("settings"),
-        confirmed=bool(body.get("confirmed", False)),
+        confirmed=body.get("confirmed") is True,
     )
     return _ok(res)
 
@@ -915,7 +918,7 @@ async def api_bundle_backup(request: web.Request) -> web.Response:
         return _ok({"bundle": bundle, "history": hist})
     body = await _json_body(request)
     res = await services_ops.import_workspace_bundle(
-        ws_id, ctx.user_id, body.get("bundle") or {}, confirmed=bool(body.get("confirmed", False))
+        ws_id, ctx.user_id, body.get("bundle") or {}, confirmed=body.get("confirmed") is True
     )
     return _ok(res)
 

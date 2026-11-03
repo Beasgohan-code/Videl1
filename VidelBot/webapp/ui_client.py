@@ -309,9 +309,9 @@ CLIENT_JS = r"""
         }
         if (wid === "filestore_usage") {
           return `<div class="card">
-            <div class="card-header"><h3 class="card-title">📦 File Store Usage</h3><button class="btn btn-sm" data-goto="filestore">Open Vault</button></div>
-            <div style="font-size:26px;font-weight:700">${u.files_count || 0} files</div>
-            <div class="stat-meta">${fmtBytes(u.storage_bytes || 0)} indexed across workspace</div>
+            <div class="card-header"><h3 class="card-title">📦 File Store Usage</h3>${u.files_count == null ? "" : '<button class="btn btn-sm" data-goto="filestore">Open Vault</button>'}</div>
+            <div style="font-size:26px;font-weight:700">${u.files_count == null ? "Unavailable" : `${u.files_count} files`}</div>
+            <div class="stat-meta">${u.storage_bytes == null ? "File Store permission required." : `${fmtBytes(u.storage_bytes)} indexed${u.files_count >= u.filestore_sample_limit ? ` (sample of up to ${u.filestore_sample_limit} records)` : " across workspace"}`}</div>
           </div>`;
         }
         if (wid === "active_tasks") {
@@ -336,7 +336,7 @@ CLIENT_JS = r"""
         return `<div class="card">
           <div class="card-header"><h3 class="card-title">${esc(wid.replace(/_/g, " ").toUpperCase())}</h3>
           <button class="btn btn-sm" data-remove-widget="${esc(wid)}" title="Remove widget">✕</button></div>
-          <div class="stat-meta">Live workspace widget (#${idx + 1}) — real-time data synced from MongoDB.</div>
+          <div class="stat-meta">This widget's data is not available yet.</div>
         </div>`;
       }).join("");
 
@@ -357,11 +357,11 @@ CLIENT_JS = r"""
         <div class="card" style="margin-bottom:18px">
           <div class="card-header">
             <h3 class="card-title">Getting Started Checklist</h3>
-            <span class="badge badge-success">${checklistDone.filter(Boolean).length} / 2 Completed</span>
+            <span class="badge badge-success">${checklistDone.filter(Boolean).length} / 2 Completed${u.files_count == null ? " · File status unavailable" : ""}</span>
           </div>
           <div class="grid grid-2">
             <div>${checklistDone[0] ? "✅" : "⬜"} <strong>1. Register or connect a Telegram bot</strong><div class="stat-meta">Use Bot Creation Studio; legacy bots require migration.</div></div>
-            <div>${checklistDone[1] ? "✅" : "⬜"} <strong>2. Upload File Store items</strong><div class="stat-meta">Organize files & inspect duplicate candidates.</div></div>
+            <div>${u.files_count == null ? "—" : (checklistDone[1] ? "✅" : "⬜")} <strong>2. Upload File Store items</strong><div class="stat-meta">${u.files_count == null ? "File Store permission required." : "Organize files & inspect duplicate candidates."}</div></div>
           </div>
         </div>
 

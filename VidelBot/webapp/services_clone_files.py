@@ -31,6 +31,8 @@ CLONEABLE_SECTIONS = (
     "text_templates",
 )
 
+FILESTORE_QUERY_LIMIT = 2000
+
 DEFAULT_FILESTORE_CONFIG: dict[str, Any] = {
     "storage_channel_id": 0,
     "destination": "local",
@@ -569,7 +571,7 @@ async def query_filestore_files(
     if category and category != "all":
         q["category"] = category
 
-    rows = await db_models.files_col().find(q).to_list(length=2000)
+    rows = await db_models.files_col().find(q).to_list(length=FILESTORE_QUERY_LIMIT)
     needle = (search or "").strip().lower()
     mf = (mime_filter or "").strip().lower()
     tf = (tag or "").strip().lower()

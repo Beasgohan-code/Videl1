@@ -940,3 +940,86 @@ def test_clone_rollback_compare_and_set_does_not_overwrite_concurrent_change(mon
             assert (await real.find_one({"bot_id": b["bot_id"]}))["settings"]["welcome_message"] == "Concurrent edit"
             assert not (await db_models.clones_col().find_one({"clone_id": clone_id}))["rolled_back"]
     run(go())
+
+
+def test_workspace_overview_respects_domains_and_counts_all_unread(tmp_path, monkeypatch):
+    from webapp import services_clone_files as fs
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 19001, "Owner")
+            viewer, _ = await _login_link(cli, 19002, "Viewer")
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                                   json={"user_id": 19002, "role": "viewer"})).status == 201
+            form = FormData()
+            form.add_field("file", b"confidential file bytes", filename="private.txt", content_type="text/plain")
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/filestore", headers=owner, data=form)).status == 201
+            await db_models.notifications_col().update_many({"workspace_id": ws}, {"$set": {"read": True}})
+            for i in range(12):
+                await db_models.create_notification(ws, category="test", title=f"Alert {i}", message="private")
+            await db_models.create_notification("another-workspace", category="test", title="Other", message="private")
+            owner_response = await cli.get(f"/api/v1/workspaces/{ws}", headers=owner)
+            assert owner_response.status == 200
+            data = await owner_response.json()
+            assert data["usage"]["files_count"] == 1
+            assert data["usage"]["storage_bytes"] == len(b"confidential file bytes")
+            assert data["usage"]["unread_notifications"] == 12
+            assert len(data["recent_notifications"]) == 10
+
+            async def forbidden_query(*args, **kwargs):
+                raise AssertionError("unauthorized file query")
+            monkeypatch.setattr(fs, "query_filestore_files", forbidden_query)
+            viewer_response = await cli.get(f"/api/v1/workspaces/{ws}", headers=viewer)
+            assert viewer_response.status == 200
+            data = await viewer_response.json()
+            assert data["usage"]["files_count"] is None
+            assert data["usage"]["storage_bytes"] is None
+            assert data["usage"]["filestore_sample_limit"] is None
+            assert data["usage"]["unread_notifications"] is None
+            assert data["recent_notifications"] == []
+
+    run(go())
+
+
+def test_production_environment_requires_explicit_boolean_confirmation():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 19003, "Owner")
+            bot = await services_bots.create_or_register_bot(ws, 19003, {"display_name": "Env Bot"}, allow_unverified_offline=True)
+            url = f"/api/v1/workspaces/{ws}/bots/{bot['bot_id']}/environments"
+            assert (await cli.get(url, headers=owner)).status == 200
+            before = await db_models.bot_envs_col().find_one({"bot_id": bot["bot_id"], "env": "production"})
+            for value in (None, False, "false", 1):
+                payload = {"source_env": "production", "settings": {"welcome_message": "Changed"}, "confirmed": value}
+                assert (await cli.post(url, headers=owner, json=payload)).status == 400
+                after = await db_models.bot_envs_col().find_one({"bot_id": bot["bot_id"], "env": "production"})
+                assert after == before
+                response = await cli.post(url, headers=owner, json={"source_env": "development", "target_env": "production", "confirmed": value})
+                assert response.status == 200 and (await response.json())["preview"] is True
+                assert await db_models.bot_envs_col().find_one({"bot_id": bot["bot_id"], "env": "production"}) == before
+            assert (await cli.post(url, headers=owner, json={"source_env": "production", "settings": {"welcome_message": "Changed"}, "confirmed": True})).status == 200
+            assert (await db_models.bot_envs_col().find_one({"bot_id": bot["bot_id"], "env": "production"}))["settings"]["welcome_message"] == "Changed"
+    run(go())
+
+
+def test_bulk_and_bundle_require_true_boolean_confirmation():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 19004, "Owner")
+            bot = await services_bots.create_or_register_bot(ws, 19004, {"display_name": "Fleet Bot"}, allow_unverified_offline=True)
+            fleet_url = f"/api/v1/workspaces/{ws}/fleet"
+            bundle_url = f"/api/v1/workspaces/{ws}/bundle"
+            bundle = {"format": services_ops.BUNDLE_FORMAT, "templates": [{"name": "Example", "category": "bot_config", "payload": {"setting": "value"}}]}
+            for confirmation in (None, False, "false", 1):
+                fleet = await cli.post(fleet_url, headers=owner, json={"bot_ids": [bot["bot_id"]], "operation": "archive", "confirmed": confirmation})
+                assert fleet.status == 200 and (await fleet.json())["preview"] is True
+                assert not (await services_bots.get_owned_workspace_bot(ws, bot["bot_id"])).get("archived")
+                imported = await cli.post(bundle_url, headers=owner, json={"bundle": bundle, "confirmed": confirmation})
+                assert imported.status == 200 and (await imported.json())["preview"] is True
+                assert await db_models.templates_col().count_documents({"workspace_id": ws}) == 0
+            assert (await (await cli.post(fleet_url, headers=owner, json={"bot_ids": [bot["bot_id"]], "operation": "archive", "confirmed": True})).json())["executed"] is True
+            assert (await services_bots.get_owned_workspace_bot(ws, bot["bot_id"]))["archived"] is True
+            assert (await (await cli.post(bundle_url, headers=owner, json={"bundle": bundle, "confirmed": True})).json())["imported"] is True
+            assert await db_models.templates_col().count_documents({"workspace_id": ws}) == 1
+    run(go())
