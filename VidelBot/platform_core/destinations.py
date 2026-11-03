@@ -14,6 +14,7 @@ Supported destinations:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -59,15 +60,30 @@ def user_workspace_dir(user_id: int) -> str:
     return udir
 
 
-def resolve_user_path(user_id: int, rel_path: str, *, must_exist: bool = True) -> str:
-    """Resolve `rel_path` strictly inside `user_workspace_dir(user_id)` (blocks `..` & symlink escapes)."""
+def media_workspace_dir(user_id: int, workspace_id: str) -> str:
+    """A separate per-user, per-workspace media sandbox; never infer legacy ownership."""
+    import config
+
+    if not isinstance(workspace_id, str) or not workspace_id.strip():
+        raise PermissionError("A workspace is required for Media Studio storage.")
+    root = os.path.realpath(os.path.join(getattr(config, "DOWNLOAD_DIR", "download") or "download", "saas_media"))
+    user_dir = os.path.join(root, f"u_{int(user_id)}")
+    target = os.path.join(user_dir, "w_" + hashlib.sha256(workspace_id.encode("utf-8")).hexdigest())
+    if os.path.realpath(user_dir) != user_dir or os.path.realpath(target) != target:
+        raise PermissionError("Invalid Media Studio storage directory.")
+    os.makedirs(target, exist_ok=True)
+    return target
+
+
+def resolve_user_path(user_id: int, rel_path: str, *, must_exist: bool = True, workspace_id: str | None = None) -> str:
+    """Resolve within user storage, or the explicit isolated media workspace when provided."""
     raw = (rel_path or "").strip().lstrip("/\\")
     if not raw or "\x00" in raw:
         raise PermissionError("Invalid file path.")
     parts = [p for p in raw.replace("\\", "/").split("/") if p]
     if not parts or any(p in (".", "..") for p in parts):
         raise PermissionError("Path traversal outside your workspace is forbidden.")
-    base = user_workspace_dir(user_id)
+    base = user_workspace_dir(user_id) if workspace_id is None else media_workspace_dir(user_id, workspace_id)
     candidate = os.path.realpath(os.path.join(base, *parts))
     if candidate == base or not candidate.startswith(base + os.sep):
         raise PermissionError("Path traversal outside your workspace is forbidden.")
@@ -76,8 +92,8 @@ def resolve_user_path(user_id: int, rel_path: str, *, must_exist: bool = True) -
     return candidate
 
 
-def list_user_files(user_id: int, *, search: str = "", category: str = "") -> dict[str, Any]:
-    base = user_workspace_dir(user_id)
+def list_user_files(user_id: int, *, search: str = "", category: str = "", workspace_id: str | None = None) -> dict[str, Any]:
+    base = user_workspace_dir(user_id) if workspace_id is None else media_workspace_dir(user_id, workspace_id)
     q = (search or "").strip().lower()
     cat_filter = (category or "").strip().lower()
     items: list[dict[str, Any]] = []

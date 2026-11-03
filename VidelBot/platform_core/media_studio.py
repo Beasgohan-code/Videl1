@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import tempfile
 import time
@@ -755,60 +756,62 @@ def file_checksums_sync(path: str, *, expected: str = "") -> dict[str, Any]:
 
 
 # ─────────────────────────── Unified User-Sandboxed Studio Runner ───────────────────────────
-async def run_studio_operation(user_id: int, op: str, params: dict[str, Any]) -> dict[str, Any]:
-    """Execute a validated Media Studio operation on files inside `user_workspace_dir(user_id)`."""
+async def run_studio_operation(user_id: int, op: str, params: dict[str, Any], *, workspace_id: str | None = None) -> dict[str, Any]:
+    """Run in legacy user storage or an explicitly selected isolated media sandbox."""
     uid = int(user_id)
-    udir = destinations.user_workspace_dir(uid)
+    udir = destinations.user_workspace_dir(uid) if workspace_id is None else destinations.media_workspace_dir(uid, workspace_id)
 
     def _in_file(key: str = "file") -> str:
-        return destinations.resolve_user_path(uid, str(params.get(key) or ""), must_exist=True)
+        return destinations.resolve_user_path(uid, str(params.get(key) or ""), must_exist=True, workspace_id=workspace_id)
 
     def _in_files(key: str = "files") -> list[str]:
         raw = params.get(key) or []
         if isinstance(raw, str):
             raw = [x.strip() for x in raw.split(",") if x.strip()]
-        return [destinations.resolve_user_path(uid, str(p), must_exist=True) for p in raw]
+        return [destinations.resolve_user_path(uid, str(p), must_exist=True, workspace_id=workspace_id) for p in raw]
 
     def _rel(p: str) -> str:
         return os.path.relpath(p, udir).replace("\\", "/")
 
+    # Unique output directories prevent concurrent jobs from overwriting one another.
+    out_dir = udir if workspace_id is None else os.path.join(udir, "outputs", secrets.token_hex(16))
     action = (op or "").strip().lower()
 
     if action == "video_probe":
         return {"op": action, "info": await video_probe(_in_file())}
     if action == "video_compress":
-        out = await video_compress(_in_file(), udir, crf=int(params.get("crf") or 28), preset=str(params.get("preset") or "veryfast"))
+        out = await video_compress(_in_file(), out_dir, crf=int(params.get("crf") or 28), preset=str(params.get("preset") or "veryfast"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "video_convert":
-        out = await video_convert(_in_file(), udir, target_ext=str(params.get("format") or "mp4"))
+        out = await video_convert(_in_file(), out_dir, target_ext=str(params.get("format") or "mp4"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "video_scale":
-        out = await video_scale(_in_file(), udir, height=int(params.get("height") or 720))
+        out = await video_scale(_in_file(), out_dir, height=int(params.get("height") or 720))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "video_thumbnails":
-        out = await video_thumbnails(_in_file(), udir, at_sec=float(params.get("at_sec") or 0.5))
+        out = await video_thumbnails(_in_file(), out_dir, at_sec=float(params.get("at_sec") or 0.5))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "video_extract_audio":
-        out = await video_extract_audio(_in_file(), udir, fmt=str(params.get("format") or "mp3"))
+        out = await video_extract_audio(_in_file(), out_dir, fmt=str(params.get("format") or "mp3"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "video_trim":
-        out = await video_trim(_in_file(), udir, start_sec=float(params.get("start_sec") or 0), end_sec=float(params.get("end_sec") or 5))
+        out = await video_trim(_in_file(), out_dir, start_sec=float(params.get("start_sec") or 0), end_sec=float(params.get("end_sec") or 5))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "video_split":
-        outs = await video_split_segments(_in_file(), udir, segment_sec=int(params.get("segment_sec") or 30))
+        outs = await video_split_segments(_in_file(), out_dir, segment_sec=int(params.get("segment_sec") or 30))
         return {"op": action, "outputs": [_rel(p) for p in outs]}
     if action == "video_merge":
-        out = await video_merge(_in_files(), udir, out_name=str(params.get("out_name") or "merged.mp4"))
+        out = await video_merge(_in_files(), out_dir, out_name=str(params.get("out_name") or "merged.mp4"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "video_sub_convert":
-        out = await video_subtitle_convert(_in_file(), udir, target_ext=str(params.get("format") or "vtt"))
+        out = await video_subtitle_convert(_in_file(), out_dir, target_ext=str(params.get("format") or "vtt"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "video_mux_sub":
-        out = await video_mux_subtitle(_in_file("file"), _in_file("subtitle_file"), udir)
+        out = await video_mux_subtitle(_in_file("file"), _in_file("subtitle_file"), out_dir)
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "video_metadata":
         out = await video_edit_metadata(
-            _in_file(), udir,
+            _in_file(), out_dir,
             title=str(params.get("title") or ""),
             artist=str(params.get("artist") or ""),
             comment=str(params.get("comment") or ""),
@@ -816,83 +819,83 @@ async def run_studio_operation(user_id: int, op: str, params: dict[str, Any]) ->
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
 
     if action == "audio_convert":
-        out = await audio_convert(_in_file(), udir, target_ext=str(params.get("format") or "mp3"), bitrate=str(params.get("bitrate") or "192k"))
+        out = await audio_convert(_in_file(), out_dir, target_ext=str(params.get("format") or "mp3"), bitrate=str(params.get("bitrate") or "192k"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "audio_compress":
-        out = await audio_convert(_in_file(), udir, target_ext="mp3", bitrate=str(params.get("bitrate") or "96k"))
+        out = await audio_convert(_in_file(), out_dir, target_ext="mp3", bitrate=str(params.get("bitrate") or "96k"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "audio_normalize":
-        out = await audio_normalize(_in_file(), udir)
+        out = await audio_normalize(_in_file(), out_dir)
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "audio_waveform":
-        out = await audio_waveform(_in_file(), udir)
+        out = await audio_waveform(_in_file(), out_dir)
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "audio_tags":
         out = await audio_edit_tags(
-            _in_file(), udir,
+            _in_file(), out_dir,
             title=str(params.get("title") or ""),
             artist=str(params.get("artist") or ""),
             album=str(params.get("album") or ""),
         )
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "audio_cover_embed":
-        out = await audio_embed_cover(_in_file("file"), _in_file("cover_file"), udir)
+        out = await audio_embed_cover(_in_file("file"), _in_file("cover_file"), out_dir)
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "audio_cover_extract":
-        out = await audio_extract_cover(_in_file(), udir)
+        out = await audio_extract_cover(_in_file(), out_dir)
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "audio_trim":
-        out = await audio_trim(_in_file(), udir, start_sec=float(params.get("start_sec") or 0), end_sec=float(params.get("end_sec") or 5))
+        out = await audio_trim(_in_file(), out_dir, start_sec=float(params.get("start_sec") or 0), end_sec=float(params.get("end_sec") or 5))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "audio_merge":
-        out = await audio_merge(_in_files(), udir, out_name=str(params.get("out_name") or "merged.mp3"))
+        out = await audio_merge(_in_files(), out_dir, out_name=str(params.get("out_name") or "merged.mp3"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
 
     if action == "image_convert":
-        out = await asyncio.to_thread(image_convert_sync, _in_file(), udir, target_fmt=str(params.get("format") or "webp"), quality=int(params.get("quality") or 85))
+        out = await asyncio.to_thread(image_convert_sync, _in_file(), out_dir, target_fmt=str(params.get("format") or "webp"), quality=int(params.get("quality") or 85))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "image_compress":
-        out = await asyncio.to_thread(image_convert_sync, _in_file(), udir, target_fmt=str(params.get("format") or "webp"), quality=int(params.get("quality") or 70))
+        out = await asyncio.to_thread(image_convert_sync, _in_file(), out_dir, target_fmt=str(params.get("format") or "webp"), quality=int(params.get("quality") or 70))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "image_resize":
         out = await asyncio.to_thread(
-            image_resize_sync, _in_file(), udir,
+            image_resize_sync, _in_file(), out_dir,
             width=int(params.get("width") or 800),
             height=int(params.get("height") or 600),
             keep_aspect=bool(params.get("keep_aspect", True)),
         )
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "image_thumbnail":
-        out = await asyncio.to_thread(image_resize_sync, _in_file(), udir, width=320, height=320, keep_aspect=True)
+        out = await asyncio.to_thread(image_resize_sync, _in_file(), out_dir, width=320, height=320, keep_aspect=True)
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "image_metadata_view":
         info = await asyncio.to_thread(image_inspect_metadata_sync, _in_file())
         return {"op": action, "info": info}
     if action == "image_metadata_strip":
-        out = await asyncio.to_thread(image_strip_metadata_sync, _in_file(), udir)
+        out = await asyncio.to_thread(image_strip_metadata_sync, _in_file(), out_dir)
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "images_to_pdf":
-        out = await asyncio.to_thread(images_to_pdf_sync, _in_files(), udir, out_name=str(params.get("out_name") or "bundle.pdf"))
+        out = await asyncio.to_thread(images_to_pdf_sync, _in_files(), out_dir, out_name=str(params.get("out_name") or "bundle.pdf"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
 
     if action == "pdf_metadata":
         info = await asyncio.to_thread(pdf_metadata_sync, _in_file())
         return {"op": action, "info": info}
     if action == "pdf_merge":
-        out = await asyncio.to_thread(pdf_merge_sync, _in_files(), udir, out_name=str(params.get("out_name") or "merged.pdf"))
+        out = await asyncio.to_thread(pdf_merge_sync, _in_files(), out_dir, out_name=str(params.get("out_name") or "merged.pdf"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "pdf_extract_pages":
         out = await asyncio.to_thread(
-            pdf_extract_pages_sync, _in_file(), udir,
+            pdf_extract_pages_sync, _in_file(), out_dir,
             start_page=int(params.get("start_page") or 1),
             end_page=int(params.get("end_page") or 1),
         )
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "archive_zip":
-        out = await asyncio.to_thread(archive_create_zip_sync, _in_files(), udir, out_name=str(params.get("out_name") or "archive.zip"))
+        out = await asyncio.to_thread(archive_create_zip_sync, _in_files(), out_dir, out_name=str(params.get("out_name") or "archive.zip"))
         return {"op": action, "output": _rel(out), "size_bytes": os.path.getsize(out)}
     if action == "archive_extract":
-        outs = await asyncio.to_thread(archive_extract_safe_sync, _in_file(), udir)
+        outs = await asyncio.to_thread(archive_extract_safe_sync, _in_file(), out_dir)
         return {"op": action, "outputs": [_rel(p) for p in outs]}
     if action == "checksum":
         info = await asyncio.to_thread(file_checksums_sync, _in_file(), expected=str(params.get("expected") or ""))

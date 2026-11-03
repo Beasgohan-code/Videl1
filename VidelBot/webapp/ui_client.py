@@ -1408,7 +1408,7 @@ CLIENT_JS = r"""
         <div class="page-header">
           <div>
             <h1 class="page-title">Advanced Downloads & Media Processing Studio</h1>
-            <p class="page-subtitle">SSRF-guarded multi-provider download queue, multi-file selection, and magic-byte validated Video, Audio, Image, PDF & Archive workbench.</p>
+            <p class="page-subtitle">Media files are isolated per user and workspace. The download queue is still account-scoped, not workspace-isolated; avoid using it for separate tenants until migration is complete.</p>
           </div>
         </div>
 
@@ -1436,8 +1436,10 @@ CLIENT_JS = r"""
 
           <div class="card">
             <h3 class="card-title" style="margin-bottom:10px">Media, PDF & Archive Studio</h3>
-            <div class="field"><label class="field-label">Workspace Input File</label>
-              <select id="st-file" class="select">${files.length ? files.map((f) => `<option value="${esc(f.path)}">${esc(f.name)} (${fmtBytes(f.size_bytes)})</option>`).join("") : `<option value="">Upload or download a file first</option>`}</select>
+            <p class="stat-meta">Private media storage for this user and workspace. Legacy downloads and File Store uploads are separate and are not automatically imported.</p>
+            <div class="field"><label class="field-label">Upload to Media Studio (up to 512 MiB)</label><input id="st-upload" class="input" type="file"></div>
+            <div class="field"><label class="field-label">Media Studio Input File</label>
+              <select id="st-file" class="select">${files.length ? files.map((f) => `<option value="${esc(f.path)}">${esc(f.name)} (${fmtBytes(f.size_bytes)})</option>`).join("") : `<option value="">Upload a file to Media Studio first</option>`}</select>
             </div>
             <div class="field"><label class="field-label">Operation</label>
               <select id="st-op" class="select">${ops.map((o) => `<option value="${esc(o.op)}">[${esc(o.cat.toUpperCase())}] ${esc(o.label)}</option>`).join("")}</select>
@@ -1507,6 +1509,18 @@ CLIENT_JS = r"""
             body: { action: "enqueue", url: $("dl-url").value, destination: $("dl-dest").value, priority: $("dl-prio").value, auto_select_all: true },
           });
           toast("Download added to queue", "success");
+          navigate("downloads", true);
+        } catch (e) { toast(e.message, "error"); }
+      };
+
+      $("st-upload").onchange = async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        try {
+          const form = new FormData();
+          form.append("file", file);
+          await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/studio`, { method: "POST", body: form });
+          toast("Media Studio file uploaded", "success");
           navigate("downloads", true);
         } catch (e) { toast(e.message, "error"); }
       };

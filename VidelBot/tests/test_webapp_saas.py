@@ -1096,3 +1096,77 @@ def test_automation_run_count_and_hourly_cap_are_workspace_scoped():
             assert (await db_models.automations_col().find_one({"workspace_id": ws_a, "workflow_id": "same_id"}))["run_count"] == 1
             assert (await db_models.automations_col().find_one({"workspace_id": ws_b, "workflow_id": "same_id"}))["run_count"] == 0
     run(go())
+
+
+def test_media_studio_isolates_workspaces_and_users_and_preserves_legacy_files(tmp_path, monkeypatch):
+    import io
+    import os
+    from PIL import Image
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws_a = await _login_link(cli, 21001, "Owner")
+            team, _ = await _login_link(cli, 21002, "Team")
+            viewer, _ = await _login_link(cli, 21003, "Viewer")
+            created = await cli.post("/api/v1/workspaces", headers=owner, json={"name": "Second workspace"})
+            ws_b = (await created.json())["workspace"]["workspace_id"]
+            assert (await cli.post(f"/api/v1/workspaces/{ws_a}/team", headers=owner,
+                                   json={"user_id": 21002, "role": "manager"})).status == 201
+            assert (await cli.post(f"/api/v1/workspaces/{ws_a}/team", headers=owner,
+                                   json={"user_id": 21003, "role": "viewer"})).status == 201
+            legacy_dir = destinations.user_workspace_dir(21001)
+            with open(os.path.join(legacy_dir, "legacy.txt"), "wb") as f:
+                f.write(b"legacy data")
+            image = io.BytesIO()
+            Image.new("RGB", (30, 20), "red").save(image, format="PNG")
+            form = FormData()
+            form.add_field("file", image.getvalue(), filename="sample.png", content_type="image/png")
+            url_a = f"/api/v1/workspaces/{ws_a}/studio"
+            url_b = f"/api/v1/workspaces/{ws_b}/studio"
+            upload = await cli.post(url_a, headers=owner, data=form)
+            assert upload.status == 201
+            path = (await upload.json())["uploaded"]["path"]
+            files_a = (await (await cli.get(url_a, headers=owner)).json())["workspace_files"]
+            assert [f["path"] for f in files_a] == [path]
+            assert (await (await cli.get(url_b, headers=owner)).json())["workspace_files"] == []
+            assert (await (await cli.get(url_a, headers=team)).json())["workspace_files"] == []
+            assert (await cli.get(url_a, headers=viewer)).status == 403
+            assert (await cli.post(url_a, headers=viewer, json={"op": "checksum", "file": path})).status == 403
+            for url, hdr, file in ((url_b, owner, path), (url_a, team, path), (url_a, owner, "legacy.txt"), (url_a, owner, "../legacy.txt")):
+                assert (await cli.post(url, headers=hdr, json={"op": "checksum", "file": file})).status in (400, 403, 404)
+            assert os.path.exists(os.path.join(legacy_dir, "legacy.txt"))
+            resize = await cli.post(url_a, headers=owner, json={"op": "image_resize", "file": path, "width": 10, "height": 10})
+            assert resize.status == 200
+            out = (await resize.json())["output"]
+            assert os.path.isfile(destinations.resolve_user_path(21001, out, workspace_id=ws_a))
+            second = await cli.post(url_a, headers=owner, json={"op": "image_resize", "file": path, "width": 10, "height": 10})
+            assert second.status == 200 and (await second.json())["output"] != out
+            checksum = await cli.post(url_a, headers=owner, json={"op": "checksum", "file": out})
+            assert checksum.status == 200 and len((await checksum.json())["info"]["sha256"]) == 64
+            assert (await cli.post(url_b, headers=owner, json={"op": "checksum", "file": out})).status == 404
+    run(go())
+
+
+def test_media_upload_failure_cleans_partial_files_and_blocks_symlink_escape(tmp_path, monkeypatch):
+    import os
+    from webapp import api_routes
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(api_routes, "MEDIA_UPLOAD_MAX_BYTES", 5)
+
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 21004)
+            url = f"/api/v1/workspaces/{ws}/studio"
+            form = FormData()
+            form.add_field("file", b"too many bytes", filename="large.txt", content_type="text/plain")
+            assert (await cli.post(url, headers=owner, data=form)).status == 400
+            root = destinations.media_workspace_dir(21004, ws)
+            assert not [p for p in __import__("pathlib").Path(root).rglob("*") if p.is_file()]
+            outside = tmp_path / "outside"
+            outside.mkdir()
+            (outside / "secret.txt").write_text("secret")
+            os.symlink(outside, os.path.join(root, "link"), target_is_directory=True)
+            assert (await cli.post(url, headers=owner, json={"op": "checksum", "file": "link/secret.txt"})).status == 403
+            assert not (await (await cli.get(url, headers=owner)).json())["workspace_files"]
+    run(go())

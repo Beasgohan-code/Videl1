@@ -17,6 +17,7 @@ from platform_core import destinations, download_engine, media_studio, models_db
 from webapp import auth, db_models, services_bots, services_clone_files, services_ops
 
 log = logging.getLogger("videl.webapp.api")
+MEDIA_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
 
 
 async def _json_body(request: web.Request) -> dict[str, Any]:
@@ -705,15 +706,47 @@ async def api_downloads(request: web.Request) -> web.Response:
 async def api_media_studio(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
+    await auth.require_workspace_access(ctx, ws_id, scope="filestore")
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id, scope="filestore")
         return _ok({
             "catalog": media_studio.STUDIO_CATALOG,
-            "workspace_files": destinations.list_user_files(ctx.user_id)["files"],
+            "workspace_files": destinations.list_user_files(ctx.user_id, workspace_id=ws_id)["files"],
+            "storage_scope": "private media storage for this user and workspace",
         })
-    await auth.require_workspace_access(ctx, ws_id, scope="filestore")
+    if request.method != "POST":
+        raise web.HTTPMethodNotAllowed(request.method, ["GET", "POST"])
+    if (request.headers.get("Content-Type") or "").lower().startswith("multipart/form-data"):
+        import secrets
+        import shutil
+
+        reader = await request.multipart()
+        part = await reader.next()
+        if part is None or not part.filename:
+            raise services_bots.SaaSValidationError("Select one file to upload to Media Studio.")
+        filename = providers.sanitize_filename(part.filename)
+        relpath = f"uploads/{secrets.token_hex(16)}/{filename}"
+        path = destinations.resolve_user_path(ctx.user_id, relpath, workspace_id=ws_id, must_exist=False)
+        parent = os.path.dirname(path)
+        os.makedirs(parent, exist_ok=False)
+        size = 0
+        try:
+            with open(path, "xb") as fp:
+                while True:
+                    chunk = await part.read_chunk(65536)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MEDIA_UPLOAD_MAX_BYTES:
+                        raise services_bots.SaaSValidationError("Media Studio upload capped at 512 MiB per file.")
+                    fp.write(chunk)
+            if await reader.next() is not None:
+                raise services_bots.SaaSValidationError("Upload one Media Studio file per request.")
+        except BaseException:
+            shutil.rmtree(parent, ignore_errors=True)
+            raise
+        return _ok({"uploaded": {"path": relpath, "name": filename, "size_bytes": size}}, status=201)
     body = await _json_body(request)
-    res = await media_studio.run_studio_operation(ctx.user_id, str(body.get("op") or ""), body)
+    res = await media_studio.run_studio_operation(ctx.user_id, str(body.get("op") or ""), body, workspace_id=ws_id)
     return _ok(res)
 
 
