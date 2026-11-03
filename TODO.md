@@ -123,8 +123,147 @@ Audit baseline: branch `arena/a69b9f62-videl1`, verified remote baseline `fa10c7
 - **Clone Studio progress (partial):** Cross-domain access is required per selected section; execution/rollback require explicit confirmation. Bot-record-only clones have a version/conflict-checked rollback preserving unrelated settings; unsafe rollback is unavailable for legacy operations and operations involving commands, File Store settings, plugins or automations. Permissions-template cloning is not implemented and is no longer offered. Execution across collections and recording rollback status are not transactional; failures can still leave partial changes. Sensitive field names are filtered but free-text content is not reliably screened for credentials or private data, and clone metadata does not comprehensively control Telegram workers. Further redesign, safe allowlists and concurrency testing are required before production.
 - **Production blockers — actual runtime behavior:** SaaS bot configurations and command metadata are not comprehensively connected to the existing Telegram workers. Workflow triggers are not wired to all advertised events; scheduled jobs are not automatically started by the application. Clone rollback is unavailable for several sections, bundle import does not restore all exported resources, and several dashboard widgets are placeholders. These capabilities must not be represented as complete.
 - **Security follow-up:** This review blocks API keys from unclassified endpoints, protects existing membership records and restricts permission delegation, prevents cross-workspace workflow-ID updates, requires encryption for new webapp bot/integration credentials, and rejects unverified bot tokens through the web API. These targeted fixes do not prove the platform secure. Outbound webhook pings now validate the actual resolver results, block private IPs even with `LEECH_ALLOW_PRIVATE`, disable redirects and hide saved URLs/errors from responses; older saved URLs with query strings or credentials will no longer ping. Webhook URLs are still stored as ordinary configuration and a secret embedded in a path cannot be identified reliably: users must not put credentials there. Other outbound download/provider paths need their own DNS-rebinding audit. Review legacy plaintext credentials, secret redaction inside free-form content, file path/ownership handling, demo data lifetime, and database failure/concurrency handling before deployment. File intelligence no longer labels uninstrumented access counts as usage or zero-byte files as integrity failures; actual access and integrity instrumentation is still missing, and large datasets are sampled.
-- **Verification gaps:** Existing automated tests cover a limited set of flows, not all requested unauthorized, concurrency, responsive and live Telegram scenarios. Latest local full suite: 822 passed, 1 warning (with locally installed ffmpeg and ffprobe). Targeted SaaS suite: 27 passed, 1 warning. CI run 41558560743 passed for baseline `fa10c72`; subsequent changes require their own CI verification. Browser screenshots and a production container build have not been verified in this environment.
+- **Verification gaps:** Existing automated tests cover a limited set of flows, not all requested unauthorized, concurrency, responsive and live Telegram scenarios. Latest local full suite: 822 passed, 1 warning (with locally installed ffmpeg and ffprobe). Targeted SaaS suite: 27 passed, 1 warning. CI run 41559548742 passed for `24b1721` (Clone Studio hardening); documentation changes after that run require their own CI verification. Browser screenshots and a production container build have not been verified in this environment.
 - **Live Telegram E2E Validation & `@BotFather` Interactive Creation**: Telegram requires interactive owner confirmation inside `@BotFather` (`/newbot`) to mint brand-new bot usernames/tokens; end-to-end verification of live Telegram worker updates, `sendRichMessage`, `setChatMemberTag`, `sendChecklist`, and `ManagedBotUpdated` requires deploying with live `API_ID`, `API_HASH`, `BOT_TOKEN`, `MONGO_URI`, and `ENCRYPTION_KEY`.
 - **Optional External Cloud Credentials**: Dropbox (`DROPBOX_ACCESS_TOKEN`), Microsoft OneDrive (`ONEDRIVE_ACCESS_TOKEN`), Google Drive (`GDRIVE_TOKEN_FILE` / `GDRIVE_SA_FILE`), and Rclone (`RCLONE_CONFIG_PATH`) require user-supplied OAuth/API tokens for live external transfers.
 - **Process-Level Plugin Isolation**: Approved plugins run in-process with the bot (matching WZML-X's design); only bot owners (`OWNER_ID` / `OWNERS`) can approve staged plugins.
 - **Telegram Command Scope Cap**: Telegram caps each `BotCommandScope` at 100 commands (`USER + ADMIN + OWNER = 100/100`; `GROUP_COMMANDS = 46/100`). Adding future private-scope menu entries requires replacing or consolidating existing menu entries (`/web` and `/studio` work directly as private-chat commands without exceeding the 100-command menu ceiling).
+
+## Ultimate Webapp Master Roadmap — requested scope (Sections 1–31)
+
+This is an acceptance checklist, not a claim of completion. Some items have partial scaffolding described in the feature matrix and constraints above; each remains open until its functionality, security and tests are verified. Implement sequentially by stage, completing and testing each stage before expanding. Preserve Videl1's identity and reuse existing working code; study WZML-X and other relevant open-source projects with licensing and attribution review rather than copying indiscriminately.
+
+### 1. Product vision
+- [ ] Deliver a responsive, integrated multi-bot SaaS platform for creating, connecting, configuring, cloning, analyzing and operating bots, with the dedicated studios and centers below backed by working services rather than placeholders.
+
+### 2. Audit and feature matrix
+- [ ] Keep the nine-category feature matrix above current with the verified target branch/SHA, existing functionality, improvements, missing features and proposals. Re-audit the webapp, frontend/backend, APIs, authentication/authorization, MongoDB schemas, bot registration, File Store, commands, deployments, tests/CI and relevant WZML-X patterns as implementation changes. Do not recreate working features.
+
+### 3. Design system and global navigation
+- [ ] Build and verify a reusable, accessible design system with professional typography, spacing, colors, icons, tables, cards, forms, status indicators, subtle motion, light/dark themes, responsive desktop/mobile layouts, and useful empty/loading/error states.
+- [ ] Complete collapsible sidebar and mobile navigation, top bar, persisted workspace and bot selectors, global search, command palette, notifications, profile, breadcrumbs, quick actions, help center and theme selector.
+- [ ] Avoid generic templates, excessive gradients/glass effects, crowded layouts, arbitrary colors, oversized decoration, inconsistent icons, fabricated charts and nonfunctional controls.
+
+### 4. Multi-workspace system
+- [ ] Deliver strictly backend-isolated workspace-owned bots, teams, permissions, templates, File Store configuration, integrations, analytics, notifications, automations, activity and settings.
+- [ ] Support workspace creation, rename, icon customization, switching, archive, confirmed deletion, member invitations and roles, activity, dashboard and usage summary. Plan an explicit, non-destructive migration for legacy user-scoped data; do not guess ownership.
+
+### 5. Bot Management Center
+- [ ] Show actual bot name, username, profile image, description, type, connection state, runtime health where available, last activity, creation date, features and usage.
+- [ ] Support add/connect/register, profile editing, configuration, dashboard, commands, permissions, analytics, logs, clone, supported export, archive, disconnect and delete; add search, sorting, filters, tags, categories and grid/list views. Enforce workspace ownership and authorization on every operation.
+
+### 6. Bot Creation Studio
+- [ ] Implement a guided wizard for identity (display name, username, description, image, category, tags), secure token submission, Telegram Bot API validation and identity verification, and connection diagnostics.
+- [ ] Offer File Store, utility, group management, media/file management and custom templates; configure features, defaults, command presentation, owner permissions and notifications; include review, validation, confirmation, result and next steps.
+- [ ] Guide users through interactive BotFather registration; never imply it can be completed automatically. Distinguish verified credentials from a running bot process.
+
+### 7. Bot Clone Studio
+- [ ] For owned/explicitly manageable bots, complete the 11-step flow: source, inspection, section selection, destination or new registration, comparison, conflict detection, preview, validation, confirmation, execution and results.
+- [ ] Safely support profile, command metadata, feature, File Store, welcome, UI, notification, permission-template, plugin, automation and custom-text settings where implemented, with independent destination configuration. Never clone tokens, credentials, sessions, payment secrets, private user data or private file ownership.
+- [ ] Complete history, progress, validation, diff, exclusions, reusable templates, compatibility checks and migration reports; implement transactional execution and safe rollback where possible. Current rollback is limited and free-text secret/private-data exclusion is not guaranteed.
+
+### 8. Bot Fleet Management
+- [ ] Provide all-bot overview with type/status filters, groups and labels, health, recent errors/activity, usage comparison, disconnected bots and configuration differences based on available data.
+- [ ] Implement permitted bulk configuration, notification-preference and archive actions with affected-bot preview and explicit confirmation; prevent cross-workspace leakage.
+
+### 9. Bot Configuration Studio
+- [ ] Provide searchable, categorized settings, supported feature toggles, validation, defaults, drafts, preview/apply, attributed version history, restore, revision comparison and safe export/import.
+- [ ] Explain and validate feature dependencies before activation; connect supported changes to the authoritative runtime.
+
+### 10. Command Management Studio
+- [ ] Display name, description, category, visibility, permission, enabled state, available usage and last modification; support add/edit/delete, search/filter/sort, presentation preview and supported bulk metadata changes.
+- [ ] Support General, File Store, Administration, Media, Group Management, Utilities, Owner Tools and Custom categories; everyone, owner, administrators, authorized users and supported custom-role scopes.
+- [ ] Apply only supported commands to the existing runtime/Telegram and preserve Telegram's 100-command-per-scope ceiling; do not imply metadata creates an executable command.
+
+### 11. File Store Studio
+- [ ] Give each owner an isolated workspace and show real file count, storage, uploads/downloads, recent activity, categories, duplicate candidates, growth, failures and available capacity where measurable.
+- [ ] Provide table/grid manager, search, sorting, filtering, pagination, previews/details, IDs, sizes, MIME types, dates, metadata, tags, categories, multi-select and supported bulk actions.
+- [ ] Support authorized rename/delete/copy/move, metadata/tags/organization, metadata export and permitted sharing where implemented; require deletion confirmation and recovery safeguards where possible.
+- [ ] Configure storage channel/destination, allowed types/size, captions/thumbnails, search/pagination, duplicate handling, cleanup and access policies. Address legacy migration, physical storage isolation and database/filesystem consistency first.
+
+### 12. File Intelligence Center
+- [ ] Provide largest/recent/frequently accessed files, duplicate candidates, type distribution, growth, missing metadata, integrity issues and unused files only where tracking supports them.
+- [ ] Search by filename, ID, MIME type, size, date, tags, category and metadata; analyze trends, destination distribution, growth forecasts, counts, large files and duplicate-space estimates using real collected data.
+- [ ] Never automatically delete files based on a guessed cleanup recommendation; label estimates and unavailable information accurately.
+
+### 13. File Store Owner Analytics
+- [ ] Provide private owner metrics for file count/storage, upload/download trends, popular files/categories, recent operations, measurable active users, failures, health and usage patterns.
+- [ ] Add today, 7/30/90-day and custom ranges, CSV export and reports; distinguish unavailable data from zero and verify workspace/bot attribution.
+
+### 14. Bot Analytics
+- [ ] Record and show per-bot user activity where available, command usage, operation success/failure, tasks, uploads/downloads, storage, runtime availability and errors.
+- [ ] Add accurate activity, command popularity, transfer, storage growth, success/failure and trend charts with date filtering and period comparisons; never fabricate metrics or Telegram data.
+
+### 15. Bot Health and Monitoring
+- [ ] Show token/API connectivity separately from runtime status, last successful operation/error, available worker/plugin health, relevant database connectivity, warnings and health history.
+- [ ] Add alerts for connection failure, offline bots, repeated errors, storage and integration warnings, and failed scheduled jobs, only where observable.
+
+### 16. Bot Environment Manager
+- [ ] Implement separately stored Development, Testing and Production configurations, labels, comparison, environment-specific integrations and health, and change history.
+- [ ] Provide safe promotion with preview and explicit approval; never automatically overwrite production with development settings.
+
+### 17. Webhook and Event Monitor
+- [ ] Show supported outbound/integration webhook configuration status, endpoint health, observed successful/failed deliveries, errors, retries and recent filterable events, with diagnostics and secret-safe storage/logging.
+- [ ] Preserve the authoritative Telegram update architecture; do not introduce a second incoming Telegram update receiver.
+
+### 18. Automation Studio
+- [ ] Build a supported Trigger → Conditions → Actions → Result editor with trigger/condition/action selection, preview, validation, enable/disable, execution history, retry, errors, duplicate and version history.
+- [ ] Wire only supported workflows: file/activity notifications, download completion, storage alerts, reports, bot errors, approved bot initialization, policy-based retry and inspection of eligible cleanup candidates.
+- [ ] Implement durable idempotency, execution limits, loop prevention, authorization and event wiring; do not expose unimplemented actions as operational.
+
+### 19. Scheduled Task Center
+- [ ] Support create/edit/pause/resume/delete, timezone, next/last run, history and failure details with workspace isolation and a managed scheduler lifecycle.
+- [ ] Enable only implemented reports, notifications, backups, approved cleanup and health checks; ensure scheduling does not cause unsafe automatic deletion.
+
+### 20. Template Library and Marketplace
+- [ ] Support official and user templates for bot/File Store configuration, command metadata, permission presets, automations, welcome messages, dashboard layouts and notification preferences.
+- [ ] Add create/edit/duplicate, preview, safe import/export, version history and compatibility checks. Optional community marketplace: submission, review/moderation, publisher, version, installation preview and reporting.
+- [ ] Templates must not silently execute arbitrary code or include credentials/private data.
+
+### 21. Plugin and Extension Center
+- [ ] Show supported plugins' name, description, version, compatibility, dependencies, permissions, enabled state, configuration, diagnostics and changelog; implement supported enable/disable/configure/health operations.
+- [ ] Treat a reviewed extension marketplace as future work; do not run untrusted arbitrary code. Existing owner-approved in-process plugins are not isolation from malicious code.
+
+### 22. Team and Access Management
+- [ ] Support Owner, Administrator, Manager, Developer, Analyst and Viewer with independently configurable bot settings, commands, File Store, analytics, integrations, logs, templates, cloning, automation and team permissions.
+- [ ] Complete invitation/pending invitation, revocation, role changes, member activity and permission history; enforce backend anti-escalation and protect ownership changes, concurrent updates and every cross-domain operation.
+
+### 23. Developer Center
+- [ ] Provide API documentation/examples, scoped API keys with expiration, rotation and revocation, webhook/connection diagnostics, configuration validation, bot diagnostics, error inspection, test environment and available usage information.
+- [ ] Reveal new secrets only once; never redisplay saved secrets or expose production credentials in developer tools. Enforce scope delegation and workspace isolation.
+
+### 24. Configuration Migration Center
+- [ ] Support owned source/destination selection, compatibility, comparison, conflict detection, selective migration, preview, confirmation, progress, report and rollback where safe.
+- [ ] Migrate only supported command metadata, feature/File Store settings, templates, notification preferences and automation workflows; never migrate credentials or private user data.
+
+### 25. Custom Dashboard Builder
+- [ ] Support bot health, fleet, recent activity, File Store usage, storage trends, active tasks, command usage, integration health, failed operations, scheduled jobs and notifications using actual authorized data.
+- [ ] Add/remove/reorder widgets, resize where supported, save/reset layouts and multiple presets; persist separately per user and workspace.
+
+### 26. Notification and Activity Center
+- [ ] Provide supported bot/connection/task/job/File Store/storage/integration/permission/configuration/clone/automation/report notifications with read/unread, filters, search, preferences and per-bot/workspace views.
+- [ ] Provide searchable permission-aware audit history with actor, action, resource, timestamp and outcome; never log secrets.
+
+### 27. Global Search and Command Palette
+- [ ] Search authorized bots, files, commands, templates, tasks, integrations, settings and activity; add keyboard navigation, recent searches/resources, suggestions, quick navigation and permitted actions.
+
+### 28. Export, Import and Backup
+- [ ] Safely export/import supported bot configuration, command metadata, templates, File Store settings, automations and dashboard layouts with preview, validation, compatibility, conflict detection, confirmation and history.
+- [ ] Implement tested configuration backup/restore; never export tokens, credentials or private user information. Current bundle import is incomplete.
+
+### 29. Platform Admin Center
+- [ ] Restrict platform administration to platform administrators and separate it from workspace administration; provide authorized user/workspace/bot management, platform usage, system/API/database/storage/worker/plugin health, error/audit logs, maintenance and feature availability.
+
+### 30. Onboarding, Help and Product Experience
+- [ ] Complete interactive onboarding, getting-started checklist, clearly labeled demo workspace, contextual help, documentation, searchable help, changelog, What's New and feedback; offer support tickets only if supported.
+- [ ] Add keyboard shortcuts, favorites, recent bots/files, saved filters, unsaved-change warnings, validation, tooltips, copy controls and useful empty states. Define demo-data expiry and cleanup.
+
+### 31. Optional future premium roadmap
+- [ ] Evaluate custom branding/layouts, advanced analytics, more team seats, configurable task limits, extra environments/integration slots, report presets, audit retention, template publishing and collaboration as optional future work.
+- [ ] Do not introduce real payment/subscription handling without an approved billing architecture and secure implementation plan; do not artificially restrict existing features.
+
+### Cross-cutting delivery and safety gates
+- [ ] Keep work on `arena/a69b9f62-videl1`; do not modify `main`, merge, deploy, delete branches or alter production services without explicit permission. Use focused commits and update this roadmap honestly.
+- [ ] Preserve the WzGram/Pyrofork authoritative incoming receiver, aiogram outgoing Bot API, MongoDB and Richgram architecture. Keep one canonical root `Dockerfile` and synchronized root and `VidelBot/` requirements.
+- [ ] Enforce backend workspace isolation, bot ownership and RBAC; prevent IDOR, CSRF and abuse; encrypt secrets at rest and prevent secret exposure in URLs, responses, logs, clones and exports. Never bypass DRM, paywalls, CAPTCHAs or platform restrictions.
+- [ ] Complete and test stages sequentially; verify full tests, production build, responsive screenshots, real MongoDB concurrency and live Telegram end-to-end flows when feasible. Report gaps and observed results without claiming unverified functionality, builds or CI.
