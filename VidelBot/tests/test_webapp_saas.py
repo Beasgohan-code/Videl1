@@ -1023,3 +1023,76 @@ def test_bulk_and_bundle_require_true_boolean_confirmation():
             assert (await (await cli.post(bundle_url, headers=owner, json={"bundle": bundle, "confirmed": True})).json())["imported"] is True
             assert await db_models.templates_col().count_documents({"workspace_id": ws}) == 1
     run(go())
+
+
+def test_automation_actions_enforce_cross_domain_permissions_and_isolation():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 20001, "Owner")
+            limited, _ = await _login_link(cli, 20002, "Limited")
+            other, other_ws = await _login_link(cli, 20003, "Other")
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                                   json={"user_id": 20002, "role": "manager", "permissions": {"analytics": False, "filestore": False}})).status == 201
+            url = f"/api/v1/workspaces/{ws}/automations"
+            def payload(action):
+                return {"name": "Test workflow", "trigger": "file_uploaded", "actions": [{"type": action}]}
+            for action in ("generate_report", "inspect_eligible_files"):
+                assert (await cli.post(url, headers=limited, json=payload(action))).status == 403
+            for action in ("retry_failed_task", "apply_template_defaults"):
+                assert (await cli.post(url, headers=owner, json=payload(action))).status == 400
+            other_bot = await services_bots.create_or_register_bot(other_ws, 20003, {"display_name": "Other Bot"}, allow_unverified_offline=True)
+            assert (await cli.post(url, headers=owner, json={**payload("record_activity"), "bot_id": other_bot["bot_id"]})).status == 404
+            good = await cli.post(url, headers=limited, json=payload("create_notification"))
+            assert good.status == 201
+            assert (await cli.post(url, headers=limited, json={"action": "run", "workflow_id": (await good.json())["workflow"]["workflow_id"]})).status == 200
+            r = await cli.post(url, headers=owner, json=payload("inspect_eligible_files"))
+            assert r.status == 201
+            wf_id = (await r.json())["workflow"]["workflow_id"]
+            run_request = {"action": "run", "workflow_id": wf_id}
+            assert (await cli.post(url, headers=limited, json=run_request)).status == 403
+            assert (await cli.post(url, headers=owner, json=run_request)).status == 200
+            rows = (await (await cli.get(url, headers=limited)).json())["runs"]
+            report = next(row for row in rows if row["workflow_id"] == wf_id)
+            assert report["results"] == [{"redacted": True}]
+            owner_rows = (await (await cli.get(url, headers=owner)).json())["runs"]
+            assert next(row for row in owner_rows if row["workflow_id"] == wf_id)["results"][0]["action"] == "inspect_eligible_files"
+            key_response = await cli.post(f"/api/v1/workspaces/{ws}/api-keys", headers=owner, json={"name": "Automation only", "scopes": ["automation"]})
+            key = (await key_response.json())["raw_key_once"]
+            key_headers = {"Authorization": f"Bearer {key}"}
+            assert (await cli.post(url, headers=key_headers, json=run_request)).status == 403
+            key_rows = (await (await cli.get(url, headers=key_headers)).json())["runs"]
+            assert next(row for row in key_rows if row["workflow_id"] == wf_id)["results"] == [{"redacted": True}]
+            assert (await cli.post(f"/api/v1/workspaces/{other_ws}/automations", headers=other, json=run_request)).status == 404
+    run(go())
+
+
+def test_legacy_unsupported_automation_fails_before_any_side_effects():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 20004, "Owner")
+            wf_id = "legacy_workflow"
+            await db_models.automations_col().insert_one({"workspace_id": ws, "workflow_id": wf_id, "bot_id": "all", "name": "Legacy", "trigger": "task_failed", "actions": [{"type": "create_notification"}, {"type": "retry_failed_task"}]})
+            before = await db_models.notifications_col().count_documents({"workspace_id": ws})
+            response = await cli.post(f"/api/v1/workspaces/{ws}/automations", headers=owner, json={"action": "run", "workflow_id": wf_id})
+            assert response.status == 400
+            assert await db_models.notifications_col().count_documents({"workspace_id": ws}) == before
+            assert await db_models.automation_runs_col().count_documents({"workspace_id": ws}) == 0
+    run(go())
+
+
+def test_automation_run_count_and_hourly_cap_are_workspace_scoped():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner_a, ws_a = await _login_link(cli, 20005, "A")
+            _, ws_b = await _login_link(cli, 20006, "B")
+            common = {"workflow_id": "same_id", "name": "Scoped", "bot_id": "all", "trigger": "file_uploaded", "actions": [{"type": "record_activity"}], "conditions": [], "run_count": 0}
+            await db_models.automations_col().insert_one({**common, "workspace_id": ws_b})
+            await db_models.automations_col().insert_one({**common, "workspace_id": ws_a})
+            import time
+            for i in range(30):
+                await db_models.automation_runs_col().insert_one({"workspace_id": ws_b, "workflow_id": "same_id", "created_ts": time.time(), "run_id": str(i)})
+            response = await cli.post(f"/api/v1/workspaces/{ws_a}/automations", headers=owner_a, json={"action": "run", "workflow_id": "same_id"})
+            assert response.status == 200 and (await response.json())["run"]["status"] == "completed"
+            assert (await db_models.automations_col().find_one({"workspace_id": ws_a, "workflow_id": "same_id"}))["run_count"] == 1
+            assert (await db_models.automations_col().find_one({"workspace_id": ws_b, "workflow_id": "same_id"}))["run_count"] == 0
+    run(go())

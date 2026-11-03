@@ -768,16 +768,27 @@ async def api_health_and_webhooks(request: web.Request) -> web.Response:
 async def api_automations(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
+    mem = await auth.require_workspace_access(ctx, ws_id, scope="automation")
+    scopes = {scope for scope in db_models.PERMISSION_SCOPES if _can_read_scope(ctx, mem, scope)}
     if request.method == "GET":
-        await auth.require_workspace_access(ctx, ws_id, scope="automation")
         wfs = await db_models.automations_col().find({"workspace_id": ws_id}).sort("created_ts", -1).to_list(length=100)
         runs = await db_models.automation_runs_col().find({"workspace_id": ws_id}).sort("created_ts", -1).limit(50).to_list(length=50)
         for w in wfs:
             w.pop("_id", None)
         for r in runs:
             r.pop("_id", None)
+            # Run results can contain data from domains other than automation.
+            # Unrecognized legacy results are withheld as well.
+            safe_results = []
+            for result in r.get("results") or []:
+                action = result.get("action") if isinstance(result, dict) else None
+                required = services_ops.AUTOMATION_ACTION_SCOPES.get(action)
+                if required is not None and required.issubset(scopes):
+                    safe_results.append(result)
+                else:
+                    safe_results.append({"redacted": True})
+            r["results"] = safe_results
         return _ok({"workflows": wfs, "runs": runs})
-    await auth.require_workspace_access(ctx, ws_id, scope="automation")
     body = await _json_body(request)
     act = str(body.get("action") or "upsert")
     if act == "run":
@@ -787,11 +798,15 @@ async def api_automations(request: web.Request) -> web.Response:
             ctx.user_id,
             event_data=body.get("event_data") or {},
             idempotency_key=str(body.get("idempotency_key") or ""),
+            allowed_scopes=scopes,
         )
         return _ok({"run": run_res})
     if act == "delete":
         await db_models.automations_col().delete_one({"workflow_id": str(body.get("workflow_id") or ""), "workspace_id": ws_id})
         return _ok({"deleted": True})
+    _, _, actions = services_ops.validate_automation_workflow(body)
+    if not services_ops.automation_action_scopes(actions).issubset(scopes):
+        raise PermissionError("Additional workspace permissions are required for this workflow's actions.")
     wf = await services_ops.upsert_automation_workflow(ws_id, ctx.user_id, body)
     return _ok({"workflow": wf}, status=201 if not body.get("workflow_id") else 200)
 

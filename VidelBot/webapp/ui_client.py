@@ -1605,7 +1605,7 @@ CLIENT_JS = r"""
         <div class="page-header">
           <div>
             <h1 class="page-title">Automation Studio & Scheduled Task Center</h1>
-            <p class="page-subtitle">Workflow configuration and manual runs are available. Automatic triggers, durable idempotency and workspace-isolated schedules are not yet complete.</p>
+            <p class="page-subtitle">Manual runs are available for supported actions. File insights and reports require their corresponding permissions. Automatic triggers, durable idempotency and workspace-isolated schedules are not yet complete; legacy retry and template-application actions cannot run.</p>
           </div>
         </div>
 

@@ -15,7 +15,7 @@ from typing import Any
 
 import config
 from core import diagnostics
-from platform_core import destinations, download_engine, models_db
+from platform_core import destinations, models_db
 from webapp import db_models, safe_webhook, services_bots, services_clone_files
 
 # ─────────────────────────── Supported Automation Catalog (Section 18) ───────────────────────────
@@ -34,8 +34,6 @@ SUPPORTED_ACTIONS = (
     "record_activity",
     "create_notification",
     "generate_report",
-    "apply_template_defaults",
-    "retry_failed_task",
     "inspect_eligible_files",
 )
 
@@ -285,6 +283,26 @@ async def test_outbound_webhook(workspace_id: str, webhook_id: str, actor_id: in
 
 
 # ─────────────────────────── 2. Automation Studio (Section 18) ───────────────────────────
+AUTOMATION_ACTION_SCOPES = {
+    "record_activity": frozenset(),
+    "create_notification": frozenset(),
+    "generate_report": frozenset({"analytics"}),
+    "inspect_eligible_files": frozenset({"analytics", "filestore"}),
+}
+
+
+def automation_action_scopes(actions: list[dict[str, Any]]) -> set[str]:
+    """Fail closed on unsupported or malformed stored actions, before side effects."""
+    if not isinstance(actions, list) or not actions:
+        raise services_bots.SaaSValidationError("Workflow has no supported actions.")
+    scopes: set[str] = set()
+    for action in actions:
+        if not isinstance(action, dict) or action.get("type") not in AUTOMATION_ACTION_SCOPES:
+            raise services_bots.SaaSValidationError("Workflow contains an unsupported or unavailable action.")
+        scopes.update(AUTOMATION_ACTION_SCOPES[action["type"]])
+    return scopes
+
+
 def validate_automation_workflow(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     trigger = str(payload.get("trigger") or "").strip()
     if trigger not in SUPPORTED_TRIGGERS:
@@ -310,7 +328,7 @@ def validate_automation_workflow(payload: dict[str, Any]) -> tuple[str, list[dic
     actions: list[dict[str, Any]] = []
     for a in raw_actions:
         if not isinstance(a, dict):
-            continue
+            raise services_bots.SaaSValidationError("Each workflow action must be an object.")
         atype = str(a.get("type") or "").strip()
         if atype not in SUPPORTED_ACTIONS:
             raise services_bots.SaaSValidationError(
@@ -331,6 +349,9 @@ async def upsert_automation_workflow(
     if len(name) < 2 or len(name) > 80:
         raise services_bots.SaaSValidationError("Workflow name must be between 2 and 80 characters.")
     trigger, conds, actions = validate_automation_workflow(payload)
+    bot_id = str(payload.get("bot_id") or "all")
+    if bot_id != "all":
+        await services_bots.get_owned_workspace_bot(workspace_id, bot_id)
     wf_id = str(payload.get("workflow_id") or f"wf_{secrets.token_hex(6)}")
     existing = await db_models.automations_col().find_one({"workflow_id": wf_id, "workspace_id": workspace_id})
     if payload.get("workflow_id") and not existing:
@@ -340,7 +361,7 @@ async def upsert_automation_workflow(
     doc = {
         "workflow_id": wf_id,
         "workspace_id": workspace_id,
-        "bot_id": str(payload.get("bot_id") or "all"),
+        "bot_id": bot_id,
         "name": name,
         "trigger": trigger,
         "conditions": conds,
@@ -390,6 +411,7 @@ async def trigger_automation_run(
     *,
     event_data: dict[str, Any] | None = None,
     idempotency_key: str = "",
+    allowed_scopes: set[str] | None = None,
     _depth: int = 0,
 ) -> dict[str, Any]:
     """Execute a workflow with idempotency, rate cap, and recursion-loop prevention (`_depth <= 1`)."""
@@ -400,6 +422,11 @@ async def trigger_automation_run(
     wf = await db_models.automations_col().find_one({"workflow_id": workflow_id, "workspace_id": workspace_id})
     if not wf:
         raise KeyError("Workflow not found in this workspace.")
+    required = automation_action_scopes(wf.get("actions"))
+    if not required.issubset(allowed_scopes or set()):
+        raise PermissionError("Additional workspace permissions are required for this workflow's actions.")
+    if wf.get("bot_id") and wf["bot_id"] != "all":
+        await services_bots.get_owned_workspace_bot(workspace_id, wf["bot_id"])
 
     idem = (idempotency_key or "").strip()
     if idem:
@@ -413,7 +440,7 @@ async def trigger_automation_run(
     # Hourly execution cap (max 30 runs/hour per workflow)
     cutoff_hr = time.time() - 3600
     recent_runs = await db_models.automation_runs_col().count_documents(
-        {"workflow_id": workflow_id, "created_ts": {"$gte": cutoff_hr}}
+        {"workspace_id": workspace_id, "workflow_id": workflow_id, "created_ts": {"$gte": cutoff_hr}}
     )
     if recent_runs >= 30:
         raise services_bots.SaaSValidationError("Workflow hourly execution cap (30/hr) reached.")
@@ -448,13 +475,6 @@ async def trigger_automation_run(
             elif atype == "inspect_eligible_files":
                 intel = await services_clone_files.compute_file_intelligence(workspace_id, actor_id)
                 results.append({"action": atype, "duplicate_groups": len(intel["duplicate_candidates"]), "advisory_only": True})
-            elif atype == "retry_failed_task":
-                tid = str(ev.get("task_id") or "")
-                if tid:
-                    await download_engine.engine.control_task(tid, "retry", user_id=actor_id)
-                results.append({"action": atype, "task_id": tid})
-            elif atype == "apply_template_defaults":
-                results.append({"action": atype, "applied": True})
 
     now = time.time()
     run_doc = {
@@ -469,7 +489,7 @@ async def trigger_automation_run(
         "created_ts": now,
     }
     await db_models.automation_runs_col().insert_one(dict(run_doc))
-    await db_models.automations_col().update_one({"workflow_id": workflow_id}, {"$inc": {"run_count": 1}})
+    await db_models.automations_col().update_one({"workspace_id": workspace_id, "workflow_id": workflow_id}, {"$inc": {"run_count": 1}})
     run_doc.pop("_id", None)
     return run_doc
 
