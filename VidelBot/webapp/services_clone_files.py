@@ -26,7 +26,6 @@ CLONEABLE_SECTIONS = (
     "welcome",
     "ui_preferences",
     "notifications",
-    "permissions_template",
     "plugin_settings",
     "automations",
     "text_templates",
@@ -48,6 +47,16 @@ DEFAULT_FILESTORE_CONFIG: dict[str, Any] = {
 
 
 # ─────────────────────────── Bot Clone Studio & Migration Center (Sections 7 & 24) ───────────────────────────
+def validate_clone_sections(sections: list[str] | None) -> list[str]:
+    if sections is None:
+        return list(CLONEABLE_SECTIONS)
+    if not isinstance(sections, list) or not sections or any(
+        not isinstance(section, str) or section not in CLONEABLE_SECTIONS for section in sections
+    ):
+        raise services_bots.SaaSValidationError("Select at least one supported configuration section.")
+    return list(dict.fromkeys(sections))
+
+
 async def extract_cloneable_bundle(workspace_id: str, bot_id: str) -> dict[str, Any]:
     """Extract ONLY safe, non-secret configuration sections from an owned source bot."""
     bot = await services_bots.get_owned_workspace_bot(workspace_id, bot_id)
@@ -98,16 +107,13 @@ async def extract_cloneable_bundle(workspace_id: str, bot_id: str) -> dict[str, 
                 "notify_on_error": bool(settings.get("notify_on_error", True)),
                 "notify_on_upload": bool(settings.get("notify_on_upload", False)),
             },
-            "permissions_template": {
-                "default_command_scope": "everyone",
-            },
             "plugin_settings": db_models.strip_sensitive_fields(bot.get("plugin_settings") or {}),
             "automations": [
                 {
                     "name": a.get("name", ""),
                     "trigger": a.get("trigger", ""),
-                    "conditions": a.get("conditions") or [],
-                    "actions": a.get("actions") or [],
+                    "conditions": db_models.strip_sensitive_fields(a.get("conditions") or []),
+                    "actions": db_models.strip_sensitive_fields(a.get("actions") or []),
                 }
                 for a in autos
             ],
@@ -132,10 +138,11 @@ async def preview_clone_operation(
     src_bundle = await extract_cloneable_bundle(workspace_id, source_bot_id)
     tgt_bundle = await extract_cloneable_bundle(workspace_id, target_bot_id)
 
-    chosen = [s for s in (sections or list(CLONEABLE_SECTIONS)) if s in CLONEABLE_SECTIONS]
-    if not chosen:
-        raise services_bots.SaaSValidationError("Select at least one configuration section to clone.")
+    chosen = validate_clone_sections(sections)
 
+    if excluded_fields is not None and (not isinstance(excluded_fields, list) or
+                                        any(not isinstance(field, str) for field in excluded_fields)):
+        raise services_bots.SaaSValidationError("Excluded fields must be a list of field names.")
     excl = set(excluded_fields or [])
     compatibility_warnings: list[str] = []
     if src_bundle["bot_type"] != tgt_bundle["bot_type"]:
@@ -176,7 +183,8 @@ async def preview_clone_operation(
         "conflicts_count": conflicts_count,
         "compatibility_warnings": compatibility_warnings,
         "diffs": section_diffs,
-        "credentials_stripped": True,
+        "sensitive_fields_filtered": True,
+        "free_text_not_scanned": True,
     }
 
 
@@ -199,8 +207,6 @@ async def execute_clone_operation(
     )
     src_bundle = await extract_cloneable_bundle(workspace_id, source_bot_id)
     tgt_raw = await services_bots.get_owned_workspace_bot(workspace_id, target_bot_id)
-    tgt_snapshot = await extract_cloneable_bundle(workspace_id, target_bot_id)
-
     chosen = preview["selected_sections"]
     excl = set(preview["excluded_fields"])
     now = time.time()
@@ -232,9 +238,18 @@ async def execute_clone_operation(
         upd_bot["plugin_settings"] = db_models.strip_sensitive_fields(src_bundle["sections"]["plugin_settings"])
 
     upd_bot["features"] = next_features
-    upd_bot["settings"] = db_models.strip_sensitive_fields(next_settings)
+    # Do not strip unrelated target settings when cloning selected fields.
+    upd_bot["settings"] = next_settings
     upd_bot["config_version"] = int(tgt_raw.get("config_version") or 1) + 1
-    await db_models.bots_col().update_one({"bot_id": target_bot_id}, {"$set": upd_bot})
+    guard: dict[str, Any] = {"bot_id": target_bot_id, "workspace_id": workspace_id,
+                             "config_version": tgt_raw.get("config_version"),
+                             "features": tgt_raw.get("features"), "settings": tgt_raw.get("settings")}
+    for key in ("description", "category", "avatar_emoji", "tags", "plugin_settings"):
+        if key in upd_bot:
+            guard[key] = tgt_raw.get(key)
+    result = await db_models.bots_col().update_one(guard, {"$set": upd_bot})
+    if not result.matched_count:
+        raise services_bots.SaaSValidationError("Destination changed concurrently; preview the clone again.")
 
     if "commands" in chosen:
         for cmd_item in src_bundle["sections"]["commands"]:
@@ -260,6 +275,30 @@ async def execute_clone_operation(
                 "created_ts": now,
             })
 
+    # Rollback is offered only for bot-record sections where the prior values
+    # are known. Cross-collection commands, policies, plugins and automations
+    # need transactional history before they can be restored safely.
+    rollback_supported = not bool(set(chosen) & {"commands", "filestore", "automations", "plugin_settings"})
+    if "features" in chosen and (
+        db_models.strip_sensitive_fields(tgt_raw.get("features") or {}) != (tgt_raw.get("features") or {})
+        or any(not isinstance(v, bool) for v in (tgt_raw.get("features") or {}).values())
+    ):
+        rollback_supported = False
+    bot_fields = [k for k in ("description", "category", "avatar_emoji", "tags", "features")
+                  if k in upd_bot and (k != "features" or "features" in chosen)]
+    settings_fields = []
+    for sec, keys in (("welcome", ("welcome_message",)), ("ui_preferences", ("compact_cards", "rich_formatting")),
+                      ("notifications", ("notify_on_error", "notify_on_upload")), ("text_templates", ("custom_caption",))):
+        if sec in chosen:
+            settings_fields.extend(k for k in keys if k not in excl)
+    old_settings = tgt_raw.get("settings") or {}
+    rollback_snapshot = {
+        "bot_before": {k: {"present": k in tgt_raw, "value": copy.deepcopy(tgt_raw.get(k))} for k in bot_fields},
+        "bot_after": {k: copy.deepcopy(upd_bot[k]) for k in bot_fields},
+        "settings_before": {k: {"present": k in old_settings, "value": copy.deepcopy(old_settings.get(k))} for k in settings_fields},
+        "settings_after": {k: copy.deepcopy(next_settings.get(k)) for k in settings_fields},
+        "expected_version": upd_bot["config_version"],
+    } if rollback_supported else {}
     op_id = f"{'mig' if kind == 'migration' else 'cln'}_{secrets.token_hex(6)}"
     report = {
         "clone_id": op_id,
@@ -273,8 +312,10 @@ async def execute_clone_operation(
         "excluded_fields": sorted(excl),
         "conflicts_resolved": preview["conflicts_count"],
         "warnings": preview["compatibility_warnings"],
-        "credentials_cloned": False,
-        "rollback_snapshot": tgt_snapshot["sections"],
+        "sensitive_fields_filtered": True,
+        "free_text_not_scanned": True,
+        "rollback_snapshot": rollback_snapshot,
+        "rollback_supported": rollback_supported,
         "rolled_back": False,
         "status": "completed",
         "created_at": db_models.utcnow_iso(),
@@ -308,28 +349,47 @@ async def rollback_clone_operation(workspace_id: str, clone_id: str, actor_id: i
     if rec.get("rolled_back"):
         raise services_bots.SaaSValidationError("This operation has already been rolled back.")
 
+    if not rec.get("rollback_supported"):
+        raise services_bots.SaaSValidationError("Rollback is unavailable for this operation; its full state cannot be restored safely.")
     snap = rec.get("rollback_snapshot") or {}
+    if not all(k in snap for k in ("bot_before", "bot_after", "settings_before", "settings_after", "expected_version")):
+        raise services_bots.SaaSValidationError("Rollback snapshot is incomplete.")
     target_bot_id = rec["target_bot_id"]
     tgt = await services_bots.get_owned_workspace_bot(workspace_id, target_bot_id)
-    restored_settings = dict(tgt.get("settings") or {})
-    if "welcome" in snap:
-        restored_settings["welcome_message"] = snap["welcome"].get("welcome_message", "")
-    if "text_templates" in snap:
-        restored_settings["custom_caption"] = snap["text_templates"].get("custom_caption", "")
+    current_settings = tgt.get("settings") or {}
+    if int(tgt.get("config_version") or 1) != snap["expected_version"]:
+        raise services_bots.SaaSValidationError("Destination changed after cloning; rollback would overwrite newer changes.")
+    if any(tgt.get(k) != v for k, v in snap["bot_after"].items()) or any(
+        current_settings.get(k) != v for k, v in snap["settings_after"].items()
+    ):
+        raise services_bots.SaaSValidationError("Destination changed after cloning; rollback would overwrite newer changes.")
 
-    upd: dict[str, Any] = {
-        "features": snap.get("features") or tgt.get("features") or {},
-        "settings": restored_settings,
-        "updated_ts": time.time(),
-    }
-    if "profile" in snap:
-        upd.update(snap["profile"])
-    await db_models.bots_col().update_one({"bot_id": target_bot_id}, {"$set": upd})
-    if "filestore" in snap:
-        await update_filestore_config(workspace_id, target_bot_id, actor_id, snap["filestore"])
-
+    restored_settings = copy.deepcopy(current_settings)
+    for key, state in snap["settings_before"].items():
+        if state["present"]:
+            restored_settings[key] = copy.deepcopy(state["value"])
+        else:
+            restored_settings.pop(key, None)
+    updates: dict[str, Any] = {"settings": restored_settings, "updated_ts": time.time(),
+                               "config_version": snap["expected_version"] + 1}
+    unset: dict[str, str] = {}
+    for key, state in snap["bot_before"].items():
+        if state["present"]:
+            updates[key] = copy.deepcopy(state["value"])
+        else:
+            unset[key] = ""
+    # Compare-and-set detects writes occurring after the snapshot check.
+    match = {"workspace_id": workspace_id, "bot_id": target_bot_id,
+             "config_version": snap["expected_version"], "settings": current_settings,
+             **snap["bot_after"]}
+    patch: dict[str, Any] = {"$set": updates}
+    if unset:
+        patch["$unset"] = unset
+    result = await db_models.bots_col().update_one(match, patch)
+    if not result.matched_count:
+        raise services_bots.SaaSValidationError("Destination changed concurrently; reload before rollback.")
     await db_models.clones_col().update_one(
-        {"clone_id": str(clone_id)},
+        {"workspace_id": workspace_id, "clone_id": str(clone_id)},
         {"$set": {"rolled_back": True, "rolled_back_at": db_models.utcnow_iso()}},
     )
     await models_db.log_audit(actor_id, "bot_clone_rollback", target=f"{workspace_id}:{clone_id}")

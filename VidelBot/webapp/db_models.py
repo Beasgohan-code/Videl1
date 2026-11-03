@@ -177,6 +177,10 @@ class _MemCollection:
                 continue
             dv = doc.get(k)
             if isinstance(v, dict):
+                if not any(str(key).startswith("$") for key in v):
+                    if dv != v:
+                        return False
+                    continue
                 if "$ne" in v and dv == v["$ne"]:
                     return False
                 if "$in" in v and dv not in v["$in"]:

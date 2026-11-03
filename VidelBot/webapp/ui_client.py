@@ -1106,7 +1106,7 @@ CLIENT_JS = r"""
         <div class="page-header">
           <div>
             <h1 class="page-title">Bot Clone Studio & Migration Center</h1>
-            <p class="page-subtitle">Copy or migrate approved settings, commands, File Store rules, and automations between owned bots. Credentials, tokens, and private user data are strictly excluded.</p>
+            <p class="page-subtitle">Preview metadata changes between bots in this workspace. Credentials are excluded by field name; review free-text content before copying. Runtime changes and complete rollback are not yet supported.</p>
           </div>
         </div>
 
@@ -1140,7 +1140,7 @@ CLIENT_JS = r"""
         </div>
 
         <div class="card">
-          <h3 class="card-title" style="margin-bottom:12px">Clone & Migration History (1-Click Rollback)</h3>
+          <h3 class="card-title" style="margin-bottom:12px">Clone & Migration History</h3>
           <div class="table-wrap"><table class="data-table">
             <thead><tr><th>ID</th><th>Kind</th><th>Source → Target</th><th>Sections</th><th>Status</th><th>Rollback</th></tr></thead>
             <tbody>${(histRes.history || []).map((h) => `
@@ -1150,7 +1150,7 @@ CLIENT_JS = r"""
                 <td class="mono">${esc(h.source_bot_id)} → ${esc(h.target_bot_id)}</td>
                 <td>${(h.sections || []).length} section(s)</td>
                 <td>${h.rolled_back ? `<span class="badge badge-warning">Rolled Back</span>` : `<span class="badge badge-success">Completed</span>`}</td>
-                <td>${!h.rolled_back ? `<button class="btn btn-sm" data-rb="${esc(h.clone_id)}">Rollback</button>` : "—"}</td>
+                <td>${!h.rolled_back && h.rollback_supported ? `<button class="btn btn-sm" data-rb="${esc(h.clone_id)}">Rollback</button>` : h.rolled_back ? "—" : "Unavailable"}</td>
               </tr>
             `).join("") || `<tr><td colspan="6" style="color:var(--text-muted)">No clone or migration runs yet.</td></tr>`}</tbody>
           </table></div>
@@ -1167,19 +1167,26 @@ CLIENT_JS = r"""
             body: { action: "preview", source_bot_id: $("cln-src").value, target_bot_id: $("cln-tgt").value, sections: chosenSecs() },
           });
           $("cln-preview-out").innerHTML = `<div class="callout callout-info">
-            <strong>Validation Passed:</strong> ${p.conflicts_count} overwrite conflict(s) detected · Credentials excluded: <code>${p.credentials_stripped}</code>
+            <strong>Validation Passed:</strong> ${p.conflicts_count} overwrite conflict(s) detected. Review free-text for secrets and private data before copying.
             ${p.compatibility_warnings.length ? `<div style="margin-top:4px">${esc(p.compatibility_warnings.join(" "))}</div>` : ""}
+            <pre class="mono" style="white-space:pre-wrap;overflow:auto">${esc(JSON.stringify(p.diffs, null, 2))}</pre>
           </div>`;
         } catch (e) { toast(e.message, "error"); }
       };
 
       const runClone = async (actionName) => {
         try {
-          await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/clones`, {
-            method: "POST",
-            body: { action: actionName, source_bot_id: $("cln-src").value, target_bot_id: $("cln-tgt").value, sections: chosenSecs() },
+          const selection = { source_bot_id: $("cln-src").value, target_bot_id: $("cln-tgt").value, sections: chosenSecs() };
+          const preview = await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/clones`, {
+            method: "POST", body: { ...selection, action: "preview" },
           });
-          toast("Configuration copied (tokens & private data excluded)", "success");
+          const ok = await confirmModal("Confirm configuration copy",
+            `Copy ${preview.selected_sections.length} section(s) from <strong>${esc(preview.source_bot.display_name)}</strong> to <strong>${esc(preview.target_bot.display_name)}</strong>? ${preview.conflicts_count} potential conflict(s). Review free-text for secrets and private data. Cross-collection changes are not atomic; rollback is unavailable for commands, File Store settings, plugins and automations.<pre class="mono" style="white-space:pre-wrap;max-height:220px;overflow:auto">${esc(JSON.stringify(preview.diffs, null, 2))}</pre>`, "Copy configuration");
+          if (!ok) return;
+          await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/clones`, {
+            method: "POST", body: { ...selection, action: actionName, confirmed: true },
+          });
+          toast("Configuration metadata copied", "success");
           navigate("clone_studio", true);
         } catch (e) { toast(e.message, "error"); }
       };
@@ -1189,11 +1196,14 @@ CLIENT_JS = r"""
 
       vp.querySelectorAll("[data-rb]").forEach((b) => {
         b.onclick = async () => {
-          await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/clones`, {
-            method: "POST", body: { action: "rollback", clone_id: b.dataset.rb },
-          });
-          toast("Destination bot rolled back to pre-clone snapshot", "success");
-          navigate("clone_studio", true);
+          try {
+            if (!await confirmModal("Confirm rollback", "Restore the selected bot-record fields if they have not changed since this clone?", "Rollback")) return;
+            await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/clones`, {
+              method: "POST", body: { action: "rollback", clone_id: b.dataset.rb, confirmed: true },
+            });
+            toast("Selected bot settings restored", "success");
+            navigate("clone_studio", true);
+          } catch (e) { toast(e.message, "error"); }
         };
       });
     },

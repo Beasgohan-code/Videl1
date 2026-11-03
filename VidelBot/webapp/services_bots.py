@@ -496,11 +496,11 @@ def _live_running_bot_ids() -> set[int]:
 
 def _public_bot_doc(doc: dict[str, Any], live_ids: set[int] | None = None) -> dict[str, Any]:
     """Strip any encrypted token fields and enrich with live runtime vs credential status."""
-    out = {
+    out = db_models.strip_sensitive_fields({
         k: v
         for k, v in doc.items()
         if k not in ("_id", "token_sealed", "bot_token_encrypted")
-    }
+    })
     live = live_ids if live_ids is not None else _live_running_bot_ids()
     tg_id = int(out.get("telegram_bot_id") or 0)
     is_running = tg_id > 0 and tg_id in live

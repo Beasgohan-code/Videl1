@@ -451,6 +451,21 @@ async def api_bot_commands(request: web.Request) -> web.Response:
 
 
 # ─────────────────────────── Clone Studio & Migration Center ───────────────────────────
+async def _require_clone_section_access(ctx: auth.AuthContext, workspace_id: str, sections: list[str]) -> None:
+    domains = set()
+    for section in sections:
+        if section == "commands":
+            domains.add("commands")
+        elif section == "filestore":
+            domains.add("filestore")
+        elif section == "automations":
+            domains.add("automation")
+        else:
+            domains.add("bot_settings")
+    for domain in sorted(domains):
+        await auth.require_workspace_access(ctx, workspace_id, scope=domain)
+
+
 @_api
 async def api_clones(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
@@ -463,8 +478,12 @@ async def api_clones(request: web.Request) -> web.Response:
     body = await _json_body(request)
     action = str(body.get("action") or "preview")
     if action == "inspect":
+        await _require_clone_section_access(ctx, ws_id, list(services_clone_files.CLONEABLE_SECTIONS))
         bundle = await services_clone_files.extract_cloneable_bundle(ws_id, str(body.get("bot_id") or ""))
         return _ok({"bundle": bundle})
+    if action in ("preview", "execute", "migrate"):
+        sections = services_clone_files.validate_clone_sections(body.get("sections"))
+        await _require_clone_section_access(ctx, ws_id, sections)
     if action == "preview":
         prev = await services_clone_files.preview_clone_operation(
             ws_id,
@@ -475,6 +494,10 @@ async def api_clones(request: web.Request) -> web.Response:
         )
         return _ok(prev)
     if action in ("execute", "migrate"):
+        if body.get("confirmed") is not True:
+            raise services_bots.SaaSValidationError("Clone execution requires explicit confirmation.")
+        # Every execution currently writes the destination bot record/version.
+        await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
         rep = await services_clone_files.execute_clone_operation(
             ws_id,
             ctx.user_id,
@@ -486,6 +509,12 @@ async def api_clones(request: web.Request) -> web.Response:
         )
         return _ok({"report": rep, **rep})
     if action == "rollback":
+        if body.get("confirmed") is not True:
+            raise services_bots.SaaSValidationError("Rollback requires explicit confirmation.")
+        record = await db_models.clones_col().find_one({"workspace_id": ws_id, "clone_id": str(body.get("clone_id") or "")})
+        if not record:
+            raise KeyError("Clone/migration record not found in this workspace.")
+        await _require_clone_section_access(ctx, ws_id, services_clone_files.validate_clone_sections(record.get("sections")))
         rb = await services_clone_files.rollback_clone_operation(ws_id, str(body.get("clone_id") or ""), ctx.user_id)
         return _ok(rb)
     raise services_bots.SaaSValidationError(f"Unsupported clone action '{action}'.")

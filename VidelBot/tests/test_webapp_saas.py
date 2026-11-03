@@ -267,12 +267,12 @@ def test_clone_studio_excludes_secrets_and_supports_rollback():
                 json={"action": "preview", "source_bot_id": b1["bot_id"], "target_bot_id": b2["bot_id"], "sections": ["welcome", "features"]},
             )
             assert r_prev.status == 200
-            assert (await r_prev.json())["credentials_stripped"] is True
+            assert (await r_prev.json())["sensitive_fields_filtered"] is True
 
             r_exec = await cli.post(
                 f"/api/v1/workspaces/{ws_id}/clones",
                 headers=hdr,
-                json={"action": "execute", "source_bot_id": b1["bot_id"], "target_bot_id": b2["bot_id"], "sections": ["welcome", "features"]},
+                json={"action": "execute", "source_bot_id": b1["bot_id"], "target_bot_id": b2["bot_id"], "sections": ["welcome", "features"], "confirmed": True},
             )
             assert r_exec.status == 200
             exec_data = await r_exec.json()
@@ -285,7 +285,7 @@ def test_clone_studio_excludes_secrets_and_supports_rollback():
             r_rb = await cli.post(
                 f"/api/v1/workspaces/{ws_id}/clones",
                 headers=hdr,
-                json={"action": "rollback", "clone_id": clone_id},
+                json={"action": "rollback", "clone_id": clone_id, "confirmed": True},
             )
             assert r_rb.status == 200
             tgt_restored = (await r_rb.json())["target_bot"]
@@ -846,4 +846,97 @@ def test_invite_fails_closed_if_unique_index_cannot_be_established(monkeypatch):
             assert response.status == 500
             assert await real.find_one({"workspace_id": ws, "user_id": 17010}) is None
             assert await db_models.invites_col().count_documents({"workspace_id": ws, "target_user_id": 17010}) == 0
+    run(go())
+
+
+def test_clone_section_permissions_confirmation_and_unsupported_sections():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 18001)
+            actor, _ = await _login_link(cli, 18002)
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                                   json={"user_id": 18002, "role": "manager", "permissions": {"commands": False, "filestore": False, "automation": False}})).status == 201
+            a = await services_bots.create_or_register_bot(ws, 18001, {"display_name": "Source"}, allow_unverified_offline=True)
+            b = await services_bots.create_or_register_bot(ws, 18001, {"display_name": "Target"}, allow_unverified_offline=True)
+            url = f"/api/v1/workspaces/{ws}/clones"
+            payload = {"action": "preview", "source_bot_id": a["bot_id"], "target_bot_id": b["bot_id"]}
+            for section in ("commands", "filestore", "automations"):
+                assert (await cli.post(url, headers=actor, json={**payload, "sections": [section]})).status == 403
+            assert (await cli.post(url, headers=actor, json={"action": "inspect", "bot_id": a["bot_id"]})).status == 403
+            assert (await cli.post(url, headers=owner, json={**payload, "sections": []})).status == 400
+            assert (await cli.post(url, headers=owner, json={**payload, "sections": ["permissions_template"]})).status == 400
+            assert (await cli.post(url, headers=actor, json={**payload, "action": "execute", "sections": ["welcome"]})).status == 400
+            assert (await cli.post(url, headers=actor, json={**payload, "action": "preview", "sections": ["welcome"]})).status == 200
+            commands_user, _ = await _login_link(cli, 18005)
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                                   json={"user_id": 18005, "role": "developer", "permissions": {"bot_settings": False}})).status == 201
+            assert (await cli.post(url, headers=commands_user, json={**payload, "sections": ["commands"]})).status == 200
+            assert (await cli.post(url, headers=commands_user, json={**payload, "action": "execute", "sections": ["commands"], "confirmed": True})).status == 403
+            result = await cli.post(url, headers=owner, json={**payload, "action": "execute", "sections": ["commands"], "confirmed": True})
+            assert result.status == 200
+            clone = (await result.json())["clone"]
+            assert clone["rollback_supported"] is False
+            assert (await cli.post(url, headers=owner, json={"action": "rollback", "clone_id": clone["clone_id"], "confirmed": True})).status == 400
+    run(go())
+
+
+def test_clone_rollback_preserves_unselected_fields_and_blocks_conflicts():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 18003)
+            a = await services_bots.create_or_register_bot(ws, 18003, {"display_name": "Source"}, allow_unverified_offline=True)
+            b = await services_bots.create_or_register_bot(ws, 18003, {"display_name": "Target"}, allow_unverified_offline=True)
+            source, target = a["bot_id"], b["bot_id"]
+            await db_models.bots_col().update_one({"bot_id": source}, {"$set": {"settings.welcome_message": "New welcome"}})
+            await db_models.bots_col().update_one({"bot_id": target}, {"$set": {"settings.welcome_message": "Original", "settings.api_token": "retain-target-secret"}})
+            url = f"/api/v1/workspaces/{ws}/clones"
+            body = {"action": "execute", "source_bot_id": source, "target_bot_id": target, "sections": ["welcome"], "confirmed": True}
+            response = await cli.post(url, headers=owner, json=body)
+            assert response.status == 200
+            clone = (await response.json())["clone"]
+            assert clone["rollback_supported"]
+            raw = await db_models.bots_col().find_one({"bot_id": target})
+            assert raw["settings"]["api_token"] == "retain-target-secret"
+            public = await (await cli.get(f"/api/v1/workspaces/{ws}/bots/{target}", headers=owner)).json()
+            assert "retain-target-secret" not in json.dumps(public)
+            await db_models.bots_col().update_one({"bot_id": target}, {"$set": {"category": "Unrelated edit", "settings.custom_caption": "Keep this"}})
+            assert (await cli.post(url, headers=owner, json={"action": "rollback", "clone_id": clone["clone_id"]})).status == 400
+            response = await cli.post(url, headers=owner, json={"action": "rollback", "clone_id": clone["clone_id"], "confirmed": True})
+            assert response.status == 200
+            raw = await db_models.bots_col().find_one({"bot_id": target})
+            assert raw["category"] == "Unrelated edit" and raw["settings"]["custom_caption"] == "Keep this"
+            assert raw["settings"]["welcome_message"] == "Original" and raw["settings"]["api_token"] == "retain-target-secret"
+            response = await cli.post(url, headers=owner, json=body)
+            clone2 = (await response.json())["clone"]
+            await db_models.bots_col().update_one({"bot_id": target}, {"$set": {"settings.welcome_message": "Later change"}})
+            response = await cli.post(url, headers=owner, json={"action": "rollback", "clone_id": clone2["clone_id"], "confirmed": True})
+            assert response.status == 400
+            assert (await db_models.bots_col().find_one({"bot_id": target}))["settings"]["welcome_message"] == "Later change"
+    run(go())
+
+
+def test_clone_rollback_compare_and_set_does_not_overwrite_concurrent_change(monkeypatch):
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 18004)
+            a = await services_bots.create_or_register_bot(ws, 18004, {"display_name": "From"}, allow_unverified_offline=True)
+            b = await services_bots.create_or_register_bot(ws, 18004, {"display_name": "To"}, allow_unverified_offline=True)
+            url = f"/api/v1/workspaces/{ws}/clones"
+            response = await cli.post(url, headers=owner, json={"action": "execute", "source_bot_id": a["bot_id"],
+                "target_bot_id": b["bot_id"], "sections": ["welcome"], "confirmed": True})
+            assert response.status == 200
+            clone_id = (await response.json())["clone"]["clone_id"]
+            real = db_models.bots_col()
+            class ConcurrentBotWrite:
+                def __getattr__(self, name):
+                    return getattr(real, name)
+                async def update_one(self, query, update, **kwargs):
+                    await real.update_one({"workspace_id": ws, "bot_id": b["bot_id"]}, {"$set": {"settings.welcome_message": "Concurrent edit"}})
+                    return await real.update_one(query, update, **kwargs)
+            with monkeypatch.context() as patch:
+                patch.setattr(db_models, "bots_col", lambda: ConcurrentBotWrite())
+                result = await cli.post(url, headers=owner, json={"action": "rollback", "clone_id": clone_id, "confirmed": True})
+            assert result.status == 400
+            assert (await real.find_one({"bot_id": b["bot_id"]}))["settings"]["welcome_message"] == "Concurrent edit"
+            assert not (await db_models.clones_col().find_one({"clone_id": clone_id}))["rolled_back"]
     run(go())
