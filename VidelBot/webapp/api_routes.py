@@ -854,6 +854,7 @@ async def api_developer_keys(request: web.Request) -> web.Response:
         await auth.require_workspace_access(ctx, ws_id, scope="integrations")
         return _ok({"keys": await services_ops.list_api_keys(ws_id)})
     await auth.require_workspace_access(ctx, ws_id, min_role="administrator")
+    await auth.require_workspace_access(ctx, ws_id, scope="integrations")
     body = await _json_body(request)
     act = str(body.get("action") or "create")
     if act in ("revoke", "rotate"):
@@ -865,7 +866,7 @@ async def api_developer_keys(request: web.Request) -> web.Response:
         ws_id,
         ctx.user_id,
         name=str(body.get("name") or ""),
-        scopes=list(body.get("scopes") or []),
+        scopes=body.get("scopes") or [],
         expires_in_days=int(body.get("expires_in_days") or 90),
     )
     return _ok(created, status=201)

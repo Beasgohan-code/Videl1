@@ -543,6 +543,19 @@ async def toggle_or_configure_plugin(
 
 
 # ─────────────────────────── 5. Developer Center & Scoped API Keys (Section 23) ───────────────────────────
+async def _validate_api_key_scopes(workspace_id: str, actor_id: int, scopes: list[str]) -> list[str]:
+    if not isinstance(scopes, list) or not scopes or any(
+        not isinstance(scope, str) or scope not in db_models.PERMISSION_SCOPES for scope in scopes
+    ):
+        raise services_bots.SaaSValidationError("Select valid permission scopes for the API key.")
+    member = await db_models.get_membership(workspace_id, actor_id)
+    if not member or db_models.ROLE_RANK.get(member.get("role"), 0) < db_models.ROLE_RANK["administrator"]:
+        raise PermissionError("An administrator workspace membership is required to manage API keys.")
+    if any(not member["permissions"].get(scope, False) for scope in scopes):
+        raise PermissionError("Cannot grant API key permissions you do not possess.")
+    return list(dict.fromkeys(scopes))
+
+
 async def create_scoped_api_key(
     workspace_id: str,
     owner_id: int,
@@ -555,9 +568,7 @@ async def create_scoped_api_key(
     clean_name = (name or "").strip()
     if len(clean_name) < 2 or len(clean_name) > 64:
         raise services_bots.SaaSValidationError("API key name must be between 2 and 64 characters.")
-    valid_scopes = [s for s in (scopes or []) if s in db_models.PERMISSION_SCOPES]
-    if not valid_scopes:
-        raise services_bots.SaaSValidationError("Select at least one permission scope for the API key.")
+    valid_scopes = await _validate_api_key_scopes(workspace_id, owner_id, scopes)
 
     raw_key = f"vdk_{secrets.token_urlsafe(30)}"
     key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
@@ -605,8 +616,12 @@ async def revoke_or_rotate_api_key(
     existing = await db_models.api_keys_col().find_one({"key_id": key_id, "workspace_id": workspace_id})
     if not existing:
         raise KeyError("API key not found in this workspace.")
+    if rotate:
+        # Validate before revocation so a caller cannot rotate a broader key
+        # into their own identity or accidentally invalidate it on denial.
+        await _validate_api_key_scopes(workspace_id, actor_id, existing.get("scopes") or [])
     await db_models.api_keys_col().update_one(
-        {"key_id": key_id},
+        {"key_id": key_id, "workspace_id": workspace_id},
         {"$set": {"revoked": True, "revoked_at": db_models.utcnow_iso()}},
     )
     await models_db.log_audit(actor_id, "api_key_rotate" if rotate else "api_key_revoke", target=f"{workspace_id}:{key_id}")

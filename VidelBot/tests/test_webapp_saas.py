@@ -745,3 +745,105 @@ def test_workspace_bot_listing_does_not_automatically_assign_legacy_bots(monkeyp
             assert (await cli.get(f"/api/v1/workspaces/{a}/bots", headers=hdr)).status == 200
             assert (await cli.get(f"/api/v1/workspaces/{b}/bots", headers=hdr)).status == 200
     run(go())
+
+
+def test_api_key_delegation_and_rotation_do_not_exceed_actor_scopes():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 17001)
+            admin, _ = await _login_link(cli, 17002)
+            denied, _ = await _login_link(cli, 17003)
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner, json={
+                "user_id": 17002, "role": "administrator", "permissions": {"bot_settings": False}})).status == 201
+            assert (await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner, json={
+                "user_id": 17003, "role": "administrator", "permissions": {"integrations": False}})).status == 201
+            uri = f"/api/v1/workspaces/{ws}/api-keys"
+            result = await cli.post(uri, headers=owner, json={"name": "Owner bot key", "scopes": ["bot_settings"]})
+            assert result.status == 201
+            key = await result.json()
+            token = {"Authorization": f"Bearer {key['raw_key_once']}"}
+            assert (await cli.post(uri, headers=admin, json={"name": "Escalation", "scopes": ["bot_settings"]})).status == 403
+            assert (await cli.post(uri, headers=admin, json={"action": "rotate", "key_id": key["key_id"]})).status == 403
+            assert (await cli.get(f"/api/v1/workspaces/{ws}/bots", headers=token)).status == 200
+            assert (await cli.post(uri, headers=denied, json={"name": "No access", "scopes": ["analytics"]})).status == 403
+            assert (await cli.post(uri, headers=owner, json={"name": "Invalid", "scopes": "analytics"})).status == 400
+            allowed = await cli.post(uri, headers=admin, json={"name": "Analyst key", "scopes": ["analytics"]})
+            assert allowed.status == 201
+            assert "raw_key_once" in await allowed.json()
+    run(go())
+
+
+def test_invitation_rechecks_membership_atomically_and_validates_permission_types(monkeypatch):
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 17004)
+            uri = f"/api/v1/workspaces/{ws}/team"
+            invalid = await cli.post(uri, headers=owner, json={"user_id": 17005, "role": "viewer", "permissions": {"bot_settings": "false"}})
+            assert invalid.status == 400
+            assert not await db_models.memberships_col().find_one({"workspace_id": ws, "user_id": 17005})
+            real = db_models.memberships_col()
+            class RaceCollection:
+                def __getattr__(self, name):
+                    return getattr(real, name)
+                async def update_one(self, query, update, **kwargs):
+                    await real.insert_one({"workspace_id": ws, "user_id": 17005, "role": "owner", "permissions": {}})
+                    return await real.update_one(query, update, **kwargs)
+            with monkeypatch.context() as patch:
+                patch.setattr(db_models, "memberships_col", lambda: RaceCollection())
+                response = await cli.post(uri, headers=owner, json={"user_id": 17005, "role": "viewer"})
+            assert response.status == 400
+            assert (await real.find_one({"workspace_id": ws, "user_id": 17005}))["role"] == "owner"
+            assert await db_models.invites_col().count_documents({"workspace_id": ws, "target_user_id": 17005}) == 0
+    run(go())
+
+
+def test_member_role_races_do_not_modify_or_revoke_newly_promoted_peer(monkeypatch):
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 17006)
+            admin, _ = await _login_link(cli, 17007)
+            uri = f"/api/v1/workspaces/{ws}/team"
+            assert (await cli.post(uri, headers=owner, json={"user_id": 17007, "role": "administrator"})).status == 201
+            assert (await cli.post(uri, headers=owner, json={"user_id": 17008, "role": "viewer"})).status == 201
+            real = db_models.memberships_col()
+            class RaceCollection:
+                def __getattr__(self, name):
+                    return getattr(real, name)
+                async def update_one(self, query, update, **kwargs):
+                    await real.update_one({"workspace_id": ws, "user_id": 17008}, {"$set": {"role": "administrator"}})
+                    return await real.update_one(query, update, **kwargs)
+                async def delete_one(self, query):
+                    await real.update_one({"workspace_id": ws, "user_id": 17008}, {"$set": {"role": "administrator"}})
+                    return await real.delete_one(query)
+            with monkeypatch.context() as patch:
+                patch.setattr(db_models, "memberships_col", lambda: RaceCollection())
+                result = await cli.patch(f"{uri}/17008", headers=admin, json={"role": "developer"})
+            assert result.status == 400
+            assert (await real.find_one({"workspace_id": ws, "user_id": 17008}))["role"] == "administrator"
+            await real.update_one({"workspace_id": ws, "user_id": 17008}, {"$set": {"role": "viewer"}})
+            with monkeypatch.context() as patch:
+                patch.setattr(db_models, "memberships_col", lambda: RaceCollection())
+                result = await cli.delete(f"{uri}/17008", headers=admin)
+            assert result.status == 400
+            assert (await real.find_one({"workspace_id": ws, "user_id": 17008}))["role"] == "administrator"
+    run(go())
+
+
+def test_invite_fails_closed_if_unique_index_cannot_be_established(monkeypatch):
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 17009)
+            real = db_models.memberships_col()
+            class BrokenIndex:
+                def __getattr__(self, name):
+                    return getattr(real, name)
+                async def create_index(self, *args, **kwargs):
+                    raise RuntimeError("index creation failure")
+            with monkeypatch.context() as patch:
+                patch.setattr(db_models, "memberships_col", lambda: BrokenIndex())
+                response = await cli.post(f"/api/v1/workspaces/{ws}/team", headers=owner,
+                                          json={"user_id": 17010, "role": "viewer"})
+            assert response.status == 500
+            assert await real.find_one({"workspace_id": ws, "user_id": 17010}) is None
+            assert await db_models.invites_col().count_documents({"workspace_id": ws, "target_user_id": 17010}) == 0
+    run(go())

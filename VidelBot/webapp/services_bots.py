@@ -322,6 +322,19 @@ async def _validate_delegated_permissions(workspace_id: str, actor_id: int, acto
         raise PermissionError("Cannot delegate permissions you do not possess.")
 
 
+def _validated_member_permissions(role: str, permissions: dict[str, bool] | None) -> dict[str, bool]:
+    result = dict(db_models.DEFAULT_ROLE_PERMISSIONS[role])
+    if permissions is None:
+        return result
+    if not isinstance(permissions, dict):
+        raise SaaSValidationError("Permissions must be an object of boolean values.")
+    for scope, value in permissions.items():
+        if scope not in db_models.PERMISSION_SCOPES or not isinstance(value, bool):
+            raise SaaSValidationError("Permissions must contain known scopes with boolean values.")
+        result[scope] = value
+    return result
+
+
 async def invite_team_member(
     workspace_id: str,
     actor_id: int,
@@ -345,11 +358,7 @@ async def invite_team_member(
     existing = await db_models.memberships_col().find_one({"workspace_id": workspace_id, "user_id": t_uid})
     if existing:
         raise SaaSValidationError("User is already a workspace member; use the role management operation.")
-    base_perms = dict(db_models.DEFAULT_ROLE_PERMISSIONS[role])
-    if isinstance(permissions, dict):
-        for sc, val in permissions.items():
-            if sc in db_models.PERMISSION_SCOPES:
-                base_perms[sc] = bool(val)
+    base_perms = _validated_member_permissions(role, permissions)
     await _validate_delegated_permissions(workspace_id, actor_id, actor_role, base_perms)
 
     now = time.time()
@@ -364,11 +373,16 @@ async def invite_team_member(
         "created_at": db_models.utcnow_iso(),
         "created_ts": now,
     }
-    await db_models.invites_col().insert_one(dict(inv_doc))
-    await db_models.memberships_col().update_one(
-        {"workspace_id": workspace_id, "user_id": t_uid},
-        {
-            "$set": {
+    # A pre-check alone is unsafe: another request may insert a membership
+    # before this one writes. Enforce uniqueness and never update an existing
+    # row in this path, even if it appears after the pre-check.
+    members = db_models.memberships_col()
+    await members.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)
+    from pymongo.errors import DuplicateKeyError
+    try:
+        result = await members.update_one(
+            {"workspace_id": workspace_id, "user_id": t_uid},
+            {"$setOnInsert": {
                 "workspace_id": workspace_id,
                 "user_id": t_uid,
                 "role": role,
@@ -376,10 +390,14 @@ async def invite_team_member(
                 "invited_by": int(actor_id),
                 "joined_at": db_models.utcnow_iso(),
                 "joined_ts": now,
-            }
-        },
-        upsert=True,
-    )
+            }},
+            upsert=True,
+        )
+    except DuplicateKeyError:
+        raise SaaSValidationError("User is already a workspace member; use the role management operation.") from None
+    if getattr(result, "upserted_id", None) is None:
+        raise SaaSValidationError("User is already a workspace member; use the role management operation.")
+    await db_models.invites_col().insert_one(dict(inv_doc))
     await models_db.log_audit(actor_id, "team_member_add", actor_role=actor_role, target=f"{workspace_id}:{t_uid}", detail=role)
     await db_models.create_notification(
         workspace_id,
@@ -417,17 +435,14 @@ async def update_member_role(
         if db_models.ROLE_RANK.get(existing.get("role", "viewer"), 0) >= db_models.ROLE_RANK.get(actor_role, 0):
             raise PermissionError("Cannot modify a peer or higher-ranked member.")
 
-    perms = dict(db_models.DEFAULT_ROLE_PERMISSIONS[new_role])
-    if isinstance(permissions, dict):
-        for sc, val in permissions.items():
-            if sc in db_models.PERMISSION_SCOPES:
-                perms[sc] = bool(val)
-
+    perms = _validated_member_permissions(new_role, permissions)
     await _validate_delegated_permissions(workspace_id, actor_id, actor_role, perms)
-    await db_models.memberships_col().update_one(
-        {"workspace_id": workspace_id, "user_id": int(target_user_id)},
+    result = await db_models.memberships_col().update_one(
+        {"workspace_id": workspace_id, "user_id": int(target_user_id), "role": existing.get("role")},
         {"$set": {"role": new_role, "permissions": perms, "updated_ts": time.time()}},
     )
+    if not result.matched_count:
+        raise SaaSValidationError("Member role changed concurrently; reload and try again.")
     await models_db.log_audit(
         actor_id, "team_role_change", actor_role=actor_role, target=f"{workspace_id}:{target_user_id}", detail=new_role
     )
@@ -450,9 +465,11 @@ async def remove_team_member(
         raise PermissionError("Cannot remove the workspace owner.")
     if actor_role != "owner" and db_models.ROLE_RANK.get(existing.get("role", "viewer"), 0) >= db_models.ROLE_RANK.get(actor_role, 0):
         raise PermissionError("Insufficient rank to remove this member.")
-    await db_models.memberships_col().delete_one(
-        {"workspace_id": workspace_id, "user_id": int(target_user_id)}
+    result = await db_models.memberships_col().delete_one(
+        {"workspace_id": workspace_id, "user_id": int(target_user_id), "role": existing.get("role")}
     )
+    if not result.deleted_count:
+        raise SaaSValidationError("Member role changed concurrently; reload and try again.")
     await models_db.log_audit(
         actor_id, "team_member_revoke", actor_role=actor_role, target=f"{workspace_id}:{target_user_id}"
     )
