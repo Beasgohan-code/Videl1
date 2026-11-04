@@ -66,6 +66,8 @@ token-diagnostic handling and selected unsaved-navigation checks.
 `node next-library-inbox.test.cjs` checks Hosting observations, template
 create/copy/delete, notification read state, workspace isolation and permission
 presentation at 320/390/1440px. `node next-team.test.cjs` checks direct member grants, reviewed role changes,
-removal and role denial against the fixture. `npm run test:next` runs all four
-Next browser suites. These assertions do not establish
+removal and role denial against the fixture. `npm run test:next` runs all five
+Next browser suites. `node next-analytics.test.cjs` checks time/bot filters,
+CSV download, workspace changes, sample disclosure, permissions and responsive
+layout with fixture data. These assertions do not establish
 live Telegram verification, real file safety, production RBAC or full parity.

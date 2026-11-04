@@ -11,6 +11,7 @@ templates = {}
 notifications = {}
 teams = {}
 roles = {}
+analytics_access = {}
 
 
 def error(message, status):
@@ -24,7 +25,7 @@ def account(request):
 
 async def login(request):
     body = await request.json()
-    if body.get('link') not in ('l.valid', 'l.empty', 'l.readonly'):
+    if body.get('link') not in ('l.valid', 'l.empty', 'l.readonly', 'l.noanalytics'):
         return error('Sign-in link expired or already used.', 401)
     token = secrets.token_urlsafe(18)
     sessions[token] = [] if body['link'] == 'l.empty' else [
@@ -37,7 +38,8 @@ async def login(request):
     templates[token] = {}
     notifications[token] = {}
     teams[token] = {}
-    roles[token] = body['link'] != 'l.readonly'
+    roles[token] = body['link'] not in ('l.readonly', 'l.noanalytics')
+    analytics_access[token] = body['link'] != 'l.noanalytics'
     return web.json_response({'session_token': token, 'csrf_token': 'fixture-csrf'})
 
 
@@ -55,7 +57,7 @@ async def logout(request):
     if request.headers.get('X-CSRF-Token') != 'fixture-csrf':
         return error('CSRF required', 403)
     del sessions[token]
-    records.pop(token, None); commands.pop(token, None); files.pop(token, None); templates.pop(token, None); notifications.pop(token, None); teams.pop(token, None); roles.pop(token, None)
+    records.pop(token, None); commands.pop(token, None); files.pop(token, None); templates.pop(token, None); notifications.pop(token, None); teams.pop(token, None); roles.pop(token, None); analytics_access.pop(token, None)
     return web.json_response({'logged_out': True})
 
 
@@ -86,7 +88,7 @@ async def workspace(request):
     token = request.headers['Authorization'].removeprefix('Bearer ')
     if request.path.endswith('/bots'):
         return web.json_response({'bots': bot_records(token, ws)})
-    return web.json_response({'workspace': ws, 'my_role': 'owner' if roles[token] else 'viewer', 'my_permissions': {'bot_settings': roles[token], 'commands': roles[token], 'filestore': roles[token], 'templates': roles[token], 'logs': roles[token], 'team_management': roles[token], 'analytics': True}})
+    return web.json_response({'workspace': ws, 'my_role': 'owner' if roles[token] else 'viewer', 'my_permissions': {'bot_settings': roles[token], 'commands': roles[token], 'filestore': roles[token], 'templates': roles[token], 'logs': roles[token], 'team_management': roles[token], 'analytics': analytics_access[token]}})
 
 
 
@@ -295,6 +297,21 @@ async def team_member(request):
 
 app.router.add_route('*', '/api/v1/workspaces/{ws}/team', team_collection)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/team/{member}', team_member)
+
+
+async def analytics(request):
+    context, failure = authorized(request)
+    if failure is not None: return failure
+    token, ws = context
+    if not analytics_access[token]: return error('Forbidden', 403)
+    days=int(request.query.get('days','30'))
+    bot=request.query.get('bot_id','all')
+    if request.path.endswith('.csv'):
+        return web.Response(text='date,uploads,downloads,storage_bytes_added\n2026-10-01,2,,1024\n',content_type='text/csv')
+    return web.json_response({'range_days':days,'bot_id':bot,'totals':{'stored_files':(42 if ws['workspace_id']=='slow' else 84) if bot=='all' else 5,'storage_bytes':2048,'period_uploads':2},'comparison_previous_period':{'files_delta':1},'series':{'days':['2026-10-01','2026-10-02'],'uploads':[2,0],'storage_bytes_added':[1024,0]},'file_sample_truncated':days==90})
+
+app.router.add_get('/api/v1/workspaces/{ws}/analytics', analytics)
+app.router.add_get('/api/v1/workspaces/{ws}/analytics.csv', analytics)
 app.router.add_get('/api/v1/workspaces/{ws}/fleet', fleet)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/templates', template_collection)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/notifications', notification_collection)

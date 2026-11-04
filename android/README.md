@@ -41,6 +41,10 @@ on the default branch). Open the successful run in **Actions**, download its
 artifact, unzip it, then install the APK on an Android device. Artifacts expire
 after seven days. The workflow file and app source must first be committed and
 pushed before GitHub can run them; local uncommitted work is not visible to CI.
+The first CI attempts failed during Android SDK setup before Gradle; logs were
+not accessible from the sandbox. The revised workflow uses the Android SDK
+preinstalled on GitHub’s Ubuntu 24.04 runner. A successful run and artifact
+have not yet been confirmed.
 
 This is a **debug-signed** build, not a Play Store or release-signed package.
 The debug signing key on a fresh CI runner can differ between runs, so Android

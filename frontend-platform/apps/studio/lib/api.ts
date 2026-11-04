@@ -108,3 +108,12 @@ export function teamData(value:unknown):TeamData {
   const role_defaults:Record<string,Record<string,boolean>>={};if(object(value.role_defaults))for(const [role,permissions] of Object.entries(value.role_defaults)){if(object(permissions)&&Object.values(permissions).every(v=>typeof v==='boolean'))role_defaults[role]=permissions as Record<string,boolean>}
   return {members,role_defaults,reviewed_membership_guards:value.reviewed_membership_guards===true};
 }
+
+export type AnalyticsData={storedFiles:number;storageBytes:number;periodUploads:number;filesDelta:number;sampled:boolean;days:string[];uploads:number[];bytesAdded:number[]};
+export function analyticsData(value:unknown):AnalyticsData {
+ if(!object(value)||!object(value.totals)||!object(value.comparison_previous_period)||!object(value.series)||typeof value.file_sample_truncated!=='boolean')throw new Error('The server returned invalid analytics.');
+ const totals=value.totals,series=value.series,comparison=value.comparison_previous_period;
+ const nat=(n:unknown):n is number=>typeof n==='number'&&Number.isSafeInteger(n)&&n>=0;
+ if(!nat(totals.stored_files)||!nat(totals.storage_bytes)||!nat(totals.period_uploads)||typeof comparison.files_delta!=='number'||!Number.isSafeInteger(comparison.files_delta)||!Array.isArray(series.days)||!Array.isArray(series.uploads)||!Array.isArray(series.storage_bytes_added)||series.days.length!==series.uploads.length||series.days.length!==series.storage_bytes_added.length||series.days.length>365||!series.days.every((d:unknown)=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d))||!series.uploads.every(nat)||!series.storage_bytes_added.every(nat))throw new Error('The server returned invalid analytics values.');
+ return {storedFiles:totals.stored_files,storageBytes:totals.storage_bytes,periodUploads:totals.period_uploads,filesDelta:comparison.files_delta,sampled:value.file_sample_truncated,days:series.days,uploads:series.uploads,bytesAdded:series.storage_bytes_added};
+}

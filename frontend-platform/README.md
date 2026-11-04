@@ -12,7 +12,7 @@ npm run build
 ```
 
 The Next application is currently mounted at `/next-preview`; it includes an
-overview and partial Bot, Command, File Store, Hosting, Template, Notification and Team workflows. Other features
+overview and partial Bot, Command, File Store, Hosting, Template, Notification, Team and Analytics workflows. Other features
 remain in the existing `/app`. To use real data, configure `VIDEL_BACKEND_ORIGIN`
 to a plain backend origin at both build and server startup. The Next server
 proxies browser requests via same-origin `/api/v1` paths. Without that setting,
