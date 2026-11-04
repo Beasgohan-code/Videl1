@@ -1,0 +1,12 @@
+{
+  "name": "videl-browser-visual-tests",
+  "private": true,
+  "scripts": {
+    "test": "node browser.test.cjs",
+    "test:hosting": "node hosting.test.cjs",
+    "test:next": "node next-preview.test.cjs && node next-studios.test.cjs && node next-library-inbox.test.cjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.58.2"
+  }
+}
