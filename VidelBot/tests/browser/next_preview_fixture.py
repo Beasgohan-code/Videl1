@@ -9,6 +9,7 @@ commands = {}
 files = {}
 templates = {}
 notifications = {}
+teams = {}
 roles = {}
 
 
@@ -35,6 +36,7 @@ async def login(request):
     files[token] = {}
     templates[token] = {}
     notifications[token] = {}
+    teams[token] = {}
     roles[token] = body['link'] != 'l.readonly'
     return web.json_response({'session_token': token, 'csrf_token': 'fixture-csrf'})
 
@@ -43,7 +45,7 @@ async def me(request):
     workspaces = account(request)
     if workspaces is None:
         return error('Unauthorized', 401)
-    return web.json_response({'user': {'display_name': 'Fixture user', 'is_platform_admin': False, 'csrf_token': 'fixture-csrf'}, 'workspaces': workspaces})
+    return web.json_response({'user': {'user_id':1,'display_name': 'Fixture user', 'is_platform_admin': False, 'csrf_token': 'fixture-csrf'}, 'workspaces': workspaces, 'catalogs': {'workspace_roles':['owner','administrator','manager','developer','analyst','viewer'],'permission_scopes':['team_management','analytics']}})
 
 
 async def logout(request):
@@ -53,7 +55,7 @@ async def logout(request):
     if request.headers.get('X-CSRF-Token') != 'fixture-csrf':
         return error('CSRF required', 403)
     del sessions[token]
-    records.pop(token, None); commands.pop(token, None); files.pop(token, None); templates.pop(token, None); notifications.pop(token, None); roles.pop(token, None)
+    records.pop(token, None); commands.pop(token, None); files.pop(token, None); templates.pop(token, None); notifications.pop(token, None); teams.pop(token, None); roles.pop(token, None)
     return web.json_response({'logged_out': True})
 
 
@@ -84,7 +86,7 @@ async def workspace(request):
     token = request.headers['Authorization'].removeprefix('Bearer ')
     if request.path.endswith('/bots'):
         return web.json_response({'bots': bot_records(token, ws)})
-    return web.json_response({'workspace': ws, 'my_role': 'owner' if roles[token] else 'viewer', 'my_permissions': {'bot_settings': roles[token], 'commands': roles[token], 'filestore': roles[token], 'templates': roles[token], 'logs': roles[token]}})
+    return web.json_response({'workspace': ws, 'my_role': 'owner' if roles[token] else 'viewer', 'my_permissions': {'bot_settings': roles[token], 'commands': roles[token], 'filestore': roles[token], 'templates': roles[token], 'logs': roles[token], 'team_management': roles[token], 'analytics': True}})
 
 
 
@@ -260,6 +262,39 @@ async def notification_collection(request):
     row['read'] = data['read']
     return web.json_response({'updated':True})
 
+
+
+TEAM_DEFAULTS = {'owner':{'team_management':True,'analytics':True},'administrator':{'team_management':True,'analytics':True},'manager':{'team_management':False,'analytics':True},'developer':{'team_management':False,'analytics':True},'analyst':{'team_management':False,'analytics':True},'viewer':{'team_management':False,'analytics':True}}
+
+async def team_collection(request):
+    context, failure = authorized(request, write=request.method != 'GET')
+    if failure is not None: return failure
+    token, ws = context
+    if not roles[token]: return error('Forbidden', 403)
+    members = teams[token].setdefault(ws['workspace_id'], [{'user_id':1,'role':'owner','permissions':TEAM_DEFAULTS['owner'].copy()}])
+    if request.method == 'GET': return web.json_response({'members':members,'role_defaults':TEAM_DEFAULTS})
+    data=await request.json()
+    if data.get('role') not in TEAM_DEFAULTS or data.get('role') == 'owner' or not isinstance(data.get('user_id'),int) or any(m['user_id']==data['user_id'] for m in members): return error('Invalid member',400)
+    member={'user_id':data['user_id'],'role':data['role'],'permissions':data['permissions']}
+    members.append(member)
+    return web.json_response({'member':member},status=201)
+
+async def team_member(request):
+    context, failure = authorized(request, write=True)
+    if failure is not None: return failure
+    token, ws = context
+    members=teams[token].setdefault(ws['workspace_id'], [])
+    member=next((m for m in members if str(m['user_id'])==request.match_info['member']),None)
+    data=await request.json()
+    if not member or member['role']=='owner': return error('Forbidden',403)
+    if data.get('expected_role')!=member['role'] or data.get('expected_permissions')!=member['permissions']: return error('Member changed; reload.',400)
+    if request.method=='DELETE':
+        members.remove(member); return web.json_response({'removed':True})
+    member['role']=data['role'];member['permissions']=data['permissions']
+    return web.json_response({'member':member})
+
+app.router.add_route('*', '/api/v1/workspaces/{ws}/team', team_collection)
+app.router.add_route('*', '/api/v1/workspaces/{ws}/team/{member}', team_member)
 app.router.add_get('/api/v1/workspaces/{ws}/fleet', fleet)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/templates', template_collection)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/notifications', notification_collection)

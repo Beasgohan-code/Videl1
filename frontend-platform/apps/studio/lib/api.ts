@@ -1,7 +1,7 @@
 export type Session = {token:string; csrf:string};
 export type Workspace = {workspace_id:string; name:string};
 export type Bot = {bot_id:string; display_name?:string; username?:string; telegram_bot_id?:number; connection_state?:string; archived?:boolean; description?:string; category?:string; tags?:string[]};
-export type Identity = {user:{display_name:string; is_platform_admin:boolean; csrf_token?:string}; workspaces:Workspace[]};
+export type Identity = {user:{display_name:string; is_platform_admin:boolean; csrf_token?:string; user_id?:number}; workspaces:Workspace[]; catalogs:{workspace_roles:string[]; permission_scopes:string[]}};
 export type WorkspaceDetail = {workspace:{name:string}; my_role:string; my_permissions:Record<string,boolean>};
 export class ApiError extends Error { constructor(message:string,public status:number){super(message)} }
 export async function request(path:string, session:Session | null, options:{method?:string; body?:unknown; signal?:AbortSignal}={}):Promise<unknown> {
@@ -22,7 +22,8 @@ const object = (value:unknown): value is Record<string,unknown> => typeof value=
 export function identity(value:unknown):Identity {
   if(!object(value)||!object(value.user)||typeof value.user.display_name!=='string'||typeof value.user.is_platform_admin!=='boolean'||!Array.isArray(value.workspaces)) throw new Error('The server returned an invalid account response.');
   const workspaces=value.workspaces.map(w=>{if(!object(w)||typeof w.workspace_id!=='string'||typeof w.name!=='string')throw new Error('The server returned an invalid workspace.');return {workspace_id:w.workspace_id,name:w.name}});
-  return {user:{display_name:value.user.display_name,is_platform_admin:value.user.is_platform_admin,csrf_token:typeof value.user.csrf_token==='string'?value.user.csrf_token:undefined},workspaces};
+  const catalogs=object(value.catalogs)?value.catalogs:{}; const strings=(v:unknown)=>Array.isArray(v)?v.filter((x):x is string=>typeof x==='string'):[];
+  return {user:{display_name:value.user.display_name,is_platform_admin:value.user.is_platform_admin,csrf_token:typeof value.user.csrf_token==='string'?value.user.csrf_token:undefined,user_id:typeof value.user.user_id==='number'&&Number.isSafeInteger(value.user.user_id)&&value.user.user_id>0?value.user.user_id:undefined},workspaces,catalogs:{workspace_roles:strings(catalogs.workspace_roles),permission_scopes:strings(catalogs.permission_scopes)}};
 }
 export function login(value:unknown):Session {
   if(!object(value)||typeof value.session_token!=='string'||typeof value.csrf_token!=='string')throw new Error('The server did not return a valid session.');
@@ -97,4 +98,13 @@ export function fleetSummary(value:unknown):FleetSummary {
   const count=(n:unknown)=>typeof n==='number'&&Number.isSafeInteger(n)&&n>=0?n:null;
   const counts=object(value.state_counts)?value.state_counts:{};
   return {total:count(value.total_bots),running:count(counts.running),bots:botList({bots:value.bots})};
+}
+
+export type TeamMember={user_id:number;role:string;permissions:Record<string,boolean>};
+export type TeamData={members:TeamMember[];role_defaults:Record<string,Record<string,boolean>>};
+export function teamData(value:unknown):TeamData {
+  if(!object(value)||!Array.isArray(value.members))throw new Error('The server returned an invalid team list.');
+  const members=value.members.map(m=>{if(!object(m)||typeof m.user_id!=='number'||!Number.isSafeInteger(m.user_id)||m.user_id<=0||typeof m.role!=='string'||!object(m.permissions)||Object.values(m.permissions).some(v=>typeof v!=='boolean'))throw new Error('The server returned an invalid membership record.');return {user_id:m.user_id,role:m.role,permissions:m.permissions as Record<string,boolean>}});
+  const role_defaults:Record<string,Record<string,boolean>>={};if(object(value.role_defaults))for(const [role,permissions] of Object.entries(value.role_defaults)){if(object(permissions)&&Object.values(permissions).every(v=>typeof v==='boolean'))role_defaults[role]=permissions as Record<string,boolean>}
+  return {members,role_defaults};
 }

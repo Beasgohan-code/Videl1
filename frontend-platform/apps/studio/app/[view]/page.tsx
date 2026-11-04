@@ -3,6 +3,6 @@ import WorkspaceApp from '../../components/WorkspaceApp';
 export const dynamic = 'force-dynamic';
 export default async function StudioPage({params}:{params:Promise<{view:string}>}) {
   const {view} = await params;
-  if (view !== 'bots' && view !== 'commands' && view !== 'files' && view !== 'hosting' && view !== 'templates' && view !== 'notifications') notFound();
+  if (view !== 'bots' && view !== 'commands' && view !== 'files' && view !== 'hosting' && view !== 'templates' && view !== 'notifications' && view !== 'team') notFound();
   return <WorkspaceApp backendConfigured={Boolean(process.env.VIDEL_BACKEND_ORIGIN)} initialView={view}/>;
 }
