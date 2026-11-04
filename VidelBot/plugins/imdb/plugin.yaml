@@ -1,0 +1,14 @@
+name: imdb
+version: 1.2.0
+author: Videl
+description: Rich IMDb movie & TV series lookup with poster previews, ratings, cast & trailers
+entry: plugin.py
+min_bot_version: 3.0.0
+dependencies:
+  - imdbio>=0.0.9
+  - pycountry>=24.6.1
+permissions:
+  - network
+commands:
+  - name: imdb
+    description: Search movies & TV series on IMDb (title or tt-id)

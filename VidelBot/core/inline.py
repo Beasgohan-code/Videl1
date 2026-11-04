@@ -19,6 +19,12 @@ log = logging.getLogger("videl.inline")
 
 
 async def _shorten(url: str) -> list:
+    from VideoEncoder.utils import leech
+
+    try:
+        await leech.check_public(url)
+    except Exception:
+        return []
     out = []
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=6)) as s:
         for name, api in (("is.gd", "https://is.gd/create.php?format=simple&url="),
@@ -26,7 +32,7 @@ async def _shorten(url: str) -> list:
             try:
                 async with s.get(api + quote(url, safe="")) as r:
                     t = (await r.text()).strip()
-                    if r.status == 200 and t.startswith("http"):
+                    if r.status == 200 and t.startswith(("http://", "https://")):
                         out.append((name, t))
             except Exception:
                 pass
@@ -38,12 +44,13 @@ async def inline_handler(client: Client, query: InlineQuery):
     me = getattr(client, "me", None) or await client.get_me()
     q = (query.query or "").strip()
     results = []
+    safe_bot = html.escape(str(BOT_NAME), quote=False)
     if not q:
         results.append(InlineQueryResultArticle(
             title=f"Share {BOT_NAME}",
             description="Save content · Encode videos · Clone FileStore bots · Tools",
             input_message_content=InputTextMessageContent(
-                f"<b>✨ {BOT_NAME}</b> — all-in-one Telegram utility bot\n\n"
+                f"<b>✨ {safe_bot}</b> — all-in-one Telegram utility bot\n\n"
                 "📥 Save restricted content\n🎬 Encode & compress videos\n⚡ Clone your own FileStore bot\n"
                 "🧰 Rename · MediaInfo · Upload · QR · Short links"),
             reply_markup=InlineKeyboardMarkup([[Btn(f"🚀 Start {BOT_NAME}", url=f"https://t.me/{me.username}?start=help")]]),

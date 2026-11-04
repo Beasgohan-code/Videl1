@@ -609,11 +609,12 @@ class WorkerEngine:
         @app.on_message(filters.command("id") & filters.private)
         async def handle_id(client: Client, message: Message):
             user = message.from_user
+            safe_name = _html.escape(user.first_name or "")
             text = (
                 f"<b>🆔 Your Info</b>\n\n"
                 f"<blockquote>"
                 f"◈ <b>User ID:</b> <code>{user.id}</code>\n"
-                f"◈ <b>Name:</b> {user.first_name}\n"
+                f"◈ <b>Name:</b> {safe_name}\n"
                 f"◈ <b>Username:</b> @{user.username or 'N/A'}\n"
                 f"◈ <b>Bot:</b> @{me.username}"
                 f"</blockquote>"
@@ -656,6 +657,13 @@ class WorkerEngine:
                 self.workers[bot_id] = app
 
         except Exception as e:
+            for task in getattr(ctx, "tasks", []):
+                task.cancel()
+            if getattr(app, "is_connected", False):
+                try:
+                    await asyncio.wait_for(app.stop(block=False), timeout=3.0)
+                except Exception:
+                    pass
             log.error(f"Failed to start worker {bot_id}: {e}")
             raise
 

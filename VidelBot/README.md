@@ -12,21 +12,29 @@ Videl is **one** Telegram bot that combines:
 | 🤝 **Growth** (`core/growth.py`) | `/refer` invite links (every `REFERRAL_TARGET` new users → `REFERRAL_REWARD_DAYS` Premium), `/redeem` codes (`/gencode`, `/codes`, `/delcode`), one-time `/trial` |
 | 💬 **Support inbox** (`core/support.py`) | `/support` delivers text or media to the owners' DM – owners just **reply** to answer, users reply to follow up |
 | 🔒 **Force Subscribe** (`core/fsub.py`) | Require joining one or more channels, manage with `/add_fsub`, `/del_fsub`, `/fsub_list`; `/fsub_mode` switches **join-request** mode per channel; leaving a channel re-locks the user |
-| 🧰 **Tools** (`core/`) | `/mediainfo`, `/rename`, `/upload` (public link), `/short`, `/qr`, `/id`, `/info`, `/json`, `/ping`, **inline mode** (`@bot <url or text>` → short links + QR) |
-| 👮 **Admin** (`core/`) | runtime admins (`/add_admin`, `/deladmin`, `/admins` – owners only, no redeploy), `/user <id\|@name>` (full profile + ban / premium buttons), `/msg`, `/export` (CSV), `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/logtest`, `/report`, `/setcommands`, `/restart`, `/update`; clone owners' panel `/clonestats`, `/bots`, `/check [fix]`, `/sys` |
+| 🧰 **Tools & Checklists** (`core/`) | `/mediainfo` (reply **or** direct HTTP Range URL), `/checklist` (interactive task checklists + Business native), `/nftgift` (collectible gift inspector), `/rename`, `/upload`, `/short`, `/qr`, `/id`, `/info`, `/json`, `/ping`, **inline mode** (`@bot <url or text>`) |
+| 🧩 **Modular Plugins** (`plugins/`, `core/plugin_manager.py`) | WZML-X-inspired YAML-manifest plugin architecture (`plugin.yaml` & `wzml_plugin.yml`, `/plugins` owner-governed toggle/reload/settings, **staged AST security scan + SHA-256 + explicit owner approval** before remote/archive install) with 5 bundled rich plugins: **`/imdb`**, **`/anime`** / **`/manga`** / **`/character`**, **`/mdl`**, **`/exportsession`**, and **`group_mod`** |
+| 🛡 **Group Moderation** (`plugins/group_mod/`) | Live Telegram permission-verified group suite (`/gsettings`, `/gban`, `/gunban`, `/kick`, `/mute`, `/unmute`, `/warn`, `/warns`, Bot API 10.3 **`/tag`** / **`/deltag`**, **`/clearreactions`**, **`/topic`**, **`/joinmode`**, `/rules`, `/welcome`, `/goodbye`, `/lock`, `/unlock`, `/gfilter`, `/antiraid`, `/modreport`) |
+| 👮 **Admin** (`core/`) | runtime admins (`/add_admin`, `/deladmin`, `/admins` – owners only, no redeploy), `/plugins`, `/speedtest` (rich card + masked IP), `/user <id\|@name>` (full profile + ban / premium buttons), `/msg`, `/export` (CSV), `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/logtest`, `/report`, `/setcommands`, `/restart`, `/update`; clone owners' panel `/clonestats`, `/bots`, `/check [fix]`, `/sys` |
 | 📝 **Owner log channel** (`core/botlog.py`) | Every event tagged in `LOG_CHANNEL` – who started the bot, who cloned which bot, logins, payments, bans, restarts… – boot/shutdown/clone reports also in the owners' DM, plus a daily activity report |
 | 🐕 **Keep-alive + Watchdog** | Health server + self-ping for free hosts; automatic temp-file cleanup, low-disk rescue, stuck-flow expiry, clone-bot self-healing, hang detection & auto-restart |
 
 Everything runs in a single process on a single bot token; clone bots are extra
 Pyrogram clients started by the worker engine.
 
-## 🛰 Pyrofork + aiogram (Bot API 10.3)
-Videl uses **both** libraries, each for what it does best:
+## 🛰 WzGram (Layer 232) + Richgram + aiogram (Bot API 10.3)
+Videl runs on **WzGram v3.1.6** (MTProto Layer 232 + **WarpCrypto**), **Richgram v0.2.0**, and **aiogram 3.31** (Bot API 10.3):
 
-| | Pyrofork (MTProto, layer 220) | aiogram 3.31 (Bot API 10.3) |
+| | WzGram 3.1.6 + Richgram 0.2.0 (MTProto Layer 232) | aiogram 3.31 (Bot API 10.3) |
 |---|---|---|
-| Role | receives **all updates**, runs handlers, clone workers, user sessions | **outgoing** Bot API client (`core/botapi.py`) |
-| Used for | 4 GB up/downloads, restricted-content saver, encoder, raw API | 🎨 coloured buttons · 👻 ephemeral group replies · 📖 rich messages · ⚡ managed bots · ⭐ Stars subscriptions/ledger · 🎁 Premium & gifts · 🖼 profile photos · ✍️ drafts |
+| Role | receives **all updates**, pooled multi-DC 4 GB up/downloads, clone workers, user sessions, **native Layer 232 RichMessage** | optional **outgoing** Bot API HTTP bridge (`core/botapi.py`) |
+| Used for | `InputRichMessage` · `ButtonStyle` · `DisabledButton` · `CopyTextButton` · `ReplyParameters` · `LinkPreviewOptions` · `EphemeralMessageParameters` · `send_rich_message_draft` + `MessageGenerationStopped` · `ManagedBotUpdated` · `get_upgraded_gift` | outgoing Bot API 10.3 HTTP calls for the primary bot token (shared message IDs with WzGram) |
+
+> **Manual local `pip install` note:** `richgram==0.2.0` declares `kurigram` as an install dependency on PyPI. The root `Dockerfile` automatically strips `kurigram` and keeps `wzgram==3.1.6` as the `pyrogram` provider; when installing manually into a virtualenv, run:
+> ```bash
+> pip install -r VidelBot/requirements.txt
+> pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6
+> ```
 
 aiogram never polls (two consumers on one token would split the updates), message IDs are shared so either
 library can edit what the other sent, and **every aiogram call falls back to MTProto** – if the Bot API is
@@ -65,7 +73,9 @@ unreachable (3 network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, Vid
 * **Disabled buttons** (Bot API 10.3 `DisabledButton`) – status chips such as *✅ Premium · active* on the Premium
   screen and *🔒 Limit reached* in My Bots are greyed out and not tappable. Any button with `callback_data`
   `noop` / `noop:<x>` is sent this way; the MTProto fallback answers it silently.
-* **Streaming replies** (Bot API 9.5 `sendMessageDraft`) – /start shows a live draft while the home screen is built, slow commands (`/stats`, `/report`, `/check`, `/user`, `/stars`, `/export`) show Telegram's native **“Thinking…”** placeholder (`STREAM_REPLIES`)
+* **Streaming replies & stoppable rich drafts** (Bot API 9.5+ `sendMessageDraft` + WzGram `send_rich_message_draft` / `MessageGenerationStopped`) – `/start` shows a live draft while the home screen is built; slow commands and plugin lookups (`/imdb`, `/anime`, `/mdl`, `/mediainfo`, `/speedtest`) stream rich progress stages and honour Telegram's native **Stop** button (`STREAM_REPLIES`)
+* **Interactive checklists & upgraded NFT gifts** – `/checklist Title :: Task 1 | Task 2` (native Business checklist or interactive inline checklist) and `/nftgift <t.me/nft/slug>` (WzGram `get_upgraded_gift` collectible rarity & floor inspector)
+* **Instant managed clone onboarding** – `@Client.on_managed_bot()` (`ManagedBotUpdated`) auto-connects new BotFather managed clones on push without waiting for polling
 * **Bot profile photo** (Bot API 9.4 `setMyProfilePhoto`) – owners: `/setbotpic` · `/delbotpic`; clone owners: dashboard → 📩 Start cfg → 🤖 Bot profile photo
 * **Stars subscriptions** (30-day auto-renew, cancel / resume) and **Premium gifts**
 * **Native pickers** (`request_chat` / `request_user` keyboard buttons) – 📢 *Select channel* when creating a clone / changing its log or force-sub channel, 👤 *Choose a friend* for gifts
@@ -111,7 +121,7 @@ All platforms build the **root `Dockerfile`** (Python 3.11 + ffmpeg/ffprobe, med
 | **Koyeb / Northflank / Fly.io** | Create a service from the GitHub repo with the **Dockerfile** builder, port `8080`, health check path `/health`. |
 | **VPS with Docker** | `cp VidelBot/config.env.sample VidelBot/config.env` → edit → `docker compose up -d --build` (logs: `docker compose logs -f`). |
 | **VPS without Docker** | `sudo apt install ffmpeg mediainfo mkvtoolnix p7zip-full` → `cd VidelBot && python3.11 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt` → create `config.env` → `python3 run.py` (systemd unit below). |
-| **Any Dockerfile path / root dir** | `Dockerfile` and `VidelBot/Dockerfile` are the **same universal file**: it works with the repo root *or* `VidelBot/` as build context, so either Dockerfile path is fine. |
+| **Root Dockerfile** | The single canonical **`Dockerfile`** lives outside `VidelBot/` at the repository root (`./Dockerfile`), so all PaaS auto-detectors and `docker compose` build from the repo root without duplicate-Dockerfile ambiguity (also falls back cleanly if invoked with `VidelBot/` as build context). |
 
 > ⚠️ Run **exactly one** instance per bot token (keep replicas at 1). Two copies would steal each other's updates.
 
@@ -241,21 +251,16 @@ normal letters so they remain readable and copyable. Admin, owner and log messag
 
 - `core/style.py` – `sc()` small caps (keeps HTML tags, entities, `{placeholders}`, `/commands`,
   `@mentions`, links, `<code>` and ACRONYMS; escapes bare `& < >`), `hdr()`, `sec()`, `row()`, `quote()`.
-- `core/rich.py` – `Doc` builds a screen once (`.h()`, `.table()`, `.items()`, `.details()`, `.footer()`)
-  and renders it two ways:
-  - **native rich message** (Bot API 10.1+ `sendRichMessage` / `editMessageText(rich_message=…)`): `<h1>`
-    title, small-caps `<h3>` sections, bordered + striped `<table>`s, `<details>` and a `<footer>`;
-  - **classic HTML** (FileStore look): 2-column tables become `◈ ʟᴀʙᴇʟ: value` rows in a quote, wider
-    tables become `◈ a · b · c` rows, `<details>` becomes an expandable quote.
+- `core/rich.py` – `Doc` (backed by **`richgram`** + 3-tier delivery) builds a screen once (`.h()`, `.table()`, `.kv_table()`, `.items()`, `.details()`, `.pull_quote()`, `.pre()`, `.math()`, `.buttons_row()`, `.slideshow()`, `.footer()`) and renders it across three tiers:
+  1. **Bot API 10.3 `sendRichMessage`** (via `aiogram` bridge on the primary bot),
+  2. **WzGram Layer 232 native `send_rich_message(InputRichMessage)`** (works in every clone worker too, with zero Bot API HTTP round-trips),
+  3. **Classic FileStore HTML fallback** (`◈ ʟᴀʙᴇʟ: value` rows, expandable `<blockquote expandable>` details, plain text helper `.plain()`).
 
-  The rich form is used in private chats of the main bot whenever the aiogram bridge is on. Because
-  pyrofork can't read rich messages, a rich screen only carries buttons whose handlers edit through the
-  Bot API (`rich.SAFE_CALLBACKS`); any other keyboard automatically gets the classic rendering. Groups
-  get the classic form as an ephemeral reply, and if Telegram refuses to turn a rich screen back into a
-  text one, the helpers send the new screen and delete the old message.
+  Rich screens only carry buttons whose handlers edit through `rich.SAFE_CALLBACKS`; any other keyboard automatically gets the classic rendering. Groups get an ephemeral reply (`EphemeralMessageParameters` / Bot API `ephemeral_user_id`), and if Telegram refuses to turn a rich screen back into a text one, the helpers send the new screen and delete the old message.
 
 Rich screens: `/help`, `/about`, `/commands` (one table per section), `/stats`, `/status`, `/mediainfo`
-(streams table), `/id`, `/info`, `/ping`, `/myplan`, `/premium` (Free vs Premium table + Stars prices),
+(streams + container tables, reply or direct HTTP Range URL), `/speedtest`, `/checklist`, `/nftgift`, `/plugins`,
+`/imdb`, `/anime` / `/manga` / `/character`, `/mdl`, `/id`, `/info`, `/ping`, `/myplan`, `/premium` (Free vs Premium table + Stars prices),
 `/mysub`, `/refer`, `/verify`, `/testrename`, `/leaderboard` and the 🧰 Tools help. Restyled
 classic screens (photo / preview based): home, settings hub, encoder help, premium banner and the
 Auto-Rename panel.
@@ -458,8 +463,69 @@ tests/            offline test-suite
 * The watchdog also trims per-user caches (rename settings, locks, log/error de-dupe) so memory stays flat.
 
 ### Handler order
-`-10` payments (never blocked) → `-4` user tracking (+ referral credit) → `-3` ban / maintenance → `-2` force-subscribe → `-1` reply routers (support inbox, gift picker, rename-settings input) → `0` modules → `1–2` clone link generators.  
-Inside clones: `-10` Stars payments → `-3` anti-flood → `-2` password / request-reply input → `-1` activity → `0` commands → `1–2` link generators → `3` storage-channel indexer.
+`-20` update deduplication (`SEEN`, 15 min window) → `-10` Stars payments (atomic `charge_id` idempotency, never blocked) → `-4` user tracking (+ referral credit) → `-3` ban / maintenance → `-2` force-subscribe → `-1` reply routers (support inbox, gift picker, rename-settings input) → `0` modules & modular plugins → `1–2` clone link generators.
+Inside clones: `-10` Stars payments (atomic `charge_id` idempotency) → `-3` anti-flood → `-2` password / request-reply input → `-1` activity → `0` commands → `1–2` link generators → `3` storage-channel indexer.
+
+---
+
+## 🏗 Engineering Architecture, Operations & Reference
+
+### 1. Startup & Graceful Shutdown Lifecycle (`run.py`)
+1. **Boot validation:** `config.missing_required()` verifies required credentials (`API_ID`, `API_HASH`, `BOT_TOKEN`, `DB_URI`, `OWNER_ID`) before network initialization.
+2. **Health & Dashboard server:** `keep_alive.start_server()` binds `0.0.0.0:$PORT` (`/`, `/health`, `/admin`) and spawns `self-ping` via `core.bg.spawn`.
+3. **Shared MongoDB pool & indexes:** `get_motor_client()` connects with bounded timeouts (`serverSelectionTimeoutMS=10s`, `connectTimeoutMS=10s`, `socketTimeoutMS=30s`) and is shared across `VidelDB`, `saver` (`database/db.py`), `VideoEncoder`, and `filestore`. `vdb.warm_up()`, `MainDB().ensure_indexes()`, and `ensure_module_indexes()` build indexes and hydrate `_banned` / `_settings`.
+4. **Single-instance lease & orphan reaping:** `core.instance.acquire()` acquires the MongoDB lease + starts its heartbeat; `VideoEncoder.utils.jobs.reap_orphans()` terminates stray child media processes after `exec` restarts.
+5. **Dynamic admins & idempotent plugin loading:** `load_db_admins()` merges persisted admins before filter compilation; `load_plugins(app)` registers module handlers through `register_handler_once()` (preventing duplicate handler registration) and records any import errors into `boot_import_errors` / `plugin_manager.load_errors`.
+6. **Client & clone worker startup:** `start_with_retry(app)` connects `WzGram`, registers scoped command menus (`USER` / `GROUP` / `ADMIN` / `OWNER`, each ≤ 100 Telegram commands), starts active FileStore clone workers (rolling back cleanly if post-start setup fails), and arms `watchdog.start(app)`.
+7. **Graceful shutdown:** Unloads modular plugins (`plugin_manager.unload_all`), stops all clone workers (`worker_engine.stop_all_workers`), stops `watchdog` (`watchdog.stop`), cancels & drains tracked background tasks (`core.bg.cancel_all`), stops `keep_alive`, closes the outgoing `aiogram` session (`botapi.close`), stops `app`, releases the MongoDB instance lease (`instance.release`), and closes the Motor pool (`close_motor_client`).
+
+### 2. Telegram Bot API Compatibility Matrix (`WzGram 3.1.6` + `aiogram 3.31`)
+| Capability | Classification | Implementation Details |
+|---|---|---|
+| Rich messages (`sendRichMessage`, tables, code, details, pull quotes, math) | **Supported and implemented** | Centralized `core/rich.py` (`Doc`) with 3-tier delivery: Bot API 10.3 → WzGram `InputRichMessage` → classic HTML fallback |
+| Coloured buttons (`ButtonStyle`), `CopyTextButton`, `DisabledButton` | **Supported and implemented** | `core/ui.py` (`btn`, `styled_button`, `copy_button`) across Bot API 10.3 & WzGram Layer 232 |
+| Ephemeral group replies (`sendEphemeralMessage`, edit, delete) | **Partially supported (with safe fallback)** | Implemented in `core/botapi.py` & `core/rich.py`; Telegram forbids `callback_data` buttons on ephemeral messages, so interactive keyboards automatically fall back to standard replies |
+| Stoppable streaming drafts (`sendMessageDraft` / `send_rich_message_draft`) | **Supported and implemented** | `core/stream.py` with `MessageGenerationStopped` cancellation |
+| Telegram Stars (`XTR`) one-time plans, 30-day subscriptions, gifts, refunds | **Supported and implemented** | `core/payments.py` + clone `extras.py` with unique `charge_id` atomic idempotency & post-checkout currency/amount/payer verification |
+| Member tags (`setChatMemberTag`), forum topics, checklists, managed bots | **Supported and implemented** | `core/botapi.py` + `plugins/group_mod/plugin.py` + `filestore/main_bot/plugins/managed_bots.py` |
+| Enumerating all members of a group via Bot API | **Unsupported by Telegram Bot API** | Bot API only exposes `getChatAdministrators`, `getChatMemberCount`, and individual `getChatMember(user_id)`. Videl never fakes full member enumeration |
+| Custom Stars subscription billing intervals (≠ 30 days) | **Unsupported by Telegram API** | Telegram enforces `subscription_period = 2592000` (30 days); other durations use one-time Stars plans |
+
+### 3. MongoDB Databases, Collections & Indexes
+| Logical Key | Default DB Name | Key Collections & Indexes |
+|---|---|---|
+| `videl` | `VIDEL_DB_NAME` (`videl_core`) | `videl_users` (`id` unique, `referred_by` sparse), `videl_settings`, `videl_admins`, `videl_instance` (single-instance lease), `payments` (`charge_id` **unique sparse**, `user`, `date`), `subscriptions` (`user`), `plans`, `codes` (`code` unique), `support_map` (`(chat, msg)`, 30d TTL on `date`), `fsub_requests` (`(chat, user)`), `group_settings`, `group_warns` (`(chat_id, user_id)`), `group_filters`, `checklists` (`owner`), `plugins`, `plugin_settings` |
+| `saver` | `DB_NAME` | `users` (`id` indexed; per-user session, premium status/expiry, daily saves, traffic) |
+| `encoder` | `SESSION_NAME` | `users` (`id` indexed; atomic `$setOnInsert` creation), `enc_queue` (persistent encode queue) |
+| `filestore` | `MONGO_DB_NAME` | `bots` (`owner_id`, `is_active`, `(is_active, last_active)`), plus per-clone `bot_<id>_users`, `bot_<id>_admins`, `bot_<id>_fsub`, `bot_<id>_links`, `bot_<id>_purchases` (`(code, user)` unique), `bot_<id>_payments` (`charge_id` **unique sparse**), `bot_<id>_premium`, `bot_<id>_files` (`name_lc`), `bot_<id>_requests`, `bot_<id>_schedules` (`run_at`) |
+
+### 4. Backup, Validation & Dry-Run Restore Guide (`core/backup.py`)
+- **Create backup now:** Send `/backup` as a bot owner (or enable automatic daily backups via `BACKUP_ENABLED=true`, `BACKUP_HOUR`, `BACKUP_CHAT`). Every `.json.gz` archive embeds `integrity` metadata (`payload_sha256`, `total_docs`, `collections`), and the Telegram backup caption includes the archive's SHA-256 digest and uncompressed size.
+- **Secret stripping:** User `/login` string sessions, API hashes, passwords, and 2FA fields are stripped (`null`) unless `BACKUP_INCLUDE_SECRETS=true`. Clone bot tokens remain encrypted with `ENCRYPTION_KEY`.
+- **Dry-Run & Non-Destructive Restore:**
+  1. Reply `/backup` to any `.json.gz` Videl backup document.
+  2. Tap **🔍 Dry-Run** (`bkr:dry`) first: Videl streams and validates the archive (capped at 256 MiB uncompressed to prevent gzip bombs), verifies SHA-256 and `integrity` document/collection counts (`verify_backup_file()`), and displays exact **New inserts**, **Updates**, **Live secrets preserved**, and **Invalid rows skipped** without modifying MongoDB.
+  3. Tap **♻️ Restore** (`bkr:yes`): Documents are upserted by `_id` with per-collection error isolation (existing records are never deleted, and live user sessions are never overwritten by `null` backup placeholders), followed by automatic `vdb.warm_up()` and `load_db_admins()` cache refresh.
+- **Database Integrity & Legacy Duplicate-User Doctor (`core/db_doctor.py`):**
+  1. Send `/backup check` (or `/backup doctor`) as a bot owner to run a read-only audit across `videl`, `saver`, `encoder`, and `filestore` without modifying MongoDB.
+  2. If legacy duplicate `id` rows are found in `saver.users` or `encoder.users`, tap **🧹 Merge Duplicate Row(s)** (`bkr:dedupe_ok`) to merge them non-destructively (preserving Lifetime or latest `premium_expiry`, user `/login` `session`s, custom thumbnails, captions, word filters, encoder settings, and max save/encode counters).
+  3. When `ENCRYPTION_KEY` is configured, personal user `/login` sessions (`saver.users.session`) and clone tokens are stored encrypted at rest (`enc:<fernet>`), and **🔐 Encrypt Legacy Secret(s)** (`bkr:encrypt_ok`) upgrades any pre-existing plaintext records in place without interrupting active sessions.
+
+### 5. Web Console (`/admin`), Storage Backends & Portable Settings
+- **Responsive `/admin` Console (`keep_alive.py`):** Open via `/dashboard` (one-time single-use Telegram login link) or `X-Admin-Token`. Features KPI metric cards, WAI-ARIA accessible tabs (**Overview**, **Tasks & Queue** with inline **Pause / Resume / Boost / Stop** & queue purge, **Workspace Files** sandboxed multi-select orphan-file cleaner with active-task lock protection, and **Storage & Config** secret-free diagnostics), confirmation dialogs, and toast notifications.
+- **Cloud Storage Backends (`VideoEncoder/utils/uploads/`):**
+  - **Google Drive (`drive/`):** Headless Service Account (`GDRIVE_SA_FILE`) or pre-authorized OAuth JSON (`GDRIVE_TOKEN_FILE`), optional Cloudflare/GDIndex links (`INDEX_URL`), exponential backoff, and per-chunk cancellation.
+  - **Rclone (`rclone.py`):** Optional `rclone copy` integration (`RCLONE_CONFIG_PATH`, `RCLONE_DEFAULT_REMOTE`) with strict `remote:folder` validation, live progress/speed/ETA, POSIX pause/resume/cancel, optional `rclone link`, and credential redaction.
+  - **GoFile (`gofile.py`):** Optional streaming 512 KiB chunked GoFile uploader (`GOFILE_TOKEN` / `GOFILE_FOLDER_ID` or guest mode) with pause/cancel and transient HTTP retry.
+  - If a selected external destination is unconfigured on the server, `storage.dispatch_upload()` automatically falls back to Telegram upload instead of failing the encode.
+- **Portable User Settings Portal (`core/settings_portal.py`, `/vset`):**
+  - Run `/vset export` (or tap **📤 Export JSON** on `/vset`) to export a portable, secret-free `videl-user-settings/1` JSON bundle covering Encoder, Auto-Rename, and Saver preferences.
+  - Reply `/vset import` to restore validated preferences on any Videl instance (sessions, privileges, and quotas are strictly excluded and never overwritten), or use the two-step confirmed **♻️ Reset…** button on `/vset`.
+
+### 6. Troubleshooting
+- **`ImportError` or `RICH_AVAILABLE == False` after installing packages:** `richgram` lists `kurigram` in its package metadata, which shares the `pyrogram` import namespace with `wzgram`. Run `pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6` (already automated in the root `Dockerfile` and `.github/workflows/ci.yml`).
+- **Second container waits on startup (`waiting for previous instance lease`):** Expected during rolling deploys (`SINGLE_INSTANCE=true`). The new container serves `/health` immediately and acquires the lease as soon as the old container stops or its 60s lease expires. If MongoDB is unreachable or `SINGLE_INSTANCE_TIMEOUT` (>0) elapses, `instance.acquire()` now **fails closed** (`InstanceLeaseError`) so two containers never consume updates concurrently.
+- **Plugin shows `⚠️ Error` in `/plugins`:** Open `/plugins info <name>` to view the captured manifest, `required_env`, permission, or `startup()` timeout diagnostic stored in `plugin_manager.load_errors` / `manifest_errors`, supply any missing dependency/env var, and tap **🔄 Reload**.
 
 ## 📜 Licence
 

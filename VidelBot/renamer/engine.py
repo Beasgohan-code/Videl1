@@ -12,6 +12,7 @@ import itertools
 import json
 import logging
 import os
+import re
 
 from config import env_int
 import shutil
@@ -155,6 +156,30 @@ RENAME_PROGRESS = ("<b>{title}</b>\n📄 <code>{name}</code>\n\n<code>[{bar}]</c
                    "💾 {current} / {total}\n⚡ {speed}/s · ⏳ {eta}")
 
 
+def _job_telemetry_key(job: Job) -> int:
+    return -100_000 - int(job.id)
+
+
+async def _send_with_retry(coro_factory, *, retries: int = 2, max_flood: int = 600):
+    """Retry Telegram media upload on FloodWait / 5xx before acceptance (never duplicates delivered media)."""
+    from pyrogram.errors import FloodWait, InternalServerError, ServiceUnavailable
+    attempt = 0
+    while True:
+        try:
+            return await coro_factory()
+        except FloodWait as fw:
+            wait_s = int(getattr(fw, "value", 0) or 0) + 1
+            if attempt >= retries or wait_s > max_flood:
+                raise
+            attempt += 1
+            await asyncio.sleep(wait_s)
+        except (InternalServerError, ServiceUnavailable):
+            if attempt >= retries:
+                raise
+            attempt += 1
+            await asyncio.sleep(2 ** attempt)
+
+
 def progress_cb(job: Job, title: str):
     """Live progress with ⏹ Cancel; cancelling raises StopTransmission inside pyrogram."""
     from core.progress import LiveProgress
@@ -163,8 +188,17 @@ def progress_cb(job: Job, title: str):
         def render(self, current, total):
             return super().render(current, total).replace("█", "■").replace("░", "□")
 
-    return _Bar(job.status, title, template=RENAME_PROGRESS, every=PROGRESS_EVERY,
-                cancel=lambda: job.cancelled, reply_markup=_cancel_kb(job), name=job.label or "file").update
+    return _Bar(
+        job.status,
+        title,
+        template=RENAME_PROGRESS,
+        every=PROGRESS_EVERY,
+        cancel=lambda: job.cancelled,
+        reply_markup=_cancel_kb(job),
+        name=job.label or "file",
+        job_key=_job_telemetry_key(job),
+        engine="AutoRename",
+    ).update
 
 
 # ─────────────────────────── ffmpeg helpers ───────────────────────────
@@ -467,11 +501,28 @@ async def process(client, job: Job):
     job.status = await reply(f"📥 <b>Preparing</b> <code>{html.escape(new_name, quote=False)}</code>…")
     if not job.status:
         return
+    t_key = _job_telemetry_key(job)
+    try:
+        from VideoEncoder.utils import jobs as live_jobs
+        live_jobs.register(
+            t_key,
+            uid,
+            message.chat.id,
+            name=new_name,
+            stage="Rename · Download",
+            engine="AutoRename",
+            mode="rename",
+            on_cancel=lambda: setattr(job, "cancelled", True),
+        )
+    except Exception:
+        live_jobs = None
     workdir = os.path.join(WORK_DIR, f"{uid}_{job.id}_{int(time.time())}")
     os.makedirs(workdir, exist_ok=True)
     try:
         # 1. download
-        src = os.path.join(workdir, "src" + (os.path.splitext(old_name)[1] or ""))
+        raw_ext = os.path.splitext(os.path.basename(old_name.replace("\\", "/")))[1]
+        safe_ext = raw_ext if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", raw_ext or "") else ""
+        src = os.path.join(workdir, "src" + safe_ext)
         try:
             from core import fastdl
             path = await fastdl.download(client, message, file_name=src,
@@ -489,6 +540,8 @@ async def process(client, job: Job):
         wants_mkv = new_name.lower().endswith(".mkv") and not old_name.lower().endswith(".mkv")
         note = ""
         if wants_mkv or meta_on:
+            if live_jobs is not None:
+                live_jobs.update_progress(t_key, stage="Rename · Remux", pct=50.0)
             await job.status.edit_text("⚙️ <b>" + ("Converting to MKV" if wants_mkv else "Adding metadata") +
                                        "…</b>", reply_markup=_cancel_kb(job))
             out_ext = ".mkv" if wants_mkv else os.path.splitext(path)[1]
@@ -531,20 +584,31 @@ async def process(client, job: Job):
             pass
         caption = build_caption(caption_tpl, new_name, size, duration, old_name)
 
-        # 4. upload
+        # 4. upload (with FloodWait + 5xx resilience)
         up = progress_cb(job, "📤 Uploading…")
         common = dict(caption=caption, reply_to_message_id=message.id, progress=up)
         if send_as == "video":
-            sent = await client.send_video(message.chat.id, final, file_name=new_name, duration=duration,
-                                           width=width, height=height, thumb=thumb or None,
-                                           supports_streaming=True, **common)
+            sent = await _send_with_retry(
+                lambda: client.send_video(
+                    message.chat.id, final, file_name=new_name, duration=duration,
+                    width=width, height=height, thumb=thumb or None, supports_streaming=True, **common
+                )
+            )
         elif send_as == "audio":
-            sent = await client.send_audio(message.chat.id, final, file_name=new_name, duration=duration,
-                                           thumb=thumb or None, title=meta.get("title") if meta_on else None,
-                                           performer=meta.get("artist") if meta_on else None, **common)
+            sent = await _send_with_retry(
+                lambda: client.send_audio(
+                    message.chat.id, final, file_name=new_name, duration=duration,
+                    thumb=thumb or None, title=meta.get("title") if meta_on else None,
+                    performer=meta.get("artist") if meta_on else None, **common
+                )
+            )
         else:
-            sent = await client.send_document(message.chat.id, final, file_name=new_name, thumb=thumb or None,
-                                              force_document=True, **common)
+            sent = await _send_with_retry(
+                lambda: client.send_document(
+                    message.chat.id, final, file_name=new_name, thumb=thumb or None,
+                    force_document=True, **common
+                )
+            )
         if job.cancelled or sent is None:
             raise Cancelled
 
@@ -567,10 +631,12 @@ async def process(client, job: Job):
     except Exception as e:
         log.warning(f"rename failed for {uid}: {e}")
         try:
-            await job.status.edit_text(f"❌ <b>Rename failed:</b> <code>{str(e)[:300]}</code>")
+            await job.status.edit_text(f"❌ <b>Rename failed:</b> <code>{html.escape(str(e))[:300]}</code>")
         except Exception:
             pass
     finally:
+        if live_jobs is not None:
+            live_jobs.unregister(t_key)
         shutil.rmtree(workdir, ignore_errors=True)
 
 

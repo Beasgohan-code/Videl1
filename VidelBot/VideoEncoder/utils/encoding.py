@@ -55,27 +55,59 @@ async def extract_subs(filepath, msg, user_id):
     return await asyncio.to_thread(_extract_subs_sync, filepath, output)
 
 
+def _install_extracted_fonts() -> None:
+    """Safely move extracted font files from cwd into a writable font dir without invoking `shell=True`."""
+    if os.name == "nt":
+        return
+    import shutil
+    from pathlib import Path
+
+    font_exts = {
+        ".ttf", ".otf", ".ttc", ".woff", ".woff2", ".pfb", ".pfa", ".fnt", ".bdf", ".pcf", ".sfnt", ".dfont",
+    }
+    target_dir = Path("/usr/share/fonts")
+    if not (target_dir.is_dir() and os.access(target_dir, os.W_OK)):
+        target_dir = Path.home() / ".local" / "share" / "fonts"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    moved = False
+    for entry in Path(".").iterdir():
+        if entry.is_file() and entry.suffix.lower() in font_exts:
+            safe_dest = target_dir / entry.name
+            try:
+                shutil.move(str(entry), str(safe_dest))
+                moved = True
+            except OSError:
+                pass
+    if moved:
+        try:
+            subprocess.run(
+                ["fc-cache", "-f"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60,
+            )
+        except Exception:
+            pass
+
+
 def _extract_subs_sync(filepath, output):
     """ffmpeg / mkvextract / font install – blocking, so it runs in a worker thread."""
     try:
         subprocess.call(['ffmpeg', '-nostdin', '-y', '-i', filepath, '-map', 's:0', output], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=900)
         # mkvextract might not be in PATH on Windows, handle gracefully
         try:
-            subprocess.call(['mkvextract', 'attachments', filepath, '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16',
-                            '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=900)
+            subprocess.call(['mkvextract', 'attachments', filepath, *[str(i) for i in range(1, 41)]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=900)
         except FileNotFoundError:
             LOGGER.warning("mkvextract not found, skipping attachments extraction.")
         except Exception as e:
             LOGGER.error(f"mkvextract failed: {e}")
 
-        # Moving fonts is Linux specific and dangerous on Windows to assume /usr/share/fonts/
-        # We will only attempt this on Linux-like environments or skip if it fails
         try:
-            if os.name != 'nt':
-                subprocess.run([f"mv -f *.JFPROJ *.FNT *.PFA *.ETX *.WOFF *.FOT *.TTF *.SFD *.VLW *.VFB *.PFB *.OTF *.GXF *.WOFF2 *.ODTTF *.BF *.CHR *.TTC *.BDF *.FON *.GF *.PMT *.AMFM  *.MF *.PFM *.COMPOSITEFONT *.PF2 *.GDR *.ABF *.VNF *.PCF *.SFP *.MXF *.DFONT *.UFO *.PFR *.TFM *.GLIF *.XFN *.AFM *.TTE *.XFT *.ACFM *.EOT *.FFIL *.PK *.SUIT *.NFTR *.EUF *.TXF *.CHA *.LWFN *.T65 *.MCF *.YTF *.F3F *.FEA *.SFT *.PFT /usr/share/fonts/"], shell=True)
-                subprocess.run([f"mv -f *.jfproj *.fnt *.pfa *.etx *.woff *.fot *.ttf *.sfd *.vlw *.vfb *.pfb *.otf *.gxf *.woff2 *.odttf *.bf *.chr *.ttc *.bdf *.fon *.gf *.pmt *.amfm  *.mf *.pfm *.compositefont *.pf2 *.gdr *.abf *.vnf *.pcf *.sfp *.mxf *.dfont *.ufo *.pfr *.tfm *.glif *.xfn *.afm *.tte *.xft *.acfm *.eot *.ffil *.pk *.suit *.nftr *.euf *.txf *.cha *.lwfn *.t65 *.mcf *.ytf *.f3f *.fea *.sft *.pft /usr/share/fonts/ && fc-cache -f"], shell=True)
+            _install_extracted_fonts()
         except Exception as e:
-            LOGGER.warning(f"Font moving failed (likely not supported on this OS): {e}")
+            LOGGER.warning(f"Font install skipped: {e}")
 
         if not os.path.exists(output) or os.path.getsize(output) == 0:
             LOGGER.error("Extract subs failed: ffmpeg produced no subtitle file")
@@ -670,7 +702,9 @@ async def handle_progress(proc, msg, message, filepath, progress_file=None, tota
                     except ProcessLookupError:
                         pass
                     break
-            stats = await _progress_stats(text, name, total_time, probed, filepath, started, settings, stage)
+            stats = await _progress_stats(
+                text, name, total_time, probed, filepath, started, settings, stage, job_key=getattr(msg, "id", None)
+            )
             if stats is None:
                 continue
             probed, total_time, stats = True, stats[0], stats[1]
@@ -702,7 +736,7 @@ def _tail(path: str, size: int = 4096) -> str | None:
         return None
 
 
-async def _progress_stats(text, name, total_time, probed, filepath, started, settings, stage):
+async def _progress_stats(text, name, total_time, probed, filepath, started, settings, stage, *, job_key=None):
     """→ (total_time, card text) or None when this tick can't be rendered."""
     try:
         speed = _last(r"speed=\s*(\d+\.?\d*)x", text)
@@ -715,6 +749,30 @@ async def _progress_stats(text, name, total_time, probed, filepath, started, set
         size_now = _last(r"total_size=(\d+)", text, int)
         if not probed:
             total_time, _ = await media_info(filepath)   # probe once, not every tick
+        if job_key is not None:
+            pct = (
+                max(0.0, min(100.0, elapsed_media * 100.0 / total_time))
+                if total_time and total_time > 0
+                else 0.0
+            )
+            rem = (
+                max(0.0, (total_time - elapsed_media) / speed)
+                if total_time and speed and speed > 0
+                else 0.0
+            )
+            proj_total = int(size_now * 100 / pct) if size_now and pct >= 3 else int(size_now or 0)
+            s_lbl = f"{speed:g}x" + (f" · {fps:g} fps" if fps else "")
+            jobs.update_progress(
+                job_key,
+                current=int(size_now or 0),
+                total=proj_total,
+                pct=pct,
+                speed_label=s_lbl,
+                eta=rem,
+                stage=stage,
+                engine="FFmpeg",
+                name=name,
+            )
         return total_time, progress_text(name, elapsed_media, total_time, speed, fps, size_now,
                                          time.time() - started, settings, stage=stage)
     except Exception as e:               # never let a progress glitch orphan the ffmpeg process

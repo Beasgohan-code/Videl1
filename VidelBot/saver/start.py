@@ -150,12 +150,22 @@ def get_message_type(msg):
     return None
 
 
+def _saver_job_key(user_id: int) -> int:
+    return -200_000 - int(user_id)
+
+
 def _live(status, user_id: int, title: str):
     """In-place progress for one transfer (SRC progress layout) with a ⏹ Cancel button."""
     from core.progress import LiveProgress
-    return LiveProgress(status, title, template=script.PROGRESS_BAR,
-                        cancel=lambda: bool(batch_temp.IS_BATCH.get(user_id)),
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Cancel", callback_data="sv_cancel")]]))
+    return LiveProgress(
+        status,
+        title,
+        template=script.PROGRESS_BAR,
+        cancel=lambda: bool(batch_temp.IS_BATCH.get(user_id)),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Cancel", callback_data="sv_cancel")]]),
+        job_key=_saver_job_key(user_id),
+        engine="ContentSaver",
+    )
 
 
 @Client.on_callback_query(filters.regex(r"^sv_cancel$"))
@@ -180,9 +190,11 @@ async def apply_word_filters(user_id: int, text: str) -> str:
         return text
     try:
         for w in await db.get_delete_words(user_id) or []:
-            text = re.sub(re.escape(w), "", text, flags=re.IGNORECASE)
+            if w:
+                text = re.sub(re.escape(str(w)), "", text, flags=re.IGNORECASE)
         for target, repl in (await db.get_replace_words(user_id) or {}).items():
-            text = re.sub(re.escape(target), repl, text, flags=re.IGNORECASE)
+            if target:
+                text = re.sub(re.escape(str(target)), lambda _m, r=str(repl): r, text, flags=re.IGNORECASE)
     except Exception as e:
         logger.warning(f"word filter failed for {user_id}: {e}")
     return re.sub(r"[ \t]{2,}", " ", text).strip()
@@ -191,8 +203,9 @@ async def apply_word_filters(user_id: int, text: str) -> str:
 async def build_caption(user_id: int, filename: str, size: int, original: str) -> str:
     custom = await db.get_caption(user_id)
     if custom:
+        safe_fn = html.escape(str(filename or ""), quote=False)
         try:
-            cap = custom.format(filename=filename, size=humanbytes(size))
+            cap = custom.format(filename=safe_fn, size=humanbytes(size))
         except (KeyError, IndexError, ValueError):
             cap = custom
     else:
@@ -228,8 +241,19 @@ async def save(client: Client, message: Message):
             parse_mode=enums.ParseMode.HTML,
         )
 
-    link = re.search(r"https?://t\.me/\S+", message.text).group(0)
+    link = re.search(r"https?://t\.me/\S+", message.text).group(0).rstrip("/")
     datas = link.split("/")
+    is_private_link = "t.me/c/" in link
+    is_batch = "t.me/b/" in link
+    is_public_link = not is_private_link and not is_batch
+    min_parts = 6 if (is_private_link or is_batch) else 5
+    if len(datas) < min_parts or not datas[3]:
+        return await message.reply_text("❌ <b>Invalid post link.</b>", parse_mode=enums.ParseMode.HTML)
+    if is_private_link and not datas[4].isdigit():
+        return await message.reply_text("❌ <b>Invalid private channel link.</b>", parse_mode=enums.ParseMode.HTML)
+    if is_batch and not datas[4]:
+        return await message.reply_text("❌ <b>Invalid bot post link.</b>", parse_mode=enums.ParseMode.HTML)
+
     temp = datas[-1].replace("?single", "").split("?")[0].split("-")
     try:
         fromID = int(temp[0].strip())
@@ -240,6 +264,9 @@ async def save(client: Client, message: Message):
     except (IndexError, ValueError):
         toID = fromID
 
+    if fromID < 1 or toID < fromID:
+        return await message.reply_text("❌ <b>Invalid message range in link.</b>", parse_mode=enums.ParseMode.HTML)
+
     is_premium = await db.check_premium(user_id)
     if not is_premium and toID - fromID + 1 > 5:
         await message.reply_text(
@@ -249,15 +276,34 @@ async def save(client: Client, message: Message):
         toID = fromID + 4
 
     batch_temp.IS_BATCH[user_id] = False
-    is_private_link = "t.me/c/" in link
-    is_batch = "t.me/b/" in link
-    is_public_link = not is_private_link and not is_batch
     acc = None
+    total_posts = max(1, toID - fromID + 1)
+    saver_key = _saver_job_key(user_id)
+    try:
+        from VideoEncoder.utils import jobs as live_jobs
+        live_jobs.register(
+            saver_key,
+            user_id,
+            message.chat.id,
+            name=f"Saver {fromID}-{toID}" if total_posts > 1 else f"Saver #{fromID}",
+            stage=f"Saver · 0/{total_posts}",
+            engine="ContentSaver",
+            mode="saver",
+            on_cancel=lambda: batch_temp.IS_BATCH.__setitem__(user_id, True),
+        )
+    except Exception:
+        live_jobs = None
 
     try:
-        for msgid in range(fromID, toID + 1):
+        for step_idx, msgid in enumerate(range(fromID, toID + 1), 1):
             if batch_temp.IS_BATCH.get(user_id):
                 break
+            if live_jobs is not None:
+                live_jobs.update_progress(
+                    saver_key,
+                    stage=f"Saver · {step_idx}/{total_posts}",
+                    pct=round((step_idx - 1) * 100.0 / total_posts, 1) if total_posts > 1 else None,
+                )
 
             if is_public_link:
                 username = datas[3]
@@ -308,6 +354,8 @@ async def save(client: Client, message: Message):
             await asyncio.sleep(2)
     finally:
         batch_temp.IS_BATCH[user_id] = True
+        if live_jobs is not None:
+            live_jobs.unregister(saver_key)
         if acc is not None:
             try:
                 await acc.disconnect()

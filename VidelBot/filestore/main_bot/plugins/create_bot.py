@@ -10,9 +10,9 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     KeyboardButton,
+    KeyboardButtonRequestChat,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
-    RequestPeerTypeChannel,
 )
 from filestore.fs_config import BOT_CREATION_COOLDOWN, API_ID, API_HASH, LOGGER, CLONE_ENABLED, OWNERS
 from filestore.database.main_db import MainDB
@@ -34,8 +34,15 @@ CHANNEL_STEPS = ("awaiting_channel", "awaiting_new_log_channel", "awaiting_fsub_
 
 def channel_picker_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("📢 Select channel",
-                         request_chat=RequestPeerTypeChannel(button_id=CHANNEL_PICKER_ID))]],
+        [[KeyboardButton(
+            "📢 Select channel",
+            request_chat=KeyboardButtonRequestChat(
+                button_id=CHANNEL_PICKER_ID,
+                chat_is_channel=True,
+                request_title=True,
+                request_username=True,
+            ),
+        )]],
         resize_keyboard=True, one_time_keyboard=True, placeholder="Pick a channel or type its ID",
     )
 
@@ -63,7 +70,7 @@ async def remove_channel_picker(client, user_id: int, state: dict = None, text: 
 
 
 async def _has_shared_chat(_, __, m: Message) -> bool:
-    return bool(getattr(m, "chats_shared", None))
+    return bool(getattr(m, "chat_shared", None) or getattr(m, "chats_shared", None))
 
 
 shared_chat_filter = filters.create(_has_shared_chat)
@@ -238,7 +245,7 @@ async def handle_creation_input(client: Client, message: Message):
     step = state["step"]
 
     # 📢 Channel shared through the native picker → treat it as a typed ID
-    if getattr(message, "chats_shared", None):
+    if getattr(message, "chat_shared", None) or getattr(message, "chats_shared", None):
         from core.payments import shared_ids
         picked = shared_ids(message)
         if step not in CHANNEL_STEPS or not picked:
@@ -313,22 +320,21 @@ async def handle_creation_input(client: Client, message: Message):
         bot_info = state["data"]["bot_info"]
         channel_title = str(channel_id)
 
+        import html
+        temp_client = Client(
+            name=f"verify_{bot_info['id']}",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            bot_token=token,
+            in_memory=True,
+            no_updates=True,
+        )
         try:
-            # Create a temporary Pyrogram client to verify channel access
-            temp_client = Client(
-                name=f"verify_{bot_info['id']}",
-                api_id=API_ID,
-                api_hash=API_HASH,
-                bot_token=token,
-                in_memory=True,
-            )
-
             await temp_client.start()
 
             try:
                 chat = await temp_client.get_chat(channel_id)
                 channel_title = chat.title or str(channel_id)
-                # Try sending a test message
                 test_msg = await temp_client.send_message(
                     chat_id=channel_id, text="✅ Channel verified for FileStore bot."
                 )
@@ -338,28 +344,30 @@ async def handle_creation_input(client: Client, message: Message):
                     f"<b>❌ Cannot access channel!</b>\n\n"
                     f"<blockquote>Make sure:\n"
                     f"1. The channel ID is correct\n"
-                    f"2. The bot (@{bot_info.get('username', '')}) is an admin in the channel\n"
+                    f"2. The bot (@{html.escape(str(bot_info.get('username', '')))}) is an admin in the channel\n"
                     f"3. The bot has permission to send messages\n\n"
-                    f"Error: <code>{str(e)[:100]}</code></blockquote>",
+                    f"Error: <code>{html.escape(str(e))[:100]}</code></blockquote>",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
                     ]),
                 )
-                await temp_client.stop()
                 return
-
-            await temp_client.stop()
-
         except Exception as e:
             log.error(f"Channel validation error: {e}")
             await status_msg.edit_text(
                 f"<b>❌ Verification failed!</b>\n\n"
-                f"<blockquote>Error: <code>{str(e)[:150]}</code></blockquote>",
+                f"<blockquote>Error: <code>{html.escape(str(e))[:150]}</code></blockquote>",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
                 ]),
             )
             return
+        finally:
+            if getattr(temp_client, "is_connected", False):
+                try:
+                    await temp_client.stop(block=False)
+                except Exception:
+                    pass
 
         # Everything valid — save to database
         encrypted_token = encrypt_token(token)

@@ -226,6 +226,15 @@ DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "VideoEncoder/utils/extras/downloa
 ENCODE_DIR = os.environ.get("ENCODE_DIR", "VideoEncoder/utils/extras/encodes/")
 DRIVE_DIR = os.environ.get("DRIVE_DIR", "")
 INDEX_URL = os.environ.get("INDEX_URL", "")
+GDRIVE_TOKEN_FILE = os.environ.get("GDRIVE_TOKEN_FILE", "token.json")
+GDRIVE_SA_FILE = os.environ.get("GDRIVE_SA_FILE", os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""))
+DRIVE_HTTP_TIMEOUT = max(10, env_int("GDRIVE_HTTP_TIMEOUT", env_int("DRIVE_HTTP_TIMEOUT", 60)))
+RCLONE_CONFIG_PATH = (os.environ.get("RCLONE_CONFIG_PATH") or os.environ.get("RCLONE_CONFIG", "rclone.conf")).strip()
+RCLONE_DEFAULT_REMOTE = os.environ.get("RCLONE_DEFAULT_REMOTE", "").strip()
+GOFILE_TOKEN = os.environ.get("GOFILE_TOKEN", "").strip()
+DROPBOX_ACCESS_TOKEN = os.environ.get("DROPBOX_ACCESS_TOKEN", "").strip()
+ONEDRIVE_ACCESS_TOKEN = os.environ.get("ONEDRIVE_ACCESS_TOKEN", "").strip()
+GOFILE_FOLDER_ID = os.environ.get("GOFILE_FOLDER_ID", "").strip()
 
 # The original encoder code expects trailing slashes.
 if not DOWNLOAD_DIR.endswith("/"):
@@ -278,10 +287,22 @@ LEECH_FREE_GB = env_float("LEECH_FREE_GB", 2)
 LEECH_PRO_GB = env_float("LEECH_PRO_GB", 8)
 QUEUE_PERSIST = _bool("QUEUE_PERSIST", True)                    # encoder queue survives restarts
 SINGLE_INSTANCE = _bool("SINGLE_INSTANCE", True)                # one live copy per bot token (core/instance.py)
+SINGLE_INSTANCE_TIMEOUT = max(0, env_int("SINGLE_INSTANCE_TIMEOUT", 0))  # 0 = wait while holder is alive; >0 = fail closed after N s
 SOURCE_CACHE_MIN = max(0, env_int("SOURCE_CACHE_MIN", 60))     # reuse a downloaded source for N min (0 = off)
 SOURCE_CACHE_GB = max(1, env_int("SOURCE_CACHE_GB", 10))        # cache size cap
 FAST_DL = _bool("FAST_DL", True)                                # parallel Telegram downloads (core/fastdl.py)
 FAST_DL_WORKERS = max(1, min(16, env_int("FAST_DL_WORKERS", 6)))  # chunk requests in flight per download
+
+# ==============================
+# WzGram native rich UI & modular plugins
+# ==============================
+WZGRAM_NATIVE_RICH = _bool("WZGRAM_NATIVE_RICH", True)          # native MTProto RichMessage / ButtonStyle / Ephemeral via WzGram
+PLUGINS_ENABLED = _bool("PLUGINS_ENABLED", True)                # YAML-manifest plugin system (core/plugin_manager.py)
+PLUGINS_DIR = os.environ.get("PLUGINS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"))
+PLUGIN_INDEX_URL = os.environ.get(
+    "PLUGIN_INDEX_URL",
+    "https://raw.githubusercontent.com/SilentDemonSD/WZML-X/wzv3-dev/plugins/index.json",
+)
 
 # ==============================
 # Owner tools: web dashboard · backups · analytics
@@ -337,6 +358,8 @@ CLEANUP_AFTER_HOURS = env_float("CLEANUP_AFTER_HOURS", 6)       # delete temp fi
 MIN_FREE_DISK_GB = env_float("MIN_FREE_DISK_GB", 2)             # aggressive cleanup below this
 STATE_TIMEOUT_MIN = env_int("STATE_TIMEOUT_MIN", 15)           # drop abandoned login/setup flows
 AUTO_RESTART_ON_HANG = _bool("AUTO_RESTART_ON_HANG", True)                         # restart if Telegram is unreachable
+MEMORY_HIGH_WATERMARK_PCT = max(0, min(99, env_int("MEMORY_HIGH_WATERMARK_PCT", 85)))  # watchdog trims caches above this %
+MEMORY_PAUSE_NEW_TASKS_PCT = max(0, min(99, env_int("MEMORY_PAUSE_NEW_TASKS_PCT", 92)))  # hold extra parallel encodes above this % (0 = off)
 
 
 def missing_required():

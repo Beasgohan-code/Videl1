@@ -43,12 +43,16 @@ def _progress_cb(status: Message, action: str):
 # ─────────────────────────── /ping ───────────────────────────
 @Client.on_message(filters.command("ping"))
 async def ping_cmd(client: Client, message: Message):
+    from core.menus import BOOT_TIME
+    from core.ui import readable_time
+
     t = time.perf_counter()
     m = await message.reply_text("🏓 Pinging…")
     ms = (time.perf_counter() - t) * 1000
     doc = Doc("🏓", "Pong!").table([
         ("Round trip", rich.code(f"{ms:.0f} ms")),
         ("Speed", "⚡ Excellent" if ms < 300 else "👍 Good" if ms < 800 else "🐢 Slow"),
+        ("Uptime", readable_time(time.time() - BOOT_TIME)),
     ])
     if message.chat.id < 0:
         return await m.edit_text(doc.classic())
@@ -111,7 +115,7 @@ async def json_cmd(client: Client, message: Message):
     target = message.reply_to_message or message
     raw = str(target)
     if len(raw) < 3900:
-        return await message.reply_text(f"<pre language='json'>{raw.replace('<', '&lt;')}</pre>")
+        return await message.reply_text(f"<pre language='json'>{html.escape(raw, quote=False)}</pre>")
     f = io.BytesIO(raw.encode())
     f.name = f"message_{target.id}.json"
     await message.reply_document(f, caption="📄 Message JSON")
@@ -120,10 +124,16 @@ async def json_cmd(client: Client, message: Message):
 # ─────────────────────────── /short ───────────────────────────
 @Client.on_message(filters.command(["short", "shorten"]))
 async def short_cmd(client: Client, message: Message):
+    from VideoEncoder.utils import leech
+
     url = message.command[1] if len(message.command) > 1 else (
         message.reply_to_message.text.strip() if message.reply_to_message and message.reply_to_message.text else "")
     if not url.startswith(("http://", "https://")):
         return await message.reply_text("<b>Usage:</b> <code>/short https://example.com/very/long/link</code>")
+    try:
+        await leech.check_public(url)
+    except leech.LeechError as e:
+        return await message.reply_text(f"❌ {html.escape(str(e), quote=False)}")
     results = []
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
         for name, api in (("is.gd", "https://is.gd/create.php?format=simple&url="),
@@ -131,14 +141,15 @@ async def short_cmd(client: Client, message: Message):
             try:
                 async with s.get(api + quote(url, safe="")) as r:
                     t = (await r.text()).strip()
-                    if r.status == 200 and t.startswith("http"):
+                    if r.status == 200 and t.startswith(("http://", "https://")):
                         results.append((name, t))
             except Exception:
                 pass
     if not results:
         return await message.reply_text("❌ Shortening failed, try again later.")
     await message.reply_text(
-        "<b>🔗 Short links</b>\n\n" + "\n".join(f"<b>{n}:</b> <code>{u}</code>" for n, u in results),
+        "<b>🔗 Short links</b>\n\n"
+        + "\n".join(f"<b>{html.escape(n)}:</b> <code>{html.escape(u, quote=False)}</code>" for n, u in results),
         disable_web_page_preview=True,
     )
 
@@ -157,7 +168,7 @@ async def qr_cmd(client: Client, message: Message):
         img.save(bio, "PNG")
         bio.name = "qr.png"
         bio.seek(0)
-        await message.reply_photo(bio, caption=f"<b>🔳 QR for:</b>\n<code>{text[:900]}</code>")
+        await message.reply_photo(bio, caption=f"<b>🔳 QR for:</b>\n<code>{html.escape(text[:900], quote=False)}</code>")
     except Exception as e:
         log.warning(f"qr failed: {e}")
         await message.reply_text("❌ Couldn't create the QR code.")
@@ -203,21 +214,92 @@ def _fmt_stream(st: dict, details_only: bool = False) -> str:
     return " · ".join(b for b in bits if b)
 
 
+def _extract_media_url(message: Message) -> str:
+    if message.command and len(message.command) > 1:
+        cand = (message.text or "").split(None, 1)[1].strip()
+        if cand.startswith(("http://", "https://")):
+            return cand
+    rep = message.reply_to_message
+    if rep and (rep.text or rep.caption):
+        for tok in (rep.text or rep.caption).split():
+            if tok.startswith(("http://", "https://")):
+                return tok
+    return ""
+
+
+async def _probe_http_header(url: str, path: str, max_bytes: int = 8 * 1024 * 1024) -> dict:
+    """Download up to *max_bytes* of a public HTTP(S) media link via Range request."""
+    from urllib.parse import unquote, urlparse
+    from VideoEncoder.utils.leech import check_public
+
+    await check_public(url)
+    headers = {"Range": f"bytes=0-{max_bytes - 1}", "User-Agent": "VidelMediaInfo/3.2"}
+    total_size = 0
+    mime_type = ""
+    fname = os.path.basename(unquote(urlparse(url).path)) or "remote_media"
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35)) as session:
+        async with session.get(url, headers=headers, allow_redirects=True) as resp:
+            if resp.status not in (200, 206):
+                raise RuntimeError(f"HTTP {resp.status} while reading media URL")
+            await check_public(str(resp.url))
+            mime_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+            cd = resp.headers.get("Content-Disposition") or ""
+            if "filename=" in cd:
+                fname = cd.split("filename=", 1)[1].strip().strip('"\'') or fname
+            cr = resp.headers.get("Content-Range") or ""
+            if "/" in cr:
+                tail = cr.rsplit("/", 1)[-1].strip()
+                if tail.isdigit():
+                    total_size = int(tail)
+            if not total_size:
+                cl = resp.headers.get("Content-Length") or ""
+                if cl.isdigit():
+                    total_size = int(cl)
+            written = 0
+            with open(path, "wb") as fp:
+                async for chunk in resp.content.iter_chunked(65536):
+                    take = chunk[: max_bytes - written]
+                    if take:
+                        fp.write(take)
+                        written += len(take)
+                    if written >= max_bytes:
+                        break
+            if not total_size:
+                total_size = written
+    return {"file_name": fname, "file_size": total_size, "mime_type": mime_type}
+
+
 @Client.on_message(filters.command("mediainfo"))
 async def mediainfo_cmd(client: Client, message: Message):
     r = message.reply_to_message
     media = _media(r)
-    if not media or not getattr(media, "file_id", None):
-        return await message.reply_text("↩️ Reply to a video / audio / document with <code>/mediainfo</code>")
+    url = _extract_media_url(message) if not (media and getattr(media, "file_id", None)) else ""
+    if not (media and getattr(media, "file_id", None)) and not url:
+        return await message.reply_text(
+            "↩️ Reply to a video / audio / document with <code>/mediainfo</code> "
+            "or send <code>/mediainfo https://example.com/video.mkv</code>"
+        )
     if not shutil.which("ffprobe"):
         return await message.reply_text("❌ ffprobe is not installed on the server.")
-    status = await message.reply_text("🔎 <i>Reading file header…</i>")
+    status = await message.reply_text(
+        "🌐 <i>Reading remote media header…</i>" if url else "🔎 <i>Reading file header…</i>"
+    )
     path = os.path.join(TMP, f"mi_{message.id}_{int(time.time())}")
     try:
-        # Only the first ~8 MB is needed for container / stream info.
-        with open(path, "wb") as f:
-            async for chunk in client.stream_media(r, limit=8):
-                f.write(chunk)
+        if url:
+            remote_meta = await _probe_http_header(url, path)
+            name = remote_meta["file_name"]
+            size = remote_meta["file_size"]
+            mime = remote_meta["mime_type"] or "?"
+        else:
+            # Only the first ~8 MB is needed for container / stream info.
+            with open(path, "wb") as f:
+                async for chunk in client.stream_media(r, limit=8):
+                    f.write(chunk)
+            name = getattr(media, "file_name", None) or "file"
+            size = getattr(media, "file_size", 0)
+            mime = getattr(media, "mime_type", None) or "?"
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -231,24 +313,30 @@ async def mediainfo_cmd(client: Client, message: Message):
         info = json.loads(out or b"{}")
         fmt = info.get("format", {})
         streams = info.get("streams", [])
-        name = getattr(media, "file_name", None) or "file"
-        size = getattr(media, "file_size", 0)
-        duration = float(fmt.get("duration") or getattr(media, "duration", 0) or 0)
+        duration = float(fmt.get("duration") or (getattr(media, "duration", 0) if media else 0) or 0)
         doc = Doc("🔎", "Media info", name)
-        doc.table([
+        gen_rows = [
             ("📦 Size", humanbytes(size)),
             ("🗂 Container", fmt.get("format_long_name") or fmt.get("format_name", "?")),
             ("⏱ Duration", time.strftime("%H:%M:%S", time.gmtime(duration)) if duration else "?"),
-            ("🧾 Mime", getattr(media, "mime_type", None) or "?"),
+            ("🧾 Mime", mime),
             ("📶 Bitrate", f"{int(fmt['bit_rate']) // 1000} kb/s" if str(fmt.get("bit_rate", "")).isdigit() else "?"),
-        ], header=("General", "Value"))
+        ]
+        if url:
+            gen_rows.append(("🌐 Source", "Direct HTTP Range Probe"))
+        doc.table(gen_rows, header=("General", "Value"))
         doc.h("🎛", f"Streams ({len(streams)})")
         if streams:
             doc.table([_stream_row(i, st) for i, st in enumerate(streams, 1)],
                       header=("#", "Type", "Codec", "Details", "Language / title"), compact=True)
+            tags_fmt = fmt.get("tags") or {}
+            if tags_fmt:
+                meta_rows = [(str(k), str(v)[:80]) for k, v in list(tags_fmt.items())[:8]]
+                doc.details("🏷 Container Metadata", Doc().table(meta_rows, header=("Tag", "Value")))
         else:
             doc.text("<i>No streams detected in the header.</i>")
-        await rich.edit(status, doc)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Direct Link", url=url)]]) if url else None
+        await rich.edit(status, doc, reply_markup=kb)
     except Exception as e:
         await status.edit_text(f"❌ mediainfo failed: <code>{html.escape(str(e))}</code>")
     finally:
@@ -299,7 +387,10 @@ async def rename_cmd(client: Client, message: Message):
     uid = message.from_user.id
     if not media or len(message.command) < 2:
         return await message.reply_text("<b>Usage:</b> reply to a file with <code>/rename New Name.mkv</code>")
-    new_name = message.text.split(None, 1)[1].strip().replace("/", "_")[:200]
+    raw_new = message.text.split(None, 1)[1].strip()
+    new_name = raw_new.replace("\\", "_").replace("/", "_").replace("\x00", "")[:200].strip()
+    if new_name in ("", ".", "..") or new_name.lstrip(".") == "":
+        new_name = "renamed_file"
     if any(getattr(r, k, None) for k in ("document", "video", "audio")):
         # Full rename pipeline: queue + progress/cancel, MKV & metadata settings, thumbnail
         # (custom or a frame), caption placeholders, history, leaderboard and dump channel.
@@ -311,9 +402,11 @@ async def rename_cmd(client: Client, message: Message):
         if pos > 1:
             await message.reply_text(f"🕒 Queued – position <b>#{pos}</b>.")
         return
-    old_name = getattr(media, "file_name", None) or ""
+    old_name = os.path.basename(str(getattr(media, "file_name", None) or "").replace("\\", "/"))
     if "." not in new_name and "." in old_name:
-        new_name += "." + old_name.rsplit(".", 1)[1]
+        ext = old_name.rsplit(".", 1)[1]
+        if ext.isalnum() and len(ext) <= 10:
+            new_name += "." + ext
     if uid in _busy:
         return await message.reply_text("⏳ Please wait for your previous job to finish.")
     _busy.add(uid)

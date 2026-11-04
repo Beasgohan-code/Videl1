@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "plugins": [
+    {
+      "name": "imdb",
+      "version": "1.2.0",
+      "author": "Videl",
+      "description": "Rich IMDb movie & series search with posters, cast, ratings & trailers",
+      "commands": ["imdb"]
+    },
+    {
+      "name": "anilist",
+      "version": "1.2.0",
+      "author": "Videl",
+      "description": "AniList GraphQL anime, manga & character cards with HD banners & tabs",
+      "commands": ["anime", "manga", "character"]
+    },
+    {
+      "name": "mydramalist",
+      "version": "1.1.0",
+      "author": "Videl",
+      "description": "MyDramaList Asian drama & movie metadata search with cast & ratings",
+      "commands": ["mdl"]
+    },
+    {
+      "name": "exportsession",
+      "version": "1.0.0",
+      "author": "Videl",
+      "description": "Secure owner-only WzGram session string exporter with auto-destruct",
+      "commands": ["exportsession", "gensession"]
+    },
+    {
+      "name": "group_mod",
+      "version": "1.0.0",
+      "author": "Videl",
+      "description": "Richgram group management & Bot API 10.3 moderation (bans, mutes, warns, member tags, reaction moderation, topics, join-requests, locks, anti-raid, welcome/rules & filters)",
+      "commands": ["gsettings", "gban", "mute", "warn", "tag", "clearreactions", "topic", "joinmode", "rules", "welcome", "lock", "gfilter", "antiraid", "modreport"]
+    },
+    {
+      "name": "group_insights",
+      "version": "1.0.0",
+      "author": "Videl",
+      "description": "Read-only group policy simulator and live permission diagnostics",
+      "commands": ["policysim", "ghealth"]
+    },
+    {
+      "name": "group_activity",
+      "version": "1.0.0",
+      "author": "Videl",
+      "description": "Opt-in group message rankings, member totals and privacy controls",
+      "commands": ["activity", "topmembers", "myactivity", "memberactivity", "groupactivity", "activityprivacy"]
+    }
+  ]
+}

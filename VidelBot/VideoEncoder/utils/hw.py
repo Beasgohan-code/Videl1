@@ -58,7 +58,12 @@ def has_filter(name: str) -> bool:
             out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, timeout=30).stdout
             for line in out.decode(errors="ignore").splitlines():
                 parts = line.split()
-                if len(parts) >= 3 and len(parts[0]) in (3, 4) and set(parts[0]) <= set(".TSC|AVN"):
+                if (
+                    len(parts) >= 3
+                    and 2 <= len(parts[0]) <= 4
+                    and set(parts[0]) <= set(".TSC|AVN")
+                    and "->" in parts[2]
+                ):
                     names.add(parts[1])
         except Exception as e:
             log.warning(f"ffmpeg -filters failed: {e}")

@@ -249,7 +249,11 @@ async def _botapi_line() -> str:
 async def boot_report(client, me, handlers: int, boot_seconds: float):
     import pyrogram
     t = await collect_totals()
+    from client import runtime_stack
     from core.db import vdb
+    from core.plugin_manager import plugin_manager
+    st = runtime_stack()
+    n_plg = len(plugin_manager.discover())
     maint = "🛠 ON" if vdb.cached_setting("maintenance", False) else "off"
     reason = pop_restart_reason()
     body = (
@@ -258,8 +262,8 @@ async def boot_report(client, me, handlers: int, boot_seconds: float):
         "<blockquote>"
         f"<b>🤖 Bot:</b> @{me.username} (<code>{me.id}</code>)\n"
         f"<b>🖥 Host:</b> {esc(host_name())}\n"
-        f"<b>🐍 Python:</b> {platform.python_version()} · <b>Pyrofork:</b> {pyrogram.__version__}\n"
-        f"<b>🧩 Handlers:</b> {handlers} · <b>⏱ Boot:</b> {boot_seconds:.1f}s\n"
+        f"<b>🐍 Python:</b> {platform.python_version()} · <b>{st['engine']}:</b> {pyrogram.__version__} (Layer {st['layer']})\n"
+        f"<b>🧩 Handlers:</b> {handlers} · <b>🔌 Plugins:</b> {n_plg} · <b>⏱ Boot:</b> {boot_seconds:.1f}s\n"
         f"<b>🛰 Bot API:</b> {await _botapi_line()}</blockquote>\n"
         "<blockquote>"
         f"<b>👥 Users:</b> <code>{t['users']}</code> (🚫 {t['banned']} banned)\n"

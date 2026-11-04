@@ -1,0 +1,49 @@
+'use client';
+import {useEffect,useMemo,useRef,useState} from 'react';
+import {Bot as BotIcon, Plus, Search, ShieldCheck} from 'lucide-react';
+import {request,type Bot,type Session} from '../lib/api';
+
+const stateLabel=(bot:Bot)=>bot.connection_state==='running'?'Observed running':bot.connection_state==='credentials_verified_idle'?'Credentials saved · idle':bot.connection_state==='archived'?'Archived':bot.connection_state==='disconnected'?'Not connected':'Status unavailable';
+type Props={workspace:string;session:Session;bots:Bot[];canManage:boolean;onReload:()=>void;onError:(error:unknown)=>boolean;onDirty:(dirty:boolean)=>void;onPending:(pending:boolean)=>void};
+export default function BotStudio({workspace,session,bots,canManage,onReload,onError,onDirty,onPending}:Props){
+  const [query,setQuery]=useState(''),[status,setStatus]=useState('all'),[showCreate,setShowCreate]=useState(false);
+  const [name,setName]=useState(''),[token,setToken]=useState(''),[description,setDescription]=useState(''),[template,setTemplate]=useState('custom');
+  const [dirty,setDirty]=useState(false);
+  const [diagnostic,setDiagnostic]=useState(''),[message,setMessage]=useState(''),[pending,setPending]=useState(false),[confirmDelete,setConfirmDelete]=useState<string|null>(null);
+  const busy=useRef(false),mounted=useRef(false);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false}},[]);
+  function changed(){setDirty(true);onDirty(true)}
+  function toggleCreate(){if(showCreate&&dirty&&!window.confirm('Discard unsaved bot setup?'))return;if(showCreate){setName('');setDescription('');setToken('');setDiagnostic('');setDirty(false);onDirty(false)}setShowCreate(!showCreate);setMessage('')}
+  const base=`/api/v1/workspaces/${encodeURIComponent(workspace)}/bots`;
+  const filtered=useMemo(()=>bots.filter(b=>(status==='all'||b.connection_state===status)&&`${b.display_name||''} ${b.username||''} ${(b.tags||[]).join(' ')}`.toLowerCase().includes(query.trim().toLowerCase())),[bots,query,status]);
+  async function verify(){
+    if(busy.current||!token.trim())return; busy.current=true;setPending(true);onPending(true);setDiagnostic('');setMessage('');
+    try {const result=await request(`${base}/verify-token`,session,{method:'POST',body:{bot_token:token.trim()}});
+      if(!mounted.current)return;
+      if(typeof result==='object'&&result!==null&&'verified_with_telegram' in result&&result.verified_with_telegram===true) setDiagnostic('Telegram verified these credentials. Saving will verify them again.');
+      else setDiagnostic('Telegram could not verify this token, or verification is unavailable.');
+    } catch(error){if(mounted.current&&!onError(error))setDiagnostic('Could not verify the token. Check the token and service availability.');}
+    finally{busy.current=false;if(mounted.current){setPending(false);onPending(false)}}
+  }
+  async function create(event:React.FormEvent){event.preventDefault();if(busy.current||!canManage)return;const clean=name.trim();if(clean.length<2||clean.length>80){setMessage('Display name must be 2–80 characters.');return}
+    busy.current=true;setPending(true);onPending(true);setMessage('');
+    try{await request(base,session,{method:'POST',body:{display_name:clean,description:description.trim(),template,bot_token:token.trim()}});if(!mounted.current)return;setToken('');setDirty(false);onDirty(false);setShowCreate(false);onReload()}
+    catch(error){if(mounted.current&&!onError(error))setMessage((token.trim()?'Could not register the bot. Check credentials and service availability.':error instanceof Error?error.message:'Could not create the bot.')+' The result may be uncertain; refresh before retrying.')}
+    finally{busy.current=false;if(mounted.current){setPending(false);onPending(false)}}
+  }
+  async function change(bot:Bot,del:boolean){if(busy.current||!canManage)return;busy.current=true;setPending(true);onPending(true);setMessage('');
+    try{await request(`${base}/${encodeURIComponent(bot.bot_id)}`,session,del?{method:'DELETE'}:{method:'PATCH',body:{archived:!bot.archived}});if(!mounted.current)return;setConfirmDelete(null);onReload()}
+    catch(error){if(mounted.current&&!onError(error))setMessage((error instanceof Error?error.message:'Could not update the record.')+' The result may be uncertain; refresh before retrying.')}
+    finally{busy.current=false;if(mounted.current){setPending(false);onPending(false)}}
+  }
+  return <section className="studio-page" aria-labelledby="bots-title">
+    <header className="studio-hero"><div><span className="kicker">YOUR WORKSPACE / BOTS</span><h1 id="bots-title">Your bots,<br/><em>in one place.</em></h1><p>Connect an existing Telegram bot or keep a draft record ready for later.</p></div>{canManage&&<button className="primary" onClick={toggleCreate} disabled={pending} aria-expanded={showCreate}><Plus size={16}/> {showCreate?'Close setup':'Connect a bot'}</button>}</header>
+    <div className="studio-note"><ShieldCheck size={19}/><p><strong>Records, not deployments.</strong> Only {bots.length} loaded records are shown (maximum 300). Runtime observations are local to the server process; saving credentials, archiving or deleting a record does not start or stop a worker.</p></div>
+    {message&&<p className="notice error" role="alert">{message}</p>}
+    {showCreate&&canManage&&<form className="bot-setup" onSubmit={create}><div><span className="kicker">CONNECT / 01</span><h2>Bring your bot.</h2><p>Create a bot through BotFather first. A token is optional for a draft; a supplied token is checked with Telegram before it is stored. This does not launch the bot.</p></div><div className="setup-fields"><label>Display name<input value={name} onChange={e=>{setName(e.target.value);changed()}} minLength={2} maxLength={80} required placeholder="My Telegram bot" disabled={pending}/></label><label>Starting configuration<select value={template} onChange={e=>{setTemplate(e.target.value);changed()}} disabled={pending}><option value="custom">Custom blank</option><option value="filestore">File Store</option><option value="media_suite">Media</option></select></label><label>Description <small>optional</small><textarea value={description} onChange={e=>{setDescription(e.target.value);changed()}} maxLength={300} rows={2} disabled={pending}/></label><label>BotFather token <small>optional for a draft</small><input type="password" value={token} onChange={e=>{setToken(e.target.value);setDiagnostic('');changed()}} autoComplete="off" spellCheck={false} disabled={pending}/></label><div className="form-actions"><button type="button" className="secondary" onClick={verify} disabled={pending||!token.trim()}>Verify token</button><button className="primary" disabled={pending}>{pending?'Working…':token.trim()?'Register bot':'Save draft'}</button></div>{diagnostic&&<p className="form-hint" role="status">{diagnostic}</p>}<p className="form-hint">Saved tokens require server-side encryption to be configured. Never share your token.</p></div></form>}
+    <div className="directory-head"><div><span className="kicker">BOT DIRECTORY</span><h2>Pick up where you left off.</h2><p>Search by name, username or tag.</p></div><span className="record-count" aria-live="polite">{filtered.length} / {bots.length} records</span></div>
+    <div className="directory-controls"><label className="directory-search"><Search size={17}/><span className="sr-only">Search bots</span><input type="search" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search bot records"/></label><label><span className="sr-only">Filter bot status</span><select value={status} onChange={e=>setStatus(e.target.value)}><option value="all">All statuses</option><option value="running">Observed running</option><option value="credentials_verified_idle">Credentials saved · idle</option><option value="disconnected">Not connected</option><option value="archived">Archived</option></select></label></div>
+    {!filtered.length?<div className="directory-empty"><BotIcon size={24}/><h3>{bots.length?'No matching records':'No bot records yet'}</h3><p>{bots.length?'Try another search or status.':'Create a bot with BotFather, then connect it or save a draft.'}</p></div>:<div className="directory-grid">{filtered.map(bot=><article className="directory-card" key={bot.bot_id}><div className="directory-card-top"><span className="bot-icon"><BotIcon size={18}/></span><span className="state">{stateLabel(bot)}</span></div><h3>{bot.display_name||'Unnamed bot'}</h3><span className="directory-username">{bot.username?(bot.telegram_bot_id&&bot.telegram_bot_id>0?'@':'Record: ')+bot.username:'No username'}</span><p>{bot.description||'No description added.'}</p><div className="directory-meta"><span>{bot.category||'Uncategorized'}</span>{bot.tags?.map(t=><span key={t}>#{t}</span>)}</div>{canManage&&<div className="card-actions"><button className="secondary" disabled={pending||dirty} onClick={()=>change(bot,false)}>{bot.archived?'Unarchive':'Archive'}</button><button className="text-danger" disabled={pending||dirty} onClick={()=>setConfirmDelete(bot.bot_id)}>Delete</button></div>}{confirmDelete===bot.bot_id&&<div className="delete-confirm" role="group" aria-label={`Confirm delete ${bot.display_name||'bot'}`}><strong>Delete this record?</strong><p>This clears the saved token but does not stop a running worker.</p><button className="text-danger" disabled={pending} onClick={()=>change(bot,true)}>Confirm delete</button><button className="secondary" disabled={pending} onClick={()=>setConfirmDelete(null)}>Cancel</button></div>}</article>)}</div>}
+    {!canManage&&<p className="form-hint">Connecting and modifying records requires bot settings access. The server enforces permissions.</p>}
+  </section>;
+}

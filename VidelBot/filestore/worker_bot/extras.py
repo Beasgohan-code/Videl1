@@ -743,24 +743,64 @@ def setup_extras(app: Client, ctx):
     @app.on_message(filters.successful_payment & filters.private, group=-10)
     async def paid(client, message: Message):
         sp = message.successful_payment
+        if not sp or not message.from_user:
+            raise StopPropagation
         parts = (sp.payload or "").split(":")
         uid = message.from_user.id
-        charge = sp.telegram_payment_charge_id
+        charge = (getattr(sp, "telegram_payment_charge_id", "") or "").strip()
+        currency = getattr(sp, "currency", None)
+        stars = int(getattr(sp, "total_amount", 0) or 0)
+        if (
+            not charge
+            or (currency is not None and currency != "XTR")
+            or stars <= 0
+            or len(parts) != 4
+            or not parts[2].isdigit()
+            or int(parts[2]) != uid
+        ):
+            log.warning(f"[clone {bot_id}] rejected invalid successful_payment from {uid} (charge={charge})")
+            raise StopPropagation
         try:
             if parts[0] == "xl":
-                await xdb.add_purchase(parts[1], uid, sp.total_amount, charge)
-                await xdb.record_payment(uid, "link", sp.total_amount, charge, parts[1])
-                await message.reply(f"<b>✅ Payment received – {sp.total_amount} ⭐. Thank you!</b>")
+                link = await xdb.get_link(parts[1])
+                if not link or int(link.get("stars") or 0) != stars:
+                    log.warning(f"[clone {bot_id}] smartlink payment amount mismatch (charge={charge})")
+                    raise StopPropagation
+                if not await xdb.claim_payment(uid, "link", stars, charge, parts[1]):
+                    log.info(f"[clone {bot_id}] duplicate smartlink payment ignored (charge={charge})")
+                    raise StopPropagation
+                try:
+                    await xdb.add_purchase(parts[1], uid, stars, charge)
+                    await xdb.mark_payment_fulfilled(charge)
+                except Exception:
+                    await xdb.rollback_unfulfilled_payment(charge)
+                    raise
+                await message.reply(f"<b>✅ Payment received – {stars} ⭐. Thank you!</b>")
                 await open_smart_link(client, message, parts[1], await ctx.fresh_doc(), paid=True)
             elif parts[0] == "xp":
+                if not parts[1].isdigit() or not 1 <= int(parts[1]) <= 3650:
+                    raise StopPropagation
                 days = int(parts[1])
-                until = await xdb.add_premium(uid, days, by="stars")
-                await xdb.record_payment(uid, "premium", sp.total_amount, charge, str(days))
+                cur_stars = int((await settings_now()).get("premium_stars") or 0)
+                if cur_stars <= 0 or cur_stars != stars:
+                    log.warning(f"[clone {bot_id}] premium payment amount mismatch or disabled (charge={charge})")
+                    raise StopPropagation
+                if not await xdb.claim_payment(uid, "premium", stars, charge, str(days)):
+                    log.info(f"[clone {bot_id}] duplicate premium payment ignored (charge={charge})")
+                    raise StopPropagation
+                try:
+                    until = await xdb.add_premium(uid, days, by="stars")
+                    await xdb.mark_payment_fulfilled(charge)
+                except Exception:
+                    await xdb.rollback_unfulfilled_payment(charge)
+                    raise
                 await message.reply(f"<b>💎 Premium active until {until_text(until)} – thank you!</b>")
             else:
-                return
-            await notify_admins(client, f"<b>⭐ New payment</b>\n<code>{uid}</code> paid {sp.total_amount} ⭐ "
+                raise StopPropagation
+            await notify_admins(client, f"<b>⭐ New payment</b>\n<code>{uid}</code> paid {stars} ⭐ "
                                         f"({'link ' + esc(parts[1]) if parts[0] == 'xl' else 'premium'})")
+        except StopPropagation:
+            raise
         except Exception as e:
             log.error(f"[clone {bot_id}] payment handling failed: {e}")
             await message.reply("<b>⚠️ Payment received but delivery failed – contact the admin with this ID:</b>\n"

@@ -267,8 +267,9 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
             await main_db.set_bot_active(bot_id, True)
             await _clone_log(client, "CloneStarted", query.from_user, bot)
         except Exception as e:
+            import html
             log.error(f"Failed to start bot {bot_id}: {e}")
-            await _clone_log(client, "CloneFailed", query.from_user, bot, f"<b>❌ Error:</b> <code>{str(e)[:200]}</code>")
+            await _clone_log(client, "CloneFailed", query.from_user, bot, f"<b>❌ Error:</b> <code>{html.escape(str(e))[:200]}</code>")
 
     # Refresh dashboard
     await dashboard_callback(client, query)

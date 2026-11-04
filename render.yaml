@@ -38,5 +38,9 @@ services:
         value: Asia/Kolkata
       - key: AIOGRAM_ENABLED
         value: "True"
+      - key: WZGRAM_NATIVE_RICH
+        value: "True"
+      - key: PLUGINS_ENABLED
+        value: "True"
       - key: MAX_LINK_FILES
         value: "1000"
