@@ -272,7 +272,7 @@ async def team_collection(request):
     token, ws = context
     if not roles[token]: return error('Forbidden', 403)
     members = teams[token].setdefault(ws['workspace_id'], [{'user_id':1,'role':'owner','permissions':TEAM_DEFAULTS['owner'].copy()}])
-    if request.method == 'GET': return web.json_response({'members':members,'role_defaults':TEAM_DEFAULTS})
+    if request.method == 'GET': return web.json_response({'members':members,'role_defaults':TEAM_DEFAULTS,'reviewed_membership_guards':True})
     data=await request.json()
     if data.get('role') not in TEAM_DEFAULTS or data.get('role') == 'owner' or not isinstance(data.get('user_id'),int) or any(m['user_id']==data['user_id'] for m in members): return error('Invalid member',400)
     member={'user_id':data['user_id'],'role':data['role'],'permissions':data['permissions']}

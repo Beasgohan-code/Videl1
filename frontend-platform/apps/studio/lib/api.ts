@@ -101,10 +101,10 @@ export function fleetSummary(value:unknown):FleetSummary {
 }
 
 export type TeamMember={user_id:number;role:string;permissions:Record<string,boolean>};
-export type TeamData={members:TeamMember[];role_defaults:Record<string,Record<string,boolean>>};
+export type TeamData={members:TeamMember[];role_defaults:Record<string,Record<string,boolean>>;reviewed_membership_guards:boolean};
 export function teamData(value:unknown):TeamData {
   if(!object(value)||!Array.isArray(value.members))throw new Error('The server returned an invalid team list.');
   const members=value.members.map(m=>{if(!object(m)||typeof m.user_id!=='number'||!Number.isSafeInteger(m.user_id)||m.user_id<=0||typeof m.role!=='string'||!object(m.permissions)||Object.values(m.permissions).some(v=>typeof v!=='boolean'))throw new Error('The server returned an invalid membership record.');return {user_id:m.user_id,role:m.role,permissions:m.permissions as Record<string,boolean>}});
   const role_defaults:Record<string,Record<string,boolean>>={};if(object(value.role_defaults))for(const [role,permissions] of Object.entries(value.role_defaults)){if(object(permissions)&&Object.values(permissions).every(v=>typeof v==='boolean'))role_defaults[role]=permissions as Record<string,boolean>}
-  return {members,role_defaults};
+  return {members,role_defaults,reviewed_membership_guards:value.reviewed_membership_guards===true};
 }

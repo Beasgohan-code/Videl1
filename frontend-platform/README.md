@@ -32,3 +32,7 @@ The preview requires a backend containing the companion workspace API changes
 The branch's older backend may not yet contain them. Do not point this preview
 at an older or production backend assuming contract compatibility; the backend
 reconciliation and real-service validation are still pending.
+
+Team mutations require the backend to explicitly advertise reviewed membership
+guards; older servers are read-only in this preview. These guards do not solve
+all concurrent membership or authorization races.
