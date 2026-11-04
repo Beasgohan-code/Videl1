@@ -20,8 +20,9 @@ def render_app_html() -> str:
   <script src="https://telegram.org/js/telegram-web-app.js" async></script>
 </head>
 <body>
+  <a class="skip-link" href="#auth-screen">Skip to sign in</a>
   <!-- Auth Gate -->
-  <main id="auth-screen" class="auth-screen">
+  <main id="auth-screen" class="auth-screen" tabindex="-1" aria-label="Sign in">
     <div class="auth-card" role="region" aria-label="Sign in to {bot_name} Studio">
       <div class="brand-mark" style="margin-bottom:18px">
         <span class="brand-badge">V</span>
@@ -66,7 +67,7 @@ def render_app_html() -> str:
         </div>
         <button id="btn-collapse-sidebar" class="btn btn-sm btn-icon" type="button" title="Collapse or expand sidebar" aria-label="Toggle sidebar">⇄</button>
       </div>
-      <nav id="sidebar-nav" class="sidebar-nav"></nav>
+      <nav id="sidebar-nav" class="sidebar-nav" aria-label="Studio sections"></nav>
     </aside>
 
     <div class="main-column">
@@ -98,8 +99,8 @@ def render_app_html() -> str:
         <span class="badge badge-warning">DEMO MODE</span>
       </div>
 
-      <main class="workspace-canvas" id="main-canvas" tabindex="-1">
-        <div id="breadcrumbs" class="breadcrumb-bar"></div>
+      <main class="workspace-canvas" id="main-canvas" tabindex="-1" aria-label="Workspace content">
+        <nav id="breadcrumbs" class="breadcrumb-bar" aria-label="Breadcrumb"></nav>
         <div id="studio-viewport"></div>
       </main>
     </div>
@@ -115,12 +116,13 @@ def render_app_html() -> str:
   </nav>
 
   <!-- Global Search & Command Palette (⌘K) -->
-  <div id="cmdk-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-label="Command Palette">
+  <div id="cmdk-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="cmdk-title">
     <div class="modal-box">
+      <h2 id="cmdk-title" style="margin:0 0 10px;font-size:16px">Search and jump to</h2>
       <div class="field" style="margin-bottom:10px">
-        <input id="cmdk-input" class="input" type="search" placeholder="Search bots, files, commands, templates, or jump to a studio…">
+        <input id="cmdk-input" class="input" type="search" role="combobox" aria-autocomplete="list" aria-controls="cmdk-results" aria-expanded="true" aria-label="Search bots, files, commands and studios" placeholder="Search bots, files, commands, templates, or jump to a studio…">
       </div>
-      <div id="cmdk-results" style="max-height:340px;overflow-y:auto"></div>
+      <div id="cmdk-results" role="listbox" aria-label="Search results" style="max-height:340px;overflow-y:auto"></div>
       <div style="margin-top:10px;display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-muted)">
         <span>Click an item to navigate</span>
         <button id="btn-close-cmdk" class="btn btn-sm" type="button">Esc · Close</button>

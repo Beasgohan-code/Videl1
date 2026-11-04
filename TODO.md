@@ -98,11 +98,17 @@
 - [x] **Reusable Light/Dark SaaS UI Shell (`VidelBot/webapp/{ui_styles,ui_shell,ui_client}.py` & `VidelBot/keep_alive.py`):**
   - Mounted cleanly at `/app` and `/api/v1/*` alongside `/admin`, `/ping`, and `/health` without breaking any existing console or Telegram runtime behavior; includes collapsible sidebar, mobile bottom nav, Workspace & Bot selectors, `⌘K` Command Palette, Custom Dashboard Builder, and 17 interactive Studios (`tests/test_webapp_saas.py` — full suite verified at **`802 passed, 1 skipped, 0 failed`**).
 
+### Phase 7 — Studio Command-Center UI, Accessibility & Documentation
+- [x] Redesigned the Studio Overview with an original responsive command-center hero; its workspace snapshot uses API-backed bot/File Store records and labels bot state as “marked running” rather than claiming live telemetry.
+- [x] Added a skip-to-workspace path, named landmarks, accessible combobox/listbox search semantics, Arrow Up/Down + Enter palette control, active-result visibility, and focus restoration; added reduced-motion and mobile safe-area styles.
+- [x] Added focused frontend regression assertions, desktop/mobile demo screenshots, and branch docs (`docs/WEBAPP.md`, `docs/AUDIT.md`, `docs/COMPLETED_WORK.md`). Final-tree verification: targeted `tests/test_webapp_saas.py` **35 passed, 1 warning**; full suite `python -m pytest tests -q` **832 passed, 74 warnings**; Node syntax, Python compileall for touched modules, `git diff --check`, and an isolated browser preview at desktop/390px/320px (no page errors or horizontal overflow) passed.
+- [ ] The complete design-system redesign, every Studio/public page in the supplied master specification, full-route security and runtime verification, real-Mongo concurrency, and production readiness remain open; this UI milestone does not close any P0 tenant-isolation, runtime-integration, persistence, or deployment blocker.
+
 ---
 
 ## SaaS Feature Matrix — current assessment
 
-Audit baseline: branch `arena/a69b9f62-videl1`, verified remote baseline `fa10c72`; existing VidelBot Telegram runtime, FileStore workers, MongoDB schemas, web APIs, deployment files, tests/CI and WZML-X patterns were reviewed. The table distinguishes scaffolding from proven runtime functionality; Stage 1 remains open.
+Audit baseline: branch `arena/a69b9f62-videl1`; see `docs/VIDEL1_MASTER_AUDIT.md` for the source-grounded domain audit and `docs/AUDIT.md` for this focused UI change. The table distinguishes scaffolding from proven runtime functionality; Stage 1 remains open.
 
 | Category | Existing | Needs improvement | Missing | Proposed |
 | --- | --- | --- | --- | --- |

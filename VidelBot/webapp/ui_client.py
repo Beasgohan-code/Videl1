@@ -58,6 +58,10 @@ CLIENT_JS = r"""
     wizard: { step: 1, display_name: "", username: "", description: "", template: "filestore", bot_token: "", tokenDiag: null, features: {}, tags: "" },
     selectionSession: null,
   };
+  let cmdkItems = [];
+  let cmdkActiveIndex = -1;
+  let cmdkRequestId = 0;
+  let cmdkReturnFocus = null;
 
   const $ = (id) => document.getElementById(id);
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -168,6 +172,8 @@ CLIENT_JS = r"""
     $("auth-screen").hidden = true;
     $("app-shell").hidden = false;
     $("mobile-bottom-nav").hidden = false;
+    const skipLink = document.querySelector(".skip-link");
+    if (skipLink) { skipLink.href = "#main-canvas"; skipLink.textContent = "Skip to workspace"; }
     $("demo-banner").hidden = !S.user.is_demo;
 
     const themePref = (S.settings.appearance && S.settings.appearance.theme) || localStorage.getItem("videl_theme") || "dark";
@@ -294,6 +300,8 @@ CLIENT_JS = r"""
         api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/dashboard-layout`),
       ]);
       const u = wsData.usage || {};
+      const runningBots = S.bots.filter((b) => b.connection_state === "running").length;
+      const verifiedBots = S.bots.filter((b) => b.has_credentials).length;
       const checklistDone = [
         S.bots.length > 0,
         u.files_count > 0,
@@ -343,16 +351,36 @@ CLIENT_JS = r"""
       vp.innerHTML = `
         <div class="page-header">
           <div>
+            <p class="eyebrow">VIDEL STUDIO <span aria-hidden="true">/</span> WORKSPACE</p>
             <h1 class="page-title">${esc(wsData.workspace.icon || "🚀")} ${esc(wsData.workspace.name)}</h1>
-            <p class="page-subtitle">${esc(wsData.workspace.description || "Multi-bot SaaS workspace")} · Role: <span class="badge badge-info">${esc(wsData.my_role)}</span></p>
+            <p class="page-subtitle">${esc(wsData.workspace.description || "Your bots, projects and files in one place")} · <span class="badge badge-info">${esc(wsData.my_role)}</span></p>
           </div>
           <div class="toolbar-group">
             <button id="btn-new-ws" class="btn">+ New Workspace</button>
             <button id="btn-rename-ws" class="btn">Rename Workspace</button>
             <button id="btn-customize-dash" class="btn">Customize Widgets</button>
-            <button class="btn btn-primary" data-goto="bot_create">+ Create / Connect Bot</button>
+            <button class="btn btn-primary" data-goto="bot_create">+ Connect a bot</button>
           </div>
         </div>
+
+        <section class="overview-hero" aria-labelledby="overview-hero-title">
+          <div class="overview-hero-copy">
+            <span class="overview-kicker"><span class="overview-spark" aria-hidden="true">✳</span> WORKSPACE COMMAND CENTER</span>
+            <h2 id="overview-hero-title">Build what's next.<br><span>Your workspace is ready.</span></h2>
+            <p>Connect a Telegram bot, organize your files, and keep the work that matters in view. This snapshot uses data available to your current workspace role.</p>
+            <div class="overview-hero-actions">
+              <button class="btn btn-primary" data-goto="bot_create">Connect a bot <span aria-hidden="true">→</span></button>
+              <button class="btn overview-secondary-action" data-goto="bots">Explore bot studio</button>
+            </div>
+          </div>
+          <div class="overview-snapshot" aria-label="Current workspace snapshot">
+            <div class="snapshot-heading"><span>WORKSPACE SNAPSHOT</span><span class="snapshot-live">From current records</span></div>
+            <div class="snapshot-stat"><span class="snapshot-icon" aria-hidden="true">◈</span><div><strong>${S.bots.length.toLocaleString()}</strong><span>registered bots</span></div></div>
+            <div class="snapshot-stat"><span class="snapshot-icon is-live" aria-hidden="true">↗</span><div><strong>${runningBots.toLocaleString()}</strong><span>bots marked running</span></div></div>
+            <div class="snapshot-footer">${verifiedBots.toLocaleString()} bot credentials verified${u.files_count == null ? " · File Store count restricted or unavailable" : ` · ${Number(u.files_count).toLocaleString()} files indexed`}</div>
+          </div>
+          <span class="overview-orbit orbit-one" aria-hidden="true"></span><span class="overview-orbit orbit-two" aria-hidden="true"></span>
+        </section>
 
         <div class="card" style="margin-bottom:18px">
           <div class="card-header">
@@ -2117,6 +2145,7 @@ CLIENT_JS = r"""
   /* ── Command Palette (⌘K) & Event Wiring ── */
   function openCommandPalette() {
     const m = $("cmdk-modal");
+    cmdkReturnFocus = document.activeElement;
     m.hidden = false;
     const inp = $("cmdk-input");
     inp.value = "";
@@ -2124,8 +2153,38 @@ CLIENT_JS = r"""
     renderCmdkResults("");
   }
 
+  function closeCommandPalette() {
+    const wasOpen = !$("cmdk-modal").hidden;
+    $("cmdk-modal").hidden = true;
+    if (wasOpen && cmdkReturnFocus && typeof cmdkReturnFocus.focus === "function") cmdkReturnFocus.focus();
+  }
+
+  function selectCommandResult(index) {
+    const item = cmdkItems[index];
+    if (!item) return;
+    closeCommandPalette();
+    if (item.type === "bot") {
+      S.botId = item.id;
+      localStorage.setItem("videl_bot_id", S.botId);
+    }
+    if (item.studio) navigate(item.studio);
+  }
+
+  function setCommandSelection(index) {
+    const nodes = $("cmdk-results").querySelectorAll("[data-cmdk-idx]");
+    if (!nodes.length) { cmdkActiveIndex = -1; return; }
+    cmdkActiveIndex = (index + nodes.length) % nodes.length;
+    nodes.forEach((node, i) => {
+      const selected = i === cmdkActiveIndex;
+      node.setAttribute("aria-selected", selected ? "true" : "false");
+      if (selected) node.scrollIntoView({ block: "nearest" });
+    });
+    $("cmdk-input").setAttribute("aria-activedescendant", "cmdk-option-" + cmdkActiveIndex);
+  }
+
   async function renderCmdkResults(q) {
     const box = $("cmdk-results");
+    const requestId = ++cmdkRequestId;
     const studioMatches = STUDIOS.flatMap((g) => (g.adminOnly && (!S.user || !S.user.is_platform_admin)) ? [] : g.items)
       .filter((s) => !q || s.label.toLowerCase().includes(q.toLowerCase()))
       .map((s) => ({ type: "studio", studio: s.id, title: s.label, subtitle: "Jump to Studio" }));
@@ -2137,22 +2196,21 @@ CLIENT_JS = r"""
         remote = res.results || [];
       } catch (_) {}
     }
+    if (requestId !== cmdkRequestId || $("cmdk-modal").hidden) return;
     const combined = [...remote, ...studioMatches].slice(0, 18);
+    cmdkItems = combined;
     box.innerHTML = combined.map((r, idx) => `
-      <button type="button" class="nav-item" data-cmdk-idx="${idx}" style="justify-content:space-between">
+      <button type="button" id="cmdk-option-${idx}" role="option" aria-selected="false" class="nav-item cmdk-result" data-cmdk-idx="${idx}" style="justify-content:space-between">
         <span><strong>${esc(r.title)}</strong> <span style="color:var(--text-muted);font-size:12px">· ${esc(r.subtitle)}</span></span>
         <span class="badge badge-neutral">${esc(r.type)}</span>
       </button>
     `).join("") || `<div class="stat-meta" style="padding:12px">No matching resources.</div>`;
 
     box.querySelectorAll("[data-cmdk-idx]").forEach((b) => {
-      b.onclick = () => {
-        const item = combined[Number(b.dataset.cmdkIdx)];
-        $("cmdk-modal").hidden = true;
-        if (item.type === "bot") { S.botId = item.id; localStorage.setItem("videl_bot_id", S.botId); }
-        navigate(item.studio);
-      };
+      b.onclick = () => selectCommandResult(Number(b.dataset.cmdkIdx));
     });
+    if (combined.length) setCommandSelection(0);
+    else $("cmdk-input").removeAttribute("aria-activedescendant");
   }
 
   window.addEventListener("beforeunload", (e) => {
@@ -2164,8 +2222,10 @@ CLIENT_JS = r"""
       e.preventDefault();
       if (S.user) openCommandPalette();
     } else if (e.key === "Escape") {
-      $("cmdk-modal").hidden = true;
+      const wasPaletteOpen = !$("cmdk-modal").hidden;
+      closeCommandPalette();
       $("app-modal").hidden = true;
+      if (wasPaletteOpen) e.stopPropagation();
     }
   });
 
@@ -2202,8 +2262,13 @@ CLIENT_JS = r"""
   $("btn-quick-create").onclick = () => navigate("bot_create");
   $("btn-notifications").onclick = () => navigate("team");
   $("btn-open-cmdk").onclick = openCommandPalette;
-  $("btn-close-cmdk").onclick = () => { $("cmdk-modal").hidden = true; };
+  $("btn-close-cmdk").onclick = closeCommandPalette;
   $("cmdk-input").oninput = (e) => renderCmdkResults(e.target.value);
+  $("cmdk-input").onkeydown = (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setCommandSelection(cmdkActiveIndex + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setCommandSelection(cmdkActiveIndex - 1); }
+    else if (e.key === "Enter" && cmdkActiveIndex >= 0) { e.preventDefault(); selectCommandResult(cmdkActiveIndex); }
+  };
 
   $("btn-theme-toggle").onclick = () => {
     const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";

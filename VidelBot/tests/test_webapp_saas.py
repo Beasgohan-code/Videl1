@@ -64,17 +64,27 @@ def test_spa_assets_security_headers_and_query_secret_rejection():
         async with TestClient(TestServer(keep_alive.make_app())) as cli:
             r_html = await cli.get("/app")
             assert r_html.status == 200
-            assert "Videl" in await r_html.text()
+            html = await r_html.text()
+            assert "Videl" in html
+            assert 'class="skip-link" href="#auth-screen"' in html
+            assert 'role="combobox"' in html and 'role="listbox"' in html
             assert r_html.headers.get("X-Content-Type-Options") == "nosniff"
             assert r_html.headers.get("Referrer-Policy") == "no-referrer"
 
             r_css = await cli.get("/app/styles.css")
             assert r_css.status == 200
-            assert "--bg-app" in await r_css.text()
+            css = await r_css.text()
+            assert "--bg-app" in css
+            assert "prefers-reduced-motion: reduce" in css
+            assert "safe-area-inset-bottom" in css
 
             r_js = await cli.get("/app/app.js")
             assert r_js.status == 200
-            assert "STUDIOS" in await r_js.text()
+            js = await r_js.text()
+            assert "STUDIOS" in js
+            assert "setCommandSelection" in js and 'e.key === "ArrowDown"' in js
+            assert 'e.key === "Enter"' in js and "cmdkReturnFocus" in js
+            assert 'skipLink.href = "#main-canvas"' in js
 
             # Secrets in URL query parameters MUST be rejected with 401
             r_q = await cli.get("/api/v1/auth/me?token=secret123")
