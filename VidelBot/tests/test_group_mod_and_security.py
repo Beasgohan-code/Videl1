@@ -461,3 +461,234 @@ def test_rich_admin_and_owner_telemetry_commands():
     m_sys = FakeMsg("/sys", uid=111, client=c)
     run(system_stats(c, m_sys))
     assert "𝗦𝗬𝗦𝗧𝗘𝗠 𝗥𝗘𝗦𝗢𝗨𝗥𝗖𝗘𝗦" in m_sys.replies[-1] and "CPU" in m_sys.replies[-1]
+
+
+# Group moderation foundation: fail-closed permissions, policy and warning safety.
+def test_group_permission_checks_fail_closed_on_unknown_status_and_identity():
+    from plugins.group_mod import plugin as gmod
+    owner = (enums.ChatMemberStatus.OWNER, None)
+    admin = (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())
+    c = GroupFakeClient({10: owner, 999: admin, 22: (enums.ChatMemberStatus.ADMINISTRATOR, None)})
+    assert not run(gmod.verify_mod_permissions(c, -100888, 22))[0]
+    assert not run(gmod.verify_mod_permissions(c, -100888, 10, target_id=10))[0]
+    c.me = None
+    assert not run(gmod.verify_mod_permissions(c, -100888, 10, target_id=77))[0]
+    class UnknownTarget(GroupFakeClient):
+        async def get_chat_member(self, chat_id, user_id):
+            if user_id == 77:
+                raise RuntimeError('unavailable and potentially sensitive')
+            return await super().get_chat_member(chat_id, user_id)
+    c = UnknownTarget({10: owner, 999: admin})
+    msg = _grp_msg('/gban', uid=10, client=c, reply_uid=77)
+    run(gmod.gban_cmd(c, msg))
+    assert not c.called('ban_chat_member')
+    assert 'Could not verify' in msg.replies[-1]
+    assert 'potentially sensitive' not in msg.replies[-1]
+
+
+def test_warnconfig_group_isolation_and_permission():
+    from plugins.group_mod import plugin as gmod
+    from core.middleware import senderless_gate
+    c = GroupFakeClient({10: (enums.ChatMemberStatus.OWNER, None), 20: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs(can_restrict_members=False)), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())})
+    run(gmod.warnconfig_cmd(c, _grp_msg('/warnconfig 5 ban', uid=20, client=c)))
+    assert run(gmod.get_group_cfg(-100888))['warn_limit'] == 3
+    run(gmod.warnconfig_cmd(c, _grp_msg('/warnconfig 0 ban', uid=10, client=c)))
+    assert run(gmod.get_group_cfg(-100888))['warn_limit'] == 3
+    run(gmod.warnconfig_cmd(c, _grp_msg('/warnconfig 5 ban', uid=10, client=c)))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert (cfg['warn_limit'], cfg['warn_action']) == (5, 'ban')
+    assert run(gmod.get_group_cfg(-100999))['warn_limit'] == 3
+    anon = _grp_msg('/warnconfig 4 mute', uid=None, client=c)
+    anon.sender_chat = SimpleNamespace(id=-100888)
+    run(senderless_gate(c, anon))
+    run(gmod.warnconfig_cmd(c, anon))
+    assert run(gmod.get_group_cfg(-100888))['warn_limit'] == 4
+    status = _grp_msg('/warnconfig', uid=10, client=c)
+    run(gmod.warnconfig_cmd(c, status))
+    assert '4' in status.replies[-1] and 'mute' in status.replies[-1]
+
+
+def test_warn_enforcement_failure_retains_warnings_and_success_can_reset():
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+    class FailMute(GroupFakeClient):
+        async def restrict_chat_member(self, *args, **kwargs):
+            raise RuntimeError('telegram connection failed')
+    members = {10: (enums.ChatMemberStatus.OWNER, None), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())}
+    c = FailMute(members)
+    for reason in ('first', 'second', 'third'):
+        msg = _grp_msg(f'/warn {reason}', uid=10, client=c, reply_uid=77)
+        run(gmod.warn_cmd(c, msg))
+    rec = run(vdb.db['group_warns'].find_one({'_id': '-100888:77'}))
+    assert rec['reasons'] == ['first', 'second', 'third']
+    assert 'warnings and claim retained' in msg.replies[-1].lower()
+    assert 'telegram connection failed' not in msg.replies[-1]
+    assert 'enforcement' in rec
+    c2 = GroupFakeClient(members)
+    blocked = _grp_msg('/warn fourth', uid=10, client=c2, reply_uid=77)
+    run(gmod.warn_cmd(c2, blocked))
+    assert not c2.called('restrict_chat_member')
+    assert 'pending' in blocked.replies[-1].lower()
+    run(vdb.db['group_warns'].update_one({'_id': '-100888:77'}, {'$set': {'enforcement.started_ts': 1}}))
+    recovery = _grp_msg('/warnrecover confirm', uid=10, client=c2, reply_uid=77)
+    run(gmod.warnrecover_cmd(c2, recovery))
+    assert 'warnings are retained' in recovery.replies[-1].lower()
+    run(gmod.warn_cmd(c2, _grp_msg('/warn fourth', uid=10, client=c2, reply_uid=77)))
+    assert c2.called('restrict_chat_member')
+    assert run(vdb.db['group_warns'].find_one({'_id': '-100888:77'})) is None
+
+
+def test_warn_compare_and_swap_retries_overlapping_new_records():
+    import asyncio
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+    real = vdb.db['group_warns']
+    class BarrierCollection:
+        def __init__(self):
+            self.reads = 0
+            self.ready = asyncio.Event()
+        async def find_one(self, query):
+            result = await real.find_one(query)
+            if self.reads < 2:
+                self.reads += 1
+                if self.reads == 2:
+                    self.ready.set()
+                await self.ready.wait()
+            return result
+        async def update_one(self, *args, **kwargs):
+            return await real.update_one(*args, **kwargs)
+    col = BarrierCollection()
+    previous = gmod.vdb
+    gmod.vdb = SimpleNamespace(db={'group_warns': col})
+    try:
+        async def race():
+            return await asyncio.gather(gmod._change_warns(-100888, 77, 'a'), gmod._change_warns(-100888, 77, 'b'))
+        run(race())
+    finally:
+        gmod.vdb = previous
+    record = run(real.find_one({'_id': '-100888:77'}))
+    assert sorted(record['reasons']) == ['a', 'b']
+    assert run(gmod._change_warns(-100888, 77, None)) in (['a'], ['b'])
+
+
+def test_passive_guard_never_punishes_when_member_status_is_unavailable():
+    from plugins.group_mod import plugin as gmod
+    class UnknownMember(GroupFakeClient):
+        async def get_chat_member(self, chat_id, user_id):
+            raise RuntimeError('temporary failure')
+    c = UnknownMember({})
+    run(gmod.update_group_cfg(-100888, {'locks': ['links'], 'antiflood': True}))
+    msg = _grp_msg('visit https://example.com', uid=77, client=c)
+    run(gmod.group_passive_guard(c, msg))
+    assert not msg.deleted and not c.called('restrict_chat_member')
+
+
+def test_group_callbacks_enforce_action_rights_and_deletion_failure():
+    from plugins.group_mod import plugin as gmod
+    c = GroupFakeClient({10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs(can_restrict_members=False)), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()), 77: (enums.ChatMemberStatus.MEMBER, None)})
+    def query(data):
+        q = FakeQuery(data, uid=10)
+        q.message.chat = SimpleNamespace(id=-100888, title='Test', type=enums.ChatType.SUPERGROUP)
+        return q
+    denied = query('plg_gmod:tog:antiraid')
+    run(gmod.group_mod_cb(c, denied))
+    assert denied.answers[-1][1] is True
+    assert run(gmod.get_group_cfg(-100888))['antiraid_until'] == 0
+    unknown = query('plg_gmod:rep:unknown:555:77')
+    run(gmod.group_mod_cb(c, unknown))
+    assert unknown.answers[-1][1] is True and not c.called('delete_messages')
+    denied = query('plg_gmod:rep:mute:555:77')
+    run(gmod.group_mod_cb(c, denied))
+    assert denied.answers[-1][1] is True and not c.called('delete_messages')
+    class DeleteFailure(GroupFakeClient):
+        async def delete_messages(self, *args, **kwargs):
+            raise RuntimeError('cannot delete')
+    c2 = DeleteFailure({10: (enums.ChatMemberStatus.OWNER, None), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())})
+    failure = query('plg_gmod:rep:ban:555:77')
+    run(gmod.group_mod_cb(c2, failure))
+    assert 'deletion failed' in failure.answers[-1][0].lower()
+    assert not c2.called('ban_chat_member')
+
+
+def test_group_command_menu_limit_and_disabled_callbacks():
+    from core.commands import GROUP_COMMANDS, _cmds
+    from core.plugin_manager import plugin_manager
+    from plugins.group_mod import plugin as gmod
+    assert any(name == 'warnconfig' for name, _ in GROUP_COMMANDS)
+    assert len(_cmds(GROUP_COMMANDS)) <= 100
+    plugin_manager._enabled['group_mod'] = False
+    q = FakeQuery('plg_gmod:tog:antiraid', uid=10)
+    q.message.chat = SimpleNamespace(id=-100888, title='Test', type=enums.ChatType.SUPERGROUP)
+    run(gmod.group_mod_cb(GroupFakeClient({}), q))
+    assert 'disabled' in q.answers[-1][0].lower()
+
+
+def test_warning_claim_blocks_overlapping_enforcement_and_preserves_record():
+    import asyncio
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+    class SlowMute(GroupFakeClient):
+        def __init__(self, members):
+            super().__init__(members)
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.actions = 0
+        async def restrict_chat_member(self, *args, **kwargs):
+            self.actions += 1
+            self.entered.set()
+            await self.release.wait()
+    members = {10: (enums.ChatMemberStatus.OWNER, None), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())}
+    c = SlowMute(members)
+    async def exercise():
+        await gmod.update_group_cfg(-100888, {'warn_limit': 1})
+        first = _grp_msg('/warn first', uid=10, client=c, reply_uid=77)
+        second = _grp_msg('/warn second', uid=10, client=c, reply_uid=77)
+        task = asyncio.create_task(gmod.warn_cmd(c, first))
+        await c.entered.wait()
+        await gmod.warn_cmd(c, second)
+        rec = await vdb.db['group_warns'].find_one({'_id': '-100888:77'})
+        assert rec['reasons'] == ['first'] and rec['enforcement']
+        assert 'pending' in second.replies[-1].lower()
+        c.release.set()
+        await task
+        assert await vdb.db['group_warns'].find_one({'_id': '-100888:77'}) is None
+    run(exercise())
+    assert c.actions == 1
+
+
+def test_warn_recovery_requires_authority_and_stale_claim():
+    import time
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+    members = {10: (enums.ChatMemberStatus.OWNER, None), 20: (enums.ChatMemberStatus.MEMBER, None), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())}
+    c = GroupFakeClient(members)
+    col = vdb.db['group_warns']
+    claim = {'token': 'test', 'started_ts': time.time()}
+    run(col.insert_one({'_id': '-100888:77', 'reasons': ['one'], 'enforcement': claim}))
+    fresh = _grp_msg('/warnrecover confirm', uid=10, client=c, reply_uid=77)
+    run(gmod.warnrecover_cmd(c, fresh))
+    assert 'wait' in fresh.replies[-1].lower()
+    run(col.update_one({'_id': '-100888:77'}, {'$set': {'enforcement.started_ts': 1}}))
+    denied = _grp_msg('/warnrecover confirm', uid=20, client=c, reply_uid=77)
+    run(gmod.warnrecover_cmd(c, denied))
+    assert 'permission' in denied.replies[-1].lower()
+    assert 'enforcement' in run(col.find_one({'_id': '-100888:77'}))
+    other = _grp_msg('/warnrecover confirm', uid=10, chat_id=-100999, client=c, reply_uid=77)
+    run(gmod.warnrecover_cmd(c, other))
+    assert 'enforcement' in run(col.find_one({'_id': '-100888:77'}))
+    recovered = _grp_msg('/warnrecover confirm', uid=10, client=c, reply_uid=77)
+    run(gmod.warnrecover_cmd(c, recovered))
+    rec = run(col.find_one({'_id': '-100888:77'}))
+    assert rec['reasons'] == ['one'] and 'enforcement' not in rec
+    assert not c.called('restrict_chat_member') and not c.called('ban_chat_member')
+
+
+def test_unrecognized_target_status_is_not_safe_to_moderate():
+    from plugins.group_mod import plugin as gmod
+    class UnknownStatus(GroupFakeClient):
+        async def get_chat_member(self, chat_id, user_id):
+            if user_id == 77:
+                return SimpleNamespace(status=None)
+            return await super().get_chat_member(chat_id, user_id)
+    c = UnknownStatus({10: (enums.ChatMemberStatus.OWNER, None), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())})
+    assert not run(gmod.verify_mod_permissions(c, -100888, 10, target_id=77))[0]

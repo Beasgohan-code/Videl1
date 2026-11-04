@@ -49,6 +49,12 @@ commands:
   - name: warns
     description: View a member's active warnings
     access: user
+  - name: warnconfig
+    description: Review or set warning threshold and enforcement action
+    access: admin
+  - name: warnrecover
+    description: Explicitly unlock a stale warning enforcement claim
+    access: admin
   - name: tag
     description: Set a custom Bot API 10.3 member tag (<=16 chars)
     access: admin

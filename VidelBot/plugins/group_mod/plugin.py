@@ -23,9 +23,12 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 import logging
+import secrets
 import re
 import time
 from typing import Any
+
+from pymongo.errors import DuplicateKeyError
 
 from pyrogram import Client, enums, filters
 from pyrogram.types import (
@@ -53,7 +56,7 @@ VALID_LOCKS = ("links", "forwards", "bots", "media", "all")
 
 GROUP_ANON_COMMANDS = frozenset({
     "gsettings", "gban", "gunban", "kick", "punch", "mute", "unmute",
-    "warn", "unwarn", "warns", "tag", "deltag", "clearreactions", "delreactions",
+    "warn", "unwarn", "warns", "warnconfig", "warnrecover", "tag", "deltag", "clearreactions", "delreactions",
     "topic", "joinmode", "rules", "setrules", "welcome", "goodbye",
     "lock", "unlock", "gfilter", "delfilter", "gfilters", "antiraid",
 })
@@ -148,7 +151,7 @@ def _has_privilege(member, privilege: str) -> bool:
         return False
     priv = getattr(member, "privileges", None)
     if priv is None:
-        return True
+        return False  # Missing rights are not proof of authorization.
     if privilege == "can_manage_tags":
         val = getattr(priv, "can_manage_tags", None)
         if val is not None:
@@ -178,20 +181,26 @@ async def verify_mod_permissions(
             return False, "Could not verify caller identity."
         try:
             caller_mem = await client.get_chat_member(chat_id, caller_id)
-        except Exception as e:
-            return False, f"Could not verify your admin status ({e})."
+        except Exception:
+            return False, "Could not verify your admin status. Try again later."
         if not _has_privilege(caller_mem, privilege):
             pretty = privilege.replace("can_", "").replace("_", " ")
             return False, f"You need administrator permission: {pretty}."
 
     bot_uid = getattr(getattr(client, "me", None), "id", None)
+    if target_id is not None and (type(target_id) is not int or target_id <= 0):
+        return False, "A valid Telegram user ID is required."
+    if target_id is not None and caller_id is not None and target_id == caller_id:
+        return False, "You cannot moderate yourself."
+    if check_bot and not bot_uid:
+        return False, "Could not verify bot identity and permissions."
+    if bot_uid and target_id == bot_uid:
+        return False, "I cannot moderate myself."
     if check_bot and bot_uid:
-        if target_id and int(target_id) == int(bot_uid):
-            return False, "I cannot moderate myself."
         try:
             bot_mem = await client.get_chat_member(chat_id, bot_uid)
-        except Exception as e:
-            return False, f"Could not verify bot permissions ({e})."
+        except Exception:
+            return False, "Could not verify bot permissions. Try again later."
         if not _has_privilege(bot_mem, privilege):
             pretty = privilege.replace("can_", "").replace("_", " ")
             return False, f"Promote me as admin with permission: {pretty}."
@@ -199,13 +208,14 @@ async def verify_mod_permissions(
     if target_id is not None:
         try:
             t_mem = await client.get_chat_member(chat_id, target_id)
-            if getattr(t_mem, "status", None) in (
-                enums.ChatMemberStatus.OWNER,
-                enums.ChatMemberStatus.ADMINISTRATOR,
-            ):
+            status = getattr(t_mem, "status", None)
+            if status in (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR):
                 return False, "Cannot moderate a group owner or administrator."
+            if status not in (enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.RESTRICTED,
+                              enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
+                return False, "Could not verify the target’s group status. Try again later."
         except Exception:
-            pass
+            return False, "Could not verify the target’s group status. Try again later."
 
     return True, ""
 
@@ -237,6 +247,32 @@ async def extract_target_and_args(client: Client, message: Message) -> tuple[int
         except Exception:
             return None, "", rest
     return None, "", args
+
+
+def match_locked_content(message: Message, locks: list[str]) -> str:
+    """Return the first lock hit, using the same precedence as the live guard."""
+    text = message.text or message.caption or ""
+    if "all" in locks:
+        return "all"
+    if "links" in locks and LINK_RE.search(text):
+        return "links"
+    if "forwards" in locks and (getattr(message, "forward_date", None) or getattr(message, "forward_origin", None)):
+        return "forwards"
+    if "media" in locks and any(getattr(message, k, None) for k in ("photo", "video", "document", "animation", "sticker")):
+        return "media"
+    if "bots" in locks and getattr(message, "via_bot", None):
+        return "bots"
+    return ""
+
+
+def match_keyword_filter(text: str, fmap: dict[str, str]) -> tuple[str, str] | None:
+    """Return the live guard's first keyword match, without sending anything."""
+    if text and not text.startswith("/"):
+        low = text.lower()
+        for trigger, reply in fmap.items():
+            if re.search(rf"(?<!\w){re.escape(trigger)}(?!\w)", low):
+                return trigger, reply
+    return None
 
 
 def _full_send_permissions(chat=None) -> ChatPermissions:
@@ -371,6 +407,102 @@ async def setrules_cmd(client: Client, message: Message):
     else:
         doc.status("info", "Rules cleared", "Group rules have been removed.")
     return await rich.reply(message, doc)
+
+
+# ───────────────────────── Warning policy and atomic warning updates ─────────────────────────
+_WARN_RECORD_LIMIT = 100
+_WARN_UPDATE_RETRIES = 5
+
+
+async def _change_warns(chat_id: int, target_id: int, reason: str | None) -> list[str]:
+    """CAS updates prevent ordinary concurrent appends/removals from losing entries.
+
+    Telegram enforcement and MongoDB cannot be transactional. A separate
+    action claim limits overlap, but this does not protect against ABA changes.
+    """
+    col = vdb.db["group_warns"]
+    key = f"{chat_id}:{target_id}"
+    for _ in range(_WARN_UPDATE_RETRIES):
+        current = await col.find_one({"_id": key})
+        if current and current.get("enforcement") is not None:
+            raise RuntimeError("Warning enforcement is pending or requires recovery; check the member's Telegram status.")
+        if current and "reasons" in current and not isinstance(current["reasons"], list):
+            raise ValueError("Warning record is invalid; ask an administrator to inspect it.")
+        old = list((current or {}).get("reasons") or [])
+        if reason is None:
+            if not old:
+                return []
+            new = old[:-1]
+        else:
+            if len(old) >= _WARN_RECORD_LIMIT:
+                raise ValueError("Warning record is full; resolve existing warnings before adding more.")
+            new = [*old, reason]
+        query: dict[str, Any] = {
+            "_id": key,
+            "reasons": current["reasons"] if current is not None and "reasons" in current else {"$exists": False},
+            "enforcement": {"$exists": False},
+        }
+        try:
+            result = await col.update_one(
+                query, {"$set": {"chat_id": chat_id, "user_id": target_id, "reasons": new}},
+                upsert=current is None,
+            )
+        except DuplicateKeyError:
+            continue
+        if result.matched_count or result.upserted_id is not None:
+            return new
+    raise RuntimeError("Warnings changed concurrently; reload and try again.")
+
+
+@Client.on_message(filters.group & filters.command("warnconfig") & PLG_FILTER)
+async def warnconfig_cmd(client: Client, message: Message):
+    """Review or set the threshold policy; it never changes existing warnings."""
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_restrict_members",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Warning Policy").status("error", "Permission check failed", err))
+    args = (message.command or [])[1:]
+    if not args:
+        cfg = await get_group_cfg(message.chat.id)
+        return await rich.reply(message, Doc("⚠️", "Warning Policy").kv_table([
+            ("Threshold", str(cfg.get("warn_limit", 3))),
+            ("Action", str(cfg.get("warn_action", "mute"))),
+            ("Mute duration", "6 hours"),
+            ("Usage", "/warnconfig <1–20> <mute|ban>"),
+        ]))
+    if len(args) != 2 or len(args[0]) > 2 or not args[0].isascii() or not args[0].isdigit() or not 1 <= int(args[0]) <= 20 or args[1].lower() not in ("mute", "ban"):
+        return await rich.reply(message, Doc("⚠️", "Warning Policy").status("warning", "Invalid policy", "Use /warnconfig <1–20> <mute|ban>. Existing warnings are unchanged."))
+    limit, action = int(args[0]), args[1].lower()
+    await update_group_cfg(message.chat.id, {"warn_limit": limit, "warn_action": action})
+    return await rich.reply(message, Doc("⚠️", "Warning Policy Updated").status("success", f"{limit} → {action}", "Existing warnings are unchanged. Enforcement happens on a new warning; mute lasts 6 hours."))
+
+
+@Client.on_message(filters.group & filters.command("warnrecover") & PLG_FILTER)
+async def warnrecover_cmd(client: Client, message: Message):
+    """Explicitly unlock an abandoned claim, without retrying enforcement."""
+    target_id, label, rest = await extract_target_and_args(client, message)
+    if not target_id or [s.lower() for s in rest] != ["confirm"]:
+        return await rich.reply(message, Doc("⚠️", "Warning Recovery").status("info", "Check Telegram first", "Reply to the member with /warnrecover confirm, or use /warnrecover <user> confirm. Only claims older than 2 minutes can be unlocked; age does not prove the operation has stopped. This does not retry or undo Telegram actions."))
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(client, message.chat.id, uid, privilege="can_restrict_members", is_anon_admin=_is_anon_group_admin(message), check_bot=False)
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Recovery Refused").status("error", "Permission check failed", err))
+    if type(target_id) is not int or target_id <= 0:
+        return await rich.reply(message, Doc("⚠️", "Warning Recovery").status("error", "Invalid user", "A valid Telegram user ID is required."))
+    key = f"{message.chat.id}:{target_id}"
+    record = await vdb.db["group_warns"].find_one({"_id": key})
+    claim = (record or {}).get("enforcement")
+    if not isinstance(claim, dict) or not isinstance(claim.get("token"), str) or not isinstance(claim.get("started_ts"), (int, float)):
+        return await rich.reply(message, Doc("⚠️", "Warning Recovery").status("info", "No recoverable claim", "Refresh and inspect the warning record."))
+    if time.time() - claim["started_ts"] < 120:
+        return await rich.reply(message, Doc("⚠️", "Warning Recovery").status("warning", "Still pending", "Wait at least 2 minutes and check Telegram before recovery."))
+    result = await vdb.db["group_warns"].update_one({"_id": key, "enforcement": claim}, {"$unset": {"enforcement": ""}})
+    if not result.matched_count:
+        return await rich.reply(message, Doc("⚠️", "Warning Recovery").status("warning", "Claim changed", "Refresh and inspect before trying again."))
+    return await rich.reply(message, Doc("✅", "Warning Claim Released").status("info", f"{label} ({target_id})", "Warnings are retained. Telegram enforcement may still be running or may have completed; check status before further action."))
 
 
 # ───────────────────────── Bans, Kicks, Mutes & Warns ─────────────────────────
@@ -514,13 +646,21 @@ async def warn_cmd(client: Client, message: Message):
     reason = " ".join(rest).strip()[:200] or "Rule violation"
 
     key = f"{message.chat.id}:{target_id}"
-    rec = await vdb.db["group_warns"].find_one({"_id": key}) or {"_id": key, "reasons": []}
-    reasons: list[str] = list(rec.get("reasons") or [])
-    reasons.append(reason)
+    try:
+        reasons = await _change_warns(message.chat.id, target_id, reason)
+    except (ValueError, RuntimeError) as exc:
+        return await rich.reply(message, Doc("⚠️", "Warning Not Added").status("error", "Please review", str(exc)))
     count = len(reasons)
 
     if count >= limit:
-        await vdb.db["group_warns"].delete_one({"_id": key})
+        claim = {"token": secrets.token_hex(16), "started_ts": time.time()}
+        col = vdb.db["group_warns"]
+        acquired = await col.update_one(
+            {"_id": key, "reasons": reasons, "enforcement": {"$exists": False}},
+            {"$set": {"enforcement": claim}},
+        )
+        if not acquired.matched_count:
+            return await rich.reply(message, Doc("⚠️", "Warning Recorded").status("warning", f"{count}/{limit}", "Warnings changed or another enforcement is pending; inspect the member before further action."))
         act = cfg.get("warn_action", "mute")
         try:
             if act == "ban":
@@ -532,8 +672,17 @@ async def warn_cmd(client: Client, message: Message):
                     until_date=_until_dt(timedelta(hours=6)),
                 )
                 outcome = "Muted for 6h (warn threshold reached)"
-        except Exception as e:
-            outcome = f"Threshold reached (enforcement failed: {e})"
+        except Exception:
+            outcome = "Enforcement failed or was not confirmed; warnings and claim retained. Check Telegram, then use /warnrecover."
+        else:
+            try:
+                cleared = await col.delete_one({"_id": key, "reasons": reasons, "enforcement": claim})
+                if not cleared.deleted_count:
+                    outcome += "; warnings changed concurrently and were retained. Check Telegram, then use /warnrecover."
+            except Exception:
+                outcome += "; warning reset failed. Check Telegram, then use /warnrecover."
+        # An uncertain response, interrupted task or hard crash leaves the
+        # claim for explicit recovery. Never auto-retry an unknown outcome.
         doc = Doc("🚨", "Warn Limit Reached").kv_table([
             ("👤 User", f"{label} ({target_id})"),
             ("⚠️ Warnings", f"{count}/{limit}"),
@@ -542,11 +691,6 @@ async def warn_cmd(client: Client, message: Message):
         ])
         return await message.reply_text(doc.classic(), parse_mode=enums.ParseMode.HTML)
 
-    await vdb.db["group_warns"].update_one(
-        {"_id": key},
-        {"$set": {"chat_id": message.chat.id, "user_id": target_id, "reasons": reasons}},
-        upsert=True,
-    )
     doc = Doc("⚠️", "Member Warned").kv_table([
         ("👤 User", f"{label} ({target_id})"),
         ("⚠️ Progress", f"{count}/{limit}"),
@@ -571,16 +715,13 @@ async def unwarn_cmd(client: Client, message: Message):
     if not ok:
         return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
 
-    key = f"{message.chat.id}:{target_id}"
-    rec = await vdb.db["group_warns"].find_one({"_id": key})
-    reasons = list((rec or {}).get("reasons") or [])
-    if not reasons:
-        return await rich.reply(message, Doc("ℹ️", "No Warnings").status("info", f"{label} ({target_id})", "User has 0 active warnings."))
-    reasons.pop()
-    if reasons:
-        await vdb.db["group_warns"].update_one({"_id": key}, {"$set": {"reasons": reasons}})
-    else:
-        await vdb.db["group_warns"].delete_one({"_id": key})
+    try:
+        current = await vdb.db["group_warns"].find_one({"_id": f"{message.chat.id}:{target_id}"})
+        if not current or not current.get("reasons"):
+            return await rich.reply(message, Doc("ℹ️", "No Warnings").status("info", f"{label} ({target_id})", "User has 0 active warnings."))
+        reasons = await _change_warns(message.chat.id, target_id, None)
+    except (ValueError, RuntimeError) as exc:
+        return await rich.reply(message, Doc("⚠️", "Warning Not Removed").status("error", "Please review", str(exc)))
     doc = Doc("✅", "Warning Removed").status("success", f"{label} ({target_id})", f"Remaining warnings: {len(reasons)}")
     return await message.reply_text(doc.classic(), parse_mode=enums.ParseMode.HTML)
 
@@ -1015,27 +1156,9 @@ async def group_passive_guard(client: Client, message: Message):
 
     user = message.from_user
     text = message.text or message.caption or ""
-    is_cmd = text.startswith("/")
-
     # Check locks & anti-flood against non-admins
     if user and (locks or antiflood):
-        violated = ""
-        if "all" in locks:
-            violated = "all"
-        elif "links" in locks and LINK_RE.search(text):
-            violated = "links"
-        elif "forwards" in locks and (getattr(message, "forward_date", None) or getattr(message, "forward_origin", None)):
-            violated = "forwards"
-        elif "media" in locks and bool(
-            getattr(message, "photo", None)
-            or getattr(message, "video", None)
-            or getattr(message, "document", None)
-            or getattr(message, "animation", None)
-            or getattr(message, "sticker", None)
-        ):
-            violated = "media"
-        elif "bots" in locks and getattr(message, "via_bot", None):
-            violated = "bots"
+        violated = match_locked_content(message, locks)
 
         flood_hit = False
         if antiflood:
@@ -1054,13 +1177,13 @@ async def group_passive_guard(client: Client, message: Message):
         if violated or flood_hit:
             try:
                 mem = await client.get_chat_member(message.chat.id, user.id)
-                is_adm = getattr(mem, "status", None) in (
-                    enums.ChatMemberStatus.OWNER,
-                    enums.ChatMemberStatus.ADMINISTRATOR,
-                )
+                member_status = getattr(mem, "status", None)
+                if member_status not in (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR,
+                                         enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.RESTRICTED):
+                    return  # Unknown status is not proof that the sender is a non-admin.
             except Exception:
-                is_adm = False
-            if not is_adm:
+                return  # Fail closed: the sender may be an administrator.
+            if member_status in (enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.RESTRICTED):
                 if violated:
                     try:
                         await message.delete()
@@ -1082,22 +1205,22 @@ async def group_passive_guard(client: Client, message: Message):
                     return
 
     # Keyword filters (non-command messages)
-    if fmap and text and not is_cmd:
-        low = text.lower()
-        for trig, reply_val in fmap.items():
-            if re.search(rf"(?<!\w){re.escape(trig)}(?!\w)", low):
-                formatted = _format_greeting(reply_val, user, message.chat.title or "")
-                try:
-                    await message.reply_text(formatted, parse_mode=enums.ParseMode.HTML)
-                except Exception:
-                    pass
-                break
+    matched = match_keyword_filter(text, fmap)
+    if matched:
+        _, reply_val = matched
+        formatted = _format_greeting(reply_val, user, message.chat.title or "")
+        try:
+            await message.reply_text(formatted, parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
 
 
 # ───────────────────────── Unified Callback Dispatcher ─────────────────────────
 @Client.on_callback_query(filters.regex(r"^plg_gmod:[\w:_-]+$"))
 async def group_mod_cb(client: Client, query: CallbackQuery):
-    if not query.message or not query.from_user:
+    if not plugin_enabled("group_mod"):
+        return await query.answer("Group management is disabled.", show_alert=True)
+    if not query.message or not query.from_user or not query.message.chat or query.message.chat.type not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
         return await query.answer()
     parts = query.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
@@ -1105,10 +1228,13 @@ async def group_mod_cb(client: Client, query: CallbackQuery):
     uid = query.from_user.id
 
     if action == "tog" and len(parts) >= 3:
-        ok, err = await verify_mod_permissions(client, chat_id, uid, privilege="can_change_info", check_bot=False)
+        field_key = parts[2]
+        privileges = {"welcome": "can_change_info", "goodbye": "can_change_info", "antiflood": "can_restrict_members", "antiraid": "can_restrict_members", "joinmode": "can_invite_users", "warnact": "can_restrict_members"}
+        if len(parts) != 3 or field_key not in privileges:
+            return await query.answer("Unknown setting.", show_alert=True)
+        ok, err = await verify_mod_permissions(client, chat_id, uid, privilege=privileges[field_key], check_bot=False)
         if not ok:
             return await query.answer(f"🔒 {err}"[:190], show_alert=True)
-        field_key = parts[2]
         cfg = await get_group_cfg(chat_id)
         if field_key == "welcome":
             cfg = await update_group_cfg(chat_id, {"welcome_on": not cfg.get("welcome_on")})
@@ -1135,15 +1261,13 @@ async def group_mod_cb(client: Client, query: CallbackQuery):
         if not ok:
             return await query.answer(f"🔒 {err}"[:190], show_alert=True)
         target_id = int(parts[2])
-        key = f"{chat_id}:{target_id}"
-        rec = await vdb.db["group_warns"].find_one({"_id": key})
-        reasons = list((rec or {}).get("reasons") or [])
-        if reasons:
-            reasons.pop()
-            if reasons:
-                await vdb.db["group_warns"].update_one({"_id": key}, {"$set": {"reasons": reasons}})
-            else:
-                await vdb.db["group_warns"].delete_one({"_id": key})
+        try:
+            old = await vdb.db["group_warns"].find_one({"_id": f"{chat_id}:{target_id}"})
+            if not old or not old.get("reasons"):
+                return await query.answer("No active warnings.", show_alert=True)
+            reasons = await _change_warns(chat_id, target_id, None)
+        except (ValueError, RuntimeError) as exc:
+            return await query.answer(str(exc)[:190], show_alert=True)
         await query.answer("↩️ Warning removed.")
         return await query.message.edit_text(
             Doc("✅", "Warning Removed").status("success", f"User {target_id}", f"Remaining warnings: {len(reasons)}").classic(),
@@ -1155,6 +1279,8 @@ async def group_mod_cb(client: Client, query: CallbackQuery):
         if not ok:
             return await query.answer(f"🔒 {err}"[:190], show_alert=True)
         decision, target_id = parts[2], int(parts[3])
+        if len(parts) != 4 or decision not in ("ok", "no") or target_id <= 0:
+            return await query.answer("Invalid join request action.", show_alert=True)
         try:
             if decision == "ok":
                 await client.approve_chat_join_request(chat_id, target_id)
@@ -1172,16 +1298,25 @@ async def group_mod_cb(client: Client, query: CallbackQuery):
 
     if action == "rep" and len(parts) >= 5 and parts[3].isdigit() and parts[4].lstrip("-").isdigit():
         sub, msg_id, target_id = parts[2], int(parts[3]), int(parts[4])
-        req_priv = "can_delete_messages" if sub == "del" else "can_restrict_members"
+        if len(parts) != 5 or sub not in ("del", "mute", "ban") or msg_id <= 0 or target_id <= 0:
+            return await query.answer("Invalid report action.", show_alert=True)
         ok, err = await verify_mod_permissions(
-            client, chat_id, uid, privilege=req_priv, target_id=target_id if sub != "del" else None,
+            client, chat_id, uid, privilege="can_delete_messages", target_id=target_id,
         )
         if not ok:
             return await query.answer(f"🔒 {err}"[:190], show_alert=True)
+        if sub != "del":
+            ok, err = await verify_mod_permissions(
+                client, chat_id, uid, privilege="can_restrict_members", target_id=target_id,
+            )
+            if not ok:
+                return await query.answer(f"🔒 {err}"[:190], show_alert=True)
         try:
-            await client.delete_messages(chat_id, msg_id)
+            deleted = await client.delete_messages(chat_id, msg_id)
+            if not deleted:
+                return await query.answer("Message deletion was not confirmed; no further action taken.", show_alert=True)
         except Exception:
-            pass
+            return await query.answer("Message deletion failed; no further action taken.", show_alert=True)
         summary = f"Deleted message #{msg_id}"
         try:
             if sub == "mute":
@@ -1192,8 +1327,8 @@ async def group_mod_cb(client: Client, query: CallbackQuery):
             elif sub == "ban":
                 await client.ban_chat_member(chat_id, target_id)
                 summary += f" & banned {target_id}"
-        except Exception as e:
-            return await query.answer(f"❌ {e}"[:190], show_alert=True)
+        except Exception:
+            return await query.answer("Message deleted, but moderation failed or was not confirmed. Check Telegram before retrying.", show_alert=True)
         await query.answer("Action applied!")
         return await query.message.edit_text(
             Doc("🛡", "Report Resolved").status("success", summary, f"Moderator: {query.from_user.first_name or uid}").classic(),
