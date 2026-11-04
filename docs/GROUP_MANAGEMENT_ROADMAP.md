@@ -43,3 +43,7 @@ The independently discoverable `group_activity` plugin adds opt-in, per-bot/per-
 ## Stage 5 — leaderboard navigation (implemented)
 
 Activity leaderboards support period tabs and previous/next buttons as well as `/topmembers [all|today|week] [page]`. Pages are live, group- and bot-scoped, and capped at 100 pages of ten members. Totals can shift between page requests; large-group query performance and live Telegram callback delivery remain unverified.
+
+## Stage 6 — join automation and raid safety (implemented)
+
+Join-request auto-approval and the blanket emergency raid shield now require explicit confirmation and live bot-right checks; legacy unconfirmed automatic settings are inactive until reviewed. The dashboard cannot enable either dangerous mode with one tap. Disabling automation does not depend on the bot retaining action permissions. The raid guard checks the current bot and target status before a join ban; anti-flood checks bot rights at enablement and enforcement. Unconfirmed API outcomes are not reported as successful. See `VidelBot/plugins/group_mod/README.md` for the disruptive upgrade notice, exact behavior and multi-worker limitations. This is not adaptive raid detection or a durable incident/alert system.

@@ -69,7 +69,7 @@ commands:
     description: Create, close, or reopen a supergroup forum topic
     access: admin
   - name: joinmode
-    description: Set join-request handling (off, notify, auto)
+    description: Set join requests to off, notify, or explicitly confirmed auto
     access: admin
   - name: rules
     description: View group rules (ephemeral Richgram card)
@@ -99,7 +99,7 @@ commands:
     description: List active keyword filters in this group
     access: user
   - name: antiraid
-    description: Toggle emergency anti-raid join shield
+    description: Review and explicitly confirm the emergency join shield
     access: admin
   - name: modreport
     description: Report a replied message to group administrators

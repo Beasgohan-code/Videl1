@@ -70,6 +70,19 @@ _CFG_MAX = 2000
 _FLOOD_BUCKETS: "OrderedDict[tuple[int, int], list[float]]" = OrderedDict()
 _FLOOD_MAX = 8000
 
+# Avoid turning repeated failures during a raid into a log flood. Keys below
+# are fixed internal event classes; no message or user content is stored.
+_AUTOMATION_WARNINGS: dict[str, float] = {}
+_AUTOMATION_WARNING_INTERVAL = 60.0
+
+
+def _automation_warn(event: str, text: str) -> None:
+    now = time.monotonic()
+    last = _AUTOMATION_WARNINGS.get(event)
+    if last is None or now - last >= _AUTOMATION_WARNING_INTERVAL:
+        _AUTOMATION_WARNINGS[event] = now
+        log.warning(text)
+
 
 def _default_cfg(chat_id: int) -> dict[str, Any]:
     return {
@@ -81,7 +94,9 @@ def _default_cfg(chat_id: int) -> dict[str, Any]:
         "rules": "",
         "antiflood": False,
         "antiraid_until": 0.0,
+        "antiraid_confirmed": False,
         "joinmode": "off",  # off | notify | auto
+        "joinmode_auto_confirmed": False,
         "warn_limit": 3,
         "warn_action": "mute",  # mute | ban
         "locks": [],
@@ -160,6 +175,32 @@ def _has_privilege(member, privilege: str) -> bool:
     return bool(getattr(priv, privilege, False))
 
 
+async def verify_bot_privilege(client: Client, chat_id: int, privilege: str) -> tuple[bool, str]:
+    """Check the bot's current right without inferring authorization from absence."""
+    bot_uid = getattr(getattr(client, "me", None), "id", None)
+    if type(bot_uid) is not int or bot_uid <= 0:
+        return False, "Could not verify bot identity and permissions."
+    try:
+        bot_mem = await client.get_chat_member(chat_id, bot_uid)
+    except Exception:
+        return False, "Could not verify bot permissions. Try again later."
+    if not _has_privilege(bot_mem, privilege):
+        pretty = privilege.replace("can_", "").replace("_", " ")
+        return False, f"Promote me as admin with permission: {pretty}."
+    return True, ""
+
+
+def _raid_active(cfg: dict[str, Any]) -> bool:
+    return cfg.get("antiraid_confirmed") is True and cfg.get("antiraid_until", 0) > time.time()
+
+
+def _join_mode(cfg: dict[str, Any]) -> str:
+    mode = cfg.get("joinmode", "off")
+    if mode == "auto" and cfg.get("joinmode_auto_confirmed") is not True:
+        return "off"  # Legacy automatic approval requires explicit reconfirmation.
+    return mode if mode in ("off", "notify", "auto") else "off"
+
+
 async def verify_mod_permissions(
     client: Client,
     chat_id: int,
@@ -192,18 +233,12 @@ async def verify_mod_permissions(
         return False, "A valid Telegram user ID is required."
     if target_id is not None and caller_id is not None and target_id == caller_id:
         return False, "You cannot moderate yourself."
-    if check_bot and not bot_uid:
-        return False, "Could not verify bot identity and permissions."
     if bot_uid and target_id == bot_uid:
         return False, "I cannot moderate myself."
-    if check_bot and bot_uid:
-        try:
-            bot_mem = await client.get_chat_member(chat_id, bot_uid)
-        except Exception:
-            return False, "Could not verify bot permissions. Try again later."
-        if not _has_privilege(bot_mem, privilege):
-            pretty = privilege.replace("can_", "").replace("_", " ")
-            return False, f"Promote me as admin with permission: {pretty}."
+    if check_bot:
+        ok, err = await verify_bot_privilege(client, chat_id, privilege)
+        if not ok:
+            return False, err
 
     if target_id is not None:
         try:
@@ -303,15 +338,18 @@ def _format_greeting(template: str, user, chat_title: str) -> str:
 
 
 def build_gsettings_doc(chat_title: str, cfg: dict[str, Any]) -> tuple[Doc, InlineKeyboardMarkup]:
-    raid_active = cfg.get("antiraid_until", 0) > time.time()
+    raid_active = _raid_active(cfg)
+    legacy_raid = cfg.get("antiraid_until", 0) > time.time() and not raid_active
+    join_mode = _join_mode(cfg)
+    legacy_auto = cfg.get("joinmode") == "auto" and join_mode != "auto"
     locks = cfg.get("locks") or []
     doc = Doc("🛡", "Group Settings", chat_title or "Supergroup")
     doc.kv_table([
         ("👋 Welcome", "🟢 Enabled" if cfg.get("welcome_on") else "🔴 Off"),
         ("🚪 Goodbye", "🟢 Enabled" if cfg.get("goodbye_on") else "🔴 Off"),
         ("🌊 Anti-Flood", "🟢 Enabled" if cfg.get("antiflood") else "🔴 Off"),
-        ("🚨 Anti-Raid", "🛡 Active" if raid_active else "⚪ Standby"),
-        ("🚪 Join Requests", str(cfg.get("joinmode", "off")).upper()),
+        ("🚨 Anti-Raid", "🛡 Active" if raid_active else "⚠️ Previous setting inactive; confirm again" if legacy_raid else "⚪ Standby"),
+        ("🚪 Join Requests", "⚠️ AUTO inactive; confirm again" if legacy_auto else join_mode.upper()),
         ("⚠️ Warn Limit", f"{cfg.get('warn_limit', 3)} → {cfg.get('warn_action', 'mute')}"),
         ("🔒 Active Locks", ", ".join(locks) if locks else "None"),
         ("💬 Keyword Filters", str(len(cfg.get("filters") or {}))),
@@ -345,7 +383,7 @@ def build_gsettings_doc(chat_title: str, cfg: dict[str, Any]) -> tuple[Doc, Inli
         ],
         [
             styled_button(
-                f"🚪 Join: {cfg.get('joinmode', 'off')}",
+                f"🚪 Join: {join_mode}",
                 callback_data="plg_gmod:tog:joinmode",
                 style="primary",
             ),
@@ -888,25 +926,28 @@ async def joinmode_cmd(client: Client, message: Message):
     uid = message.from_user.id if message.from_user else None
     ok, err = await verify_mod_permissions(
         client, message.chat.id, uid, privilege="can_invite_users",
-        is_anon_admin=_is_anon_group_admin(message),
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
     )
     if not ok:
         return await rich.reply(message, Doc("🔒", "Join Mode").status("error", "Permission check failed", err))
-    args = (message.command or [])[1:]
-    mode = args[0].lower() if args else ""
-    if mode not in ("off", "notify", "auto"):
-        cfg = await get_group_cfg(message.chat.id)
-        return await rich.reply(
-            message,
-            Doc("🚪", "Join-Request Mode").status(
-                "info", f"Current: {cfg.get('joinmode', 'off')}", "Choose: /joinmode off | notify | auto"
-            ),
-        )
-    await update_group_cfg(message.chat.id, {"joinmode": mode})
-    return await message.reply_text(
-        Doc("🚪", "Join-Request Mode Updated").status("success", mode.upper(), "Group join-request workflow updated.").classic(),
-        parse_mode=enums.ParseMode.HTML,
-    )
+    args = [x.lower() for x in (message.command or [])[1:]]
+    cfg = await get_group_cfg(message.chat.id)
+    if not args:
+        legacy = cfg.get("joinmode") == "auto" and _join_mode(cfg) != "auto"
+        state = "Previous AUTO setting inactive; confirm again" if legacy else _join_mode(cfg).upper()
+        return await rich.reply(message, Doc("🚪", "Join-Request Mode").status("info", state, "Use /joinmode off, /joinmode notify, or /joinmode auto confirm. Auto approves every request without review."))
+    if args not in (["off"], ["notify"], ["auto", "confirm"]):
+        return await rich.reply(message, Doc("🚪", "Join-Request Mode").status("warning", "Confirmation required or invalid command", "Use /joinmode off, /joinmode notify, or /joinmode auto confirm. Auto approves every request without review."))
+    mode = args[0]
+    if mode == "auto" and cfg.get("antiraid_until", 0) > time.time():
+        return await rich.reply(message, Doc("🚪", "Join-Request Mode").status("warning", "Anti-raid needs review", "Turn off the active or unconfirmed anti-raid setting with /antiraid off before enabling auto approval."))
+    if mode != "off":
+        ok, err = await verify_bot_privilege(client, message.chat.id, "can_invite_users")
+        if not ok:
+            return await rich.reply(message, Doc("🔒", "Join Mode").status("error", "Bot permission check failed", err))
+    await update_group_cfg(message.chat.id, {"joinmode": mode, "joinmode_auto_confirmed": mode == "auto"})
+    detail = "Every join request will be approved without review when Telegram delivers it." if mode == "auto" else "New requests will be sent for review when delivered." if mode == "notify" else "Join-request automation is disabled."
+    return await rich.reply(message, Doc("🚪", "Join-Request Mode Updated").status("success", mode.upper(), detail))
 
 
 # ───────────────────────── Welcome, Goodbye, Locks, Filters, Raid & Report ─────────────────────────
@@ -1024,28 +1065,29 @@ async def gfilter_cmd(client: Client, message: Message):
 @Client.on_message(filters.group & filters.command("antiraid") & PLG_FILTER)
 async def antiraid_cmd(client: Client, message: Message):
     uid = message.from_user.id if message.from_user else None
-    ok, err = await verify_mod_permissions(
-        client, message.chat.id, uid, privilege="can_restrict_members",
-        is_anon_admin=_is_anon_group_admin(message),
-    )
+    anon = _is_anon_group_admin(message)
+    ok, err = await verify_mod_permissions(client, message.chat.id, uid, privilege="can_restrict_members", is_anon_admin=anon, check_bot=False)
     if not ok:
         return await rich.reply(message, Doc("🔒", "Anti-Raid").status("error", "Permission check failed", err))
-    args = (message.command or [])[1:]
-    arg = args[0].lower() if args else ""
-    if arg in ("off", "disable", "0"):
-        await update_group_cfg(message.chat.id, {"antiraid_until": 0.0})
-        return await message.reply_text(
-            Doc("🛡", "Anti-Raid Disabled").status("info", "Standby", "Normal group joins resumed.").classic(),
-            parse_mode=enums.ParseMode.HTML,
-        )
-    minutes = int(arg) if arg.isdigit() else 30
-    minutes = max(5, min(1440, minutes))
-    until_ts = time.time() + minutes * 60
-    await update_group_cfg(message.chat.id, {"antiraid_until": until_ts})
-    return await message.reply_text(
-        Doc("🚨", "Anti-Raid Shield Active").status("warning", f"Enabled for {minutes} min", "New join requests and suspicious joins will be blocked.").classic(),
-        parse_mode=enums.ParseMode.HTML,
-    )
+    args = [x.lower() for x in (message.command or [])[1:]]
+    cfg = await get_group_cfg(message.chat.id)
+    if not args:
+        state = "Active" if _raid_active(cfg) else "Previous setting inactive; confirm again" if cfg.get("antiraid_until", 0) > time.time() else "Off"
+        return await rich.reply(message, Doc("🚨", "Anti-Raid").status("info", state, "Use /antiraid <5–1440 minutes> confirm to decline all join requests and temporarily ban eligible new joins for 15 minutes. Use /antiraid off to stop."))
+    if len(args) == 1 and args[0] in ("off", "disable", "0"):
+        await update_group_cfg(message.chat.id, {"antiraid_until": 0.0, "antiraid_confirmed": False})
+        return await rich.reply(message, Doc("🛡", "Anti-Raid Disabled").status("info", "Standby", "No new raid actions will be initiated by this worker after its settings refresh."))
+    if len(args) != 2 or args[1] != "confirm" or not args[0].isascii() or not args[0].isdigit() or len(args[0]) > 4 or not 5 <= int(args[0]) <= 1440:
+        return await rich.reply(message, Doc("🚨", "Anti-Raid").status("warning", "Confirmation required or invalid duration", "Use /antiraid <5–1440 minutes> confirm. It declines all join requests and attempts a 15-minute ban on eligible new joins. Use /antiraid off to stop."))
+    if _join_mode(cfg) == "auto":
+        return await rich.reply(message, Doc("🚨", "Anti-Raid").status("warning", "Auto approval is enabled", "Turn it off or use notification mode before activating the raid shield."))
+    for privilege in ("can_restrict_members", "can_invite_users"):
+        ok, err = await verify_mod_permissions(client, message.chat.id, uid, privilege=privilege, is_anon_admin=anon)
+        if not ok:
+            return await rich.reply(message, Doc("🔒", "Anti-Raid").status("error", "Permission check failed", err))
+    minutes = int(args[0])
+    await update_group_cfg(message.chat.id, {"antiraid_until": time.time() + minutes * 60, "antiraid_confirmed": True})
+    return await rich.reply(message, Doc("🚨", "Anti-Raid Active").status("warning", f"Enabled for {minutes} min", "Attempts to decline all join requests and ban eligible new joins for 15 minutes. Delivery and Telegram actions are not guaranteed; /antiraid off stops further actions."))
 
 
 @Client.on_message(filters.group & filters.command("modreport") & PLG_FILTER)
@@ -1075,20 +1117,40 @@ async def modreport_cmd(client: Client, message: Message):
 async def group_join_request_handler(client: Client, request: ChatJoinRequest):
     if not plugin_enabled("group_mod"):
         return
+    if not request.chat or request.chat.type not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
+        return
+    user = getattr(request, "from_user", None)
+    target_id = getattr(user, "id", None)
+    if type(target_id) is not int or target_id <= 0:
+        return
     cfg = await get_group_cfg(request.chat.id)
-    raid_active = cfg.get("antiraid_until", 0) > time.time()
-    mode = cfg.get("joinmode", "off")
+    raid_active = _raid_active(cfg)
+    mode = _join_mode(cfg)
+    if cfg.get("antiraid_until", 0) > time.time() and not raid_active and mode == "auto":
+        # Do not auto-approve while an old, unconfirmed shield is still configured.
+        _automation_warn("legacy_raid", "Join-request auto-approval skipped: legacy anti-raid setting requires review")
+        return
+    if not raid_active and mode == "off":
+        return
+    ok, _ = await verify_bot_privilege(client, request.chat.id, "can_invite_users")
+    if not ok:
+        _automation_warn("join_rights", "Join-request automation skipped: bot permission unavailable")
+        return
     if raid_active:
         try:
-            await client.decline_chat_join_request(request.chat.id, request.from_user.id)
+            result = await client.decline_chat_join_request(request.chat.id, target_id)
+            if not result:
+                _automation_warn("raid_decline", "Anti-raid join-request decline was not confirmed")
         except Exception:
-            pass
+            _automation_warn("raid_decline", "Anti-raid join-request decline failed or was not confirmed")
         return
     if mode == "auto":
         try:
-            await client.approve_chat_join_request(request.chat.id, request.from_user.id)
-        except Exception as e:
-            log.debug(f"auto-approve join request failed: {e}")
+            result = await client.approve_chat_join_request(request.chat.id, target_id)
+            if not result:
+                _automation_warn("join_approval", "Join-request auto-approval was not confirmed")
+        except Exception:
+            _automation_warn("join_approval", "Join-request auto-approval failed or was not confirmed")
     elif mode == "notify":
         u = request.from_user
         doc = Doc("🚪", "Join Request", request.chat.title or "Group").kv_table([
@@ -1100,9 +1162,11 @@ async def group_join_request_handler(client: Client, request: ChatJoinRequest):
             styled_button("❌ Decline", callback_data=f"plg_gmod:jr:no:{u.id}", style="danger"),
         ]])
         try:
-            await client.send_message(request.chat.id, doc.classic(), reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-        except Exception as e:
-            log.debug(f"join-request notify failed: {e}")
+            result = await client.send_message(request.chat.id, doc.classic(), reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+            if not result:
+                _automation_warn("join_notification", "Join-request notification was not confirmed")
+        except Exception:
+            _automation_warn("join_notification", "Join-request notification failed or was not confirmed")
 
 
 @Client.on_chat_member_updated(group=4)
@@ -1123,11 +1187,32 @@ async def group_member_greeting_handler(client: Client, update: ChatMemberUpdate
 
     cfg = await get_group_cfg(update.chat.id)
     if joined and new_u and not getattr(new_u, "is_bot", False):
-        if cfg.get("antiraid_until", 0) > time.time():
+        if _raid_active(cfg):
+            if getattr(new_u, "is_bot", None) is not False:
+                return  # Unknown bot identity is not proof of a human member.
+            if old_s not in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
+                return  # Unknown previous status is not proof of a new join.
+            target_id = getattr(new_u, "id", None)
+            bot_id = getattr(getattr(client, "me", None), "id", None)
+            if type(target_id) is not int or target_id <= 0 or target_id == bot_id:
+                return
+            ok, _ = await verify_bot_privilege(client, update.chat.id, "can_restrict_members")
+            if not ok:
+                _automation_warn("raid_bot_rights", "Anti-raid join action skipped: bot permission unavailable")
+                return
             try:
-                await client.ban_chat_member(update.chat.id, new_u.id, until_date=_until_dt(timedelta(minutes=15)))
+                current = await client.get_chat_member(update.chat.id, target_id)
             except Exception:
-                pass
+                _automation_warn("raid_member_status", "Anti-raid join action skipped: member status unavailable")
+                return
+            if getattr(current, "status", None) != enums.ChatMemberStatus.MEMBER:
+                return  # A stale update is not proof that the user is still a non-admin member.
+            try:
+                result = await client.ban_chat_member(update.chat.id, target_id, until_date=_until_dt(timedelta(minutes=15)))
+                if not result:
+                    _automation_warn("raid_join", "Anti-raid join action was not confirmed")
+            except Exception:
+                _automation_warn("raid_join", "Anti-raid join action failed or was not confirmed")
             return
         if cfg.get("welcome_on"):
             txt = _format_greeting(cfg.get("welcome_text") or "👋 Welcome {mention}!", new_u, update.chat.title or "")
@@ -1191,17 +1276,24 @@ async def group_passive_guard(client: Client, message: Message):
                         pass
                     return
                 if flood_hit:
+                    ok, _ = await verify_bot_privilege(client, message.chat.id, "can_restrict_members")
+                    if not ok:
+                        _automation_warn("flood_bot_rights", "Anti-flood action skipped: bot permission unavailable")
+                        return
                     try:
-                        await client.restrict_chat_member(
+                        result = await client.restrict_chat_member(
                             message.chat.id, user.id, ChatPermissions(),
                             until_date=_until_dt(timedelta(minutes=5)),
                         )
+                        if not result:
+                            _automation_warn("flood_mute", "Anti-flood action was not confirmed")
+                            return
                         await message.reply_text(
                             f"🌊 <b>Anti-Flood:</b> Muted {rich.esc(user.first_name or user.id)} for 5 minutes.",
                             parse_mode=enums.ParseMode.HTML,
                         )
                     except Exception:
-                        pass
+                        _automation_warn("flood_mute", "Anti-flood action failed or was not confirmed")
                     return
 
     # Keyword filters (non-command messages)
@@ -1241,14 +1333,27 @@ async def group_mod_cb(client: Client, query: CallbackQuery):
         elif field_key == "goodbye":
             cfg = await update_group_cfg(chat_id, {"goodbye_on": not cfg.get("goodbye_on")})
         elif field_key == "antiflood":
-            cfg = await update_group_cfg(chat_id, {"antiflood": not cfg.get("antiflood")})
+            enabling = not cfg.get("antiflood")
+            if enabling:
+                ok, err = await verify_bot_privilege(client, chat_id, "can_restrict_members")
+                if not ok:
+                    return await query.answer(f"🔒 {err}"[:190], show_alert=True)
+            cfg = await update_group_cfg(chat_id, {"antiflood": enabling})
         elif field_key == "antiraid":
-            active = cfg.get("antiraid_until", 0) > time.time()
-            cfg = await update_group_cfg(chat_id, {"antiraid_until": 0.0 if active else time.time() + 1800})
+            if cfg.get("antiraid_until", 0) > time.time():
+                cfg = await update_group_cfg(chat_id, {"antiraid_until": 0.0, "antiraid_confirmed": False})
+            else:
+                return await query.answer("Use /antiraid <5–1440> confirm. It declines all requests and temporarily bans eligible new joins.", show_alert=True)
         elif field_key == "joinmode":
-            order = ["off", "notify", "auto"]
-            nxt = order[(order.index(cfg.get("joinmode", "off")) + 1) % len(order)] if cfg.get("joinmode") in order else "notify"
-            cfg = await update_group_cfg(chat_id, {"joinmode": nxt})
+            current = cfg.get("joinmode", "off")
+            # Dashboard cycles only between off and notify; auto requires the
+            # explicit command and can always be switched off here.
+            nxt = "off" if current in ("notify", "auto") else "notify"
+            if nxt == "notify":
+                ok, err = await verify_bot_privilege(client, chat_id, "can_invite_users")
+                if not ok:
+                    return await query.answer(f"🔒 {err}"[:190], show_alert=True)
+            cfg = await update_group_cfg(chat_id, {"joinmode": nxt, "joinmode_auto_confirmed": False})
         elif field_key == "warnact":
             nxt = "ban" if cfg.get("warn_action", "mute") == "mute" else "mute"
             cfg = await update_group_cfg(chat_id, {"warn_action": nxt})
@@ -1283,13 +1388,15 @@ async def group_mod_cb(client: Client, query: CallbackQuery):
             return await query.answer("Invalid join request action.", show_alert=True)
         try:
             if decision == "ok":
-                await client.approve_chat_join_request(chat_id, target_id)
+                result = await client.approve_chat_join_request(chat_id, target_id)
                 label = "Approved"
             else:
-                await client.decline_chat_join_request(chat_id, target_id)
+                result = await client.decline_chat_join_request(chat_id, target_id)
                 label = "Declined"
-        except Exception as e:
-            return await query.answer(f"❌ {e}"[:190], show_alert=True)
+            if not result:
+                return await query.answer("Action was not confirmed. Check Telegram before retrying.", show_alert=True)
+        except Exception:
+            return await query.answer("Action failed or was not confirmed. Check Telegram before retrying.", show_alert=True)
         await query.answer(f"{label}!")
         return await query.message.edit_text(
             Doc("🚪", f"Join Request {label}").status("success" if decision == "ok" else "info", f"User {target_id}", f"Handled by {query.from_user.first_name or uid}").classic(),
