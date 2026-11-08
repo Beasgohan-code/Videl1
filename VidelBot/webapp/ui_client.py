@@ -2229,22 +2229,35 @@ CLIENT_JS = r"""
     }
   });
 
+  let authPending = false;
+  function setAuthPending(pending) {
+    authPending = pending;
+    $("btn-login-submit").disabled = pending;
+    $("btn-login-demo").disabled = pending;
+    $("auth-screen").setAttribute("aria-busy", pending ? "true" : "false");
+  }
+
   $("btn-login-submit").onclick = async () => {
+    if (authPending) return;
     const raw = $("auth-token-input").value.trim();
     if (!raw) return;
     $("auth-error").hidden = true;
+    setAuthPending(true);
     try {
       const body = raw.startsWith("l.") || raw.length === 32 ? { link: raw } : { admin_token: raw };
       const res = await api("/api/v1/auth/login", { method: "POST", body });
+      sessionStorage.removeItem("videl_telegram_signed_out");
       saveSession(res.session_token, res.csrf_token);
       await bootstrapSession();
     } catch (e) {
       $("auth-error").hidden = false;
       $("auth-error").textContent = e.message;
-    }
+    } finally { setAuthPending(false); }
   };
 
   $("btn-login-demo").onclick = async () => {
+    if (authPending) return;
+    setAuthPending(true);
     $("auth-error").hidden = true;
     try {
       const res = await api("/api/v1/auth/demo", { method: "POST", body: {} });
@@ -2254,7 +2267,7 @@ CLIENT_JS = r"""
     } catch (e) {
       $("auth-error").hidden = false;
       $("auth-error").textContent = e.message;
-    }
+    } finally { setAuthPending(false); }
   };
 
   $("btn-collapse-sidebar").onclick = () => $("app-shell").classList.toggle("sidebar-collapsed");
@@ -2276,8 +2289,10 @@ CLIENT_JS = r"""
   };
 
   $("btn-logout").onclick = async () => {
+    sessionStorage.setItem("videl_telegram_signed_out", "1");
     try { await api("/api/v1/auth/logout", { method: "POST", body: {} }); } catch (_) {}
     clearSession();
+    showTelegramButton();
   };
 
   $("ws-selector").onchange = async (e) => {
@@ -2295,29 +2310,102 @@ CLIENT_JS = r"""
     }
   };
 
-  /* ── Auto-Signin from URL Fragment (`#l.<key>`) or Telegram Mini App `initData` ── */
-  (async () => {
-    applyTheme(localStorage.getItem("videl_theme") || "dark");
-    const hash = (location.hash || "").slice(1);
-    if (hash) {
-      history.replaceState(null, "", location.pathname + location.search);
-      try {
-        const payload = hash.startsWith("l.") ? { link: hash } : { admin_token: hash };
-        const res = await api("/api/v1/auth/login", { method: "POST", body: payload });
-        saveSession(res.session_token, res.csrf_token);
-      } catch (e) {
-        $("auth-error").hidden = false;
-        $("auth-error").textContent = e.message;
-      }
-    } else if (!S.token && window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) {
-      try {
-        const res = await api("/api/v1/auth/login", { method: "POST", body: { init_data: window.Telegram.WebApp.initData } });
-        saveSession(res.session_token, res.csrf_token);
-      } catch (_) {}
+  /* Telegram launch data is verified by the server; never use initDataUnsafe. */
+  function waitForTelegramSdk() {
+    if (window.Telegram?.WebApp) return Promise.resolve();
+    const script = $("telegram-web-app");
+    if (!script) return Promise.resolve();
+    return new Promise(resolve => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; clearTimeout(timer); script.removeEventListener("load", finish); script.removeEventListener("error", finish); resolve(); };
+      const timer = setTimeout(finish, 5000);
+      script.addEventListener("load", finish, {once:true});
+      script.addEventListener("error", finish, {once:true});
+      if (window.Telegram?.WebApp) finish();
+    });
+  }
+  function showTelegramButton() {
+    $("btn-telegram-login").hidden = !!S.token || !(typeof window.Telegram?.WebApp?.initData === "string" && window.Telegram.WebApp.initData);
+  }
+  async function signInTelegram() {
+    if (authPending) return;
+    const initData = window.Telegram?.WebApp?.initData;
+    if (typeof initData !== "string" || !initData) return;
+    setAuthPending(true); $("btn-telegram-login").disabled = true;
+    $("auth-status").hidden = false; $("auth-status").textContent = "Connecting securely with Telegram…";
+    $("auth-error").hidden = true;
+    let saved = false;
+    try {
+      const res = await api("/api/v1/auth/login", {method:"POST", body:{init_data:initData}});
+      sessionStorage.removeItem("videl_telegram_signed_out");
+      saveSession(res.session_token, res.csrf_token);
+      saved = true;
+      await bootstrapSession();
+    } catch (_) {
+      if (saved) clearSession();
+      $("auth-error").hidden = false;
+      $("auth-error").textContent = "Telegram could not sign you in. Close and reopen Studio from the bot, or use a one-time key.";
+    } finally {
+      $("auth-status").hidden = true; setAuthPending(false); $("btn-telegram-login").disabled = false; showTelegramButton();
     }
-    if (S.token) {
-      try { await bootstrapSession(); } catch (_) { clearSession(); }
+  }
+  $("btn-telegram-login").onclick = signInTelegram;
+  const initialHash = (location.hash || "").slice(1);
+  const allowLateTelegram = !initialHash || Array.from(new URLSearchParams(initialHash).keys()).some(key => key.startsWith("tgWebApp"));
+  $("telegram-web-app")?.addEventListener("load", () => {
+    showTelegramButton();
+    // Some Telegram clients restore launch data from SDK storage rather than a
+    // visible fragment. Do not interrupt manual entry or an explicit sign-out.
+    if (allowLateTelegram && !authPending && !S.token && !$("auth-token-input").value.trim()
+        && sessionStorage.getItem("videl_telegram_signed_out") !== "1") void signInTelegram();
+  });
+  (async () => {
+    setAuthPending(true);
+    try {
+      applyTheme(localStorage.getItem("videl_theme") || "dark");
+      const hash = (location.hash || "").slice(1);
+      // Telegram owns its launch fragment; it is not an admin token.
+      const telegramLaunch = Array.from(new URLSearchParams(hash).keys()).some(key => key.startsWith("tgWebApp"));
+      if (hash && !telegramLaunch) {
+        history.replaceState(null, "", location.pathname + location.search);
+        try {
+          const payload = hash.startsWith("l.") ? { link: hash } : { admin_token: hash };
+          const res = await api("/api/v1/auth/login", { method: "POST", body: payload });
+          sessionStorage.removeItem("videl_telegram_signed_out");
+          saveSession(res.session_token, res.csrf_token);
+        } catch (e) {
+          $("auth-error").hidden = false;
+          $("auth-error").textContent = e.message;
+        }
+      } else if (!S.token) {
+        if (telegramLaunch) {
+          $("auth-status").hidden = false;
+          $("auth-status").textContent = "Connecting securely with Telegram…";
+          await waitForTelegramSdk();
+        }
+        const initData = window.Telegram?.WebApp?.initData;
+        if (typeof initData === "string" && initData && sessionStorage.getItem("videl_telegram_signed_out") !== "1") {
+          try {
+            const res = await api("/api/v1/auth/login", { method: "POST", body: { init_data: initData } });
+            saveSession(res.session_token, res.csrf_token);
+          } catch (_) {
+            $("auth-error").hidden = false;
+            $("auth-error").textContent = "Telegram could not sign you in. Close and reopen Studio from the bot, or use a one-time key.";
+          }
+        } else if (telegramLaunch && !initData) {
+          $("auth-error").hidden = false;
+          $("auth-error").textContent = "Telegram sign-in could not load. Reopen Studio from the bot, or use a one-time key.";
+        }
+      }
+      if (S.token) {
+        try { await bootstrapSession(); } catch (_) { clearSession(); }
+      }
+    } finally {
+      $("auth-status").hidden = true;
+      setAuthPending(false);
+      showTelegramButton();
     }
   })();
 })();
+
 """

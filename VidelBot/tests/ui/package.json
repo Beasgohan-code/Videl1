@@ -1,0 +1,6 @@
+{
+  "name": "videl-studio-ui-tests",
+  "private": true,
+  "scripts": {"test": "node telegram-login.test.cjs"},
+  "devDependencies": {"jsdom": "24.1.3"}
+}

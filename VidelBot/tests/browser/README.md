@@ -66,7 +66,7 @@ token-diagnostic handling and selected unsaved-navigation checks.
 `node next-library-inbox.test.cjs` checks Hosting observations, template
 create/copy/delete, notification read state, workspace isolation and permission
 presentation at 320/390/1440px. `node next-team.test.cjs` checks direct member grants, reviewed role changes,
-removal and role denial against the fixture. `npm run test:next` runs all ten
+removal and role denial against the fixture. `npm run test:next` runs all eleven
 Next browser suites. `node next-analytics.test.cjs` checks time/bot filters,
 CSV download, workspace changes, sample disclosure, permissions and responsive
 layout with fixture data. These assertions do not establish
@@ -81,3 +81,11 @@ live Telegram verification, real file safety, production RBAC or full parity.
 `node next-file-view.test.cjs` exercises synthetic account list/grid saves, workspace switching, failed saves and responsive layout. No production file storage or permissions are tested.
 
 `node next-compact-tables.test.cjs` checks the saved account preference on the synthetic Analytics table, including workspace/reload behavior, drafts, failed saves, default values and responsive layout. It is not a real database or accessibility test.
+
+`node next-telegram-login.test.cjs` tests Next Mini App launch and sign-out behavior with a synthetic SDK and fake API. It does not verify real Telegram signatures or MongoDB.
+
+`telegram_auth_fixture.py` is a separate, loopback-only aiohttp app with mock
+Mongo. With that fixture running and Chromium configured as above,
+`node telegram-auth-backend.test.cjs` verifies a **synthetic signed** Mini App
+launch against the actual login backend, including reload, sign-out and replay.
+It does not prove live Telegram, real Mongo write concern or multi-worker safety.

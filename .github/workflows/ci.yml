@@ -115,3 +115,13 @@ jobs:
       - name: Run full pytest suite
         working-directory: VidelBot
         run: python -m pytest tests -q
+
+      - name: Set up Node.js for Studio interaction tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Test Telegram sign-in interface (synthetic JSDOM)
+        run: |
+          npm ci --prefix VidelBot/tests/ui --ignore-scripts --no-audit --no-fund
+          npm test --prefix VidelBot/tests/ui

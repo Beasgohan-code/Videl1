@@ -158,11 +158,18 @@ def check_init_data(init_data: str, bot_token: str, max_age: int = INIT_MAX_AGE)
     if not init_data or not bot_token or len(init_data) > 8192:
         return None
     try:
-        fields = dict(parse_qsl(init_data, strict_parsing=True))
+        pairs = parse_qsl(init_data, strict_parsing=True, keep_blank_values=True, max_num_fields=64)
+        fields = dict(pairs)
+        # Ambiguous duplicate parameters must not be interpreted differently
+        # by a proxy, verifier, or downstream consumer.
+        if len(fields) != len(pairs):
+            return None
     except ValueError:
         return None
     given = fields.pop("hash", "")
-    if not given:
+    # Reject malformed/non-ASCII hashes before compare_digest, which otherwise
+    # raises on attacker-supplied Unicode instead of returning an auth failure.
+    if len(given) != 64 or any(c not in "0123456789abcdef" for c in given):
         return None
     secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
     ok = False
@@ -174,12 +181,18 @@ def check_init_data(init_data: str, bot_token: str, max_age: int = INIT_MAX_AGE)
     if not ok:
         return None
     try:
-        if time.time() - int(fields.get("auth_date") or 0) > max_age:
+        issued_at = int(fields.get("auth_date") or 0)
+        now = time.time()
+        # Bound future timestamps as well as age; allow modest clock skew.
+        if issued_at <= 0 or now - issued_at > max_age or issued_at > now + 30:
             return None
         user = json.loads(fields.get("user") or "{}")
     except (TypeError, ValueError):
         return None
-    return user if isinstance(user, dict) and user.get("id") else None
+    uid = user.get("id") if isinstance(user, dict) else None
+    # Telegram user IDs are positive integers. In particular, don't accept
+    # booleans, coercible strings, or negative synthetic demo identities.
+    return user if type(uid) is int and 0 < uid <= (1 << 63) - 1 else None
 
 
 def _ip(request) -> str:

@@ -24,7 +24,7 @@ CAT=[{'id':'bot_fleet','title':'Bot Fleet Summary'},{'id':'filestore_usage','tit
 DETAIL={'workspace':WS,'my_role':'owner','my_permissions':{'bot_settings':True,'commands':True,'cloning':True,'automation':True,'filestore':True,'logs':True,'integrations':True,'analytics':True,'templates':True,'team_management':True},'usage':{'bots_count':2,'files_count':28,'storage_bytes':482344960,'filestore_sample_limit':10000,'unread_notifications':2},'recent_notifications':[{'title':'Example notification','message':'Sample data for this visual preview.'},{'title':'Local preview','message':'No production services are connected.'}]}
 def page(html, seed=False):
     html=html.replace('<body>','<body>'+BANNER+(SEED if seed else ''),1)
-    return html.replace('<script src="https://telegram.org/js/telegram-web-app.js" async></script>','')
+    return html.replace('<script id="telegram-web-app" src="https://telegram.org/js/telegram-web-app.js" async></script>','')
 async def home(r): return web.Response(text=page(render_public_html('Videl')),content_type='text/html',headers={'Cache-Control':'no-store'})
 async def studio(r): return web.Response(text=page(render_app_html(),True),content_type='text/html',headers={'Cache-Control':'no-store'})
 async def css(r): return web.Response(text=STYLES_CSS,content_type='text/css')

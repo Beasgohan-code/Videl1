@@ -18,6 +18,7 @@ from webapp import db_models
 
 SESSION_MAX = 4000
 LINK_TTL = 600.0
+LINK_MAX = 1000
 AUTH_FAIL_WINDOW = 600.0
 AUTH_FAIL_MAX = 10
 API_RATE_WINDOW = 60.0
@@ -47,6 +48,10 @@ def _prune(now: float) -> None:
         _sessions.pop(k, None)
 
 
+class LinkCapacityError(RuntimeError):
+    """No room for a new link without invalidating existing links."""
+
+
 def issue_saas_link(
     user_id: int,
     display_name: str = "",
@@ -58,8 +63,8 @@ def issue_saas_link(
     resolved = display_name or first_name or (f"@{username}" if username else f"User {user_id}")
     now = time.time()
     _prune(now)
-    if len(_magic_links) >= 1000:
-        _magic_links.clear()
+    if len(_magic_links) >= LINK_MAX:
+        raise LinkCapacityError("Sign-in link capacity reached")
     key = secrets.token_urlsafe(24)
     _magic_links[_sha256(key)] = (now + LINK_TTL, int(user_id), str(resolved)[:64])
     return f"l.{key}"
@@ -373,6 +378,12 @@ async def exchange_login_payload(request: web.Request, body: dict[str, Any]) -> 
         import keep_alive
         tg_user = keep_alive.check_init_data(init_data, getattr(config, "BOT_TOKEN", "") or "")
         if tg_user and tg_user.get("id"):
+            from webapp.telegram_proof import consume_verified_init_data
+            try:
+                await consume_verified_init_data(init_data, keep_alive.INIT_MAX_AGE)
+            except web.HTTPUnauthorized:
+                record_login_failure(request)
+                raise
             uid = int(tg_user["id"])
             name = str(tg_user.get("first_name") or tg_user.get("username") or f"User {uid}")
             sess = create_session(uid, display_name=name)

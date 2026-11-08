@@ -17,7 +17,7 @@ def render_app_html() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{bot_name} Studio · Multi-Bot SaaS Platform</title>
   <link rel="stylesheet" href="/app/styles.css">
-  <script src="https://telegram.org/js/telegram-web-app.js" async></script>
+  <script id="telegram-web-app" src="https://telegram.org/js/telegram-web-app.js" async></script>
 </head>
 <body>
   <a class="skip-link" href="#auth-screen">Skip to sign in</a>
@@ -31,10 +31,12 @@ def render_app_html() -> str:
       </div>
       <h1 style="margin:0 0 6px;font-size:20px">Sign in to your workspace</h1>
       <p style="margin:0 0 20px;color:var(--text-secondary);font-size:13.5px">
-        Create, connect, clone, configure, and operate multiple Telegram bots and File Stores from one platform.
+        Open Studio from your bot in Telegram for automatic access. In a browser, use your one-time key.
       </p>
 
-      <div id="auth-error" class="callout callout-warn" hidden></div>
+      <div id="auth-error" class="callout callout-warn" role="alert" hidden></div>
+      <div id="auth-status" class="field-hint" role="status" hidden></div>
+      <button id="btn-telegram-login" class="btn btn-primary" style="width:100%;margin:12px 0" type="button" hidden>Continue with Telegram</button>
 
       <div class="field">
         <label class="field-label" for="auth-token-input">One-Time Telegram Link or Admin Token</label>

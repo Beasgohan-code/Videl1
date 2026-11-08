@@ -16,7 +16,7 @@ import time
 
 from pyrogram import Client, enums, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup, Message,
-                            ReplyKeyboardRemove)
+                            ReplyKeyboardRemove, WebAppInfo)
 
 from config import (ADMINS, BOT_NAME, CLONE_ENABLED, FREE_LIMIT_DAILY, GIFTS_ENABLED, OWNERS, STARS_PLANS,
                     SUBSCRIPTION, SUBSCRIPTION_STARS, SUPPORT_ENABLED, SUPPORT_URL, TRIAL_DAYS, UPDATES_URL)
@@ -540,24 +540,38 @@ async def noop_callback(client: Client, query: CallbackQuery):
 
 @Client.on_message(filters.command(["web", "studio"]) & filters.private)
 async def web_studio_cmd(client: Client, message: Message):
-    """Issue a single-use 10-minute sign-in token for the Multi-Bot SaaS Studio (`/app`)."""
+    """Offer Telegram Mini App sign-in and retain a one-time browser fallback."""
     import config as cfg
-    from webapp.auth import issue_saas_link
+    from webapp.auth import LinkCapacityError, issue_saas_link
 
     user = message.from_user
     if not user:
         return
-    token = issue_saas_link(user.id, username=user.username or "", first_name=user.first_name or "")
     base_url = (getattr(cfg, "KEEP_ALIVE_URL", "") or "").rstrip("/")
-    kb = None
-    if base_url.startswith("https://"):
-        kb = InlineKeyboardMarkup([[Btn("🚀 Launch SaaS Studio", url=f"{base_url}/app#{token}")]])
+    # The button must never embed credentials or an unexpected path/query.
+    from urllib.parse import urlsplit
+    try:
+        parsed = urlsplit(base_url)
+        is_https = bool(parsed.scheme == "https" and parsed.hostname and parsed.port != 0
+                        and parsed.username is None and parsed.password is None
+                        and parsed.path in ("", "/") and not parsed.query and not parsed.fragment)
+    except ValueError:
+        is_https = False
+    try:
+        token = issue_saas_link(user.id, username=user.username or "", first_name=user.first_name or "")
+    except LinkCapacityError:
+        token = ""
+    buttons = []
+    if is_https:
+        buttons.append([Btn("🚀 Open Studio in Telegram", web_app=WebAppInfo(url=f"{base_url}/app"))])
+        if token:
+            buttons.append([Btn("🔗 Open in browser", url=f"{base_url}/app#{token}")])
+    fallback = (f"<b>Browser fallback:</b> single-use key, valid for 10 minutes:\n<code>{html.escape(token)}</code>"
+                if token else "Browser sign-in is temporarily unavailable; please try again later.")
+    instruction = ("Tap <b>Open Studio in Telegram</b> to continue automatically.\n\n" if is_https else
+                   "Set an HTTPS public address to enable the Telegram Studio button.\n\n")
     await message.reply_text(
-        f"<b>🚀 {html.escape(cfg.BOT_NAME)} Multi-Bot SaaS Studio</b>\n\n"
-        f"Your single-use sign-in key (expires in 10 minutes):\n"
-        f"<code>{html.escape(token)}</code>\n\n"
-        "<i>Open <code>/app</code> on your web host and paste this key, or tap the button below if HTTPS is configured.</i>",
-        reply_markup=kb,
+        f"<b>🚀 {html.escape(cfg.BOT_NAME)} Multi-Bot SaaS Studio</b>\n\n" + instruction + fallback,
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
         disable_web_page_preview=True,
     )
-

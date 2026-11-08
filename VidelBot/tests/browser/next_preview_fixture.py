@@ -26,10 +26,10 @@ def account(request):
 
 async def login(request):
     body = await request.json()
-    if body.get('link') not in ('l.valid', 'l.empty', 'l.readonly', 'l.noanalytics'):
+    if body.get('link') not in ('l.valid', 'l.empty', 'l.readonly', 'l.noanalytics') and body.get('init_data') != 'synthetic-signed-launch':
         return error('Sign-in link expired or already used.', 401)
     token = secrets.token_urlsafe(18)
-    sessions[token] = [] if body['link'] == 'l.empty' else [
+    sessions[token] = [] if body.get('link') == 'l.empty' else [
         {'workspace_id': 'slow', 'name': 'Slow workspace'},
         {'workspace_id': 'bravo', 'name': 'Bravo workspace'},
     ]
@@ -40,8 +40,8 @@ async def login(request):
     templates[token] = {}
     notifications[token] = {}
     teams[token] = {}
-    roles[token] = body['link'] not in ('l.readonly', 'l.noanalytics')
-    analytics_access[token] = body['link'] != 'l.noanalytics'
+    roles[token] = body.get('link') not in ('l.readonly', 'l.noanalytics')
+    analytics_access[token] = body.get('link') != 'l.noanalytics'
     return web.json_response({'session_token': token, 'csrf_token': 'fixture-csrf'})
 
 
