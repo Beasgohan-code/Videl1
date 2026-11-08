@@ -14,7 +14,7 @@ def render_app_html() -> str:
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{bot_name} Studio · Multi-Bot SaaS Platform</title>
   <link rel="stylesheet" href="/app/styles.css">
   <script id="telegram-web-app" src="https://telegram.org/js/telegram-web-app.js" async></script>
@@ -22,40 +22,49 @@ def render_app_html() -> str:
 <body>
   <a class="skip-link" href="#auth-screen">Skip to sign in</a>
   <!-- Auth Gate -->
-  <main id="auth-screen" class="auth-screen" tabindex="-1" aria-label="Sign in">
-    <div class="auth-card" role="region" aria-label="Sign in to {bot_name} Studio">
-      <div class="brand-mark" style="margin-bottom:18px">
-        <span class="brand-badge">V</span>
-        <span>{bot_name} Studio</span>
-        <span class="badge badge-info">Multi-Bot SaaS</span>
-      </div>
-      <h1 style="margin:0 0 6px;font-size:20px">Sign in to your workspace</h1>
-      <p style="margin:0 0 20px;color:var(--text-secondary);font-size:13.5px">
-        Open Studio from your bot in Telegram for automatic access. In a browser, use your one-time key.
-      </p>
-
-      <div id="auth-error" class="callout callout-warn" role="alert" hidden></div>
-      <div id="auth-status" class="field-hint" role="status" hidden></div>
-      <button id="btn-telegram-login" class="btn btn-primary" style="width:100%;margin:12px 0" type="button" hidden>Continue with Telegram</button>
-
-      <div class="field">
-        <label class="field-label" for="auth-token-input">One-Time Telegram Link or Admin Token</label>
-        <input id="auth-token-input" class="input" type="password" autocomplete="off"
-               placeholder="Paste link key from /web or /dashboard, or Admin Token">
-        <div class="field-hint">Send <code>/web</code> or <code>/dashboard</code> to the bot in Telegram for a 10-minute single-use sign-in link.</div>
-      </div>
-
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
-        <button id="btn-login-submit" class="btn btn-primary" style="flex:1" type="button">Sign In</button>
-        <button id="btn-login-demo" class="btn" style="flex:1" type="button" title="Launch isolated Demo Workspace">
-          Launch Demo Workspace
-        </button>
-      </div>
-
-      <div style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted)">
-        <span>WzGram MTProto · Bot API 10.3 · MongoDB</span>
-        <a href="/admin" style="color:var(--accent);text-decoration:none">Classic Ops Console →</a>
-      </div>
+  <main id="auth-screen" class="auth-screen" tabindex="-1" aria-label="Workspace access">
+    <div class="entry-layout">
+      <section class="entry-intro" aria-labelledby="entry-title">
+        <div class="brand-mark entry-brand"><span class="brand-badge">V</span><span>{bot_name} <span class="entry-muted">/ Studio</span></span></div>
+        <div class="entry-intro-main">
+          <p class="entry-kicker">YOUR TELEGRAM WORKSPACE</p>
+          <h1 id="entry-title">Your bots.<br><span>Your space.</span></h1>
+          <p class="entry-description">One place to manage the bots, files and tools your workspace can access.</p>
+          <div class="entry-features" aria-label="Studio areas">
+            <div><span>01</span><strong>Workspace</strong><small>Your own space, ready on your first visit</small></div>
+            <div><span>02</span><strong>Bots</strong><small>Manage the bot records you have access to</small></div>
+            <div><span>03</span><strong>Tools</strong><small>Files and media, where permitted</small></div>
+          </div>
+        </div>
+        <p class="entry-foot">Built around your Telegram bot <span aria-hidden="true">↗</span></p>
+      </section>
+      <section class="auth-card entry-card" role="region" aria-labelledby="entry-card-title">
+        <div class="entry-top"><span>VIDEL STUDIO</span><span>WORKSPACE ACCESS</span></div>
+        <div class="entry-heading">
+          <p class="entry-kicker">NO SEPARATE SIGN-UP</p>
+          <h2 id="entry-card-title">Welcome to Studio</h2>
+          <p>Open Studio from your bot in Telegram. We verify your account and create your workspace on your first visit.</p>
+        </div>
+        <div class="entry-steps" aria-label="How to get started">
+          <div><span>01</span><p>Send <strong>/web</strong> to your bot</p></div>
+          <div><span>02</span><p>Tap <strong>Open Studio in Telegram</strong></p></div>
+          <div><span>03</span><p>Your workspace is ready</p></div>
+        </div>
+        <div id="auth-error" class="callout callout-warn" role="alert" hidden></div>
+        <div id="auth-status" class="field-hint" role="status" hidden></div>
+        <button id="btn-telegram-login" class="btn btn-primary entry-telegram" type="button" hidden>Continue with Telegram <span aria-hidden="true">→</span></button>
+        <form id="auth-form" class="entry-form">
+          <div class="entry-divider"><span>Opening in a browser?</span></div>
+          <div class="field">
+            <label class="field-label" for="auth-token-input">One-time key or admin token</label>
+            <input id="auth-token-input" class="input" type="password" autocomplete="off" spellcheck="false" aria-describedby="entry-key-hint" placeholder="Paste your key here">
+            <div id="entry-key-hint" class="field-hint">Request a one-time key from <code>/web</code>. Keys expire after 10 minutes.</div>
+          </div>
+          <button id="btn-login-submit" class="btn btn-primary entry-submit" type="submit">Continue to workspace <span aria-hidden="true">→</span></button>
+        </form>
+        <button id="btn-login-demo" class="btn entry-demo" type="button" title="Launch isolated Demo Workspace" hidden>Launch Demo Workspace</button>
+        <div class="entry-footer"><a href="/">← Back to website</a><a href="/admin">Classic console ↗</a></div>
+      </section>
     </div>
   </main>
 

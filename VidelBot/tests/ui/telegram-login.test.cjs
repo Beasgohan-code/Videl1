@@ -64,6 +64,13 @@ function setup(hash='',fail=false){
  assert.equal(bad.w.sessionStorage.getItem('videl_saas_tok'),null);assert.match(bad.d.getElementById('auth-error').textContent,/Reopen|reopen/);assert.equal(bad.d.getElementById('auth-screen').hidden,false);bad.dom.window.close();
  // Unsafe data without a raw signed proof is never submitted.
  const unsafe=setup();unsafe.w.Telegram={WebApp:{initData:'',initDataUnsafe:{user:{id:1}}}};unsafe.w.eval(js);await flush();assert.equal(unsafe.calls.length,0);unsafe.dom.window.close();
+ // The real auth screen explains first-visit provisioning and supports Enter
+ // for users opening a regular browser with a one-time key.
+ const manual=setup();manual.w.eval(js);await flush();
+ assert.match(manual.d.getElementById('auth-screen').textContent,/first visit/i);
+ manual.d.getElementById('auth-token-input').value='l.synthetic';
+ manual.d.getElementById('auth-form').dispatchEvent(new manual.w.Event('submit',{bubbles:true,cancelable:true}));await flush();
+ assert.deepEqual(manual.calls,[{link:'l.synthetic'}]);manual.dom.window.close();
  // Existing one-time fragment still wins over an available Telegram proof.
  const link=setup('#l.synthetic');link.w.Telegram={WebApp:{initData:'other-proof'}};link.w.eval(js);await flush();
  assert.deepEqual(link.calls,[{link:'l.synthetic'}]);assert.equal(link.w.location.hash,'');link.dom.window.close();

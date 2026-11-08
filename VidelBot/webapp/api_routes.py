@@ -87,8 +87,9 @@ def _api(fn: Callable[[web.Request], Awaitable[web.StreamResponse]]):
         except (KeyError, FileNotFoundError) as exc:
             msg = exc.args[0] if exc.args else str(exc)
             return web.json_response({"error": str(msg)}, status=404, headers=_security_headers())
-        except Exception as exc:
-            log.exception("Unhandled SaaS API error on %s %s: %s", request.method, request.path, exc)
+        except Exception:
+            # Database and provider exceptions may contain credentials or URLs.
+            log.error("Unhandled SaaS API error; request could not be completed.")
             return web.json_response(
                 {"error": "Internal server error while processing request."},
                 status=500,
@@ -102,21 +103,27 @@ def _api(fn: Callable[[web.Request], Awaitable[web.StreamResponse]]):
 async def api_auth_login(request: web.Request) -> web.Response:
     body = await _json_body(request)
     sess = await auth.exchange_login_payload(request, body)
-    uid = int(sess["user_id"])
-    await db_models.ensure_default_workspace(uid, display_name=sess["display_name"])
-    workspaces = await db_models.list_user_workspaces(uid)
-    is_admin = uid in set(getattr(config, "ADMINS", []) or []) or bool(sess.get("via_admin_token"))
-    return _ok({
-        "session_token": sess["session_token"],
-        "csrf_token": sess["csrf_token"],
-        "user": {
-            "user_id": uid,
-            "display_name": sess["display_name"],
-            "is_platform_admin": is_admin,
-            "is_demo": False,
-        },
-        "workspaces": workspaces,
-    })
+    try:
+        uid = int(sess["user_id"])
+        await db_models.ensure_default_workspace(uid, display_name=sess["display_name"])
+        workspaces = await db_models.list_user_workspaces(uid)
+        is_admin = uid in set(getattr(config, "ADMINS", []) or []) or bool(sess.get("via_admin_token"))
+        return _ok({
+            "session_token": sess["session_token"],
+            "csrf_token": sess["csrf_token"],
+            "user": {
+                "user_id": uid,
+                "display_name": sess["display_name"],
+                "is_platform_admin": is_admin,
+                "is_demo": False,
+            },
+            "workspaces": workspaces,
+        })
+    except BaseException:
+        # No session token was delivered; do not leave a live session behind
+        # on provisioning failure or request cancellation.
+        auth.revoke_session_token(sess["session_token"])
+        raise
 
 
 @_api

@@ -312,7 +312,7 @@ CLIENT_JS = r"""
           return `<div class="card">
             <div class="card-header"><h3 class="card-title">🤖 Bot Fleet Summary</h3><button class="btn btn-sm" data-goto="bots">Manage Bots</button></div>
             <div style="font-size:26px;font-weight:700">${S.bots.length}</div>
-            <div class="stat-meta">${S.bots.filter((b) => b.connection_state === "running").length} live workers · ${S.bots.filter((b) => b.has_credentials).length} with verified credentials</div>
+            <div class="stat-meta">${S.bots.filter((b) => b.connection_state === "running").length} reported running · ${S.bots.filter((b) => b.has_credentials).length} with saved credentials</div>
           </div>`;
         }
         if (wid === "filestore_usage") {
@@ -377,7 +377,7 @@ CLIENT_JS = r"""
             <div class="snapshot-heading"><span>WORKSPACE SNAPSHOT</span><span class="snapshot-live">From current records</span></div>
             <div class="snapshot-stat"><span class="snapshot-icon" aria-hidden="true">◈</span><div><strong>${S.bots.length.toLocaleString()}</strong><span>registered bots</span></div></div>
             <div class="snapshot-stat"><span class="snapshot-icon is-live" aria-hidden="true">↗</span><div><strong>${runningBots.toLocaleString()}</strong><span>bots marked running</span></div></div>
-            <div class="snapshot-footer">${verifiedBots.toLocaleString()} bot credentials verified${u.files_count == null ? " · File Store count restricted or unavailable" : ` · ${Number(u.files_count).toLocaleString()} files indexed`}</div>
+            <div class="snapshot-footer">${verifiedBots.toLocaleString()} bot records with saved credentials${u.files_count == null ? " · File Store count restricted or unavailable" : ` · ${Number(u.files_count).toLocaleString()} files indexed`}</div>
           </div>
           <span class="overview-orbit orbit-one" aria-hidden="true"></span><span class="overview-orbit orbit-two" aria-hidden="true"></span>
         </section>
@@ -2237,7 +2237,8 @@ CLIENT_JS = r"""
     $("auth-screen").setAttribute("aria-busy", pending ? "true" : "false");
   }
 
-  $("btn-login-submit").onclick = async () => {
+  $("auth-form").onsubmit = async (event) => {
+    event.preventDefault();
     if (authPending) return;
     const raw = $("auth-token-input").value.trim();
     if (!raw) return;

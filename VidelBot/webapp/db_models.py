@@ -8,6 +8,7 @@ in-memory collections while reporting `backend_mode = "standalone_memory"`.
 """
 from __future__ import annotations
 
+import hashlib
 import secrets
 import time
 from datetime import datetime, timezone
@@ -417,19 +418,47 @@ async def ensure_saas_indexes() -> None:
 
 
 # ─────────────────────────── Workspace & Team Membership Helpers ───────────────────────────
+def is_demo_workspace(workspace: dict[str, Any]) -> bool:
+    """Recognize labeled demos and legacy synthetic-owner workspaces."""
+    try:
+        owner_id = int(workspace.get("owner_id"))
+    except (TypeError, ValueError, OverflowError):
+        owner_id = None
+    return bool(workspace.get("is_demo")) or (owner_id is not None and owner_id <= 0)
+
+
 async def ensure_default_workspace(user_id: int, *, display_name: str = "", is_demo: bool = False) -> dict[str, Any]:
-    """Ensure every authenticated user has at least one personal workspace + owner membership."""
+    """Provision an owner workspace without overwriting existing memberships.
+
+    A collaborator's membership is not their personal workspace. Reuse an
+    existing workspace only if both its owner record and membership agree.
+    Otherwise a deterministic ID plus unique indexes lets concurrent requests
+    recover a partially created workspace rather than creating several.
+    """
+    from pymongo.errors import DuplicateKeyError
+
     uid = int(user_id)
-    existing_mem = await memberships_col().find_one({"user_id": uid})
-    if existing_mem:
-        ws = await workspaces_col().find_one({"workspace_id": existing_mem["workspace_id"], "deleted": {"$ne": True}})
-        if ws:
+    members = memberships_col()
+    workspaces = workspaces_col()
+    # The preview-only memory adapter does not enforce Mongo unique indexes.
+    # Automatic account provisioning must never pretend those guarantees exist.
+    if isinstance(members, _MemCollection) or isinstance(workspaces, _MemCollection):
+        raise RuntimeError("MongoDB is required for automatic workspace provisioning")
+    owned_memberships = await members.find({"user_id": uid, "role": "owner"}).to_list(length=100)
+    for membership in owned_memberships:
+        ws = await workspaces.find_one({
+            "workspace_id": membership["workspace_id"], "owner_id": uid, "deleted": {"$ne": True},
+        })
+        if ws and is_demo_workspace(ws) == bool(is_demo):
             ws.pop("_id", None)
             return ws
 
-    ws_id = f"ws_{'demo_' if is_demo else ''}{uid}_{secrets.token_hex(3)}"
+    # This ID is an idempotency key, not an authorization token; every access
+    # still requires membership. Avoid placing the Telegram ID directly in it.
+    digest = hashlib.sha256(f"videl-personal-workspace:{uid}".encode()).hexdigest()[:32]
+    ws_id = f"ws_personal_{digest}"
     now = time.time()
-    name = "Demo Sandbox Workspace" if is_demo else f"{display_name or f'User {uid}'} Workspace"
+    name = "Demo Sandbox Workspace" if is_demo else f"{display_name or 'Personal'} Workspace"
     ws_doc = {
         "workspace_id": ws_id,
         "name": name[:80],
@@ -443,7 +472,19 @@ async def ensure_default_workspace(user_id: int, *, display_name: str = "", is_d
         "created_ts": now,
         "updated_ts": now,
     }
-    await workspaces_col().update_one({"workspace_id": ws_id}, {"$set": ws_doc}, upsert=True)
+    # Fail closed if duplicates or database permissions prevent the necessary
+    # constraints. Never change or resurrect a conflicting existing workspace.
+    await workspaces.create_index("workspace_id", unique=True)
+    await members.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)
+    try:
+        await workspaces.insert_one(dict(ws_doc))
+    except DuplicateKeyError:
+        pass
+    ws = await workspaces.find_one({"workspace_id": ws_id})
+    if (not ws or ws.get("owner_id") != uid or ws.get("deleted")
+            or bool(ws.get("is_demo")) != bool(is_demo)):
+        raise RuntimeError("Personal workspace identity conflict; operator review required.")
+
     mem_doc = {
         "workspace_id": ws_id,
         "user_id": uid,
@@ -452,17 +493,20 @@ async def ensure_default_workspace(user_id: int, *, display_name: str = "", is_d
         "joined_at": utcnow_iso(),
         "joined_ts": now,
     }
-    await memberships_col().update_one(
-        {"workspace_id": ws_id, "user_id": uid},
-        {"$set": mem_doc},
-        upsert=True,
-    )
-    return ws_doc
+    try:
+        await members.insert_one(mem_doc)
+    except DuplicateKeyError:
+        pass
+    membership = await members.find_one({"workspace_id": ws_id, "user_id": uid})
+    if not membership or membership.get("role") != "owner":
+        raise RuntimeError("Personal workspace membership conflict; operator review required.")
+    ws.pop("_id", None)
+    return ws
 
 
 async def list_user_workspaces(user_id: int) -> list[dict[str, Any]]:
     uid = int(user_id)
-    await ensure_default_workspace(uid)
+    await ensure_default_workspace(uid, is_demo=uid < 0)
     mems = await memberships_col().find({"user_id": uid}).to_list(length=100)
     out: list[dict[str, Any]] = []
     for m in mems:

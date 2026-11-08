@@ -89,3 +89,11 @@ Mongo. With that fixture running and Chromium configured as above,
 `node telegram-auth-backend.test.cjs` verifies a **synthetic signed** Mini App
 launch against the actual login backend, including reload, sign-out and replay.
 It does not prove live Telegram, real Mongo write concern or multi-worker safety.
+
+For first-visit coverage, start `telegram_auth_fixture.py` on loopback as above,
+then run `npm run test:signup` with the Chromium environment configured. The
+suite checks the served entry screen and a signed **synthetic** first visit,
+workspace creation/reuse and navigation to bot setup at 320/390/768/1440px.
+Set `VIDEL_TEST_SCREENSHOTS_DIR` to an existing directory to save optional
+screenshots. It uses mock Mongo and cannot establish live Telegram, production
+MongoDB or real-device behavior.

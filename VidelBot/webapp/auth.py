@@ -337,6 +337,16 @@ def require_platform_admin(ctx: AuthContext) -> None:
         )
 
 
+async def _logged_session(uid: int, display_name: str, event: str, *, role: str, via_admin_token: bool = False) -> dict[str, Any]:
+    session = create_session(uid, display_name=display_name, via_admin_token=via_admin_token)
+    try:
+        await models_db.log_audit(uid, event, actor_role=role, outcome="ok")
+    except BaseException:
+        revoke_session_token(session["session_token"])
+        raise
+    return session
+
+
 async def exchange_login_payload(request: web.Request, body: dict[str, Any]) -> dict[str, Any]:
     """Exchange magic link (`link`), Telegram `initData`, `admin_token`, or `keep_alive` link for a SaaS session."""
     check_login_rate_limit(request)
@@ -351,9 +361,7 @@ async def exchange_login_payload(request: web.Request, body: dict[str, Any]) -> 
         rec = _magic_links.pop(_sha256(link), None)
         if rec and rec[0] > now:
             _, uid, name = rec
-            sess = create_session(uid, display_name=name)
-            await models_db.log_audit(uid, "saas_login_link", actor_role="user", outcome="ok")
-            return sess
+            return await _logged_session(uid, name, "saas_login_link", role="user")
         # Also accept one-time `/dashboard` links issued by `keep_alive.issue_link()` for seamless admin transition
         try:
             import keep_alive
@@ -361,9 +369,7 @@ async def exchange_login_payload(request: web.Request, body: dict[str, Any]) -> 
             if exp > now:
                 owners = list(getattr(config, "OWNERS", []) or getattr(config, "ADMINS", []) or [1])
                 uid = int(owners[0]) if owners else 1
-                sess = create_session(uid, display_name="Platform Admin", via_admin_token=True)
-                await models_db.log_audit(uid, "saas_login_dashboard_link", actor_role="admin", outcome="ok")
-                return sess
+                return await _logged_session(uid, "Platform Admin", "saas_login_dashboard_link", role="admin", via_admin_token=True)
         except Exception:
             pass
         record_login_failure(request)
@@ -386,9 +392,7 @@ async def exchange_login_payload(request: web.Request, body: dict[str, Any]) -> 
                 raise
             uid = int(tg_user["id"])
             name = str(tg_user.get("first_name") or tg_user.get("username") or f"User {uid}")
-            sess = create_session(uid, display_name=name)
-            await models_db.log_audit(uid, "saas_login_miniapp", actor_role="user", outcome="ok")
-            return sess
+            return await _logged_session(uid, name, "saas_login_miniapp", role="user")
         record_login_failure(request)
         raise web.HTTPUnauthorized(
             text='{"error":"Invalid or expired Telegram Mini App launch signature."}',
@@ -401,9 +405,7 @@ async def exchange_login_payload(request: web.Request, body: dict[str, Any]) -> 
     if adm_tok and cfg_tok and hmac.compare_digest(adm_tok.encode(), cfg_tok.encode()):
         owners = list(getattr(config, "OWNERS", []) or getattr(config, "ADMINS", []) or [1])
         uid = int(owners[0]) if owners else 1
-        sess = create_session(uid, display_name="Platform Owner", via_admin_token=True)
-        await models_db.log_audit(uid, "saas_login_admin_token", actor_role="owner", outcome="ok")
-        return sess
+        return await _logged_session(uid, "Platform Owner", "saas_login_admin_token", role="owner", via_admin_token=True)
 
     record_login_failure(request)
     raise web.HTTPUnauthorized(

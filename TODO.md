@@ -280,3 +280,5 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 - [ ] Complete and test stages sequentially; verify full tests, production build, responsive screenshots, real MongoDB concurrency and live Telegram end-to-end flows when feasible. Report gaps and observed results without claiming unverified functionality, builds or CI.
 
 - [ ] Finish and safely roll out Telegram-first Studio sign-in: `/web` offers a Mini App button, signed SaaS login uses a Mongo-backed one-use proof, and both Studio interfaces handle SDK loading. Browser Login Widget/OIDC, real Telegram/Mongo/multi-worker testing, classic-admin replay protection, durable sessions, mixed-worker migration and production rollout remain open. See `docs/TELEGRAM_STUDIO_SIGNIN.md`.
+
+- [ ] Finish automatic first-visit signup and Studio polish rollout: validate real Telegram, Mongo index/uniqueness and multi-worker recovery, durable sessions, browser Telegram OIDC, demo API containment and the remaining Studio UI/accessibility work. See `docs/AUTOMATIC_SIGNUP.md`.
