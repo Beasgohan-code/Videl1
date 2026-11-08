@@ -1,8 +1,10 @@
 # Next personal preferences (partial migration)
 
 `/next-preview/settings` reads account-wide settings independent of workspace
-membership and edits only theme, file view and compact tables. The preview saves
-but does not yet apply those preferences. It sends only changed fields and
+membership and edits only theme, file view and compact tables. After a verified
+save the Next preview applies dark, light or the device color scheme. The saved
+list/grid preference is also applied in the Next File Store; compact tables are
+saved but not yet applied. It sends only changed fields and
 verifies returned values. It disables edits when the backend does not advertise
 `atomic_field_updates`; reset and other settings remain in the existing Studio.
 Selected navigation and pending-save guards do not cover every history path.
@@ -15,6 +17,13 @@ used elsewhere, and write/read failures still race. Update compatible workers
 together: the capability does not make a mixed-version deployment safe.
 
 Browser coverage uses an in-memory synthetic fixture. It is not real MongoDB
-concurrency, Telegram or production verification. Complete preference application,
+concurrency, Telegram or production verification. Complete the remaining preference application,
 other settings/reset parity, broader navigation protection and real-service
 checks before treating this migration as complete.
+
+The theme is fetched after authentication and defaults to dark if unavailable;
+a failed read is disclosed and falls back to list view. No credential or preference is stored in localStorage.
+System mode listens for device color-scheme changes. Signing out returns to dark.
+Navigation or reload may briefly show dark while the account preference loads;
+changes in another tab do not automatically update an already-open view. This
+applies only to the Next preview, not the existing Studio or Astro public site.

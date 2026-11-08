@@ -88,6 +88,9 @@ async def workspace(request):
     if ws['workspace_id'] == 'slow':
         await asyncio.sleep(1.1)
     token = request.headers['Authorization'].removeprefix('Bearer ')
+    # A delayed workspace response can resume after the synthetic session logs out.
+    if token not in sessions:
+        return error('Unauthorized', 401)
     if request.path.endswith('/bots'):
         return web.json_response({'bots': bot_records(token, ws)})
     return web.json_response({'workspace': ws, 'my_role': 'owner' if roles[token] else 'viewer', 'my_permissions': {'bot_settings': roles[token], 'commands': roles[token], 'filestore': roles[token], 'templates': roles[token], 'logs': roles[token], 'team_management': roles[token], 'analytics': analytics_access[token]}})

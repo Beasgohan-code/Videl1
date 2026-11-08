@@ -126,3 +126,19 @@ export function personalSettings(value:unknown):PersonalSettings {
   if((appearance.theme!=='dark'&&appearance.theme!=='light'&&appearance.theme!=='system')||(appearance.file_view!=='list'&&appearance.file_view!=='grid')||typeof general.compact_tables!=='boolean')throw new Error('The server returned unsupported personal settings.');
   return {theme:appearance.theme,fileView:appearance.file_view,compactTables:general.compact_tables,atomicFieldUpdates:object(value.capabilities)&&value.capabilities.atomic_field_updates===true};
 }
+
+/** Read only the theme, independently of optional/malformed unrelated settings. */
+export type ThemePreference='dark'|'light'|'system';
+export function themePreference(value:unknown):ThemePreference {
+  if(!object(value)||!object(value.settings)||!object(value.settings.appearance))throw new Error('The server returned an invalid theme preference.');
+  const theme=value.settings.appearance.theme;
+  if(theme!=='dark'&&theme!=='light'&&theme!=='system')throw new Error('The server returned an unsupported theme preference.');
+  return theme;
+}
+
+export type FileViewPreference='list'|'grid';
+/** Treat a missing or unsupported file view as the safe list default. */
+export function fileViewPreference(value:unknown):FileViewPreference {
+  if(!object(value)||!object(value.settings)||!object(value.settings.appearance))return 'list';
+  return value.settings.appearance.file_view==='grid'?'grid':'list';
+}

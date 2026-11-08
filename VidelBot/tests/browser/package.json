@@ -4,7 +4,7 @@
   "scripts": {
     "test": "node browser.test.cjs",
     "test:hosting": "node hosting.test.cjs",
-    "test:next": "node next-preview.test.cjs && node next-studios.test.cjs && node next-library-inbox.test.cjs && node next-team.test.cjs && node next-analytics.test.cjs && node next-settings.test.cjs && node next-file-filters.test.cjs"
+    "test:next": "node next-preview.test.cjs && node next-studios.test.cjs && node next-library-inbox.test.cjs && node next-team.test.cjs && node next-analytics.test.cjs && node next-settings.test.cjs && node next-file-filters.test.cjs && node next-theme.test.cjs && node next-file-view.test.cjs"
   },
   "devDependencies": {
     "playwright-core": "1.58.2"
