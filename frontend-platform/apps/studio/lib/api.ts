@@ -142,3 +142,8 @@ export function fileViewPreference(value:unknown):FileViewPreference {
   if(!object(value)||!object(value.settings)||!object(value.settings.appearance))return 'list';
   return value.settings.appearance.file_view==='grid'?'grid':'list';
 }
+
+/** Unsupported or missing density settings use the standard table layout. */
+export function compactTablesPreference(value:unknown):boolean {
+  return object(value)&&object(value.settings)&&object(value.settings.general)&&value.settings.general.compact_tables===true;
+}

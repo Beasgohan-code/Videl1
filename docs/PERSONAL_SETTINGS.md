@@ -3,8 +3,8 @@
 `/next-preview/settings` reads account-wide settings independent of workspace
 membership and edits only theme, file view and compact tables. After a verified
 save the Next preview applies dark, light or the device color scheme. The saved
-list/grid preference is also applied in the Next File Store; compact tables are
-saved but not yet applied. It sends only changed fields and
+list/grid preference is applied in the Next File Store, and compact-table spacing
+is applied to the Analytics daily data table. It sends only changed fields and
 verifies returned values. It disables edits when the backend does not advertise
 `atomic_field_updates`; reset and other settings remain in the existing Studio.
 Selected navigation and pending-save guards do not cover every history path.
@@ -22,7 +22,7 @@ other settings/reset parity, broader navigation protection and real-service
 checks before treating this migration as complete.
 
 The theme is fetched after authentication and defaults to dark if unavailable;
-a failed read is disclosed and falls back to list view. No credential or preference is stored in localStorage.
+a failed read is disclosed and falls back to list view and standard table spacing. No credential or preference is stored in localStorage.
 System mode listens for device color-scheme changes. Signing out returns to dark.
 Navigation or reload may briefly show dark while the account preference loads;
 changes in another tab do not automatically update an already-open view. This

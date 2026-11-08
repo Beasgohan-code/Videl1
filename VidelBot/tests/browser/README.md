@@ -66,7 +66,7 @@ token-diagnostic handling and selected unsaved-navigation checks.
 `node next-library-inbox.test.cjs` checks Hosting observations, template
 create/copy/delete, notification read state, workspace isolation and permission
 presentation at 320/390/1440px. `node next-team.test.cjs` checks direct member grants, reviewed role changes,
-removal and role denial against the fixture. `npm run test:next` runs all nine
+removal and role denial against the fixture. `npm run test:next` runs all ten
 Next browser suites. `node next-analytics.test.cjs` checks time/bot filters,
 CSV download, workspace changes, sample disclosure, permissions and responsive
 layout with fixture data. These assertions do not establish
@@ -79,3 +79,5 @@ live Telegram verification, real file safety, production RBAC or full parity.
 `node next-theme.test.cjs` checks synthetic saved theme application, device color-scheme changes, navigation, sign-out/account switching, older backend reads, failures, and delayed reads at representative widths. It does not establish production or physical-device accessibility.
 
 `node next-file-view.test.cjs` exercises synthetic account list/grid saves, workspace switching, failed saves and responsive layout. No production file storage or permissions are tested.
+
+`node next-compact-tables.test.cjs` checks the saved account preference on the synthetic Analytics table, including workspace/reload behavior, drafts, failed saves, default values and responsive layout. It is not a real database or accessibility test.
