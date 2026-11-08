@@ -13,9 +13,14 @@ function load(key, storage) {
     html = read('arcade.html').replace('/* CLASSIC_STYLES */', read('classic.css'))
                               .replace('/* CLASSIC_ENGINE */', read('classic.js'));
   } else {
-    const css = read('arcade.css').replace('/* PALETTE */', '--accent:#9fd8ff');
-    const js = read('engine.js').replace('/* GAME_CODE */', read('games/' + key + '.js'));
-    html = shell.replace('/* ARCADE_STYLES */', css).replace('/* ARCADE_ENGINE */', js)
+    const css = read('arcade.css').replace('/* PALETTE */', '--accent:#9fd8ff') + (key === 'trio' ? read('tabs.css') : '');
+    let code;
+    if (key === 'trio') {
+      let mounts = ['slide','mines','maze'].map((g,i)=>'function mount'+i+'(){'+read('games/'+g+'.js')+"document.getElementById('title').textContent=title;resetGame=start;start()}\n").join('');
+      code = read('tabs.js').replace('/* TAB_MOUNTS */', mounts+'var mounts=[mount0,mount1,mount2];');
+    } else code = read('games/' + key + '.js');
+    const js = read('engine.js').replace('/* GAME_CODE */', code);
+    html = (key === 'trio' ? shell.replace('<p id="status"','<div id="tabs"></div><p id="status"') : shell).replace('/* ARCADE_STYLES */', css).replace('/* ARCADE_ENGINE */', js)
                 .replace('<!-- GENRE -->', 'TEST')
                 .replace('<!-- ART -->', '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>');
   }
@@ -65,6 +70,10 @@ run('scramble',d=>{while(!hook(d,'done')){let a=hook(d,'answer'),i=buttons(d).fi
 run('trivia',d=>{while(!hook(d,'done')){let a=hook(d,'questions[round][1]'),i=buttons(d).findIndex(b=>b.textContent===a);click(d,i)}assert.match(info(d),/You win/)});
 run('higher',d=>{for(let i=0;i<8;i++)click(d,0);assert.ok(hook(d,'done'));assert.match(info(d),/Score/)});
 run('code',d=>{let secret=Array.from(hook(d,'secret'));let wrong=Array.from(secret).reverse();if(wrong.join()===secret.join())wrong=[1,2,3];wrong.forEach(x=>click(d,x-1));click(d,7);assert.match(info(d),/Last/);secret.forEach(x=>click(d,x-1));click(d,7);assert.match(info(d),/cracked/)});
+run('towers',d=>{[[0,2],[0,1],[2,1],[0,2],[1,0],[1,2],[0,2]].forEach(([a,b])=>{click(d,a);click(d,b)});assert.match(info(d),/complete in 7 moves/i)});
+run('flood',d=>{for(let n=0;n<20&&!hook(d,'done');n++){let b=Array.from(hook(d,'board')),r=Array.from(hook(d,'region'));let boundary=b.findIndex((v,i)=>!r[i]&&[i-4,i+4,i%4?i-1:-1,i%4<3?i+1:-1].some(j=>r[j]));assert.ok(boundary>=0);click(d,boundary)}assert.match(info(d),/Board flooded/)});
+run('dots',d=>{for(let n=0;n<12&&!hook(d,'done');n++){let options=Array.from(hook(d,'candidates()'));assert.ok(options.length);click(d,options[0])}assert.ok(hook(d,'done'));assert.match(info(d),/win|draw/i)});
+run('trio',d=>{let tabs=[...d.window.document.querySelectorAll('#tabs button')];assert.equal(tabs.length,3);assert.match(d.window.document.querySelector('#title').textContent,/Sliding/i);tabs[1].click();assert.match(d.window.document.querySelector('#title').textContent,/Minefield/i);click(d,0);tabs[2].click();assert.match(d.window.document.querySelector('#title').textContent,/Maze/i);d.window.document.querySelector('#restart').click();assert.match(d.window.document.querySelector('#title').textContent,/Maze/i);tabs[0].click();assert.equal(tabs[0].getAttribute('aria-pressed'),'true')});
 // Personal bests are per-message/device, optional, and explicitly clearable.
 const saved = new Map();
 const store = {getItem:k=>saved.has(k)?saved.get(k):null, setItem:(k,v)=>saved.set(k,String(v)), removeItem:k=>saved.delete(k)};
@@ -77,4 +86,4 @@ assert.equal(saved.get('videl:math'),'10');d.window.document.getElementById('bes
 d=load('numbers',store);assert.equal(hook(d,"saveBest('numbers',1500,true)"),1500);assert.equal(hook(d,"saveBest('numbers',2000,true)"),1500);assert.equal(hook(d,"saveBest('numbers',1000,true)"),1000);assert.equal(saved.get('videl:numbers'),'1000');d.window.close();
 const blocked={getItem(){throw Error('blocked')},setItem(){throw Error('blocked')},removeItem(){throw Error('blocked')}};
 d=load('math',blocked);while(!hook(d,'done')){let correct=hook(d,'correct'),i=buttons(d).findIndex(b=>b.textContent===String(correct));click(d,i)}assert.match(info(d),/You win/);assert.doesNotMatch(info(d),/Personal best/);d.window.close();
-console.log('23 widget games and local-best storage: synthetic gameplay passed');
+console.log('26 unique widget games, local tabs and local-best storage: synthetic gameplay passed');

@@ -17,7 +17,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from core import botapi
 from core.plugin_manager import PluginBase, plugin_enabled, plugin_filter
-from plugins.game import chat_games
+from plugins.game import chat_games, widget_transport
 
 log = logging.getLogger("videl.plugins.game")
 WIDGET = Path(__file__).with_name("arcade.html")
@@ -33,7 +33,9 @@ GAMES = (
     ("numbers", "Number rush"), ("simon", "Pattern memory"),
     ("math", "Math sprint"), ("scramble", "Word scramble"),
     ("trivia", "Quick trivia"), ("higher", "Higher or lower"),
-    ("code", "Code breaker"),
+    ("code", "Code breaker"), ("trio", "Puzzle trio · 3 in 1"),
+    ("towers", "Tower puzzle"), ("flood", "Color flood"),
+    ("dots", "Dots & boxes"),
 )
 GAME_KEYS = frozenset(key for key, _ in GAMES)
 # Original compact vector marks; no network assets or third-party image licences.
@@ -54,6 +56,8 @@ STYLES = {
     "simon": ("action", "#d3baff"), "math": ("brain", "#b2e7d0"),
     "scramble": ("brain", "#f6c2a9"), "trivia": ("brain", "#c8bcff"),
     "higher": ("brain", "#b2dbff"), "code": ("brain", "#ffe097"),
+    "trio": ("puzzle", "#81ddcf"), "towers": ("puzzle", "#ffd083"),
+    "flood": ("puzzle", "#8ee7bd"), "dots": ("classic", "#e9abff"),
 }
 PAGE_SIZE = 6
 MENU_CALLBACK = re.compile(r"\Avgg:([1-9][0-9]{0,19}):(page|play|chat|cat):([a-z0-9]+)\Z")
@@ -126,7 +130,7 @@ def game_menu(uid: int, page: int, category: str = "all"):
     last = (len(entries) - 1) // PAGE_SIZE
     page = max(0, min(page, last))
     text = ("🎮 <b>Videl Arcade · Widget games</b>\n"
-            "23 single-player games: puzzles, classics, action and brain games. "
+            "26 single-player games: puzzles, classics, action and brain games. "
             "Widgets require Telegram's beta support; "
             "progress stays on this device and may reset.\n"
             + ("Widget beta is off here; the chat games are still available.\n"
@@ -176,7 +180,20 @@ def widget_html(key: str) -> str:
     shell = SHELL.read_text(encoding="utf-8")
     css = (root / "arcade.css").read_text(encoding="utf-8")
     engine = (root / "engine.js").read_text(encoding="utf-8")
-    code = (root / "games" / f"{key}.js").read_text(encoding="utf-8")
+    if key == "trio":
+        mounts = []
+        for index, game_key in enumerate(("slide", "mines", "maze")):
+            part = (root / "games" / f"{game_key}.js").read_text(encoding="utf-8")
+            mounts.append("function mount" + str(index) + "(){" + part +
+                          "document.getElementById('title').textContent=title;resetGame=start;start()}\n")
+        mounts.append("var mounts=[mount0,mount1,mount2];")
+        code = _replace_once((root / "tabs.js").read_text(encoding="utf-8"),
+                             "/* TAB_MOUNTS */", "".join(mounts))
+        shell = _replace_once(shell, '<p id="status"',
+                              '<div id="tabs" class="tabs" aria-label="Choose puzzle"></div><p id="status"')
+        css += (root / "tabs.css").read_text(encoding="utf-8")
+    else:
+        code = (root / "games" / f"{key}.js").read_text(encoding="utf-8")
     if "</style" in css.lower() or "</script" in (engine + code).lower():
         raise ValueError("Invalid widget source")
     genre, accent = STYLES[key]
@@ -192,8 +209,10 @@ def _widget_enabled() -> bool:
 
 
 async def send_widget(client, chat_id: int, key: str = "classic", thread_id: int | None = None) -> bool:
-    """Best effort beta send using only the existing primary bot's aiogram session.
+    """Best-effort send through aiogram, using the primary bot identity only.
 
+    Beta mode uses a dedicated outgoing session; configured mode uses the
+    existing bridge. Neither receives updates or retries an ambiguous send.
     Never use a primary token for a different client. Errors are logged by type
     only: HTTP exceptions can include the secret-bearing Bot API URL. No retry is
     attempted after an ambiguous response. The ordinary game is already sent.
@@ -224,7 +243,10 @@ async def send_widget(client, chat_id: int, key: str = "classic", thread_id: int
             height: int | None = None
             caption: str = "Videl Arcade: single-player games. On older clients, play using the buttons above."
 
-        await outgoing(SendWidget(chat_id=chat_id, html=html, message_thread_id=thread_id))
+        mode = os.environ.get("GAME_WIDGETS_API_MODE", "beta").strip().lower()
+        await widget_transport.send(outgoing, SendWidget(chat_id=chat_id, html=html,
+                                                         message_thread_id=thread_id),
+                                    mode=mode, timeout=botapi.REQUEST_TIMEOUT)
         return True
     except Exception as exc:
         log.warning("Beta game widget unavailable (%s); chat game remains available", type(exc).__name__)

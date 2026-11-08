@@ -10,6 +10,7 @@ def setup(monkeypatch):
     plugin_manager._enabled.clear()
     plugin_manager.discover()
     monkeypatch.delenv("GAME_WIDGETS_BETA", raising=False)
+    monkeypatch.delenv("GAME_WIDGETS_API_MODE", raising=False)
     no_botapi()
     yield
     plugin_manager._enabled.clear()
@@ -80,6 +81,7 @@ def test_widget_gate_identity_serialization_and_secret_safe_failure(monkeypatch,
     client = FakeClient()
     assert not run(game.send_widget(client, -100123)) and not outgoing.calls
     monkeypatch.setenv('GAME_WIDGETS_BETA', 'true')
+    monkeypatch.setenv('GAME_WIDGETS_API_MODE', 'configured')
     client.me.id = 99
     assert not run(game.send_widget(client, -100123)) and not outgoing.calls
     client.me.id = 123456
@@ -103,7 +105,7 @@ def test_plugin_discovery_and_widget_size():
     from plugins.game import plugin as game
     assert 'game' in plugin_manager.manifests
     assert not plugin_manager.command_conflicts(plugin_manager.manifests['game'])
-    assert len(game.GAMES) == 21 and len(game.GAME_KEYS) == 21
+    assert len(game.GAMES) == 25 and len(game.GAME_KEYS) == 25
     for key, _ in game.GAMES:
         raw = game.widget_html(key).encode()
         assert len(raw) <= 32768 and len(zlib.compress(raw, 9)) < 3800
@@ -120,9 +122,9 @@ def test_menu_all_games_callbacks_and_beta_disabled(monkeypatch):
     from plugins.game import plugin as game
     c, msg = FakeClient(), FakeMsg('board')
     seen = set()
-    for page in range(4):
+    for page in range(5):
         text, markup = game.game_menu(77, page)
-        assert '23 single-player games' in text
+        assert '26 single-player games' in text
         for row in markup.inline_keyboard:
             for button in row:
                 assert len(button.callback_data.encode()) <= 64
@@ -134,7 +136,7 @@ def test_menu_all_games_callbacks_and_beta_disabled(monkeypatch):
     assert foreign.answers[-1][1] and not msg.edits
     page = FakeQuery('vgg:77:page:1', uid=77, message=msg)
     run(game.game_menu_callback(c, page))
-    assert 'Page 2/4' in msg.edits[-1]
+    assert 'Page 2/5' in msg.edits[-1]
     disabled = FakeQuery('vgg:77:play:snake', uid=77, message=msg)
     run(game.game_menu_callback(c, disabled))
     assert disabled.answers[-1][1] and 'unavailable' in disabled.answers[-1][0].lower()
@@ -229,7 +231,7 @@ def test_chat_game_callback_and_categories():
     plugin_manager._enabled['game'] = True
     for category, _ in game.CATEGORIES:
         text, markup = game.game_menu(77, 0, category)
-        assert '23 single-player games' in text
+        assert '26 single-player games' in text
         for row in markup.inline_keyboard:
             for button in row:
                 assert len(button.callback_data.encode()) <= 64
@@ -248,3 +250,57 @@ def test_chat_game_callback_and_categories():
                           (chat_games.higher_screen, (99999999999999999999, 7, 7, 12))):
         _, markup = builder(*args)
         assert all(len(b.callback_data.encode()) <= 64 for row in markup.inline_keyboard for b in row)
+
+
+def test_beta_transport_is_isolated_outgoing_only_and_closed(monkeypatch):
+    import aiogram
+    from aiogram.client.session import aiohttp as session_module
+    from plugins.game import plugin as game
+    real_bot_class, real_session_class = aiogram.Bot, session_module.AiohttpSession
+    captured = {}
+    class Session:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+        async def close(self):
+            captured['closed'] = True
+    class BetaBot:
+        def __init__(self, token, session):
+            captured['session'] = session
+            assert token == '123456:fake-token'
+        async def __call__(self, method):
+            captured['method'] = method
+            return SimpleNamespace(message_id=1)
+    class Outgoing:
+        id = 123456
+        token = '123456:fake-token'
+        async def __call__(self, method):
+            raise AssertionError('normal endpoint must not be called')
+    monkeypatch.setattr(aiogram, 'Bot', BetaBot)
+    monkeypatch.setattr(session_module, 'AiohttpSession', Session)
+    monkeypatch.setattr(game.botapi, 'enabled', lambda: True)
+    monkeypatch.setattr(game.botapi, 'bot', lambda: Outgoing())
+    monkeypatch.setenv('GAME_WIDGETS_BETA', 'true')
+    client = FakeClient(); client.me.id = 123456
+    assert run(game.send_widget(client, -100123, 'towers', 901))
+    assert captured['api'].base == 'https://api.telegram.org/beta/bot{token}/{method}'
+    assert captured['timeout'] == game.botapi.REQUEST_TIMEOUT and captured['closed']
+    payload = captured['method'].model_dump(exclude_none=True)
+    assert payload['message_thread_id'] == 901
+    assert 'allow_queries' not in payload and 'is_shared' not in payload
+    assert payload['caption'] and payload['html'].startswith('<!doctype html>')
+    # Exercise aiogram's actual multipart serialization without a network call.
+    real_session = real_session_class()
+    real_bot = real_bot_class('123456:fake-token', session=real_session)
+    fields = {entry[0]['name']: entry[2] for entry in real_session.build_form_data(real_bot, captured['method'])._fields}
+    assert fields['chat_id'] == '-100123' and fields['message_thread_id'] == '901'
+    assert fields['html'].startswith('<!doctype html>') and fields['caption']
+    assert 'allow_queries' not in fields and 'is_shared' not in fields
+    run(real_session.close())
+    captured.clear()
+    async def fail(self, method):
+        raise RuntimeError('secret in network error')
+    monkeypatch.setattr(BetaBot, '__call__', fail)
+    assert not run(game.send_widget(client, 77)) and captured['closed']
+    captured.clear()
+    monkeypatch.setenv('GAME_WIDGETS_API_MODE', 'typo')
+    assert not run(game.send_widget(client, 77)) and not captured
