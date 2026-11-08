@@ -66,10 +66,12 @@ token-diagnostic handling and selected unsaved-navigation checks.
 `node next-library-inbox.test.cjs` checks Hosting observations, template
 create/copy/delete, notification read state, workspace isolation and permission
 presentation at 320/390/1440px. `node next-team.test.cjs` checks direct member grants, reviewed role changes,
-removal and role denial against the fixture. `npm run test:next` runs all six
+removal and role denial against the fixture. `npm run test:next` runs all seven
 Next browser suites. `node next-analytics.test.cjs` checks time/bot filters,
 CSV download, workspace changes, sample disclosure, permissions and responsive
 layout with fixture data. These assertions do not establish
 live Telegram verification, real file safety, production RBAC or full parity.
 
 `node next-settings.test.cjs` exercises account preference saves, account-wide workspace behavior, empty-workspace access, older-backend safety gating, draft/pending guards and uncertain responses at synthetic browser widths. These are in-memory fixtures, not evidence of Mongo concurrency or production behavior.
+
+`node next-file-filters.test.cjs` checks category and active-record filters with synthetic uploads, trash visibility and responsive layout. The fixture is not a storage or authorization integration test.

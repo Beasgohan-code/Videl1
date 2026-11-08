@@ -172,13 +172,15 @@ async def file_collection(request):
     rows = files[token].setdefault(ws['workspace_id'], [])
     if request.method == 'GET':
         term = request.query.get('search', '').lower()
-        found = [f for f in rows if term in f['filename'].lower()]
+        category = request.query.get('category', 'all')
+        include_deleted = request.query.get('include_deleted') in ('1', 'true')
+        found = [f for f in rows if term in f['filename'].lower() and (category == 'all' or f['category'] == category) and (include_deleted or not f['deleted'])]
         return web.json_response({'items':found[:25], 'total':len(found), 'total_bytes':sum(x['size_bytes'] for x in found), 'page':1, 'pages':1, 'sample_limit':2000, 'sample_truncated':False})
     reader = await request.multipart()
     while part := await reader.next():
         if part.filename:
             content = await part.read()
-            rows.append({'file_uid':'file_'+secrets.token_hex(4),'filename':part.filename,'size_bytes':len(content),'category':'other','deleted':False})
+            rows.append({'file_uid':'file_'+secrets.token_hex(4),'filename':part.filename,'size_bytes':len(content),'category':('document' if part.filename.endswith('.txt') else 'image' if part.filename.endswith('.png') else 'other'),'deleted':False})
     return web.json_response({'uploaded': rows},status=201)
 
 
