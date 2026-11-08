@@ -137,7 +137,7 @@ def test_menu_all_games_callbacks_and_beta_disabled(monkeypatch):
     assert 'Page 2/4' in msg.edits[-1]
     disabled = FakeQuery('vgg:77:play:snake', uid=77, message=msg)
     run(game.game_menu_callback(c, disabled))
-    assert disabled.answers[-1][1] and 'beta' in disabled.answers[-1][0].lower()
+    assert disabled.answers[-1][1] and 'unavailable' in disabled.answers[-1][0].lower()
     invalid = FakeQuery('vgg:77:play:unknown', uid=77, message=msg)
     run(game.game_menu_callback(c, invalid))
     assert invalid.answers[-1][1]
@@ -173,3 +173,78 @@ def test_template_assembly_rejects_broken_or_unsafe_sources(monkeypatch, tmp_pat
     monkeypatch.setattr(game, 'WIDGET', widget)
     with pytest.raises(ValueError):
         game.widget_html('classic')
+
+
+def test_chat_game_menu_rounds_owner_and_restart(monkeypatch):
+    from plugins.game import chat_games as cg
+    text, menu = cg.act('vgc:77:menu', 77)
+    assert 'without widget beta' in text
+    assert sum(len(row) for row in menu.inline_keyboard) == 5
+    for row in menu.inline_keyboard:
+        for button in row:
+            assert len(button.callback_data.encode()) <= 64
+    with pytest.raises(cg.GameError, match='someone else'):
+        cg.act('vgc:77:nim:17:r', 78)
+    for data in ('vgc:77:nim:99:1', 'vgc:77:nim:1:3', 'vgc:77:rps:3:3:r',
+                 'vgc:77:high:1:2:8:h', 'vgc:77:high:0:0:13:h', 'vgc:77:unknown'):
+        with pytest.raises(cg.GameError):
+            cg.act(data, 77)
+    text, board = cg.act('vgc:77:nim:17:r', 77)
+    assert 'Stones left: 17' in text
+    text, board = cg.act(board.inline_keyboard[0][0].callback_data, 77)
+    assert 'Stones left: 15' in text
+    while 'Stones left: 0' not in text:
+        choices = board.inline_keyboard[0]
+        text, board = cg.act(choices[-1].callback_data, 77)
+    assert 'You win' in text or 'Bot wins' in text
+    monkeypatch.setattr(cg.secrets, 'randbelow', lambda n: 2)
+    text, board = cg.act('vgc:77:rps:0:0:n', 77)
+    for _ in range(3):
+        text, board = cg.act(board.inline_keyboard[0][0].callback_data, 77)
+    assert 'You win' in text and 'You 3 · Bot 0' in text
+    assert 'New game' in board.inline_keyboard[0][0].text
+    monkeypatch.setattr(cg.secrets, 'randbelow', lambda n: 0)
+    text, board = cg.act('vgc:77:high:0:0:1:n', 77)
+    for _ in range(8):
+        text, board = cg.act(board.inline_keyboard[0][0].callback_data, 77)
+    assert 'Round: 8/8' in text and 'Game over' in text
+    assert len(board.inline_keyboard) == 1
+
+
+def test_chat_game_callback_and_categories():
+    from plugins.game import plugin as game
+    from plugins.game import chat_games
+    from core.plugin_manager import plugin_manager
+    c, msg = FakeClient(), FakeMsg('board')
+    q = FakeQuery('vgc:77:menu', uid=78, message=msg)
+    run(game.chat_game_callback(c, q))
+    assert q.answers[-1][1] and not msg.edits
+    q = FakeQuery('vgc:77:menu', uid=77, message=msg)
+    run(game.chat_game_callback(c, q))
+    assert 'Chat games' in msg.edits[-1]
+    plugin_manager._enabled['game'] = False
+    q = FakeQuery('vgc:77:menu', uid=77, message=msg)
+    run(game.chat_game_callback(c, q))
+    assert q.answers[-1][1] and 'disabled' in q.answers[-1][0].lower()
+    plugin_manager._enabled['game'] = True
+    for category, _ in game.CATEGORIES:
+        text, markup = game.game_menu(77, 0, category)
+        assert '23 single-player games' in text
+        for row in markup.inline_keyboard:
+            for button in row:
+                assert len(button.callback_data.encode()) <= 64
+                if ':play:' in button.callback_data and category != 'all':
+                    key = button.callback_data.split(':')[-1]
+                    assert ('classic' if key == 'classic' else game.STYLES[key][0]) == category
+    q = FakeQuery('vgg:77:cat:action0', uid=77, message=msg)
+    run(game.game_menu_callback(c, q))
+    assert 'Action' in msg.edits[-1]
+    q = FakeQuery('vgg:77:cat:invalid0', uid=77, message=msg)
+    run(game.game_menu_callback(c, q))
+    assert q.answers[-1][1]
+    for builder, args in ((chat_games.menu, (99999999999999999999,)),
+                          (chat_games.nim_screen, (99999999999999999999, 17)),
+                          (chat_games.rps_screen, (99999999999999999999, 2, 2)),
+                          (chat_games.higher_screen, (99999999999999999999, 7, 7, 12))):
+        _, markup = builder(*args)
+        assert all(len(b.callback_data.encode()) <= 64 for row in markup.inline_keyboard for b in row)

@@ -17,6 +17,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from core import botapi
 from core.plugin_manager import PluginBase, plugin_enabled, plugin_filter
+from plugins.game import chat_games
 
 log = logging.getLogger("videl.plugins.game")
 WIDGET = Path(__file__).with_name("arcade.html")
@@ -55,7 +56,9 @@ STYLES = {
     "higher": ("brain", "#b2dbff"), "code": ("brain", "#ffe097"),
 }
 PAGE_SIZE = 6
-MENU_CALLBACK = re.compile(r"\Avgg:([1-9][0-9]{0,19}):(page|play|chat):([a-z0-9]+)\Z")
+MENU_CALLBACK = re.compile(r"\Avgg:([1-9][0-9]{0,19}):(page|play|chat|cat):([a-z0-9]+)\Z")
+CATEGORIES = (("all", "All"), ("puzzle", "🧩 Puzzle"), ("classic", "🎲 Classic"),
+              ("action", "⚡ Action"), ("brain", "🧠 Brain"))
 LINES = ((0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6),
          (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6))
 CALLBACK = re.compile(r"\Avga:([1-9][0-9]{0,19}):([XO-]{9}):([0-8r])\Z")
@@ -109,29 +112,45 @@ def screen(uid: int, board: str):
         rows.append([InlineKeyboardButton(board[i] if board[i] != "-" else "·",
                      callback_data=f"vga:{uid}:{board}:{i}") for i in range(start, start + 3)])
     rows.append([InlineKeyboardButton("New game", callback_data=f"vga:{uid}:---------:r")])
-    rows.append([InlineKeyboardButton("🎮 More widget games", callback_data=f"vgg:{uid}:page:0")])
+    rows.append([InlineKeyboardButton("🕹 More chat games", callback_data=f"vgc:{uid}:menu"),
+                 InlineKeyboardButton("🎮 Widget games", callback_data=f"vgg:{uid}:page:0")])
     return text, InlineKeyboardMarkup(rows)
 
 
-def game_menu(uid: int, page: int):
-    last = (len(GAMES) - 1) // PAGE_SIZE
+def game_menu(uid: int, page: int, category: str = "all"):
+    labels = dict(CATEGORIES)
+    if category not in labels:
+        raise ValueError("Unknown category")
+    entries = [(key, label) for key, label in GAMES
+               if category == "all" or ("classic" if key == "classic" else STYLES[key][0]) == category]
+    last = (len(entries) - 1) // PAGE_SIZE
     page = max(0, min(page, last))
     text = ("🎮 <b>Videl Arcade · Widget games</b>\n"
             "23 single-player games: puzzles, classics, action and brain games. "
             "Widgets require Telegram's beta support; "
             "progress stays on this device and may reset.\n"
-            f"Page {page + 1}/{last + 1}")
-    items = GAMES[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
-    rows = [[InlineKeyboardButton(label, callback_data=f"vgg:{uid}:play:{key}")]
-            for key, label in items]
+            + ("Widget beta is off here; the chat games are still available.\n"
+               if not _widget_enabled() else
+               "Widget sending is unavailable; the chat games are still available.\n"
+               if not botapi.enabled() else
+               "Widget beta is enabled; a supported Telegram client and endpoint are required.\n")
+            + f"{labels[category]} · Page {page + 1}/{last + 1}")
+    tabs = [InlineKeyboardButton(("• " if cat == category else "") + label,
+                                 callback_data=f"vgg:{uid}:cat:{cat}0") for cat, label in CATEGORIES]
+    rows = [tabs[:3], tabs[3:]]
+    items = entries[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+    rows += [[InlineKeyboardButton(label, callback_data=f"vgg:{uid}:play:{key}")]
+             for key, label in items]
+    def page_data(n):
+        return f"vgg:{uid}:page:{n}" if category == "all" else f"vgg:{uid}:cat:{category}{n}"
     nav = []
     if page:
-        nav.append(InlineKeyboardButton("‹ Previous", callback_data=f"vgg:{uid}:page:{page - 1}"))
+        nav.append(InlineKeyboardButton("‹ Previous", callback_data=page_data(page - 1)))
     if page < last:
-        nav.append(InlineKeyboardButton("Next ›", callback_data=f"vgg:{uid}:page:{page + 1}"))
+        nav.append(InlineKeyboardButton("Next ›", callback_data=page_data(page + 1)))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("Play Tic-tac-toe in chat", callback_data=f"vgg:{uid}:chat:0")])
+    rows.append([InlineKeyboardButton("🕹 Play chat games", callback_data=f"vgc:{uid}:menu")])
     return text, InlineKeyboardMarkup(rows)
 
 
@@ -272,9 +291,17 @@ async def game_menu_callback(client, query):
         await query.answer()
         text, markup = game_menu(uid, int(value))
         await query.edit_message_text(text, reply_markup=markup)
+    elif action == "cat":
+        category = re.fullmatch(r"(all|puzzle|classic|action|brain)([0-9]{1,2})", value)
+        if not category:
+            await query.answer("Invalid category. Start again with /game.", show_alert=True)
+            return
+        await query.answer()
+        text, markup = game_menu(uid, int(category.group(2)), category.group(1))
+        await query.edit_message_text(text, reply_markup=markup)
     elif action == "play" and value in GAME_KEYS:
         if not _widget_enabled() or not botapi.enabled():
-            await query.answer("Widget beta is not enabled here. You can play Tic-tac-toe in chat.", show_alert=True)
+            await query.answer("Widget sending is unavailable here. The chat games still work.", show_alert=True)
             return
         await query.answer("Opening game…")
         from core.ui import thread_id_of
@@ -283,3 +310,20 @@ async def game_menu_callback(client, query):
             await query.message.reply_text("Widget games are unavailable right now. The chat game still works; try /game.")
     else:
         await query.answer("Invalid game. Start again with /game.", show_alert=True)
+
+
+@Client.on_callback_query(filters.regex(r"^vgc:"))
+async def chat_game_callback(client, query):
+    if not plugin_enabled("game"):
+        await query.answer("Games are disabled.", show_alert=True)
+        return
+    if not query.from_user or not query.message:
+        await query.answer("Invalid game. Start again with /game.", show_alert=True)
+        return
+    try:
+        text, markup = chat_games.act(query.data or "", query.from_user.id)
+    except chat_games.GameError as exc:
+        await query.answer(str(exc), show_alert=True)
+        return
+    await query.answer()
+    await query.edit_message_text(text, reply_markup=markup)

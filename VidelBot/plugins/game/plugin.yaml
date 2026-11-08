@@ -18,3 +18,6 @@ callbacks:
   - pattern: "^vgg:[a-zA-Z0-9:]+$"
     description: Browse and open widget games
     access: user
+  - pattern: "^vgc:[a-zA-Z0-9:]+$"
+    description: Play additional chat games
+    access: user

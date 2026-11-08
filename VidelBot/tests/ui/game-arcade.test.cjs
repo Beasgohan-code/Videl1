@@ -6,7 +6,7 @@ const path = require('node:path');
 const { JSDOM, VirtualConsole } = require('jsdom');
 const root = path.resolve(__dirname, '../../plugins/game');
 const shell = fs.readFileSync(path.join(root, 'shell.html'), 'utf8');
-function load(key) {
+function load(key, storage) {
   const read = file => fs.readFileSync(path.join(root, file), 'utf8');
   let html;
   if (key === 'classic') {
@@ -22,7 +22,7 @@ function load(key) {
   html = html.replace(/\}\)\(\);\s*<\/script>/, 'window.__test=function(s){return eval(s)};})();</script>');
   let err = []; const vc = new VirtualConsole(); vc.on('jsdomError', e => err.push(e.message));
   let seed=123456789;
-  const dom = new JSDOM(html, {runScripts:'dangerously', virtualConsole:vc, beforeParse(w){w.Math.random=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/4294967296};if(key==='simon')w.setTimeout=fn=>{fn();return 1}}});
+  const dom = new JSDOM(html, {runScripts:'dangerously', virtualConsole:vc, beforeParse(w){w.Math.random=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/4294967296};if(key==='simon')w.setTimeout=fn=>{fn();return 1};if(storage)Object.defineProperty(w,'localStorage',{value:storage,configurable:true})}});
   assert.equal(err.length, 0, key+': '+err.join(','));
   assert.ok(dom.window.__test, key+' missing hook');
   return dom;
@@ -65,4 +65,16 @@ run('scramble',d=>{while(!hook(d,'done')){let a=hook(d,'answer'),i=buttons(d).fi
 run('trivia',d=>{while(!hook(d,'done')){let a=hook(d,'questions[round][1]'),i=buttons(d).findIndex(b=>b.textContent===a);click(d,i)}assert.match(info(d),/You win/)});
 run('higher',d=>{for(let i=0;i<8;i++)click(d,0);assert.ok(hook(d,'done'));assert.match(info(d),/Score/)});
 run('code',d=>{let secret=Array.from(hook(d,'secret'));let wrong=Array.from(secret).reverse();if(wrong.join()===secret.join())wrong=[1,2,3];wrong.forEach(x=>click(d,x-1));click(d,7);assert.match(info(d),/Last/);secret.forEach(x=>click(d,x-1));click(d,7);assert.match(info(d),/cracked/)});
-console.log('23 widget games: synthetic gameplay passed');
+// Personal bests are per-message/device, optional, and explicitly clearable.
+const saved = new Map();
+const store = {getItem:k=>saved.has(k)?saved.get(k):null, setItem:(k,v)=>saved.set(k,String(v)), removeItem:k=>saved.delete(k)};
+let d=load('math',store);
+while(!hook(d,'done')){let correct=hook(d,'correct'),i=buttons(d).findIndex(b=>b.textContent===String(correct));click(d,i)}
+assert.equal(saved.get('videl:math'),'10');assert.match(info(d),/Personal best: 10/);d.window.close();
+d=load('math',store);assert.equal(hook(d,'record'),10);
+while(!hook(d,'done')){let correct=hook(d,'correct'),i=buttons(d).findIndex(b=>b.textContent!==String(correct)&&b.textContent!=='Clear best');click(d,i)}
+assert.equal(saved.get('videl:math'),'10');d.window.document.getElementById('best-clear').click();assert.equal(saved.has('videl:math'),false);d.window.close();
+d=load('numbers',store);assert.equal(hook(d,"saveBest('numbers',1500,true)"),1500);assert.equal(hook(d,"saveBest('numbers',2000,true)"),1500);assert.equal(hook(d,"saveBest('numbers',1000,true)"),1000);assert.equal(saved.get('videl:numbers'),'1000');d.window.close();
+const blocked={getItem(){throw Error('blocked')},setItem(){throw Error('blocked')},removeItem(){throw Error('blocked')}};
+d=load('math',blocked);while(!hook(d,'done')){let correct=hook(d,'correct'),i=buttons(d).findIndex(b=>b.textContent===String(correct));click(d,i)}assert.match(info(d),/You win/);assert.doesNotMatch(info(d),/Personal best/);d.window.close();
+console.log('23 widget games and local-best storage: synthetic gameplay passed');
