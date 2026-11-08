@@ -89,7 +89,7 @@ def _is_command(message: Message) -> bool:
 
 _ANON_GROUP_MOD_CMDS = frozenset({
     "gsettings", "gban", "gunban", "kick", "punch", "mute", "unmute",
-    "warn", "unwarn", "warns", "warnconfig", "warnrecover", "policysim", "ghealth", "activity", "tag", "deltag", "clearreactions", "delreactions",
+    "warn", "unwarn", "warns", "warnconfig", "warnrecover", "tag", "deltag", "clearreactions", "delreactions",
     "topic", "joinmode", "rules", "setrules", "welcome", "goodbye",
     "lock", "unlock", "gfilter", "delfilter", "gfilters", "antiraid",
 })

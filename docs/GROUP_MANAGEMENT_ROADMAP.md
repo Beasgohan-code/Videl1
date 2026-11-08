@@ -26,23 +26,31 @@ MongoDB and Telegram cannot participate in one transaction; action outcomes can 
 2. Improve group management workflow: clearer settings, moderation history, configurable policies and controls, with tenant isolation, retention/privacy rules and actual Telegram permission checks.
 3. Add useful separate plugins incrementally (for example, group notes or FAQ/knowledge commands), each with permissions, storage isolation, discovery, documentation and tests. Continue selecting and implementing individual plugins after the safety foundation.
 
-## Stage 2 — Group Insights plugin (implemented)
+## Removed plugins — user request (branch source)
 
-The independently discoverable `group_insights` plugin adds `/policysim` for read-only previews of current or draft lock rules and `/ghealth` for live bot-permission diagnostics. It shares the existing lock/keyword matcher with the live guard, does not enforce a simulation, and does not persist samples. Usage, privacy considerations, exact coverage and limitations are in `VidelBot/plugins/group_insights/README.md`.
+`group_insights` and `group_activity` have been removed from source, plugin discovery,
+the command menu and anonymous-admin exemptions. This removes the Insights commands
+`/policysim` and `/ghealth` and the activity/leaderboard commands `/rankings`,
+`/mystats`, `/topusers` and `/topgroups`, as well as the older `/activity`,
+`/topmembers`, `/myactivity`, `/memberactivity`, `/groupactivity` and
+`/activityprivacy` commands. Other group-management and plugin
+features remain. The prior stages for these plugins are historical, not active features.
 
-The user's selected ideas span options 1–90 from the conversation. Treat them as a long-term backlog, not as delivered: security and reliable group operations first; cases, workflows and knowledge tools next; then engagement and integrations; advanced AI, cross-group federation, marketplaces, third-party execution and multi-bot orchestration only after separate feasibility, privacy and isolation designs. Prioritize one reviewable increment at a time. Live Telegram integration and real MongoDB multi-process tests remain outstanding.
+**Data and rollout:** This source change does not delete the old MongoDB
+`group_activity_settings` or `group_activity_members` collections, other plugin
+configuration, logs, backups, or previously sent Telegram messages. Once updated
+workers run, the removed `/mystats` privacy controls are no longer available;
+no data erasure has been performed. Older running workers can still count and
+serve rankings until replaced, and previously posted buttons no longer work on
+new workers. Operators must coordinate all workers and refresh Telegram command
+menus (for example with the existing `/setcommands` flow); no live deployment
+or data cleanup has been performed here. Plan any retention/export/deletion
+separately with explicit authorization.
 
-## Stage 3 — Group Activity plugin (implemented)
-
-The independently discoverable `group_activity` plugin adds opt-in, per-bot/per-group recorded-message totals, top-ten ranking, individual rank, group totals and per-member opt-out. `/activity on` is required before counting. The member privacy command removes their counter and name while retaining an opt-out marker. The initial version was a lifetime leaderboard; the next stage adds bounded UTC-date totals. Neither is a count of all Telegram messages. See `VidelBot/plugins/group_activity/README.md` for exact storage, permissions, retention, race and delivery limitations. Durable replay deduplication, retention management and real Telegram/MongoDB integration remain future work.
-
-## Stage 4 — time-based activity rankings (implemented)
-
-`/topmembers today` and `/topmembers week` use up to seven bounded UTC calendar-date buckets per member, with `/topmembers all` retaining lifetime ranking. Member and group views include today and seven-date message totals. Old lifetime-only records are not backfilled. The seven-date period includes today and is not a rolling 168-hour window. Opt-out removes the new buckets. Contention, mixed-worker deployment, retention and scale limitations are documented in the plugin README.
-
-## Stage 5 — leaderboard navigation (implemented)
-
-Activity leaderboards support period tabs and previous/next buttons as well as `/topmembers [all|today|week] [page]`. Pages are live, group- and bot-scoped, and capped at 100 pages of ten members. Totals can shift between page requests; large-group query performance and live Telegram callback delivery remain unverified.
+The selected advanced group ideas remain a long-term backlog, not delivered;
+the exact original 90-item list is not reproduced. Do not reintroduce the two
+removed plugins without a new request. Continue other group management work in
+reviewable stages, with safety, permissions, isolation and privacy first.
 
 ## Stage 6 — join automation and raid safety (implemented)
 
