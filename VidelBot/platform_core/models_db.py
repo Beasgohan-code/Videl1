@@ -737,11 +737,11 @@ def validate_webapp_settings_patch(patch: dict[str, Any]) -> dict[str, dict[str,
     return validated
 
 
-async def get_webapp_settings(user_id: int) -> dict[str, Any]:
+async def get_webapp_settings(user_id: int, *, use_cache: bool = True) -> dict[str, Any]:
     uid = int(user_id)
     now = time.monotonic()
     hit = _settings_cache.get(uid)
-    if hit and (now - hit[0]) < _SETTINGS_TTL:
+    if use_cache and hit and (now - hit[0]) < _SETTINGS_TTL:
         return hit[1]
     raw = await webapp_settings_col().find_one({"_id": uid}) or {}
     merged = _deep_merge_defaults(raw)
@@ -750,23 +750,21 @@ async def get_webapp_settings(user_id: int) -> dict[str, Any]:
 
 
 async def update_webapp_settings(user_id: int, patch: dict[str, Any]) -> dict[str, Any]:
-    """Validate and persist settings FIRST; update cache strictly AFTER DB write succeeds."""
+    """Persist only supplied, validated fields; unrelated settings are not overwritten."""
     uid = int(user_id)
     validated = validate_webapp_settings_patch(patch)
-    current = await get_webapp_settings(uid)
-    next_doc: dict[str, Any] = {}
-    for sec, cur_vals in current.items():
-        merged_sec = dict(cur_vals)
-        if sec in validated:
-            merged_sec.update(validated[sec])
-        next_doc[sec] = merged_sec
-    await webapp_settings_col().update_one(
-        {"_id": uid},
-        {"$set": {**next_doc, "updated_at": utcnow_iso()}},
-        upsert=True,
-    )
-    _settings_cache[uid] = (time.monotonic(), next_doc)
-    return next_doc
+    updates = {f"{section}.{key}": value for section, fields in validated.items() for key, value in fields.items()}
+    updates["updated_at"] = utcnow_iso()
+    collection = webapp_settings_col()
+    try:
+        await collection.update_one({"_id": uid}, {"$set": updates}, upsert=True)
+    finally:
+        # Even an interrupted or failed write can have an uncertain outcome.
+        _settings_cache.pop(uid, None)
+    # Read the stored result rather than reconstructing it from a possibly stale
+    # cache. This does not fence concurrent same-field updates or other workers.
+    raw = await collection.find_one({"_id": uid}) or {}
+    return _deep_merge_defaults(raw)
 
 
 async def reset_webapp_settings(user_id: int) -> dict[str, Any]:

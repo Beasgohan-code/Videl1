@@ -97,3 +97,50 @@ def test_settings_validation_and_scheduled_jobs():
         assert await models_db.delete_scheduled_job(job["job_id"], user_id=9100) is True
 
     run(go())
+
+
+def test_settings_field_updates_preserve_stale_and_unrelated_values():
+    async def go():
+        await reset_db()
+        models_db._settings_cache.clear()
+        uid = 898102
+        initial = await models_db.get_webapp_settings(uid)
+        assert initial['appearance']['theme'] == 'dark'
+        # Simulate another worker changing storage after this process cached it.
+        await models_db.webapp_settings_col().update_one({'_id': uid}, {'$set': {'appearance.file_view': 'grid', 'general.compact_tables': True, 'custom.marker': 'kept'}}, upsert=True)
+        result = await models_db.update_webapp_settings(uid, {'appearance': {'theme': 'light'}})
+        stored = await models_db.webapp_settings_col().find_one({'_id': uid})
+        assert result['appearance']['theme'] == 'light'
+        assert result['appearance']['file_view'] == 'grid'
+        assert result['general']['compact_tables'] is True
+        assert stored['custom']['marker'] == 'kept'
+        assert uid not in models_db._settings_cache
+        with pytest.raises(ValueError):
+            await models_db.update_webapp_settings(uid, {'appearance': {'theme': 'invalid'}})
+        assert (await models_db.webapp_settings_col().find_one({'_id': uid}))['appearance']['theme'] == 'light'
+    run(go())
+
+
+def test_settings_disjoint_updates_and_uncertain_write_invalidate_cache(monkeypatch):
+    import asyncio
+    async def go():
+        await reset_db()
+        models_db._settings_cache.clear()
+        uid = 898103
+        await models_db.get_webapp_settings(uid)
+        await asyncio.gather(
+            models_db.update_webapp_settings(uid, {'appearance': {'theme': 'light'}}),
+            models_db.update_webapp_settings(uid, {'general': {'compact_tables': True}}),
+        )
+        stored = await models_db.webapp_settings_col().find_one({'_id': uid})
+        assert stored['appearance']['theme'] == 'light'
+        assert stored['general']['compact_tables'] is True
+        await models_db.get_webapp_settings(uid)
+        class FailingCollection:
+            async def update_one(self, *args, **kwargs):
+                raise RuntimeError('unknown write outcome')
+        monkeypatch.setattr(models_db, 'webapp_settings_col', lambda: FailingCollection())
+        with pytest.raises(RuntimeError):
+            await models_db.update_webapp_settings(uid, {'appearance': {'theme': 'dark'}})
+        assert uid not in models_db._settings_cache
+    run(go())

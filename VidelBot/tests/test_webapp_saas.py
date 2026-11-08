@@ -1180,3 +1180,27 @@ def test_media_upload_failure_cleans_partial_files_and_blocks_symlink_escape(tmp
             assert (await cli.post(url, headers=owner, json={"op": "checksum", "file": "link/secret.txt"})).status == 403
             assert not (await (await cli.get(url, headers=owner)).json())["workspace_files"]
     run(go())
+
+
+def test_personal_settings_api_capability_and_account_isolation():
+    from platform_core import models_db
+    async def go():
+        models_db._settings_cache.clear()
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            first, _ = await _login_link(cli, 898201)
+            second, _ = await _login_link(cli, 898202)
+            assert (await cli.get('/api/v1/settings')).status == 401
+            response = await cli.get('/api/v1/settings', headers=first)
+            assert (await response.json())['capabilities']['atomic_field_updates'] is True
+            # A reload reads storage even if another worker changed a cached value.
+            await models_db.webapp_settings_col().update_one({'_id': 898201}, {'$set': {'general.compact_tables': True}}, upsert=True)
+            fresh = await cli.get('/api/v1/settings', headers=first)
+            assert (await fresh.json())['settings']['general']['compact_tables'] is True
+            assert (await cli.post('/api/v1/settings', headers={'Authorization': first['Authorization']}, json={'appearance': {'theme': 'light'}})).status == 403
+            response = await cli.post('/api/v1/settings', headers=first, json={'appearance': {'theme': 'light'}, 'user_id': 898202})
+            assert response.status == 200
+            assert (await response.json())['settings']['appearance']['theme'] == 'light'
+            other = await cli.get('/api/v1/settings', headers=second)
+            assert (await other.json())['settings']['appearance']['theme'] == 'dark'
+            assert (await cli.post('/api/v1/settings', headers=first, json={'appearance': {'theme': 'unknown'}})).status == 400
+    run(go())

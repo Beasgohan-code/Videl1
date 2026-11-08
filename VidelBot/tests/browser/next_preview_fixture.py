@@ -12,6 +12,7 @@ notifications = {}
 teams = {}
 roles = {}
 analytics_access = {}
+personal_settings = {}
 
 
 def error(message, status):
@@ -32,6 +33,7 @@ async def login(request):
         {'workspace_id': 'slow', 'name': 'Slow workspace'},
         {'workspace_id': 'bravo', 'name': 'Bravo workspace'},
     ]
+    personal_settings[token] = {"appearance": {"theme": "dark", "file_view": "list"}, "general": {"compact_tables": False}}
     records[token] = {}
     commands[token] = {}
     files[token] = {}
@@ -57,7 +59,7 @@ async def logout(request):
     if request.headers.get('X-CSRF-Token') != 'fixture-csrf':
         return error('CSRF required', 403)
     del sessions[token]
-    records.pop(token, None); commands.pop(token, None); files.pop(token, None); templates.pop(token, None); notifications.pop(token, None); teams.pop(token, None); roles.pop(token, None); analytics_access.pop(token, None)
+    records.pop(token, None); commands.pop(token, None); files.pop(token, None); templates.pop(token, None); notifications.pop(token, None); teams.pop(token, None); roles.pop(token, None); analytics_access.pop(token, None); personal_settings.pop(token, None)
     return web.json_response({'logged_out': True})
 
 
@@ -197,6 +199,18 @@ async def file_item(request):
     return web.json_response({'action':action})
 
 
+async def settings(request):
+    token = request.headers.get('Authorization', '').removeprefix('Bearer ')
+    if token not in sessions: return error('Unauthorized', 401)
+    if request.method == 'POST':
+        if request.headers.get('X-CSRF-Token') != 'fixture-csrf': return error('CSRF required', 403)
+        patch = await request.json()
+        for section in ('appearance', 'general'):
+            if section in patch: personal_settings[token][section].update(patch[section])
+        return web.json_response({'settings': personal_settings[token]})
+    return web.json_response({'settings': personal_settings[token], 'capabilities': {'atomic_field_updates': True}})
+
+
 async def old_app(_request):
     return web.Response(text='Synthetic fixture: existing Studio is not served here.', content_type='text/plain')
 
@@ -205,6 +219,7 @@ app = web.Application()
 app.router.add_post('/api/v1/auth/login', login)
 app.router.add_get('/api/v1/auth/me', me)
 app.router.add_post('/api/v1/auth/logout', logout)
+app.router.add_route('*', '/api/v1/settings', settings)
 app.router.add_post('/api/v1/workspaces', create)
 app.router.add_get('/api/v1/workspaces/{ws}', workspace)
 app.router.add_get('/api/v1/workspaces/{ws}/bots', workspace)

@@ -117,3 +117,12 @@ export function analyticsData(value:unknown):AnalyticsData {
  if(!nat(totals.stored_files)||!nat(totals.storage_bytes)||!nat(totals.period_uploads)||typeof comparison.files_delta!=='number'||!Number.isSafeInteger(comparison.files_delta)||!Array.isArray(series.days)||!Array.isArray(series.uploads)||!Array.isArray(series.storage_bytes_added)||series.days.length!==series.uploads.length||series.days.length!==series.storage_bytes_added.length||series.days.length>365||!series.days.every((d:unknown)=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d))||!series.uploads.every(nat)||!series.storage_bytes_added.every(nat))throw new Error('The server returned invalid analytics values.');
  return {storedFiles:totals.stored_files,storageBytes:totals.storage_bytes,periodUploads:totals.period_uploads,filesDelta:comparison.files_delta,sampled:value.file_sample_truncated,days:series.days,uploads:series.uploads,bytesAdded:series.storage_bytes_added};
 }
+
+export type PersonalSettings = {theme:'dark'|'light'|'system';fileView:'list'|'grid';compactTables:boolean;atomicFieldUpdates:boolean};
+/** The capability is opt-in: older servers can overwrite unrelated fields on write. */
+export function personalSettings(value:unknown):PersonalSettings {
+  if(!object(value)||!object(value.settings)||!object(value.settings.appearance)||!object(value.settings.general))throw new Error('The server returned invalid personal settings.');
+  const appearance=value.settings.appearance,general=value.settings.general;
+  if((appearance.theme!=='dark'&&appearance.theme!=='light'&&appearance.theme!=='system')||(appearance.file_view!=='list'&&appearance.file_view!=='grid')||typeof general.compact_tables!=='boolean')throw new Error('The server returned unsupported personal settings.');
+  return {theme:appearance.theme,fileView:appearance.file_view,compactTables:general.compact_tables,atomicFieldUpdates:object(value.capabilities)&&value.capabilities.atomic_field_updates===true};
+}

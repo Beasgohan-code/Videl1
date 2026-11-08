@@ -1023,7 +1023,7 @@ async def api_global_search(request: web.Request) -> web.Response:
 async def api_user_settings(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     if request.method == "GET":
-        return _ok({"settings": await models_db.get_webapp_settings(ctx.user_id)})
+        return _ok({"settings": await models_db.get_webapp_settings(ctx.user_id, use_cache=False), "capabilities": {"atomic_field_updates": True}})
     body = await _json_body(request)
     if body.get("reset"):
         return _ok({"settings": await models_db.reset_webapp_settings(ctx.user_id)})
