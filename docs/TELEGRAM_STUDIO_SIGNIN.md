@@ -14,10 +14,14 @@ error instead of silently ignoring a failed login. Existing one-time fragment
 links continue to work. A browser Telegram Login Widget/OIDC flow like Videl0's
 is not implemented here; it needs separate server verification, domain/BotFather
 configuration, replay protection and real-service testing. The Next preview also attempts automatic Mini App login and keeps a one-time-key
-fallback. Both interfaces remember an explicit sign-out in that browser tab,
-so reopening the page does not silently sign the user back in. The **Continue
-with Telegram** button requests another attempt, which needs a fresh Telegram
-launch if the proof was already consumed. Classic `/admin` uses a separate
+fallback. Both interfaces remember the signed-out launch's `auth_date` as a
+local UX hint, so reloading that same launch does not silently sign the user
+back in. A launch with a different timestamp may sign in automatically again;
+if the timestamp is unavailable or unchanged (including two launches in the
+same second), the user can use **Continue with Telegram** or request a fresh
+launch. The hint is never used to authenticate: the backend verifies all proofs.
+If a proof was already consumed, an explicit retry requires a fresh launch.
+Classic `/admin` uses a separate
 existing auth path and was not migrated.
 
 The SaaS login now consumes a digest of the verified signed hash in MongoDB using
@@ -44,7 +48,8 @@ Local validation (synthetic, not production):
 - Clean branch snapshot: 838 backend tests passed, 33 skipped (mock Mongo).
 - Full legacy JSDOM suite and 11 synthetic Next Chromium suites passed.
 - Signed synthetic Mini App data against the local aiohttp backend in Chromium
-  verified initial login, session reload and replay rejection; the Next fixture
+  verified initial login, session reload, sign-out, replay rejection and a new
+  launch in the same tab; the Next fixture
   uses a fake SDK/API and verifies its own login, failure and sign-out flows.
 - Astro/Next typecheck and build passed. Real MongoDB majority-write, TTL and
   multi-worker behavior and real Telegram client launch are still unverified.

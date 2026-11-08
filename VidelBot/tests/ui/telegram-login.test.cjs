@@ -41,11 +41,24 @@ function setup(hash='',fail=false){
  assert.equal(signedOut.calls.length,0);assert.equal(signedOut.d.getElementById('btn-telegram-login').hidden,false);
  signedOut.d.getElementById('btn-telegram-login').click();await flush();assert.deepEqual(signedOut.calls,[{init_data:'signed-synthetic'}]);
  assert.equal(signedOut.w.sessionStorage.getItem('videl_telegram_signed_out'),null);signedOut.dom.window.close();
+ // A fresh Telegram launch in the same tab may sign in again after sign-out;
+ // the same signed-out launch remains opted out. Timestamp is not identity.
+ const same=setup('#tgWebAppData=synthetic');same.w.sessionStorage.setItem('videl_telegram_signed_out','100');
+ same.w.Telegram={WebApp:{initData:'auth_date=100&hash=synthetic'}};same.w.eval(js);await flush();assert.equal(same.calls.length,0);same.dom.window.close();
+ const fresh=setup('#tgWebAppData=synthetic');fresh.w.sessionStorage.setItem('videl_telegram_signed_out','100');
+ fresh.w.Telegram={WebApp:{initData:'auth_date=101&hash=synthetic'}};fresh.w.eval(js);await flush();
+ assert.deepEqual(fresh.calls,[{init_data:'auth_date=101&hash=synthetic'}]);assert.equal(fresh.w.sessionStorage.getItem('videl_telegram_signed_out'),null);fresh.dom.window.close();
  // A failed account load must not strand a newly created token in the tab.
  const broken=setup();broken.w.sessionStorage.setItem('videl_telegram_signed_out','1');broken.w.Telegram={WebApp:{initData:'signed-synthetic'}};
  const originalFetch=broken.w.fetch;broken.w.fetch=(url,opts)=>url==='/api/v1/auth/me'?Promise.resolve(json({error:'Unavailable'},503)):originalFetch(url,opts);
  broken.w.eval(js);await flush();broken.d.getElementById('btn-telegram-login').click();await flush();
- assert.equal(broken.w.sessionStorage.getItem('videl_saas_tok'),null);assert.equal(broken.d.getElementById('auth-screen').hidden,false);broken.dom.window.close();
+ assert.equal(broken.w.sessionStorage.getItem('videl_saas_tok'),null);assert.equal(broken.w.sessionStorage.getItem('videl_telegram_signed_out'),'1');assert.equal(broken.d.getElementById('auth-screen').hidden,false);broken.dom.window.close();
+ // Failed bootstrap after an automatic exchange leaves no token and stops a
+ // reload from repeating the consumed launch.
+ const bootFail=setup('#tgWebAppData=synthetic');bootFail.w.Telegram={WebApp:{initData:'auth_date=101&hash=synthetic'}};
+ const fetchBoot=bootFail.w.fetch;bootFail.w.fetch=(url,opts)=>url==='/api/v1/auth/me'?Promise.resolve(json({error:'Unavailable'},503)):fetchBoot(url,opts);
+ bootFail.w.eval(js);await flush();assert.equal(bootFail.w.sessionStorage.getItem('videl_saas_tok'),null);
+ assert.equal(bootFail.w.sessionStorage.getItem('videl_telegram_signed_out'),'101');assert.match(bootFail.d.getElementById('auth-error').textContent,/workspace/i);bootFail.dom.window.close();
  // Invalid proof fails visibly, with no client-side identity or session.
  const bad=setup('#tgWebAppData=synthetic',true);bad.w.Telegram={WebApp:{initData:'invalid',initDataUnsafe:{user:{id:1}}}};bad.w.eval(js);await flush();
  assert.equal(bad.w.sessionStorage.getItem('videl_saas_tok'),null);assert.match(bad.d.getElementById('auth-error').textContent,/Reopen|reopen/);assert.equal(bad.d.getElementById('auth-screen').hidden,false);bad.dom.window.close();

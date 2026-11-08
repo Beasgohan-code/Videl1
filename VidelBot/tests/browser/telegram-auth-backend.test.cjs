@@ -3,14 +3,14 @@ const {chromium}=require('playwright-core');
 const crypto=require('node:crypto');
 const assert=require('node:assert/strict');
 const base='http://127.0.0.1:8088';
-function proof(){
- const fields={auth_date:String(Math.floor(Date.now()/1000)),query_id:'synthetic-browser-launch',user:JSON.stringify({id:87654,first_name:'Synthetic'})};
+function proof(offset=0){
+ const fields={auth_date:String(Math.floor(Date.now()/1000)+offset),query_id:'synthetic-browser-launch',user:JSON.stringify({id:87654,first_name:'Synthetic'})};
  const secret=crypto.createHmac('sha256','WebAppData').update('123456:TEST').digest();
  fields.hash=crypto.createHmac('sha256',secret).update(Object.keys(fields).sort().map(k=>`${k}=${fields[k]}`).join('\n')).digest('hex');
  return new URLSearchParams(fields).toString();
 }
 (async()=>{
- const signed=proof();const b=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});
+ let signed=proof();const b=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});
  try{
   const page=await b.newPage({viewport:{width:390,height:844}}),statuses=[];
   await page.route('https://telegram.org/js/telegram-web-app.js',route=>route.fulfill({status:200,contentType:'text/javascript',body:`window.Telegram={WebApp:{initData:${JSON.stringify(signed)},initDataUnsafe:{user:{id:1}}}}`}));
@@ -23,6 +23,7 @@ function proof(){
   await page.locator('#btn-telegram-login').click();await page.locator('#auth-error').waitFor({state:'visible'});
   assert.match(await page.locator('#auth-error').innerText(),/reopen/i);assert.deepEqual(statuses,[200,401]);
   assert.equal(await page.evaluate(()=>sessionStorage.getItem('videl_saas_tok')),null);
-  await page.close();console.log('Synthetic signed login, reload, logout and replay rejection passed against local backend + mock Mongo');
+  signed=proof(1);await page.reload();await page.locator('#app-shell').waitFor({state:'visible'});assert.deepEqual(statuses,[200,401,200]);
+  await page.close();console.log('Synthetic signed login, reload, logout, replay rejection and fresh launch passed against local backend + mock Mongo');
  }finally{await b.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});

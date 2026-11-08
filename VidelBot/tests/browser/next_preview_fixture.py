@@ -26,7 +26,7 @@ def account(request):
 
 async def login(request):
     body = await request.json()
-    if body.get('link') not in ('l.valid', 'l.empty', 'l.readonly', 'l.noanalytics') and body.get('init_data') != 'synthetic-signed-launch':
+    if body.get('link') not in ('l.valid', 'l.empty', 'l.readonly', 'l.noanalytics') and body.get('init_data') not in ('synthetic-signed-launch', 'auth_date=101&hash=synthetic'):
         return error('Sign-in link expired or already used.', 401)
     token = secrets.token_urlsafe(18)
     sessions[token] = [] if body.get('link') == 'l.empty' else [

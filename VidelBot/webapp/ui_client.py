@@ -2289,7 +2289,7 @@ CLIENT_JS = r"""
   };
 
   $("btn-logout").onclick = async () => {
-    sessionStorage.setItem("videl_telegram_signed_out", "1");
+    rememberTelegramSignOut();
     try { await api("/api/v1/auth/logout", { method: "POST", body: {} }); } catch (_) {}
     clearSession();
     showTelegramButton();
@@ -2311,6 +2311,22 @@ CLIENT_JS = r"""
   };
 
   /* Telegram launch data is verified by the server; never use initDataUnsafe. */
+  // The timestamp is only a local sign-out hint, not proof of identity. If the
+  // SDK cannot provide one, stay signed out until an explicit retry.
+  function telegramLaunchDate(initData) {
+    if (typeof initData !== "string" || initData.length > 8192) return "";
+    const date = new URLSearchParams(initData).get("auth_date") || "";
+    return /^\d{1,12}$/.test(date) && date !== "1" ? date : "";
+  }
+  function rememberTelegramSignOut() {
+    sessionStorage.setItem("videl_telegram_signed_out", telegramLaunchDate(window.Telegram?.WebApp?.initData) || "1");
+  }
+  function telegramAutoAllowed(initData) {
+    const signedOut = sessionStorage.getItem("videl_telegram_signed_out");
+    if (!signedOut) return true;
+    const date = telegramLaunchDate(initData);
+    return signedOut !== "1" && !!date && date !== signedOut;
+  }
   function waitForTelegramSdk() {
     if (window.Telegram?.WebApp) return Promise.resolve();
     const script = $("telegram-web-app");
@@ -2337,12 +2353,12 @@ CLIENT_JS = r"""
     let saved = false;
     try {
       const res = await api("/api/v1/auth/login", {method:"POST", body:{init_data:initData}});
-      sessionStorage.removeItem("videl_telegram_signed_out");
       saveSession(res.session_token, res.csrf_token);
       saved = true;
       await bootstrapSession();
+      sessionStorage.removeItem("videl_telegram_signed_out");
     } catch (_) {
-      if (saved) clearSession();
+      if (saved) { rememberTelegramSignOut(); clearSession(); }
       $("auth-error").hidden = false;
       $("auth-error").textContent = "Telegram could not sign you in. Close and reopen Studio from the bot, or use a one-time key.";
     } finally {
@@ -2357,10 +2373,11 @@ CLIENT_JS = r"""
     // Some Telegram clients restore launch data from SDK storage rather than a
     // visible fragment. Do not interrupt manual entry or an explicit sign-out.
     if (allowLateTelegram && !authPending && !S.token && !$("auth-token-input").value.trim()
-        && sessionStorage.getItem("videl_telegram_signed_out") !== "1") void signInTelegram();
+        && telegramAutoAllowed(window.Telegram?.WebApp?.initData)) void signInTelegram();
   });
   (async () => {
     setAuthPending(true);
+    let telegramExchange = false;
     try {
       applyTheme(localStorage.getItem("videl_theme") || "dark");
       const hash = (location.hash || "").slice(1);
@@ -2384,10 +2401,11 @@ CLIENT_JS = r"""
           await waitForTelegramSdk();
         }
         const initData = window.Telegram?.WebApp?.initData;
-        if (typeof initData === "string" && initData && sessionStorage.getItem("videl_telegram_signed_out") !== "1") {
+        if (typeof initData === "string" && initData && telegramAutoAllowed(initData)) {
           try {
             const res = await api("/api/v1/auth/login", { method: "POST", body: { init_data: initData } });
             saveSession(res.session_token, res.csrf_token);
+            telegramExchange = true;
           } catch (_) {
             $("auth-error").hidden = false;
             $("auth-error").textContent = "Telegram could not sign you in. Close and reopen Studio from the bot, or use a one-time key.";
@@ -2398,7 +2416,15 @@ CLIENT_JS = r"""
         }
       }
       if (S.token) {
-        try { await bootstrapSession(); } catch (_) { clearSession(); }
+        try {
+          await bootstrapSession();
+          if (telegramExchange) sessionStorage.removeItem("videl_telegram_signed_out");
+        } catch (_) {
+          if (telegramExchange) rememberTelegramSignOut();
+          clearSession();
+          $("auth-error").hidden = false;
+          $("auth-error").textContent = "Could not load your workspace. Reopen Studio from the bot or use a one-time key.";
+        }
       }
     } finally {
       $("auth-status").hidden = true;
