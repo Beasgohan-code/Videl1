@@ -1,0 +1,4 @@
+var title='Code breaker',secret,guess,tries,done,result;
+function start(){secret=shuffle([1,2,3,4,5,6]).slice(0,3);guess=[];tries=0;done=false;result='';draw()}
+function draw(){say(done?result:'Choose three different digits (1–6). '+guess.join(' ')+' · '+tries+'/6 tries. '+result);grid(['1','2','3','4','5','6','Clear','Enter'],4,play)}
+function play(i){if(done)return;if(i<6){if(guess.length<3&&guess.indexOf(i+1)<0)guess.push(i+1)}else if(i===6)guess=[];else if(guess.length===3){tries++;var exact=0,present=0;for(var j=0;j<3;j++){if(guess[j]===secret[j])exact++;else if(secret.indexOf(guess[j])>=0)present++}if(exact===3){done=true;result='Code cracked!'}else if(tries===6){done=true;result='Out of tries. Code: '+secret.join(' ')}else result='Last '+guess.join(' ')+': '+exact+' exact, '+present+' right digit wrong place.';guess=[]}draw()}

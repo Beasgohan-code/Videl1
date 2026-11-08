@@ -35,6 +35,13 @@
       "author": "Videl",
       "description": "Richgram group management & Bot API 10.3 moderation (bans, mutes, warns, member tags, reaction moderation, topics, join-requests, locks, anti-raid, welcome/rules & filters)",
       "commands": ["gsettings", "gban", "mute", "warn", "tag", "clearreactions", "topic", "joinmode", "rules", "welcome", "lock", "gfilter", "antiraid", "modreport"]
+    },
+    {
+      "name": "game",
+      "version": "1.0.0",
+      "author": "Videl",
+      "description": "Single-player chat arcade with optional beta widgets",
+      "commands": ["game"]
     }
   ]
 }

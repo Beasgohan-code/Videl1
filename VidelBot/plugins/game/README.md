@@ -1,0 +1,23 @@
+# Videl Arcade
+
+`/game` opens a playable, single-player Tic-tac-toe board using regular Telegram inline buttons. Tap **More widget games** to browse the widget catalogue: Triple Play (Tic-tac-toe, Pairs and Lights), plus Sliding Tiles, Minefield, Sudoku 4×4, Maze, Merge 128, Connect Four, Take the Last, Rock Paper Scissors, Word Rescue, Mini Reversi, Snake, Target Tap, Reaction Test, Number Rush, Pattern Memory, Math Sprint, Word Scramble, Quick Trivia, Higher or Lower, and Code Breaker. All are small, self-contained touch games; the timing games have explicit start or restart controls, and Snake and Target Tap also have pause controls.
+
+## Source layout
+
+The source is intentionally split: `shell.html` and `arcade.html` contain the markup; `arcade.css` and `classic.css` contain the styles; `engine.js`, `classic.js`, and the twenty files in `games/` contain the gameplay and UI logic. `plugin.py` assembles the selected trusted local files into a single widget document when sending. This is necessary because the Telegram widget sandbox does not fetch external stylesheets or scripts. Template markers and closing tags are checked before assembly, and the final raw and compressed sizes are checked before sending.
+
+## Availability and safe opt-in
+
+Widget support is experimental. The provided [Telegram widget format](https://github.com/TelegramMessenger/widget-sandbox/blob/main/docs/tgw-format.md#the-bot-api-104) describes Bot API 10.4 beta; Videl's bundled aiogram targets Bot API 10.3. The implementation uses an aiogram `TelegramMethod` for an **outgoing** `sendWidget` call only, using Videl's existing primary bot bridge and endpoint. It checks that the incoming client and outgoing bot IDs match, carries a topic ID when present, uses no query permissions, and does not run a competing receiver. The regular command and menu callbacks remain on Videl's existing WzGram receiver. It does **not** configure Telegram beta test infrastructure or automatically switch endpoints.
+
+`GAME_WIDGETS_BETA` defaults to false. Set it to `True` only in a deliberately isolated environment with an endpoint and client confirmed to support this beta method, after checking the current Telegram specification. `AIOGRAM_ENABLED` must also be enabled and the primary bot must be configured. A normal or custom Bot API endpoint that lacks `sendWidget`, an incompatible client, or a timeout may prevent the widget appearing. Failures never log the exception text, since it can contain credentials. The chat Tic-tac-toe game remains available. On older Telegram clients the widget itself may appear unsupported; the separate chat board is the fallback. Setting the flag does not upgrade Telegram clients or make production API support available.
+
+No game requires a network connection inside the widget, bot queries, external images, custom fonts, or third-party JavaScript. The compact inline vector icons are original to this plugin. Each viewer plays locally; the games do not implement multiplayer, leaderboards, rewards, server scores or shared progress. Progress is memory-only and can be lost when the widget is stopped, reloaded or the client discards it. Chat boards are encoded in their buttons and tied to the initiating user; simultaneous taps on stale buttons may race, especially across workers. They are casual games, not authoritative records. No game data is saved to MongoDB. In topic chats the bot uses the topic identifier when provided by the incoming client.
+
+The widget profile currently describes touch interactions rather than normal keyboard support and does not guarantee accessibility semantics for `aria-*`. Shape and text cues accompany color, and timing games are optional, but this is not a claim of screen-reader support or WCAG conformance; native-client and accessibility testing remain necessary.
+
+## Testing
+
+Run `python -m pytest tests/test_game.py -q` from `VidelBot`, and `npm ci && node game-arcade.test.cjs` in `VidelBot/tests/ui`. The latter is a synthetic JSDOM gameplay suite with test-only state inspection; it is not a Telegram-client test. Python tests check the menu, owner isolation, topic routing, size limits, opt-in, identity checks and error redaction with fake clients. Telegram's `widget-sandbox` can additionally validate the assembled HTML against its QuickJS runtime and renderer; this still does not prove live Bot API delivery or behavior in real Telegram clients. Validate the current beta endpoint, actual client versions, forum topics and old-client fallback with a separate test bot before any rollout.
+
+Telegram permits at most 100 commands in a scope. To make room for `/game` in the owner menu, `/sh` is no longer advertised there; its existing owner-only handler is unchanged.
