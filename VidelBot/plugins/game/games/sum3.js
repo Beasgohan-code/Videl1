@@ -1,0 +1,4 @@
+var title='Triple Sum',numbers,chosen,target,done,attempts,last;
+function start(){numbers=shuffle([1,2,3,4,5,6,7,8,9]);var picks=shuffle([0,1,2,3,4,5,6,7,8]);target=numbers[picks[0]]+numbers[picks[1]]+numbers[picks[2]];chosen=[];done=false;attempts=0;last='';draw()}
+function draw(){var total=chosen.reduce(function(s,i){return s+numbers[i]},0);say(done?'Solved in '+attempts+' tries! Target: '+target:last+'Choose 3 numbers to make '+target+'. Selected: '+total+'.');grid(numbers.map(function(n,i){return {text:String(n),on:chosen.indexOf(i)>=0}}),3,play)}
+function play(i){if(done)return;last='';var k=chosen.indexOf(i);if(k>=0)chosen.splice(k,1);else if(chosen.length<3)chosen.push(i);if(chosen.length===3){attempts++;var total=chosen.reduce(function(s,j){return s+numbers[j]},0);if(total===target)done=true;else{chosen=[];last='Try again. '}}draw()}

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import secrets
 import zlib
 from pathlib import Path
 
@@ -35,9 +36,11 @@ GAMES = (
     ("trivia", "Quick trivia"), ("higher", "Higher or lower"),
     ("code", "Code breaker"), ("trio", "Puzzle trio · 3 in 1"),
     ("towers", "Tower puzzle"), ("flood", "Color flood"),
-    ("dots", "Dots & boxes"),
+    ("dots", "Dots & boxes"), ("sum3", "Triple sum"),
+    ("twentyone", "Twenty one"),
 )
 GAME_KEYS = frozenset(key for key, _ in GAMES)
+WIDGET_KEYS = GAME_KEYS | {"live"}
 # Original compact vector marks; no network assets or third-party image licences.
 ART = {
     "puzzle": '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><path d="M16 13v8m-4-4h8"/></svg>',
@@ -58,6 +61,7 @@ STYLES = {
     "higher": ("brain", "#b2dbff"), "code": ("brain", "#ffe097"),
     "trio": ("puzzle", "#81ddcf"), "towers": ("puzzle", "#ffd083"),
     "flood": ("puzzle", "#8ee7bd"), "dots": ("classic", "#e9abff"),
+    "sum3": ("brain", "#b4ddff"), "twentyone": ("classic", "#eac1a1"),
 }
 PAGE_SIZE = 6
 MENU_CALLBACK = re.compile(r"\Avgg:([1-9][0-9]{0,19}):(page|play|chat|cat):([a-z0-9]+)\Z")
@@ -130,9 +134,9 @@ def game_menu(uid: int, page: int, category: str = "all"):
     last = (len(entries) - 1) // PAGE_SIZE
     page = max(0, min(page, last))
     text = ("🎮 <b>Videl Arcade · Widget games</b>\n"
-            "26 single-player games: puzzles, classics, action and brain games. "
+            "28 single-player games: puzzles, classics, action and brain games. "
             "Widgets require Telegram's beta support; "
-            "progress stays on this device and may reset.\n"
+            "progress stays on this device and may reset. /game keys lists shortcuts.\n"
             + ("Widget beta is off here; the chat games are still available.\n"
                if not _widget_enabled() else
                "Widget sending is unavailable; the chat games are still available.\n"
@@ -154,6 +158,7 @@ def game_menu(uid: int, page: int, category: str = "all"):
         nav.append(InlineKeyboardButton("Next ›", callback_data=page_data(page + 1)))
     if nav:
         rows.append(nav)
+    rows.append([InlineKeyboardButton("🔎 Live widget log", callback_data=f"vgg:{uid}:play:live")])
     rows.append([InlineKeyboardButton("🕹 Play chat games", callback_data=f"vgc:{uid}:menu")])
     return text, InlineKeyboardMarkup(rows)
 
@@ -166,9 +171,16 @@ def _replace_once(source: str, marker: str, content: str) -> str:
 
 def widget_html(key: str) -> str:
     """Assemble trusted local HTML, CSS and JS for Telegram's no-network sandbox."""
-    if key not in GAME_KEYS:
+    if key not in WIDGET_KEYS:
         raise ValueError("Unknown game")
     root = WIDGET.parent
+    if key == "live":
+        template = (root / "log.html").read_text(encoding="utf-8")
+        css = (root / "log.css").read_text(encoding="utf-8")
+        script = (root / "log.js").read_text(encoding="utf-8")
+        if "</style" in css.lower() or "</script" in script.lower():
+            raise ValueError("Invalid widget source")
+        return _replace_once(_replace_once(template, "/* LOG_STYLES */", css), "/* LOG_SCRIPT */", script)
     if key == "classic":
         template = WIDGET.read_text(encoding="utf-8")
         css = (root / "classic.css").read_text(encoding="utf-8")
@@ -243,9 +255,12 @@ async def send_widget(client, chat_id: int, key: str = "classic", thread_id: int
             height: int | None = None
             caption: str = "Videl Arcade: single-player games. On older clients, play using the buttons above."
 
+        caption = ("Videl Arcade: local SDK event log. This widget needs a supported client."
+                   if key == "live" else
+                   "Videl Arcade: single-player games. On older clients, play using the buttons above.")
         mode = os.environ.get("GAME_WIDGETS_API_MODE", "beta").strip().lower()
         await widget_transport.send(outgoing, SendWidget(chat_id=chat_id, html=html,
-                                                         message_thread_id=thread_id),
+                                                         message_thread_id=thread_id, caption=caption),
                                     mode=mode, timeout=botapi.REQUEST_TIMEOUT)
         return True
     except Exception as exc:
@@ -259,8 +274,38 @@ async def game_command(client, message):
     if not user:
         await message.reply_text("Start /game as a user to play.")
         return
+    args = (getattr(message, "command", None) or [])[1:]
+    if len(args) > 1:
+        await message.reply_text("Use /game, /game list, /game keys, /game chat, /game random, /game live or /game &lt;game key&gt;.")
+        return
+    choice = args[0].lower() if args else ""
+    if choice == "keys":
+        await message.reply_text("🎮 Widget shortcuts: " + ", ".join(key for key, _ in GAMES) +
+                                 "\nUse /game &lt;key&gt;, /game random or /game live. "
+                                 "Widgets require a compatible endpoint and client.")
+        return
+    if choice == "list":
+        text, markup = game_menu(user.id, 0)
+        await message.reply_text(text, reply_markup=markup)
+        return
+    if choice == "chat":
+        text, markup = chat_games.menu(user.id)
+        await message.reply_text(text, reply_markup=markup)
+        return
+    if choice and choice != "random" and choice not in WIDGET_KEYS:
+        await message.reply_text("Unknown game key. Use /game list to browse or /game chat for button games.")
+        return
     text, markup = screen(user.id, "---------")
     await message.reply_text(text, reply_markup=markup)
+    if not choice:
+        return
+    key = secrets.choice(sorted(GAME_KEYS)) if choice == "random" else choice
+    if not _widget_enabled() or not botapi.enabled():
+        await message.reply_text("Widget sending is unavailable here. The chat game above still works.")
+        return
+    from core.ui import thread_id_of
+    if not await send_widget(client, message.chat.id, key, thread_id_of(message)):
+        await message.reply_text("Widget unavailable. The chat game above still works; try /game list.")
 
 
 @Client.on_callback_query(filters.regex(r"^vga:"))
@@ -321,11 +366,11 @@ async def game_menu_callback(client, query):
         await query.answer()
         text, markup = game_menu(uid, int(category.group(2)), category.group(1))
         await query.edit_message_text(text, reply_markup=markup)
-    elif action == "play" and value in GAME_KEYS:
+    elif action == "play" and value in WIDGET_KEYS:
         if not _widget_enabled() or not botapi.enabled():
             await query.answer("Widget sending is unavailable here. The chat games still work.", show_alert=True)
             return
-        await query.answer("Opening game…")
+        await query.answer("Opening widget…" if value == "live" else "Opening game…")
         from core.ui import thread_id_of
         sent = await send_widget(client, query.message.chat.id, value, thread_id_of(query.message))
         if not sent:

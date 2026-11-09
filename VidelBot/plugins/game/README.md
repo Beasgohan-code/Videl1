@@ -1,10 +1,10 @@
 # Videl Arcade
 
-`/game` opens a single-player Tic-tac-toe board using regular Telegram inline buttons. Tap **More chat games** for Take the Last, Rock Paper Scissors and Higher or Lower: these also use ordinary Telegram buttons and do not need widget beta. Tap **Widget games** to browse the widget catalogue by category: Triple Play (Tic-tac-toe, Pairs and Lights), plus Sliding Tiles, Minefield, Sudoku 4×4, Maze, Merge 128, Connect Four, Take the Last, Rock Paper Scissors, Word Rescue, Mini Reversi, Snake, Target Tap, Reaction Test, Number Rush, Pattern Memory, Math Sprint, Word Scramble, Quick Trivia, Higher or Lower, Code Breaker, Tower Puzzle, Color Flood and Dots & Boxes. Puzzle Trio puts Sliding Tiles, Minefield and Maze into one widget with instant local tabs (switching resets the current puzzle). All are small, self-contained touch games; the timing games have explicit start or restart controls, and Snake and Target Tap also have pause controls.
+`/game` opens a single-player Tic-tac-toe board using regular Telegram inline buttons. Tap **More chat games** for Take the Last, Rock Paper Scissors and Higher or Lower: these also use ordinary Telegram buttons and do not need widget beta. Tap **Widget games** to browse the widget catalogue by category: Triple Play (Tic-tac-toe, Pairs and Lights), plus Sliding Tiles, Minefield, Sudoku 4×4, Maze, Merge 128, Connect Four, Take the Last, Rock Paper Scissors, Word Rescue, Mini Reversi, Snake, Target Tap, Reaction Test, Number Rush, Pattern Memory, Math Sprint, Word Scramble, Quick Trivia, Higher or Lower, Code Breaker, Tower Puzzle, Color Flood, Dots & Boxes, Triple Sum and Twenty One (no betting). Puzzle Trio puts Sliding Tiles, Minefield and Maze into one widget with instant local tabs (switching resets the current puzzle). Use `/game list` for the catalogue, `/game keys` for shortcuts, `/game <key>` to send a selected widget, `/game random` for a random game, or `/game chat` for the regular-button menu. Widget shortcuts first send the fallback board; they still need the widget opt-in and a compatible client. All are small, self-contained touch games; the timing games have explicit start or restart controls, and Snake and Target Tap also have pause controls.
 
 ## Source layout
 
-The source is intentionally split: `shell.html` and `arcade.html` contain the markup; `arcade.css`, `classic.css` and `tabs.css` contain the styles; `engine.js`, `classic.js`, and the gameplay files in `games/` and `tabs.js` contain the gameplay and UI logic. `plugin.py` assembles the selected trusted local files into a single widget document when sending. This is necessary because the Telegram widget sandbox does not fetch external stylesheets or scripts. Template markers and closing tags are checked before assembly, and the final raw and compressed sizes are checked before sending.
+The source is intentionally split: `shell.html` and `arcade.html` contain the markup; `arcade.css`, `classic.css`, `tabs.css` and `log.css` contain the styles; `engine.js`, `classic.js`, and the gameplay files in `games/`, `tabs.js` and `log.js` contain the gameplay and UI logic. `plugin.py` assembles the selected trusted local files into a single widget document when sending. This is necessary because the Telegram widget sandbox does not fetch external stylesheets or scripts. Template markers and closing tags are checked before assembly, and the final raw and compressed sizes are checked before sending.
 
 ## Availability and safe opt-in
 
@@ -16,7 +16,24 @@ No game requires a network connection inside the widget, bot queries, external i
 
 The widget profile currently describes touch interactions rather than normal keyboard support and does not guarantee accessibility semantics for `aria-*`. Shape and text cues accompany color, and timing games are optional, but this is not a claim of screen-reader support or WCAG conformance; native-client and accessibility testing remain necessary.
 
+## Live widget log
+
+The catalogue's **Live widget log**, also available with `/game live`, is a local SDK event viewer, not a Telegram renderer log or remote telemetry. It shows profile, theme and activity state, records up to four event names and tap tests in memory, and has clear and (where supported) copy controls. It never records identities, chat or public-data contents, and sends no widget queries or network requests. The list resets if the widget is recreated and is not a persistent audit record. Telegram does not expose its internal renderer diagnostics to widget code; use the official `widget-sandbox` harness for validator diagnostics, size, layout and gesture investigation. A widget that stops cannot report its own stop from inside its frozen view. A copy request depends on a real user tap and compatible SDK; the client does not confirm clipboard success to the widget.
+
 ## Testing
+
+Export one built-in widget for the official sandbox (requires the repository's Python dependencies, Node and the sandbox's pnpm dependencies):
+
+```sh
+# Run in a clean directory/environment without production credentials.
+# Replace the two example paths; existing output files are not overwritten.
+cd /tmp
+env -i PATH="$PATH" PYTHONPATH=/path/to/VidelBot /path/to/venv/bin/python -m plugins.game.export_widget live /tmp/videl-live.html
+# From a separate checkout of TelegramMessenger/widget-sandbox:
+corepack pnpm tsx packages/core/scripts/sandbox-node.ts /tmp/videl-live.html --width 320
+```
+
+The harness prints the validator and renderer diagnostics and measured height; `--tap x,y` can exercise a real renderer gesture. Renderer layout requires a working Playwright Chromium installation. This exports only trusted built-in widgets; do not execute arbitrary user HTML in the privileged bot or web server. Run the development sandbox separately, without production credentials.
 
 Run `python -m pytest tests/test_game.py -q` from `VidelBot`, and `npm ci && node game-arcade.test.cjs` in `VidelBot/tests/ui`. The latter is a synthetic JSDOM gameplay suite with test-only state inspection; it is not a Telegram-client test. Python tests check chat-game rounds and isolation, catalogue filters, topic routing, size limits, opt-in, identity checks and error redaction with fake clients. Telegram's `widget-sandbox` can additionally validate the assembled HTML against its QuickJS runtime and renderer; this still does not prove live Bot API delivery or behavior in real Telegram clients. Validate the current beta endpoint, actual client versions, forum topics and old-client fallback with a separate test bot before any rollout.
 

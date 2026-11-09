@@ -105,7 +105,7 @@ def test_plugin_discovery_and_widget_size():
     from plugins.game import plugin as game
     assert 'game' in plugin_manager.manifests
     assert not plugin_manager.command_conflicts(plugin_manager.manifests['game'])
-    assert len(game.GAMES) == 25 and len(game.GAME_KEYS) == 25
+    assert len(game.GAMES) == 27 and len(game.GAME_KEYS) == 27
     for key, _ in game.GAMES:
         raw = game.widget_html(key).encode()
         assert len(raw) <= 32768 and len(zlib.compress(raw, 9)) < 3800
@@ -124,13 +124,13 @@ def test_menu_all_games_callbacks_and_beta_disabled(monkeypatch):
     seen = set()
     for page in range(5):
         text, markup = game.game_menu(77, page)
-        assert '26 single-player games' in text
+        assert '28 single-player games' in text
         for row in markup.inline_keyboard:
             for button in row:
                 assert len(button.callback_data.encode()) <= 64
                 if ':play:' in button.callback_data:
                     seen.add(button.callback_data.split(':')[-1])
-    assert seen == game.GAME_KEYS
+    assert seen == game.WIDGET_KEYS
     foreign = FakeQuery('vgg:77:page:0', uid=78, message=msg)
     run(game.game_menu_callback(c, foreign))
     assert foreign.answers[-1][1] and not msg.edits
@@ -231,13 +231,14 @@ def test_chat_game_callback_and_categories():
     plugin_manager._enabled['game'] = True
     for category, _ in game.CATEGORIES:
         text, markup = game.game_menu(77, 0, category)
-        assert '26 single-player games' in text
+        assert '28 single-player games' in text
         for row in markup.inline_keyboard:
             for button in row:
                 assert len(button.callback_data.encode()) <= 64
                 if ':play:' in button.callback_data and category != 'all':
                     key = button.callback_data.split(':')[-1]
-                    assert ('classic' if key == 'classic' else game.STYLES[key][0]) == category
+                    if key != 'live':
+                        assert ('classic' if key == 'classic' else game.STYLES[key][0]) == category
     q = FakeQuery('vgg:77:cat:action0', uid=77, message=msg)
     run(game.game_menu_callback(c, q))
     assert 'Action' in msg.edits[-1]
@@ -304,3 +305,66 @@ def test_beta_transport_is_isolated_outgoing_only_and_closed(monkeypatch):
     captured.clear()
     monkeypatch.setenv('GAME_WIDGETS_API_MODE', 'typo')
     assert not run(game.send_widget(client, 77)) and not captured
+
+
+def test_live_tool_assembly_size_and_distinct_caption(monkeypatch):
+    import zlib
+    from plugins.game import plugin as game
+    html = game.widget_html('live'); raw = html.encode()
+    assert len(raw) <= 32768 and len(zlib.compress(raw, 9)) <= 4096
+    assert 'not internal renderer logs' in html and 'TelegramWidget' in html
+    assert '/* LOG_' not in html and '<style>' in html and '<script>' in html
+    assert 'fetch(' not in html and 'TelegramWidget.request' not in html
+    class Outgoing:
+        id = 123456
+        async def __call__(self, method):
+            self.method = method
+            return SimpleNamespace(message_id=1)
+    bot = Outgoing()
+    monkeypatch.setattr(game.botapi, 'enabled', lambda: True)
+    monkeypatch.setattr(game.botapi, 'bot', lambda: bot)
+    monkeypatch.setenv('GAME_WIDGETS_BETA', '1')
+    monkeypatch.setenv('GAME_WIDGETS_API_MODE', 'configured')
+    client = FakeClient(); client.me.id = bot.id
+    assert run(game.send_widget(client, 77, 'live'))
+    assert 'event log' in bot.method.caption.lower()
+
+
+def test_game_shortcuts_fallback_and_topic(monkeypatch):
+    from plugins.game import plugin as game
+    c = FakeClient()
+    for cmd, expected in [('/game list', 'Widget games'), ('/game keys', 'sum3'), ('/game chat', 'Chat games'),
+                          ('/game invalid', 'Unknown game'), ('/game live extra', 'Use /game')]:
+        m = FakeMsg(cmd, uid=77); run(game.game_command(c, m)); assert expected.lower() in m.replies[-1].lower()
+    m = FakeMsg('/game live', uid=77); run(game.game_command(c, m))
+    assert 'Tic-tac-toe' in m.replies[0] and 'unavailable' in m.replies[-1].lower()
+    monkeypatch.setenv('GAME_WIDGETS_BETA', '1')
+    monkeypatch.setattr(game.botapi, 'enabled', lambda: True)
+    monkeypatch.setattr(game.secrets, 'choice', lambda items: 'sum3')
+    calls = []
+    async def send(client, chat, key, thread):
+        calls.append((chat, key, thread)); return True
+    monkeypatch.setattr(game, 'send_widget', send)
+    for command, key in [('/game live', 'live'), ('/game twentyone', 'twentyone'), ('/game random', 'sum3')]:
+        m = FakeMsg(command, uid=77, chat_id=-100123); m.message_thread_id = 42
+        run(game.game_command(c, m))
+        assert 'Tic-tac-toe' in m.replies[0] and calls[-1] == (-100123, key, 42)
+    m = FakeMsg('/game list', uid=77); run(game.game_command(c, m))
+    q = FakeQuery('vgg:77:play:live', uid=77, message=FakeMsg('menu'))
+    run(game.game_menu_callback(c, q)); assert calls[-1][1] == 'live' and q.answers[-1][0] == 'Opening widget…'
+
+
+def test_export_widget_only_builtin_and_no_overwrite(tmp_path):
+    import subprocess
+    import sys
+    out = tmp_path / 'widget.html'
+    cmd = [sys.executable, '-m', 'plugins.game.export_widget', 'live', str(out)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0 and 'zlib-9' in result.stdout
+    original = out.read_text()
+    assert 'Live widget log' in original
+    again = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    assert again.returncode != 0 and out.read_text() == original
+    invalid = subprocess.run([sys.executable, '-m', 'plugins.game.export_widget', '../../etc/passwd', str(tmp_path / 'other')],
+                             capture_output=True, text=True, timeout=30)
+    assert invalid.returncode != 0 and not (tmp_path / 'other').exists()
