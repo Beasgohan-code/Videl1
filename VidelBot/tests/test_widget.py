@@ -255,72 +255,25 @@ def test_invalid_mode_does_not_send(monkeypatch):
     assert "WIDGET_API_MODE" in msg.replies[-1]
 
 
-def test_tools_assembly_and_limits():
-    html = widget.tools_html()
-    assert "Everyday tools" in html and "/*CSS*/" not in html and "/*JS*/" not in html
-    assert len(html.encode()) <= 32768 and len(zlib.compress(html.encode(), 9)) <= 4096
-    assert "tw.request" not in html and "<script src=" not in html
-
-
-def test_tools_sender_identity_mode_and_thread(monkeypatch):
-    class Message:
-        chat = SimpleNamespace(id=123, type=enums.ChatType.PRIVATE)
-        message_thread_id = 12
-        def __init__(self): self.replies = []
-        async def reply_text(self, text): self.replies.append(text)
-    outgoing = SimpleNamespace(id=123, token="token")
-    monkeypatch.setattr(widget.botapi, "enabled", lambda: True)
-    monkeypatch.setattr(widget.botapi, "bot", lambda: outgoing)
-    monkeypatch.setenv("WIDGET_API_BETA", "true")
-    monkeypatch.setenv("WIDGET_API_MODE", "beta")
-    calls = []
-    async def send(*args): calls.append(args)
-    monkeypatch.setattr(widget.tool_sender, "send", send)
-    msg = Message()
-    assert not run(widget._send_tools(SimpleNamespace(me=SimpleNamespace(id=999)), msg))
-    assert not calls
-    assert run(widget._send_tools(SimpleNamespace(me=SimpleNamespace(id=123)), msg))
-    assert calls[0][0:3] == (outgoing, 123, 12)
-    assert "Everyday tools" in calls[0][3] and calls[0][4] == "beta"
-    monkeypatch.setenv("WIDGET_API_BETA", "false")
-    assert not run(widget._send_tools(SimpleNamespace(me=SimpleNamespace(id=123)), msg))
-    assert len(calls) == 1
-
-
-def test_widget_shortcuts_preserve_calculator(monkeypatch):
+def test_widget_shortcuts_preserve_calculator_and_tools_do_not_send(monkeypatch):
     calls = []
     async def calc(*args): calls.append("calculator")
-    async def tools(*args): calls.append("tools")
     monkeypatch.setattr(widget, "_send_widget", calc)
-    monkeypatch.setattr(widget, "_send_tools", tools)
     class Message:
         def __init__(self, text): self.text, self.replies = text, []
         async def reply_text(self, text): self.replies.append(text)
-    for text in ("/widget", "/widget calculator", "/widget tools"):
+    for text in ("/widget", "/widget calculator"):
         run(widget.widget_command(None, Message(text)))
-    assert calls == ["calculator", "calculator", "tools"]
-    message = Message("/widget help")
-    run(widget.widget_command(None, message))
-    assert "/widget tools" in message.replies[-1]
+    assert calls == ["calculator", "calculator"]
+    for text in ("/widget tools", "/widget help", "/widget tools extra"):
+        message = Message(text)
+        run(widget.widget_command(None, message))
+        assert "/web" in message.replies[-1]
+    assert calls == ["calculator", "calculator"]
 
 
-def test_aiogram_configured_sender_uses_one_outgoing_request():
-    calls = []
-    async def outgoing(method):
-        calls.append(method)
-        return True
-    assert run(widget.tool_sender.send(outgoing, 5, 7, "<b>Hi</b>", "configured")) is True
-    assert len(calls) == 1 and calls[0].__api_method__ == "sendWidget"
-    assert calls[0].chat_id == 5 and calls[0].message_thread_id == 7
-    assert "allow_queries" not in calls[0].model_dump(exclude_none=True)
-    with pytest.raises(ValueError):
-        run(widget.tool_sender.send(outgoing, 5, None, "", "bad"))
-    assert len(calls) == 1
-
-
-@pytest.mark.parametrize("sender", [widget._send_widget, widget._send_tools])
 @pytest.mark.parametrize("chat_type", [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL, None])
-def test_widget_sends_are_private_only_and_never_dm_implicitly(monkeypatch, sender, chat_type):
+def test_widget_sends_are_private_only_and_never_dm_implicitly(monkeypatch, chat_type):
     class Message:
         chat = SimpleNamespace(id=-100123, type=chat_type)
         message_thread_id = None
@@ -332,11 +285,10 @@ def test_widget_sends_are_private_only_and_never_dm_implicitly(monkeypatch, send
     monkeypatch.setattr(widget.botapi, "bot", no_access)
     monkeypatch.setattr(widget.vdb, "get_setting", no_access)
     monkeypatch.setattr(widget.transport, "request", no_access)
-    monkeypatch.setattr(widget.tool_sender, "send", no_access)
     msg = Message()
-    assert not run(sender(SimpleNamespace(), msg))
+    assert not run(widget._send_widget(SimpleNamespace(), msg))
     assert len(msg.replies) == 1 and "private chat" in msg.replies[0]
-    assert "/widget tools" in msg.replies[0]
+    assert "/widget" in msg.replies[0]
 
 
 def test_widget_command_group_replies_and_never_sends(monkeypatch):
@@ -346,7 +298,7 @@ def test_widget_command_group_replies_and_never_sends(monkeypatch):
         def __init__(self, text): self.text, self.replies = text, []
         async def reply_text(self, text): self.replies.append(text)
     monkeypatch.setattr(widget.botapi, "enabled", lambda: pytest.fail("must not attempt a send"))
-    for text in ("/widget", "/widget calculator", "/widget tools"):
+    for text in ("/widget", "/widget calculator"):
         msg = Message(text)
         run(widget.widget_command(None, msg))
         assert len(msg.replies) == 1 and "private chat" in msg.replies[0]

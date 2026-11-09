@@ -34,13 +34,21 @@ const flush = async () => { for (let i=0;i<12;i++) await new Promise(r=>setTimeo
  const set=(id,v)=>{el(id).value=v;el(id).dispatchEvent(new w.Event('input',{bubbles:true}));};
  const change=(id,v)=>{el(id).value=v;el(id).dispatchEvent(new w.Event('change',{bubbles:true}));};
  const submit=()=>el('tool-calc-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+ assert.equal(el('tool-history-clear').disabled,true);
  set('tool-expression','2 + 3 × (4 - 1)'); submit(); assert.equal(el('tool-calc-result').textContent,'11');
+ assert.equal(el('tool-history-list').children.length,1); assert.equal(el('tool-history-empty').hidden,true);
  el('tool-calc-copy').click(); await flush(); assert.equal(copied,'11');
  blockCopy=true; el('tool-calc-copy').click(); await flush(); assert.match(el('tool-calc-message').textContent,/Copy unavailable/); blockCopy=false;
  set('tool-expression','2**10'); submit(); assert.equal(el('tool-calc-result').textContent,'—');
  set('tool-expression','1/0'); assert.equal(el('tool-calc-copy').disabled,true); submit(); assert.match(el('tool-calc-message').textContent,/divide by zero/i);
  set('tool-expression','globalThis.alert(1)'); submit(); assert.equal(el('tool-calc-result').textContent,'—'); assert.match(el('tool-calc-message').textContent,/Use numbers/);
  set('tool-expression','999999999999999*9'); submit(); assert.match(el('tool-calc-message').textContent,/out of range/i);
+ assert.equal(el('tool-history-list').children.length,1, 'invalid calculations never enter history');
+ for (const value of ['1+1','2+2','3+3','4+4','5+5','6+6']) { set('tool-expression',value); submit(); }
+ assert.equal(el('tool-history-list').children.length,5); assert.match(el('tool-history-list').textContent,/6\+6/); assert.doesNotMatch(el('tool-history-list').textContent,/1\+1/);
+ el('tool-history-list').querySelector('button').click(); assert.equal(el('tool-expression').value,'6+6'); assert.equal(el('tool-calc-result').textContent,'12');
+ el('tool-history-clear').click(); assert.equal(el('tool-history-list').children.length,0); assert.equal(el('tool-history-clear').disabled,true);
+ set('tool-expression','8+1'); submit();
  el('tool-calc-clear').click(); assert.equal(el('tool-expression').value,'');
  set('tool-bill','100'); set('tool-tip','15'); set('tool-people','2'); assert.equal(el('tool-split-result').textContent,'57.50');
  set('tool-people','0'); assert.equal(el('tool-split-result').textContent,'—');
@@ -49,8 +57,12 @@ const flush = async () => { for (let i=0;i<12;i++) await new Promise(r=>setTimeo
  change('tool-unit','length'); set('tool-unit-value','254'); assert.equal(el('tool-unit-result').textContent,'100');
  change('tool-unit','volume'); set('tool-unit-value','3.785411784'); assert.equal(el('tool-unit-result').textContent,'1');
  el('tool-plus').click(); el('tool-plus').click(); el('tool-minus').click(); assert.equal(el('tool-count').textContent,'1'); el('tool-reset').click(); assert.equal(el('tool-count').textContent,'0');
+ set('tool-date-start','2024-02-28'); set('tool-date-end','2024-03-01'); assert.equal(el('tool-date-result').textContent,'2 days');
+ set('tool-date-end','2024-02-27'); assert.equal(el('tool-date-result').textContent,'-1 day'); assert.match(el('tool-date-detail').textContent,/before/);
+ set('tool-date-end','2024-02-28'); assert.equal(el('tool-date-result').textContent,'0 days');
+ set('tool-date-end',''); assert.equal(el('tool-date-result').textContent,'—');
  assert.equal(calls.length,before,'tools never call an API');
  d.querySelector('[data-studio="overview"]').click(); await flush(); d.querySelector('[data-studio="everyday_tools"]').click(); await flush();
- assert.equal(el('tool-expression').value,''); assert.equal(el('tool-count').textContent,'0');
+ assert.equal(el('tool-expression').value,''); assert.equal(el('tool-count').textContent,'0'); assert.equal(el('tool-history-list').children.length,0);
  dom.window.close(); console.log('dashboard tools: served navigation, local calculation, splitting, conversions, counter, validation and no network passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
