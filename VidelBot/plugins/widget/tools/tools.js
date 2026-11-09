@@ -1,7 +1,7 @@
 (()=>{'use strict';
 const $=id=>document.getElementById(id),tabs=document.querySelectorAll('[data-tab]');
 let tab='tip',input='0',tip=10,people=1,count=0,unit=0,reverse=false;
-const units=[['km','mi',v=>v*0.6213711922,v=>v/0.6213711922],['kg','lb',v=>v*2.2046226218,v=>v/2.2046226218],['°C','°F',v=>v*9/5+32,v=>(v-32)*5/9]];
+const units=[['km','mi',v=>v*0.6213711922,v=>v/0.6213711922],['kg','lb',v=>v*2.2046226218,v=>v/2.2046226218],['°C','°F',v=>v*9/5+32,v=>(v-32)*5/9],['cm','in',v=>v/2.54,v=>v*2.54],['L','US gal',v=>v/3.785411784,v=>v*3.785411784]];
 const number=v=>Number(Number(v).toFixed(4)).toString(),money=v=>Number(v).toFixed(2);
 function button(text,action){const b=document.createElement('button');b.textContent=text;b.dataset.action=action;$('controls').appendChild(b)}
 function render(){tabs.forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.tab===tab)));$('controls').replaceChildren();$('keys').style.display=tab==='count'?'none':'grid';

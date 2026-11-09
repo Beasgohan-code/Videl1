@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import config
-from pyrogram import Client, filters
+from pyrogram import Client, enums, filters
 
 from core import botapi
 from core.db import vdb
@@ -59,7 +59,18 @@ def tools_html() -> str:
     return html
 
 
+async def _widget_private_chat(message) -> bool:
+    """Do not send widgets to groups or channels, or proactively DM a user."""
+    chat = getattr(message, "chat", None)
+    if getattr(chat, "type", None) == enums.ChatType.PRIVATE:
+        return True
+    await message.reply_text("To use widgets, open this bot in a private chat (DM) and send /widget or /widget tools.")
+    return False
+
+
 async def _send_tools(client, message) -> bool:
+    if not await _widget_private_chat(message):
+        return False
     if not _beta_enabled() or not botapi.enabled():
         await message.reply_text("Widget sending is disabled or unavailable. An operator should check the widget and aiogram settings.")
         return False
@@ -185,6 +196,8 @@ _SEND_FAILURE_MESSAGES = {
 
 
 async def _send_widget(client, message) -> bool:
+    if not await _widget_private_chat(message):
+        return False
     if not _beta_enabled() or not botapi.enabled():
         await message.reply_text(
             "The calculator widget or aiogram bridge is disabled or unavailable. "
@@ -360,4 +373,4 @@ async def widget_command(client, message):
     elif option == "tools":
         await _send_tools(client, message)
     else:
-        await message.reply_text("Widget platform: /widget or /widget calculator for the shared calculator; /widget tools for split bill, unit converter and counter.")
+        await message.reply_text("Widget platform (private chat): /widget or /widget calculator for the shared calculator; /widget tools for split bill, unit converter and counter.")

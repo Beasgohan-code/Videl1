@@ -5,6 +5,8 @@ import zlib
 
 import pytest
 
+from pyrogram import enums
+
 from plugins.widget import plugin as widget
 
 
@@ -61,7 +63,7 @@ def test_send_widget_is_opt_in_identity_checked_and_reuses_shared_object(monkeyp
         token = "test-token"
 
     class Message:
-        chat = SimpleNamespace(id=-100123)
+        chat = SimpleNamespace(id=100123, type=enums.ChatType.PRIVATE)
         message_thread_id = 44
         replies = []
 
@@ -97,7 +99,7 @@ def test_send_widget_is_opt_in_identity_checked_and_reuses_shared_object(monkeyp
     assert run(widget._send_widget(client, message))
     method, payload = calls[-1][1:]
     assert method == "sendWidget"
-    assert payload["chat_id"] == -100123 and payload["message_thread_id"] == 44
+    assert payload["chat_id"] == 100123 and payload["message_thread_id"] == 44
     assert payload["is_shared"] is True and payload["allow_queries"] is True
     assert stored == [(widget.SETTING_KEY, 987)]
 
@@ -198,7 +200,7 @@ def test_transport_timeout_redacts_url_and_cause(monkeypatch):
 
 def test_send_failures_distinguish_transport_storage_and_accepted_send(monkeypatch, caplog):
     class Message:
-        chat = SimpleNamespace(id=123)
+        chat = SimpleNamespace(id=123, type=enums.ChatType.PRIVATE)
         message_thread_id = None
         def __init__(self): self.replies = []
         async def reply_text(self, text): self.replies.append(text)
@@ -240,7 +242,7 @@ def test_send_failures_distinguish_transport_storage_and_accepted_send(monkeypat
 
 def test_invalid_mode_does_not_send(monkeypatch):
     class Message:
-        chat = SimpleNamespace(id=1)
+        chat = SimpleNamespace(id=1, type=enums.ChatType.PRIVATE)
         message_thread_id = None
         def __init__(self): self.replies = []
         async def reply_text(self, text): self.replies.append(text)
@@ -262,7 +264,7 @@ def test_tools_assembly_and_limits():
 
 def test_tools_sender_identity_mode_and_thread(monkeypatch):
     class Message:
-        chat = SimpleNamespace(id=-123)
+        chat = SimpleNamespace(id=123, type=enums.ChatType.PRIVATE)
         message_thread_id = 12
         def __init__(self): self.replies = []
         async def reply_text(self, text): self.replies.append(text)
@@ -278,7 +280,7 @@ def test_tools_sender_identity_mode_and_thread(monkeypatch):
     assert not run(widget._send_tools(SimpleNamespace(me=SimpleNamespace(id=999)), msg))
     assert not calls
     assert run(widget._send_tools(SimpleNamespace(me=SimpleNamespace(id=123)), msg))
-    assert calls[0][0:3] == (outgoing, -123, 12)
+    assert calls[0][0:3] == (outgoing, 123, 12)
     assert "Everyday tools" in calls[0][3] and calls[0][4] == "beta"
     monkeypatch.setenv("WIDGET_API_BETA", "false")
     assert not run(widget._send_tools(SimpleNamespace(me=SimpleNamespace(id=123)), msg))
@@ -314,3 +316,37 @@ def test_aiogram_configured_sender_uses_one_outgoing_request():
     with pytest.raises(ValueError):
         run(widget.tool_sender.send(outgoing, 5, None, "", "bad"))
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("sender", [widget._send_widget, widget._send_tools])
+@pytest.mark.parametrize("chat_type", [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL, None])
+def test_widget_sends_are_private_only_and_never_dm_implicitly(monkeypatch, sender, chat_type):
+    class Message:
+        chat = SimpleNamespace(id=-100123, type=chat_type)
+        message_thread_id = None
+        def __init__(self): self.replies = []
+        async def reply_text(self, text): self.replies.append(text)
+    def no_access(*args, **kwargs):
+        pytest.fail("non-private requests must not touch outgoing transport, identity, or storage")
+    monkeypatch.setattr(widget.botapi, "enabled", no_access)
+    monkeypatch.setattr(widget.botapi, "bot", no_access)
+    monkeypatch.setattr(widget.vdb, "get_setting", no_access)
+    monkeypatch.setattr(widget.transport, "request", no_access)
+    monkeypatch.setattr(widget.tool_sender, "send", no_access)
+    msg = Message()
+    assert not run(sender(SimpleNamespace(), msg))
+    assert len(msg.replies) == 1 and "private chat" in msg.replies[0]
+    assert "/widget tools" in msg.replies[0]
+
+
+def test_widget_command_group_replies_and_never_sends(monkeypatch):
+    class Message:
+        chat = SimpleNamespace(id=-100, type=enums.ChatType.SUPERGROUP)
+        message_thread_id = None
+        def __init__(self, text): self.text, self.replies = text, []
+        async def reply_text(self, text): self.replies.append(text)
+    monkeypatch.setattr(widget.botapi, "enabled", lambda: pytest.fail("must not attempt a send"))
+    for text in ("/widget", "/widget calculator", "/widget tools"):
+        msg = Message(text)
+        run(widget.widget_command(None, msg))
+        assert len(msg.replies) == 1 and "private chat" in msg.replies[0]

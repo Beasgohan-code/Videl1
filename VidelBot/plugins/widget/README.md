@@ -1,6 +1,6 @@
 # Widget platform
 
-`/widget` (or `/widget calculator`) sends a native, self-contained Telegram HTML calculator. Arithmetic is evaluated immediately in the widget as buttons are pressed. Pressing `=` sends a short expression through Telegram's Bot API 10.4 beta widget-query mechanism; Videl validates it without `eval`, answers that request, and updates the shared widget's public state. Copies sent with `/widget` use the same persisted `widget_id`, so supported clients that watch public state can see the latest committed result.
+In a private chat with the bot, `/widget` (or `/widget calculator`) sends a native, self-contained Telegram HTML calculator. Arithmetic is evaluated immediately in the widget as buttons are pressed. Pressing `=` sends a short expression through Telegram's Bot API 10.4 beta widget-query mechanism; Videl validates it without `eval`, answers that request, and updates the shared widget's public state. Copies sent with `/widget` use the same persisted `widget_id`, so supported clients that watch public state can see the latest committed result.
 
 ## Availability and safety
 
@@ -28,6 +28,10 @@ A failed `/widget` does **not** by itself prove that Telegram's beta is down or 
 
 ## Everyday tools
 
-`/widget tools` sends a self-contained tools widget with a bill splitter (tip percentage and up to ten people; displayed amounts round independently to two decimals, so an indivisible remainder may need manual adjustment), a converter (km/mi, kg/lb, °C/°F, including negative values) and a counter. Tabs and controls work locally in each widget on the device: these tools do not send queries, persist state or synchronize between viewers. Their outgoing sender uses aiogram, only trusted built-in assets, and the configured widget endpoint. The existing `/widget` shared calculator behavior is unchanged. `/widget help` lists the shortcuts.
+In the bot’s private chat, `/widget tools` sends a self-contained tools widget with a bill splitter (tip percentage and up to ten people; displayed amounts round independently to two decimals, so an indivisible remainder may need manual adjustment), a converter (km/mi, kg/lb, °C/°F, cm/in and L/US gallons, including negative values) and a counter. Tabs and controls work locally in each widget on the device: these tools do not send queries, persist state or synchronize between viewers. Their outgoing sender uses aiogram, only trusted built-in assets, and the configured widget endpoint. The calculator’s shared-state behavior is unchanged. `/widget help` lists the shortcuts.
 
 CSS and JavaScript live in `tools/` and are assembled into the one inline document required by the widget runtime. The tool widget has no network access, external assets, forms or user-supplied code. Widget sending still requires a compatible endpoint and client; a failed send may have an uncertain outcome. No automatic retry is made.
+
+### Private chat availability
+
+Videl attempts widget sends only in a private chat with the bot. In groups, `/widget` and `/widget tools` reply with instructions to open the bot in DM; they do not send a widget there or send unsolicited private messages. This is Videl's conservative behavior based on the reported availability, not a claim that every Telegram deployment rejects group widgets: the upstream sandbox documentation describes group support subject to server configuration. Already-sent widgets and forwarded copies are not deleted or changed.
