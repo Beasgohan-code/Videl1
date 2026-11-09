@@ -7,6 +7,12 @@
 
 ## Completed Milestones
 
+### Telegram Bot API 10.4 — Shared Calculator Widget
+- [x] Removed the legacy `/game` arcade and its game-only plugin, assets, environment flags, Python tests and browser harness; replaced it with `/widget`, a self-contained calculator that evaluates locally as the user types.
+- [x] Added an opt-in (`WIDGET_API_BETA=False` by default) Bot API 10.4 beta integration: create/reuse a shared widget, validate calculator expressions server-side without `eval`, answer widget queries and publish shared state; poll only widget-query updates and refuse to start when a webhook exists.
+- [x] Verified `python -m pytest tests -q` (**890 passed**) plus `npm test` in `VidelBot/tests/ui` (Telegram login and calculator widget DOM tests passed); no live Telegram API delivery was attempted.
+- [ ] Validate on an isolated Telegram test bot and compatible clients before enabling; the beta API's live delivery and client rendering are not verified by local tests.
+
 ### Phase 1 — Repository, Dependency & API Audit
 - [x] Audited `VidelBot/` runtime, MongoDB schemas, 21 existing test suites, and deploy manifests.
 - [x] Consolidated Docker deployment to a single root **`Dockerfile`** and **`.dockerignore`** outside `VidelBot/` (removing the duplicate `VidelBot/Dockerfile` and `VidelBot/.dockerignore`) with root-anchored `.dockerignore` rules and build-time `compileall` + runtime-stack verification.
@@ -215,7 +221,7 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 
 ### 17. Webhook and Event Monitor
 - [ ] Show supported outbound/integration webhook configuration status, endpoint health, observed successful/failed deliveries, errors, retries and recent filterable events, with diagnostics and secret-safe storage/logging.
-- [ ] Preserve the authoritative Telegram update architecture; do not introduce a second incoming Telegram update receiver.
+- [ ] Preserve the authoritative Telegram update architecture; the only narrow exception is the explicitly enabled Bot API 10.4 widget-query-only listener, which refuses to start beside a webhook. Do not add another general-purpose incoming update receiver.
 
 ### 18. Automation Studio
 - [ ] Build a supported Trigger → Conditions → Actions → Result editor with trigger/condition/action selection, preview, validation, enable/disable, execution history, retry, errors, duplicate and version history.
@@ -275,7 +281,7 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 
 ### Cross-cutting delivery and safety gates
 - [ ] Keep work on `arena/a69b9f62-videl1`; do not modify `main`, merge, deploy, delete branches or alter production services without explicit permission. Use focused commits and update this roadmap honestly.
-- [ ] Preserve the WzGram/Pyrofork authoritative incoming receiver, aiogram outgoing Bot API, MongoDB and Richgram architecture. Keep one canonical root `Dockerfile` and synchronized root and `VidelBot/` requirements.
+- [ ] Preserve WzGram/Pyrofork as the primary receiver for normal updates, aiogram outgoing Bot API, MongoDB and Richgram architecture. The opt-in 10.4 beta listener is limited to widget queries and refuses a configured webhook. Keep one canonical root `Dockerfile` and synchronized root and `VidelBot/` requirements.
 - [ ] Enforce backend workspace isolation, bot ownership and RBAC; prevent IDOR, CSRF and abuse; encrypt secrets at rest and prevent secret exposure in URLs, responses, logs, clones and exports. Never bypass DRM, paywalls, CAPTCHAs or platform restrictions.
 - [ ] Complete and test stages sequentially; verify full tests, production build, responsive screenshots, real MongoDB concurrency and live Telegram end-to-end flows when feasible. Report gaps and observed results without claiming unverified functionality, builds or CI.
 

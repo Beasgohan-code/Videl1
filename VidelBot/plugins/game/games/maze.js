@@ -1,4 +1,0 @@
-var title='Maze',position,done,steps,paths;
-function start(){var maps=[['11111','00001','11111','10000','11111'],['11111','10000','11111','00001','11111'],['10111','10101','11101','00101','00111']];paths=maps[rnd(maps.length)].slice();if(rnd(2))paths=paths.reverse().map(function(row){return row.split('').reverse().join('')});position=0;done=false;steps=0;draw()}
-function draw(){say(done?'Maze escaped in '+steps+' steps!':'Tap a neighboring path to reach ★.');var cells=[];for(var i=0;i<25;i++)cells.push({text:i===position?'●':i===24?'★':paths[Math.floor(i/5)][i%5]==='1'?'·':'■',on:i===position});grid(cells,5,play)}
-function play(i){if(done||paths[Math.floor(i/5)][i%5]!=='1'||Math.abs(i%5-position%5)+Math.abs(Math.floor(i/5)-Math.floor(position/5))!==1)return;position=i;steps++;done=i===24;draw()}

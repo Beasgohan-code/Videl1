@@ -13,7 +13,7 @@ Videl is **one** Telegram bot that combines:
 | 💬 **Support inbox** (`core/support.py`) | `/support` delivers text or media to the owners' DM – owners just **reply** to answer, users reply to follow up |
 | 🔒 **Force Subscribe** (`core/fsub.py`) | Require joining one or more channels, manage with `/add_fsub`, `/del_fsub`, `/fsub_list`; `/fsub_mode` switches **join-request** mode per channel; leaving a channel re-locks the user |
 | 🧰 **Tools & Checklists** (`core/`) | `/mediainfo` (reply **or** direct HTTP Range URL), `/checklist` (interactive task checklists + Business native), `/nftgift` (collectible gift inspector), `/rename`, `/upload`, `/short`, `/qr`, `/id`, `/info`, `/json`, `/ping`, **inline mode** (`@bot <url or text>`) |
-| 🧩 **Modular Plugins** (`plugins/`, `core/plugin_manager.py`) | WZML-X-inspired YAML-manifest plugin architecture (`plugin.yaml` & `wzml_plugin.yml`, `/plugins` owner-governed toggle/reload/settings, **staged AST security scan + SHA-256 + explicit owner approval** before remote/archive install) with 5 bundled rich plugins: **`/imdb`**, **`/anime`** / **`/manga`** / **`/character`**, **`/mdl`**, **`/exportsession`**, and **`group_mod`** |
+| 🧩 **Modular Plugins** (`plugins/`, `core/plugin_manager.py`) | WZML-X-inspired YAML-manifest plugin architecture (`plugin.yaml` & `wzml_plugin.yml`, `/plugins` owner-governed toggle/reload/settings, **staged AST security scan + SHA-256 + explicit owner approval** before remote/archive install) with 6 bundled plugins: **`/imdb`**, **`/anime`** / **`/manga`** / **`/character`**, **`/mdl`**, **`/exportsession`**, **`/widget`** (experimental shared calculator), and **`group_mod`** |
 | 🛡 **Group Moderation** (`plugins/group_mod/`) | Live Telegram permission-verified group suite (`/gsettings`, `/gban`, `/gunban`, `/kick`, `/mute`, `/unmute`, `/warn`, `/warns`, Bot API 10.3 **`/tag`** / **`/deltag`**, **`/clearreactions`**, **`/topic`**, **`/joinmode`**, `/rules`, `/welcome`, `/goodbye`, `/lock`, `/unlock`, `/gfilter`, `/antiraid`, `/modreport`) |
 | 👮 **Admin** (`core/`) | runtime admins (`/add_admin`, `/deladmin`, `/admins` – owners only, no redeploy), `/plugins`, `/speedtest` (rich card + masked IP), `/user <id\|@name>` (full profile + ban / premium buttons), `/msg`, `/export` (CSV), `/stats`, `/users`, `/broadcast [-pin]`, `/ban`, `/unban`, `/banned`, `/maintenance on\|off`, `/premium_users`, `/watchdog`, `/logtest`, `/report`, `/setcommands`, `/restart`, `/update`; clone owners' panel `/clonestats`, `/bots`, `/check [fix]`, `/sys` |
 | 📝 **Owner log channel** (`core/botlog.py`) | Every event tagged in `LOG_CHANNEL` – who started the bot, who cloned which bot, logins, payments, bans, restarts… – boot/shutdown/clone reports also in the owners' DM, plus a daily activity report |
@@ -22,13 +22,13 @@ Videl is **one** Telegram bot that combines:
 Everything runs in a single process on a single bot token; clone bots are extra
 Pyrogram clients started by the worker engine.
 
-## 🛰 WzGram (Layer 232) + Richgram + aiogram (Bot API 10.3)
-Videl runs on **WzGram v3.1.6** (MTProto Layer 232 + **WarpCrypto**), **Richgram v0.2.0**, and **aiogram 3.31** (Bot API 10.3):
+## 🛰 WzGram (Layer 232) + Richgram + aiogram (Bot API 10.3; optional 10.4 beta widgets)
+Videl runs on **WzGram v3.1.6** (MTProto Layer 232 + **WarpCrypto**), **Richgram v0.2.0**, and **aiogram 3.31** (Bot API 10.3). Native HTML widgets use a separate, opt-in Bot API 10.4 beta transport:
 
-| | WzGram 3.1.6 + Richgram 0.2.0 (MTProto Layer 232) | aiogram 3.31 (Bot API 10.3) |
+| | WzGram 3.1.6 + Richgram 0.2.0 (MTProto Layer 232) | aiogram 3.31 (Bot API 10.3) + optional 10.4 beta transport |
 |---|---|---|
-| Role | receives **all updates**, pooled multi-DC 4 GB up/downloads, clone workers, user sessions, **native Layer 232 RichMessage** | optional **outgoing** Bot API HTTP bridge (`core/botapi.py`) |
-| Used for | `InputRichMessage` · `ButtonStyle` · `DisabledButton` · `CopyTextButton` · `ReplyParameters` · `LinkPreviewOptions` · `EphemeralMessageParameters` · `send_rich_message_draft` + `MessageGenerationStopped` · `ManagedBotUpdated` · `get_upgraded_gift` | outgoing Bot API 10.3 HTTP calls for the primary bot token (shared message IDs with WzGram) |
+| Role | primary receiver for commands and normal updates, pooled multi-DC 4 GB up/downloads, clone workers, user sessions, **native Layer 232 RichMessage** | optional outgoing Bot API HTTP bridge (`core/botapi.py`); when explicitly enabled, a separate beta poller consumes only `widget_query` / `shared_widget_query` updates |
+| Used for | `InputRichMessage` · `ButtonStyle` · `DisabledButton` · `CopyTextButton` · `ReplyParameters` · `LinkPreviewOptions` · `EphemeralMessageParameters` · `send_rich_message_draft` + `MessageGenerationStopped` · `ManagedBotUpdated` · `get_upgraded_gift` | outgoing Bot API 10.3 calls for the primary bot token; optional beta `sendWidget`, `sendSharedWidget`, `editSharedWidgetData`, and `answerWidgetQuery` |
 
 > **Manual local `pip install` note:** `richgram==0.2.0` declares `kurigram` as an install dependency on PyPI. The root `Dockerfile` automatically strips `kurigram` and keeps `wzgram==3.1.6` as the `pyrogram` provider; when installing manually into a virtualenv, run:
 > ```bash
@@ -36,9 +36,12 @@ Videl runs on **WzGram v3.1.6** (MTProto Layer 232 + **WarpCrypto**), **Richgram
 > pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6
 > ```
 
-aiogram never polls (two consumers on one token would split the updates), message IDs are shared so either
-library can edit what the other sent, and **every aiogram call falls back to MTProto** – if the Bot API is
-unreachable (3 network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, Videl behaves exactly as before.
+The regular aiogram bridge never polls for ordinary Bot API updates. `WIDGET_API_BETA` is false by default;
+when explicitly enabled for testing, the widget plugin polls only widget-query update types and refuses to
+start if `getWebhookInfo` reports an existing webhook. This narrow beta listener does not receive commands
+or callbacks; WzGram remains the primary receiver. Message IDs are shared so either library can edit what
+the other sent, and **every normal aiogram call falls back to MTProto** – if the Bot API is unreachable (3
+network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, ordinary bot behavior remains unchanged.
 `/botapi` (owners) shows the bridge status, `getMe` capability flags, latency and a live button-colour demo.
 
 * **Coloured buttons** (`COLORED_BUTTONS`) – every menu sent/edited through `core/ui.py` gets Bot API `style`s:
@@ -73,6 +76,7 @@ unreachable (3 network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, Vid
 * **Disabled buttons** (Bot API 10.3 `DisabledButton`) – status chips such as *✅ Premium · active* on the Premium
   screen and *🔒 Limit reached* in My Bots are greyed out and not tappable. Any button with `callback_data`
   `noop` / `noop:<x>` is sent this way; the MTProto fallback answers it silently.
+* **Experimental Bot API 10.4 HTML widgets** – `/widget` opens a self-contained calculator; arithmetic is live locally, and pressing `=` asks the bot to validate the expression and update the shared widget state. Requires `WIDGET_API_BETA=True`, a compatible Telegram client, and no existing Bot API webhook. See [`plugins/widget/README.md`](plugins/widget/README.md); not production-certified.
 * **Streaming replies & stoppable rich drafts** (Bot API 9.5+ `sendMessageDraft` + WzGram `send_rich_message_draft` / `MessageGenerationStopped`) – `/start` shows a live draft while the home screen is built; slow commands and plugin lookups (`/imdb`, `/anime`, `/mdl`, `/mediainfo`, `/speedtest`) stream rich progress stages and honour Telegram's native **Stop** button (`STREAM_REPLIES`)
 * **Interactive checklists & upgraded NFT gifts** – `/checklist Title :: Task 1 | Task 2` (native Business checklist or interactive inline checklist) and `/nftgift <t.me/nft/slug>` (WzGram `get_upgraded_gift` collectible rarity & floor inspector)
 * **Instant managed clone onboarding** – `@Client.on_managed_bot()` (`ManagedBotUpdated`) auto-connects new BotFather managed clones on push without waiting for polling

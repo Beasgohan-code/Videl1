@@ -7,9 +7,9 @@ Production-grade multi-function Telegram bot platform in **[`VidelBot/`](VidelBo
 ## Architecture Overview
 
 ```
-Telegram Cloud (MTProto Layer 232 + Bot API 10.3)
+Telegram Cloud (MTProto Layer 232 + Bot API 10.3; optional 10.4 widget beta)
         │
-        ▼  (single incoming update consumer)
+        ▼  (WzGram primary; optional widget-query-only beta listener)
 ┌───────────────────────────────────────────────────────────────────┐
 │  WzGram 3.1.6 Client (`VidelBot/client.py` + `WarpCrypto 2.1.0`)  │
 │   group -20  core/middleware.py (dedupe · ban · maintenance)      │
@@ -18,7 +18,8 @@ Telegram Cloud (MTProto Layer 232 + Bot API 10.3)
 │   group  -2  core/fsub.py       (parallel force-subscribe gate)   │
 │   group   0  saver · encoder · renamer · filestore · plugins      │
 └───────────────┬───────────────────────────────────┬───────────────┘
-                │ outgoing-only Bot API 10.3        │ shared Motor pool
+                │ outgoing Bot API 10.3; optional    │ shared Motor pool
+                │ widget-query-only beta polling    │
                 ▼                                   ▼
 ┌─────────────────────────────────┐ ┌───────────────────────────────┐
 │ `core/botapi.py` (aiogram 3.31) │ │ MongoDB (`videl`, `saver`,    │
@@ -28,7 +29,7 @@ Telegram Cloud (MTProto Layer 232 + Bot API 10.3)
 └─────────────────────────────────┘ └───────────────────────────────┘
 ```
 
-- **Single Update Consumer:** Only `WzGram` receives updates (no `aiogram.Dispatcher` polling/webhook). `core/instance.py` maintains a **fail-closed** MongoDB heartbeat lease (`InstanceLeaseError` on unreachable DB or timeout) so zero-downtime PaaS deploys never process updates twice.
+- **Primary Update Consumer:** `WzGram` receives normal commands and callbacks. The optional Bot API 10.4 widget beta adds a separate, explicitly enabled poller for `widget_query` / `shared_widget_query` only; it refuses to start when a webhook is configured. No normal updates are routed through that poller. `core/instance.py` maintains a **fail-closed** MongoDB heartbeat lease (`InstanceLeaseError` on unreachable DB or timeout).
 - **Unified Task Telemetry & Rich UI (`core/rich.py`, `core/progress.py`, `VideoEncoder/utils/jobs.py`):** One centralized `richgram`-compatible `Doc` builder renders across Bot API 10.3 `sendRichMessage`, native WzGram `InputRichMessage`, and classic HTML fallback, powering live paginated `/status` cards (filters, progress bars, speed, ETA, inline per-task pause/resume/boost/cancel across Encoder, Auto-Rename, and Content Saver) and the responsive `/admin` web console.
 - **Clone Worker Engine (`filestore/worker_bot/`):** User-created FileStore clone bots run as isolated in-memory `WzGram` clients with encrypted tokens, per-clone `bot_<id>_*` collections, and atomic Stars payment idempotency.
 - **Resilient Storage, Settings Portal & Secret-Free Diagnostics (`VideoEncoder/utils/uploads/`, `core/settings_portal.py`, `core/diagnostics.py`):** Pluggable storage registry (`Telegram`, `Google Drive`, `Rclone`, `GoFile`, `DDL Mirrors`) with automatic Telegram fallback, portable user settings export/import/reset (`/vset export` · `/vset import`), container cgroup v1/v2 resource & memory-backpressure telemetry (`core/sysinfo.py`), and secret-free feature diagnostics.

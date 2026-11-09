@@ -1,4 +1,0 @@
-var title='Tower Puzzle',pegs,selected,moves,done;
-function start(){pegs=[[3,2,1],[],[]];selected=-1;moves=0;done=false;draw()}
-function draw(){say(done?'Tower complete in '+moves+' moves! Best possible: 7.':selected<0?'Move the tower to C. Tap a peg to pick its top disk.':'Now tap a destination. Larger disks cannot sit on smaller ones.');var cells=pegs.map(function(p,i){return {text:'ABC'[i]+': '+(p.length?p.join(' '):'—'),on:i===selected,label:'Peg '+ 'ABC'[i]+': '+(p.length?p.join(' '):'empty') + (i===selected?', selected':'')}});grid(cells,3,play)}
-function play(i){if(done)return;if(selected<0){if(pegs[i].length)selected=i}else if(i===selected)selected=-1;else{var from=pegs[selected],to=pegs[i],disk=from[from.length-1];if(!to.length||disk<to[to.length-1]){to.push(from.pop());moves++;done=pegs[2].length===3;selected=-1}else if(to.length)selected=i}draw()}

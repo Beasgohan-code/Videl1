@@ -76,7 +76,7 @@ USER_COMMANDS = [
     ("imdb", "🎬 Movie & TV info from IMDb"),
     ("anime", "🎌 Anime, manga & character search"),
     ("checklist", "☑️ Interactive task checklist"),
-    ("game", "🎮 Play a game"),
+    ("widget", "🧮 Open the shared calculator widget"),
     ("rename", "✏️ Rename a file (reply)"),
     ("upload", "☁️ Public link for a file (reply)"),
     ("short", "✂️ Shorten a URL"),
@@ -123,7 +123,7 @@ GROUP_COMMANDS = [
     ("anime", "🎌 Anime & manga search"),
     ("mdl", "🎭 Asian drama search"),
     ("checklist", "☑️ Interactive checklist"),
-    ("game", "🎮 Play a game"),
+    ("widget", "🧮 Shared calculator widget"),
     ("leaderboard", "🏆 Top renamers"),
     ("qr", "🔳 Make a QR code"),
     ("short", "✂️ Shorten a URL"),
@@ -202,7 +202,7 @@ OWNER_COMMANDS = [
     ("plugins", "🧩 Manage, toggle & install plugins"),
     ("sys", "🖥 CPU / RAM / disk"),
     ("exec", "🐍 Run Python"),
-    # /sh remains owner-only but is not advertised, leaving room for /game.
+    # /sh remains owner-only but is not advertised to keep the owner menu compact.
 ]
 
 

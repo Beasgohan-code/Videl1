@@ -1,4 +1,0 @@
-var title='Word rescue',word,guessed,misses,done,win;
-function start(){var words=['PLANET','WIDGET','FOREST','GUITAR','ROCKET','BRIDGE','PYTHON','GARDEN','PUZZLE','TIGER'];word=words[rnd(words.length)];guessed='';misses=0;done=false;win=false;draw()}
-function draw(){var mask=word.split('').map(function(c){return guessed.indexOf(c)>=0?c:'_'}).join(' ');say(done?(win?'Word found: ':'Out of guesses. Word: ')+word:mask+' · Misses '+misses+'/6');grid('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(function(c){return {text:c+(guessed.indexOf(c)<0?'':word.indexOf(c)>=0?'✓':'×'),on:guessed.indexOf(c)>=0,label:c+(guessed.indexOf(c)<0?' not tried':word.indexOf(c)>=0?' correct':' missed')}}),4,play)}
-function play(i){var c='ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i];if(done||guessed.indexOf(c)>=0)return;guessed+=c;if(word.indexOf(c)<0)misses++;win=word.split('').every(function(v){return guessed.indexOf(v)>=0});done=win||misses>=6;draw()}
