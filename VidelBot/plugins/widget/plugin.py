@@ -2,7 +2,7 @@
 
 The widget calculates locally as the user types. Pressing '=' sends a bounded,
 validated expression to the bot; the bot answers the query and updates the
-shared widget's public state. Beta API use and the query-only poller are opt-in.
+shared widget's public state. Beta API use defaults on; operators can disable it.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ EXPR_RE = re.compile(r"\A[0-9+\-*/().\s]{1,56}\Z")
 
 
 def _beta_enabled() -> bool:
-    return os.environ.get("WIDGET_API_BETA", "").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("WIDGET_API_BETA", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def widget_html() -> str:

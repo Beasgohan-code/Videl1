@@ -9,9 +9,9 @@
 
 ### Telegram Bot API 10.4 — Shared Calculator Widget
 - [x] Removed the legacy `/game` arcade and its game-only plugin, assets, environment flags, Python tests and browser harness; replaced it with `/widget`, a self-contained calculator that evaluates locally as the user types.
-- [x] Added an opt-in (`WIDGET_API_BETA=False` by default) Bot API 10.4 beta integration: create/reuse a shared widget, validate calculator expressions server-side without `eval`, answer widget queries and publish shared state; poll only widget-query updates and refuse to start when a webhook exists.
-- [x] Verified `python -m pytest tests -q` (**890 passed**) plus `npm test` in `VidelBot/tests/ui` (Telegram login and calculator widget DOM tests passed); no live Telegram API delivery was attempted.
-- [ ] Validate on an isolated Telegram test bot and compatible clients before enabling; the beta API's live delivery and client rendering are not verified by local tests.
+- [x] Added the Bot API 10.4 beta integration and, per the follow-up request, set `WIDGET_API_BETA=True` by default in code and the sample config (explicit `False` disables it): create/reuse a shared widget, validate calculator expressions server-side without `eval`, answer widget queries and publish shared state; poll only widget-query updates and refuse to start when a webhook exists.
+- [x] Verified `python -m pytest tests -q` (**891 passed**) plus `npm test` in `VidelBot/tests/ui` (Telegram login and calculator widget DOM tests passed); no live Telegram API delivery was attempted.
+- [ ] Validate on an isolated Telegram test bot and compatible clients before relying on the default-on setting; the beta API's live delivery and client rendering are not verified by local tests.
 
 ### Phase 1 — Repository, Dependency & API Audit
 - [x] Audited `VidelBot/` runtime, MongoDB schemas, 21 existing test suites, and deploy manifests.

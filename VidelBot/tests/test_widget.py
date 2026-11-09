@@ -12,6 +12,13 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_beta_flag_defaults_on_and_allows_explicit_opt_out(monkeypatch):
+    monkeypatch.delenv("WIDGET_API_BETA", raising=False)
+    assert widget._beta_enabled()
+    monkeypatch.setenv("WIDGET_API_BETA", "false")
+    assert not widget._beta_enabled()
+
+
 def test_safe_calculator_grammar_and_bounds():
     assert widget.evaluate_expression("2 + 3 * (4 - 1)") == "11"
     assert widget.evaluate_expression("-3 / 2") == "-1.5"

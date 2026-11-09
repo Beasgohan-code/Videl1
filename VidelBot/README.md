@@ -22,12 +22,12 @@ Videl is **one** Telegram bot that combines:
 Everything runs in a single process on a single bot token; clone bots are extra
 Pyrogram clients started by the worker engine.
 
-## 🛰 WzGram (Layer 232) + Richgram + aiogram (Bot API 10.3; optional 10.4 beta widgets)
-Videl runs on **WzGram v3.1.6** (MTProto Layer 232 + **WarpCrypto**), **Richgram v0.2.0**, and **aiogram 3.31** (Bot API 10.3). Native HTML widgets use a separate, opt-in Bot API 10.4 beta transport:
+## 🛰 WzGram (Layer 232) + Richgram + aiogram (Bot API 10.3; beta widgets)
+Videl runs on **WzGram v3.1.6** (MTProto Layer 232 + **WarpCrypto**), **Richgram v0.2.0**, and **aiogram 3.31** (Bot API 10.3). Native HTML widgets use a separate Bot API 10.4 beta transport, enabled by default in code as requested:
 
 | | WzGram 3.1.6 + Richgram 0.2.0 (MTProto Layer 232) | aiogram 3.31 (Bot API 10.3) + optional 10.4 beta transport |
 |---|---|---|
-| Role | primary receiver for commands and normal updates, pooled multi-DC 4 GB up/downloads, clone workers, user sessions, **native Layer 232 RichMessage** | optional outgoing Bot API HTTP bridge (`core/botapi.py`); when explicitly enabled, a separate beta poller consumes only `widget_query` / `shared_widget_query` updates |
+| Role | primary receiver for commands and normal updates, pooled multi-DC 4 GB up/downloads, clone workers, user sessions, **native Layer 232 RichMessage** | outgoing Bot API HTTP bridge (`core/botapi.py`); a separate beta poller consumes only `widget_query` / `shared_widget_query` updates when the widget plugin is enabled |
 | Used for | `InputRichMessage` · `ButtonStyle` · `DisabledButton` · `CopyTextButton` · `ReplyParameters` · `LinkPreviewOptions` · `EphemeralMessageParameters` · `send_rich_message_draft` + `MessageGenerationStopped` · `ManagedBotUpdated` · `get_upgraded_gift` | outgoing Bot API 10.3 calls for the primary bot token; optional beta `sendWidget`, `sendSharedWidget`, `editSharedWidgetData`, and `answerWidgetQuery` |
 
 > **Manual local `pip install` note:** `richgram==0.2.0` declares `kurigram` as an install dependency on PyPI. The root `Dockerfile` automatically strips `kurigram` and keeps `wzgram==3.1.6` as the `pyrogram` provider; when installing manually into a virtualenv, run:
@@ -36,10 +36,11 @@ Videl runs on **WzGram v3.1.6** (MTProto Layer 232 + **WarpCrypto**), **Richgram
 > pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6
 > ```
 
-The regular aiogram bridge never polls for ordinary Bot API updates. `WIDGET_API_BETA` is false by default;
-when explicitly enabled for testing, the widget plugin polls only widget-query update types and refuses to
-start if `getWebhookInfo` reports an existing webhook. This narrow beta listener does not receive commands
-or callbacks; WzGram remains the primary receiver. Message IDs are shared so either library can edit what
+The regular aiogram bridge never polls for ordinary Bot API updates. `WIDGET_API_BETA` defaults to `True`;
+set it to `False` to disable the experimental widget transport. The widget plugin polls only widget-query
+update types and refuses to start if `getWebhookInfo` reports an existing webhook. This narrow beta listener
+does not receive commands or callbacks; WzGram remains the primary receiver. A source change does not update
+environment variables in a separately deployed service. Message IDs are shared so either library can edit what
 the other sent, and **every normal aiogram call falls back to MTProto** – if the Bot API is unreachable (3
 network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, ordinary bot behavior remains unchanged.
 `/botapi` (owners) shows the bridge status, `getMe` capability flags, latency and a live button-colour demo.
