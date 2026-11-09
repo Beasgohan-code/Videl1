@@ -1,0 +1,9 @@
+# Everyday tools in the served Studio
+
+The existing authenticated `/app` dashboard has an **Everyday Tools** sidebar entry and an overview shortcut. The view offers a bounded arithmetic calculator, bill/tip splitting, five two-way unit conversions and a counter. The calculator accepts only arithmetic; it does not evaluate arbitrary JavaScript. Inputs, results and counter state live only in the current view, do not make tool-specific network requests, and reset on navigation or workspace changes. Amounts are estimates based on floating-point calculations and independently rounded; a split may require manual adjustment of a remainder.
+
+These are browser implementations of the widget features, not the Telegram widget renderer and not the shared calculator's state. There is no synchronization with Telegram, stored workspace data, or history. Native Telegram widgets remain available via the bot's private chat where supported, using `/widget` and `/widget tools`; actual delivery depends on the bot's configuration, endpoint and client.
+
+Implementation: `VidelBot/webapp/studio_tools.js` and `studio_tools.css` are included in the existing `/app/app.js` and `/app/styles.css` responses. The served Studio navigation integrates the tools view. No authentication or API permissions were weakened and no new service or route was added. The later dark-theme palette selector was narrowed so it cannot override light-theme backgrounds.
+
+Validation: `VidelBot/tests/ui/dashboard-tools.test.cjs` drives the served bundle with a synthetic session and API; `VidelBot/tests/test_dashboard_tools.py` checks the responses. Real Telegram or production deployment are not covered. The separate Next.js preview does not yet include this view.

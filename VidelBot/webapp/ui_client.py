@@ -13,6 +13,7 @@ CLIENT_JS = r"""
   const STUDIOS = [
     { group: "Core Workspace", items: [
       { id: "overview", label: "Workspace Overview", icon: "⌂" },
+      { id: "everyday_tools", label: "Everyday Tools", icon: "⊞" },
       { id: "bots", label: "Bot Management", icon: "🤖" },
       { id: "bot_create", label: "Bot Creation Studio", icon: "✨" },
       { id: "fleet", label: "Bot Fleet & Health", icon: "🛰" },
@@ -293,6 +294,7 @@ CLIENT_JS = r"""
 
   /* ── Studio Renderers ── */
   const RENDERERS = {
+    async everyday_tools(vp) { window.VidelTools.mount(vp); },
     /* 1. Workspace Overview & Custom Dashboard Builder */
     async overview(vp) {
       const [wsData, layoutData] = await Promise.all([
@@ -371,6 +373,7 @@ CLIENT_JS = r"""
             <div class="overview-hero-actions">
               <button class="btn btn-primary" data-goto="bot_create">Connect a bot <span aria-hidden="true">→</span></button>
               <button class="btn overview-secondary-action" data-goto="bots">Explore bot studio</button>
+              <button class="btn overview-secondary-action" type="button" data-goto="everyday_tools">Open everyday tools</button>
             </div>
           </div>
           <div class="overview-snapshot" aria-label="Current workspace snapshot">
@@ -2436,3 +2439,6 @@ CLIENT_JS = r"""
 })();
 
 """
+
+from pathlib import Path
+CLIENT_JS = Path(__file__).with_name("studio_tools.js").read_text(encoding="utf-8") + "\n;\n" + CLIENT_JS

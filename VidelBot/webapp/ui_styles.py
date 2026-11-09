@@ -772,7 +772,7 @@ table.data-table {
 }
 
 /* Studio access & shell polish: restrained blue accents with clear fallbacks. */
-:root, [data-theme="dark"] { --bg-app:#0d1220; --bg-surface:#151c2c; --bg-elevated:#1b2437; --bg-subtle:#202b40; --bg-hover:#28334a; --border:#2a354b; --border-strong:#46536c; --text-muted:#8190aa; --accent:#9baaff; --accent-hover:#bac5ff; --accent-soft:rgba(128,146,255,.13); }
+:root:not([data-theme]), [data-theme="dark"] { --bg-app:#0d1220; --bg-surface:#151c2c; --bg-elevated:#1b2437; --bg-subtle:#202b40; --bg-hover:#28334a; --border:#2a354b; --border-strong:#46536c; --text-muted:#8190aa; --accent:#9baaff; --accent-hover:#bac5ff; --accent-soft:rgba(128,146,255,.13); }
 [data-theme="light"] { --accent:#334ee9; --accent-hover:#263ed0; --accent-soft:rgba(51,78,233,.1); }
 .btn-primary { background:#4054ce; border-color:#4054ce; color:#fff; }
 .btn-primary:hover:not(:disabled) { background:#3447b6; border-color:#3447b6; color:#fff; }
@@ -796,3 +796,6 @@ table.data-table {
 @media(max-width:360px) { .entry-intro,.auth-card.entry-card { padding:20px; }.entry-intro h1 { font-size:34px; }.entry-top { font-size:9px; } }
 
 """
+
+from pathlib import Path
+STYLES_CSS += "\n" + Path(__file__).with_name("studio_tools.css").read_text(encoding="utf-8")
