@@ -23,10 +23,11 @@ from pyrogram import Client, filters
 from core import botapi
 from core.db import vdb
 from core.plugin_manager import PluginBase, plugin_filter
-from plugins.widget import transport
+from plugins.widget import transport, tool_sender
 
 log = logging.getLogger("videl.plugins.widget")
 HTML_PATH = Path(__file__).with_name("calculator.html")
+TOOLS_PATH = Path(__file__).with_name("tools")
 SETTING_KEY = "shared_calculator_widget_id"
 MAX_EXPR_BYTES = 56
 EXPR_RE = re.compile(r"\A[0-9+\-*/().\s]{1,56}\Z")
@@ -44,6 +45,36 @@ def widget_html() -> str:
     if "<script src=" in raw.lower() or "<link " in raw.lower():
         raise ValueError("Calculator widget must remain self-contained")
     return raw
+
+
+def tools_html() -> str:
+    """Assemble trusted built-in assets; Telegram receives one self-contained HTML document."""
+    shell = (TOOLS_PATH / "shell.html").read_text(encoding="utf-8")
+    css = (TOOLS_PATH / "tools.css").read_text(encoding="utf-8")
+    js = (TOOLS_PATH / "tools.js").read_text(encoding="utf-8")
+    html = shell.replace("/*CSS*/", css).replace("/*JS*/", js)
+    raw = html.encode("utf-8")
+    if len(raw) > 32768 or len(zlib.compress(raw, 9)) > 4096:
+        raise ValueError("Tools widget exceeds Telegram's HTML size limit")
+    return html
+
+
+async def _send_tools(client, message) -> bool:
+    if not _beta_enabled() or not botapi.enabled():
+        await message.reply_text("Widget sending is disabled or unavailable. An operator should check the widget and aiogram settings.")
+        return False
+    outgoing = await _primary_bot(client)
+    if outgoing is None:
+        await message.reply_text("Widgets are available only on Videl's primary bot.")
+        return False
+    mode = os.environ.get("WIDGET_API_MODE", "beta").strip().lower()
+    try:
+        await tool_sender.send(outgoing, message.chat.id, getattr(message, "message_thread_id", None), tools_html(), mode)
+        return True
+    except Exception as exc:
+        log.warning("Tools widget send failed (type=%s)", type(exc).__name__)
+        await message.reply_text("Could not confirm the tools widget was sent. Check this chat before retrying; an operator can inspect the server logs.")
+        return False
 
 
 def evaluate_expression(expression: str) -> str:
@@ -138,11 +169,26 @@ async def _primary_bot(client):
     return outgoing
 
 
+_SEND_FAILURE_MESSAGES = {
+    "rejected": "Telegram rejected the widget request. An operator should check the widget payload, chat eligibility and saved shared ID.",
+    "authentication": "The widget API rejected bot authentication. An operator should check the bot configuration.",
+    "permission": "The widget API refused this request. An operator should check bot and chat permissions.",
+    "endpoint": "The configured widget API endpoint or method was not found. An operator should check WIDGET_API_MODE.",
+    "conflict": "The widget API reported a conflict. An operator should check the bot's API configuration.",
+    "rate_limit": "The widget API is rate-limiting requests. Please wait before trying again.",
+    "server": "The widget API returned a server error. Please try again later.",
+    "timeout": "The widget request timed out. It may have been sent; check this chat before retrying.",
+    "network": "The widget request could not be completed over the network. It may have been sent; check this chat before retrying.",
+    "invalid_response": "The widget API returned an unreadable response. Check this chat before retrying.",
+    "unknown": "The widget request could not be completed. Check this chat before retrying; an operator can inspect the safe server logs.",
+}
+
+
 async def _send_widget(client, message) -> bool:
     if not _beta_enabled() or not botapi.enabled():
         await message.reply_text(
-            "The calculator widget is experimental and currently disabled. "
-            "An operator must opt in with WIDGET_API_BETA=True and enable the aiogram bridge."
+            "The calculator widget or aiogram bridge is disabled or unavailable. "
+            "An operator should check WIDGET_API_BETA, AIOGRAM_ENABLED and the bot configuration."
         )
         return False
     outgoing = await _primary_bot(client)
@@ -154,39 +200,61 @@ async def _send_widget(client, message) -> bool:
     thread_id = getattr(message, "message_thread_id", None)
     caption = "Videl Calculator · live arithmetic, shared across copies on supported Telegram clients."
     try:
+        # Validate before any network call; never silently switch endpoints.
+        transport.api_base(mode)
+    except ValueError:
+        log.warning("Calculator widget configuration invalid (WIDGET_API_MODE)")
+        await message.reply_text("Widget configuration is invalid. An operator should check WIDGET_API_MODE.")
+        return False
+    try:
         widget_id = await vdb.get_setting(SETTING_KEY, None)
         if widget_id:
             payload = {"chat_id": chat_id, "widget_id": int(widget_id), "caption": caption}
-            if thread_id is not None:
-                payload["message_thread_id"] = int(thread_id)
-            await transport.request(outgoing.token, "sendSharedWidget", payload, mode=mode)
+            method = "sendSharedWidget"
         else:
-            payload = {
-                "chat_id": chat_id,
-                "html": widget_html(),
-                "caption": caption,
-                "is_shared": True,
-                "allow_queries": True,
-                "public_data": _shared_state("", "0", "0"),
-            }
-            if thread_id is not None:
-                payload["message_thread_id"] = int(thread_id)
-            result = await transport.request(outgoing.token, "sendWidget", payload, mode=mode)
-            widget_id = _widget_id_from_result(result)
-            if not widget_id:
-                log.warning("Widget API accepted sendWidget but returned no usable shared widget id")
-                await message.reply_text("The widget was sent, but Telegram did not return a reusable shared ID.")
-                return False
-            await vdb.set_setting(SETTING_KEY, int(widget_id))
-        await ensure_query_listener()
-        return True
+            payload = {"chat_id": chat_id, "html": widget_html(), "caption": caption,
+                       "is_shared": True, "allow_queries": True,
+                       "public_data": _shared_state("", "0", "0")}
+            method = "sendWidget"
+        if thread_id is not None:
+            payload["message_thread_id"] = int(thread_id)
     except Exception as exc:
-        log.warning("Calculator widget unavailable (%s)", type(exc).__name__)
-        await message.reply_text(
-            "Telegram's Bot API 10.4 widget beta is unavailable right now. "
-            "The regular bot remains online; try again later or use a client that supports HTML widgets."
-        )
+        log.warning("Calculator widget preparation failed (%s)", type(exc).__name__)
+        await message.reply_text("Could not prepare the calculator widget. An operator should check the server configuration and storage.")
         return False
+    try:
+        result = await transport.request(outgoing.token, method, payload, mode=mode)
+    except transport.WidgetApiError as exc:
+        log.warning("Calculator widget send failed (method=%s mode=%s category=%s code=%s)",
+                    method, mode, exc.category, exc.error_code or "unknown")
+        await message.reply_text(_SEND_FAILURE_MESSAGES[exc.category])
+        return False
+    except Exception as exc:
+        log.warning("Calculator widget send failed (method=%s type=%s)", method, type(exc).__name__)
+        await message.reply_text(_SEND_FAILURE_MESSAGES["unknown"])
+        return False
+
+    # An accepted send must never be described as a send failure or retried:
+    # either can produce duplicate messages/shared objects.
+    if method == "sendWidget":
+        widget_id = _widget_id_from_result(result)
+        if not widget_id:
+            log.warning("Widget API accepted sendWidget but returned no usable shared widget id")
+            await message.reply_text("The widget was sent, but Telegram did not return a reusable shared ID. Shared sync may not work.")
+            return False
+        try:
+            await vdb.set_setting(SETTING_KEY, int(widget_id))
+        except Exception as exc:
+            log.warning("Widget sent but shared ID storage failed (%s)", type(exc).__name__)
+            await message.reply_text("The widget was sent, but its shared ID could not be saved. Shared sync may not work; contact an operator.")
+            return False
+    try:
+        await ensure_query_listener()
+    except Exception as exc:
+        log.warning("Widget sent but listener could not start (%s)", type(exc).__name__)
+        await message.reply_text("The widget was sent, but shared sync could not start. Contact an operator.")
+        return False
+    return True
 
 
 async def handle_widget_query(update: dict[str, Any]) -> None:
@@ -285,4 +353,11 @@ async def ensure_query_listener() -> None:
 
 @Client.on_message(filters.command("widget") & (filters.private | filters.group) & plugin_filter("widget"))
 async def widget_command(client, message):
-    await _send_widget(client, message)
+    parts = (getattr(message, "text", "") or "").split()
+    option = parts[1].lower() if len(parts) == 2 else "" if len(parts) == 1 else "invalid"
+    if option in ("", "calculator"):
+        await _send_widget(client, message)
+    elif option == "tools":
+        await _send_tools(client, message)
+    else:
+        await message.reply_text("Widget platform: /widget or /widget calculator for the shared calculator; /widget tools for split bill, unit converter and counter.")

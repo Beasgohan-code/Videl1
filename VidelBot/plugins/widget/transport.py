@@ -19,9 +19,17 @@ BETA_BASE = "https://api.telegram.org/beta"
 class WidgetApiError(RuntimeError):
     """Bot API failure with no token, URL, or response body in its message."""
 
-    def __init__(self, error_code: int | None = None):
-        super().__init__(f"widget Bot API request failed ({error_code or 'unknown'})")
-        self.error_code = error_code
+    def __init__(self, error_code: int | None = None, *, category: str = "unknown"):
+        super().__init__("widget Bot API request failed")
+        self.error_code = error_code if type(error_code) is int and 100 <= error_code <= 599 else None
+        allowed = {"unknown", "timeout", "network", "invalid_response", "rejected",
+                   "authentication", "permission", "endpoint", "conflict", "rate_limit", "server"}
+        self.category = category if category in allowed else "unknown"
+
+
+def _status_category(code: int | None) -> str:
+    return {400: "rejected", 401: "authentication", 403: "permission", 404: "endpoint",
+            409: "conflict", 429: "rate_limit"}.get(code, "server" if code and 500 <= code <= 599 else "unknown")
 
 
 def api_base(mode: str | None = None) -> str:
@@ -43,15 +51,29 @@ async def request(token: str, method: str, payload: dict[str, Any] | None = None
     try:
         async with aiohttp.ClientSession(timeout=deadline) as session:
             async with session.post(url, json=payload or {}) as response:
-                data = await response.json(content_type=None)
+                status = response.status
+                try:
+                    data = await response.json(content_type=None)
+                except (ValueError, aiohttp.ClientError):
+                    if status >= 400:
+                        raise WidgetApiError(status, category=_status_category(status)) from None
+                    raise WidgetApiError(category="invalid_response") from None
                 if response.status >= 400 or not isinstance(data, dict) or data.get("ok") is not True:
-                    raise WidgetApiError(data.get("error_code") if isinstance(data, dict) else response.status)
+                    code = data.get("error_code") if isinstance(data, dict) else None
+                    if type(code) is not int or not 100 <= code <= 599:
+                        code = status if status >= 400 else None
+                    raise WidgetApiError(code, category=_status_category(code))
                 return data.get("result")
     except WidgetApiError:
         raise
-    except Exception as exc:
-        # Do not retain aiohttp's exception string: it may contain the token URL.
-        raise WidgetApiError() from exc
+    except asyncio.TimeoutError:
+        raise WidgetApiError(category="timeout") from None
+    except aiohttp.ClientError:
+        raise WidgetApiError(category="network") from None
+    except Exception:
+        # Never retain an exception chain: aiohttp errors may include token URLs.
+        raise WidgetApiError(category="unknown") from None
+
 
 
 async def poll_widget_queries(token: str,

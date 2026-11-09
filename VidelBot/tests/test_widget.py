@@ -157,3 +157,160 @@ def test_polling_refuses_existing_webhook(monkeypatch):
     with pytest.raises(widget.transport.WidgetApiError):
         run(widget.transport.poll_widget_queries("token", widget.handle_widget_query))
     assert calls == ["getWebhookInfo"]
+
+
+@pytest.mark.parametrize("code,category", [
+    (400, "rejected"), (401, "authentication"), (403, "permission"),
+    (404, "endpoint"), (409, "conflict"), (429, "rate_limit"), (503, "server"),
+])
+def test_transport_redacts_server_errors_and_classifies_status(monkeypatch, code, category):
+    class Response:
+        status = code
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def json(self, **kwargs):
+            return {"ok": False, "error_code": code, "description": "secret-token https://secret-url"}
+    class Session:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        def post(self, *args, **kwargs): return Response()
+    monkeypatch.setattr(widget.transport.aiohttp, "ClientSession", Session)
+    with pytest.raises(widget.transport.WidgetApiError) as caught:
+        run(widget.transport.request("secret-token", "sendWidget"))
+    assert caught.value.category == category and caught.value.error_code == code
+    assert "secret" not in str(caught.value)
+
+
+def test_transport_timeout_redacts_url_and_cause(monkeypatch):
+    class Session:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        def post(self, *args, **kwargs): raise asyncio.TimeoutError("secret-token")
+    monkeypatch.setattr(widget.transport.aiohttp, "ClientSession", Session)
+    with pytest.raises(widget.transport.WidgetApiError) as caught:
+        run(widget.transport.request("secret-token", "sendWidget"))
+    assert caught.value.category == "timeout"
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    assert "secret" not in str(caught.value)
+
+
+def test_send_failures_distinguish_transport_storage_and_accepted_send(monkeypatch, caplog):
+    class Message:
+        chat = SimpleNamespace(id=123)
+        message_thread_id = None
+        def __init__(self): self.replies = []
+        async def reply_text(self, text): self.replies.append(text)
+    monkeypatch.setattr(widget.botapi, "enabled", lambda: True)
+    monkeypatch.setattr(widget.botapi, "bot", lambda: SimpleNamespace(id=123, token="secret-token"))
+    monkeypatch.setenv("WIDGET_API_BETA", "true")
+    client = SimpleNamespace(me=SimpleNamespace(id=123))
+    monkeypatch.setattr(widget.vdb, "get_setting", lambda *a: asyncio.sleep(0, result=42))
+    calls = []
+    async def fail(token, method, payload, **kwargs):
+        calls.append(method)
+        raise widget.transport.WidgetApiError(400, category="rejected")
+    monkeypatch.setattr(widget.transport, "request", fail)
+    msg = Message()
+    assert not run(widget._send_widget(client, msg))
+    assert calls == ["sendSharedWidget"]
+    assert "rejected" in msg.replies[-1] and "saved shared ID" in msg.replies[-1]
+    assert "beta is unavailable" not in msg.replies[-1]
+    assert "secret-token" not in caplog.text
+
+    async def bad_db(*a): raise RuntimeError("secret-token")
+    monkeypatch.setattr(widget.vdb, "get_setting", bad_db)
+    msg = Message()
+    assert not run(widget._send_widget(client, msg))
+    assert "prepare" in msg.replies[-1] and calls == ["sendSharedWidget"]
+
+    monkeypatch.setattr(widget.vdb, "get_setting", lambda *a: asyncio.sleep(0, result=None))
+    async def sent(token, method, payload, **kwargs):
+        calls.append(method)
+        return {"widget": {"id": 1234}}
+    monkeypatch.setattr(widget.transport, "request", sent)
+    monkeypatch.setattr(widget.vdb, "set_setting", bad_db)
+    msg = Message()
+    assert not run(widget._send_widget(client, msg))
+    assert calls == ["sendSharedWidget", "sendWidget"]
+    assert "widget was sent" in msg.replies[-1] and "could not be saved" in msg.replies[-1]
+    assert "secret-token" not in caplog.text
+
+
+def test_invalid_mode_does_not_send(monkeypatch):
+    class Message:
+        chat = SimpleNamespace(id=1)
+        message_thread_id = None
+        def __init__(self): self.replies = []
+        async def reply_text(self, text): self.replies.append(text)
+    monkeypatch.setattr(widget.botapi, "enabled", lambda: True)
+    monkeypatch.setattr(widget.botapi, "bot", lambda: SimpleNamespace(id=123, token="token"))
+    monkeypatch.setenv("WIDGET_API_BETA", "true")
+    monkeypatch.setenv("WIDGET_API_MODE", "typo")
+    msg = Message()
+    assert not run(widget._send_widget(SimpleNamespace(me=SimpleNamespace(id=123)), msg))
+    assert "WIDGET_API_MODE" in msg.replies[-1]
+
+
+def test_tools_assembly_and_limits():
+    html = widget.tools_html()
+    assert "Everyday tools" in html and "/*CSS*/" not in html and "/*JS*/" not in html
+    assert len(html.encode()) <= 32768 and len(zlib.compress(html.encode(), 9)) <= 4096
+    assert "tw.request" not in html and "<script src=" not in html
+
+
+def test_tools_sender_identity_mode_and_thread(monkeypatch):
+    class Message:
+        chat = SimpleNamespace(id=-123)
+        message_thread_id = 12
+        def __init__(self): self.replies = []
+        async def reply_text(self, text): self.replies.append(text)
+    outgoing = SimpleNamespace(id=123, token="token")
+    monkeypatch.setattr(widget.botapi, "enabled", lambda: True)
+    monkeypatch.setattr(widget.botapi, "bot", lambda: outgoing)
+    monkeypatch.setenv("WIDGET_API_BETA", "true")
+    monkeypatch.setenv("WIDGET_API_MODE", "beta")
+    calls = []
+    async def send(*args): calls.append(args)
+    monkeypatch.setattr(widget.tool_sender, "send", send)
+    msg = Message()
+    assert not run(widget._send_tools(SimpleNamespace(me=SimpleNamespace(id=999)), msg))
+    assert not calls
+    assert run(widget._send_tools(SimpleNamespace(me=SimpleNamespace(id=123)), msg))
+    assert calls[0][0:3] == (outgoing, -123, 12)
+    assert "Everyday tools" in calls[0][3] and calls[0][4] == "beta"
+    monkeypatch.setenv("WIDGET_API_BETA", "false")
+    assert not run(widget._send_tools(SimpleNamespace(me=SimpleNamespace(id=123)), msg))
+    assert len(calls) == 1
+
+
+def test_widget_shortcuts_preserve_calculator(monkeypatch):
+    calls = []
+    async def calc(*args): calls.append("calculator")
+    async def tools(*args): calls.append("tools")
+    monkeypatch.setattr(widget, "_send_widget", calc)
+    monkeypatch.setattr(widget, "_send_tools", tools)
+    class Message:
+        def __init__(self, text): self.text, self.replies = text, []
+        async def reply_text(self, text): self.replies.append(text)
+    for text in ("/widget", "/widget calculator", "/widget tools"):
+        run(widget.widget_command(None, Message(text)))
+    assert calls == ["calculator", "calculator", "tools"]
+    message = Message("/widget help")
+    run(widget.widget_command(None, message))
+    assert "/widget tools" in message.replies[-1]
+
+
+def test_aiogram_configured_sender_uses_one_outgoing_request():
+    calls = []
+    async def outgoing(method):
+        calls.append(method)
+        return True
+    assert run(widget.tool_sender.send(outgoing, 5, 7, "<b>Hi</b>", "configured")) is True
+    assert len(calls) == 1 and calls[0].__api_method__ == "sendWidget"
+    assert calls[0].chat_id == 5 and calls[0].message_thread_id == 7
+    assert "allow_queries" not in calls[0].model_dump(exclude_none=True)
+    with pytest.raises(ValueError):
+        run(widget.tool_sender.send(outgoing, 5, None, "", "bad"))
+    assert len(calls) == 1
