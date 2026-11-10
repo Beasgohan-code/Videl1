@@ -143,6 +143,7 @@ GROUP_COMMANDS = [
     ("warns", "📋 Check active warnings"),
     ("warnconfig", "⚠️ Set group warning policy (admin)"),
     ("warnrecover", "⚠️ Recover stale warning action (admin)"),
+    ("faq", "📚 Browse this group's FAQ"),
     ("tag", "🏷 Set custom member tag (admin)"),
     ("deltag", "🏷 Clear member tag (admin)"),
     ("clearreactions", "🧹 Clear reactions on message or chat (admin)"),

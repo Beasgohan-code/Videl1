@@ -37,6 +37,13 @@
       "commands": ["gsettings", "gban", "mute", "warn", "tag", "clearreactions", "topic", "joinmode", "rules", "welcome", "lock", "gfilter", "antiraid", "modreport"]
     },
     {
+      "name": "group_knowledge",
+      "version": "1.0.0",
+      "author": "Videl",
+      "description": "Searchable group FAQs with admin-controlled, versioned edits",
+      "commands": ["faq"]
+    },
+    {
       "name": "game",
       "version": "1.0.0",
       "author": "Videl",

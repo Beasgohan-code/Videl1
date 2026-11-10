@@ -55,3 +55,7 @@ reviewable stages, with safety, permissions, isolation and privacy first.
 ## Stage 6 — join automation and raid safety (implemented)
 
 Join-request auto-approval and the blanket emergency raid shield now require explicit confirmation and live bot-right checks; legacy unconfirmed automatic settings are inactive until reviewed. The dashboard cannot enable either dangerous mode with one tap. Disabling automation does not depend on the bot retaining action permissions. The raid guard checks the current bot and target status before a join ban; anti-flood checks bot rights at enablement and enforcement. Unconfirmed API outcomes are not reported as successful. See `VidelBot/plugins/group_mod/README.md` for the disruptive upgrade notice, exact behavior and multi-worker limitations. This is not adaptive raid detection or a durable incident/alert system.
+
+## Stage 8 — group knowledge (implemented in branch)
+
+The separate `group_knowledge` plugin adds a group-visible `/faq` knowledge base with key search, pagination and buttons, admin-only creation, revision-checked replacement and renaming, and explicit revision-checked deletion. Entries are manually supplied and scoped by bot and group. Limits, retention, permission checks and visibility are documented in `VidelBot/plugins/group_knowledge/README.md`. It is not a confidential moderation casebook or evidence of live Telegram/real Mongo concurrency verification. The broader group-management, security, plugin and frontend roadmaps remain open.
