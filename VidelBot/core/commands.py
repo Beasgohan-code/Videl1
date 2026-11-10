@@ -25,7 +25,6 @@ USER_COMMANDS = [
     ("guide", "📖 Illustrated guide (rich message)"),
     ("about", "ℹ️ About the bot"),
     ("settings", "⚙️ Settings dashboard"),
-    ("dashboard", "🧰 Local toolkit widget (private chat)"),
     ("commands", "📜 All commands"),
     ("cancel", "❌ Cancel the current task / flow"),
     ("lang", "🌐 Language"),
@@ -158,6 +157,7 @@ GROUP_COMMANDS = [
 ]
 
 ADMIN_COMMANDS = [
+    ("dashboard", "📊 Stats widget, charts & web dashboard"),
     ("analytics", "📊 Charts + 🌐 web dashboard"),
     ("users", "👥 User counts"),
     ("user", "🔍 User profile & actions: id | @name"),

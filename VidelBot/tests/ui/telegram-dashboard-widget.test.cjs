@@ -3,33 +3,26 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
 const dir = path.resolve(__dirname, '../../plugins/widget/dashboard_assets');
+const data = { days: Array.from({length: 90}, (_, i) => `day-${i+1}`), active: Array(90).fill(4), new: Array(90).fill(2), jobs: Array(90).fill(15), stars: Array(90).fill(7), generated: '2026-04-01 00:00' };
 const html = fs.readFileSync(path.join(dir, 'shell.html'), 'utf8')
   .replace('/*CSS*/', fs.readFileSync(path.join(dir, 'dashboard.css'), 'utf8'))
+  .replace('/*DATA*/', JSON.stringify(data))
   .replace('/*JS*/', fs.readFileSync(path.join(dir, 'dashboard.js'), 'utf8'));
 let ready = 0, queries = 0;
 const dom = new JSDOM(html, { runScripts: 'dangerously', beforeParse(w) {
   w.TelegramWidget = { ready() { ready++; }, request() { queries++; throw Error('unexpected query'); } };
 }});
 const d = dom.window.document;
-const tab = v => d.querySelector(`button[data-tab="${v}"]`).click();
-const key = v => { const b = [...d.querySelectorAll('button[data-key]')].find(x => x.dataset.key === v); assert.ok(b, v); b.click(); };
-const action = v => d.querySelector(`button[data-action="${v}"]`).click();
-const val = () => d.getElementById('value').textContent;
-assert.equal(ready, 1);
-for (const k of ['2', '+', '3', '*', '4']) key(k);
-assert.equal(val(), '14');
-key('='); key('/'); key('0'); assert.equal(val(), '—');
-key('C'); for (const k of ['(', '2', '+', '3', ')', '*', '4']) key(k); assert.equal(val(), '20');
-tab('bill'); for (const k of ['1', '0', '0']) key(k); action('people');
-assert.equal(val(), '55.00 each'); assert.match(d.getElementById('detail').textContent, /Total 110.00/);
-action('tip'); assert.equal(val(), '57.50 each');
-tab('unit'); key('1'); assert.equal(val(), '0.6214 mi'); action('swap'); assert.equal(val(), '1.6093 km');
-action('unit'); action('unit'); key('C'); key('3'); key('2'); action('swap'); assert.equal(val(), '0 °C');
-action('sign'); assert.equal(val(), '-35.5556 °C');
-tab('count'); action('plus'); action('plus'); action('minus'); assert.equal(val(), '1'); action('reset'); assert.equal(val(), '0');
-tab('bill'); assert.equal(val(), '57.50 each');
-tab('calc'); assert.equal(val(), '20');
-assert.equal(queries, 0);
-assert.match(d.querySelector('.foot').textContent, /resets when reloaded/);
+const metric = v => d.querySelector(`button[data-metric="${v}"]`).click();
+const range = v => d.querySelector(`button[data-range="${v}"]`).click();
+const text = id => d.getElementById(id).textContent;
+assert.equal(ready, 1); assert.equal(text('total'), '120'); assert.equal(text('peak'), '4');
+assert.match(text('detail'), /not unique people/); assert.equal(d.querySelectorAll('.bar').length, 30);
+metric('new'); range(7); assert.equal(text('total'), '14'); assert.equal(d.querySelectorAll('.bar').length, 7);
+metric('jobs'); assert.equal(text('total'), '105'); range(90); assert.equal(text('total'), '1,350');
+assert.equal(d.querySelectorAll('.bar').length, 30); assert.match(text('detail'), /3 days/);
+metric('stars'); range(30); assert.equal(text('total'), '210'); assert.match(text('detail'), /not profit/);
+assert.equal(text('from'), 'day-61'); assert.equal(text('to'), 'day-90'); assert.match(text('stamp'), /UTC/);
+assert.match(d.querySelector('.foot').textContent, /snapshot/i); assert.equal(queries, 0);
 dom.window.close();
-console.log('telegram dashboard widget: local calculator, split, units, counter and no queries passed');
+console.log('telegram dashboard widget: real snapshot metrics, ranges, graphs and no queries passed');

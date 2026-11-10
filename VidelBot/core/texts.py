@@ -249,7 +249,7 @@ ADMIN_HELP = """<b>👮 Admin</b>
 
 <blockquote expandable><b>Bot</b>
 /stats — users, modules &amp; server stats
-/dashboard — local toolkit widget in DM; admins also get charts + 🌐 web dashboard
+/dashboard — stats widget in DM + charts and 🌐 web dashboard
 /analytics — admin charts + 🌐 web dashboard
 /users — user counts
 /user &lt;id | @name&gt; — full profile + ban / premium buttons

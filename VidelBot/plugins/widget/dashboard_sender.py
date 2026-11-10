@@ -16,8 +16,8 @@ class SendDashboardWidget(TelegramMethod[Message]):
     html: str
     is_shared: bool = False
     allow_queries: bool = False
-    caption: str = ("Videl Dashboard · calculator, bill splitter, unit converter and counter. "
-                    "Local only; requires a compatible Telegram client.")
+    caption: str = ("Videl Dashboard · private statistics snapshot. "
+                    "Requires a compatible Telegram client; request /dashboard again to refresh.")
 
 
 async def send(outgoing, chat_id: int, html: str, mode: str):

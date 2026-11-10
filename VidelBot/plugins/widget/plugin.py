@@ -338,4 +338,4 @@ async def widget_command(client, message):
     if option in ("", "calculator"):
         await _send_widget(client, message)
     else:
-        await message.reply_text("The shared calculator is available in private chat with /widget. Send /dashboard there for the local toolkit, or /web for Studio.")
+        await message.reply_text("The shared calculator is available in private chat with /widget. Everyday tools are in Studio; send /web to open it.")
