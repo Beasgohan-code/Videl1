@@ -103,3 +103,9 @@ keyboard shortcut and focus, native modal behavior, filtering, unsaved-change
 guards, no search requests and small-screen overflow using the synthetic API.
 This does not search workspace records or validate real authorization, assistive
 technology, Telegram clients or production data.
+
+`node next-bot-profile.test.cjs` checks saved bot record name/description edits
+against the synthetic fixture, including changed-field-only writes, read-only
+permissions, draft and pending navigation, preflight conflicts and uncertain
+responses. The preflight is not an atomic compare-and-set; real concurrent writes,
+MongoDB, Telegram and physical devices are not tested.

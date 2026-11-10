@@ -131,17 +131,21 @@ async def create_bot(request):
 
 
 async def bot_item(request):
-    context, failure = authorized(request, write=True)
+    context, failure = authorized(request, write=request.method != 'GET')
     if failure is not None: return failure
     token, ws = context
     bots = bot_records(token, ws)
     bot = next((b for b in bots if b['bot_id'] == request.match_info['bot']), None)
     if bot is None: return error('Bot not found', 404)
+    if request.method == 'GET': return web.json_response({'bot': bot})
     if request.method == 'DELETE':
         bots.remove(bot); return web.json_response({'deleted': True})
     data = await request.json()
-    bot['archived'] = data.get('archived') is True
-    bot['connection_state'] = 'archived' if bot['archived'] else 'disconnected'
+    for field in ('display_name', 'description'):
+        if field in data: bot[field] = data[field].strip()
+    if 'archived' in data:
+        bot['archived'] = data['archived'] is True
+        bot['connection_state'] = 'archived' if bot['archived'] else 'disconnected'
     return web.json_response({'bot': bot})
 
 
@@ -230,6 +234,7 @@ app.router.add_get('/api/v1/workspaces/{ws}', workspace)
 app.router.add_get('/api/v1/workspaces/{ws}/bots', workspace)
 app.router.add_post('/api/v1/workspaces/{ws}/bots/verify-token', verify_token)
 app.router.add_post('/api/v1/workspaces/{ws}/bots', create_bot)
+app.router.add_get('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_patch('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_delete('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/bots/{bot}/commands', command_collection)

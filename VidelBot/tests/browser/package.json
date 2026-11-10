@@ -5,7 +5,7 @@
     "test": "node browser.test.cjs",
     "test:hosting": "node hosting.test.cjs",
     "test:signup": "node auth-onboarding.test.cjs && node first-run-flow.test.cjs",
-    "test:next": "node next-navigation-palette.test.cjs && node next-preview.test.cjs && node next-studios.test.cjs && node next-library-inbox.test.cjs && node next-team.test.cjs && node next-analytics.test.cjs && node next-settings.test.cjs && node next-file-filters.test.cjs && node next-theme.test.cjs && node next-file-view.test.cjs && node next-compact-tables.test.cjs && node next-telegram-login.test.cjs"
+    "test:next": "node next-bot-profile.test.cjs && node next-navigation-palette.test.cjs && node next-preview.test.cjs && node next-studios.test.cjs && node next-library-inbox.test.cjs && node next-team.test.cjs && node next-analytics.test.cjs && node next-settings.test.cjs && node next-file-filters.test.cjs && node next-theme.test.cjs && node next-file-view.test.cjs && node next-compact-tables.test.cjs && node next-telegram-login.test.cjs"
   },
   "devDependencies": {
     "playwright-core": "1.58.2"

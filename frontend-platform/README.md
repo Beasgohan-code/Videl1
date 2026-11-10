@@ -33,6 +33,8 @@ The branch's older backend may not yet contain them. Do not point this preview
 at an older or production backend assuming contract compatibility; the backend
 reconciliation and real-service validation are still pending.
 
+Bot management can edit the saved Studio record name and description; this does not change the Telegram profile. The preview checks changed fields before saving, but the backend write is not atomic with that check: concurrent edits can still overwrite each other.
+
 Team mutations require the backend to explicitly advertise reviewed membership
 guards; older servers are read-only in this preview. These guards do not solve
 all concurrent membership or authorization races.
