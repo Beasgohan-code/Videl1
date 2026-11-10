@@ -13,7 +13,7 @@ npm run build
 
 The Next application is currently mounted at `/next-preview`; it includes an
 overview and partial Bot, Command, File Store, Hosting, Template, Notification, Team and Analytics workflows. Other features
-remain in the existing `/app`. To use real data, configure `VIDEL_BACKEND_ORIGIN`
+remain in the existing `/app`. The page finder (Ctrl/Cmd K) navigates rebuilt pages locally; it does not search workspace records. The finder and sidebar guard existing Studio drafts and unsaved workspace-creation names; the selector and form-close action also guard workspace names. Browser history and other navigation paths still need a comprehensive unsaved-state audit. To use real data, configure `VIDEL_BACKEND_ORIGIN`
 to a plain backend origin at both build and server startup. The Next server
 proxies browser requests via same-origin `/api/v1` paths. Without that setting,
 sign-in is disabled. The Astro site's `/app` fallback is not a backend either.

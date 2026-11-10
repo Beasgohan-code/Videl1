@@ -97,3 +97,9 @@ workspace creation/reuse and navigation to bot setup at 320/390/768/1440px.
 Set `VIDEL_TEST_SCREENSHOTS_DIR` to an existing directory to save optional
 screenshots. It uses mock Mongo and cannot establish live Telegram, production
 MongoDB or real-device behavior.
+
+`node next-navigation-palette.test.cjs` checks the local Studio page finder,
+keyboard shortcut and focus, native modal behavior, filtering, unsaved-change
+guards, no search requests and small-screen overflow using the synthetic API.
+This does not search workspace records or validate real authorization, assistive
+technology, Telegram clients or production data.
