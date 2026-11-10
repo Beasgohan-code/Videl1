@@ -94,7 +94,16 @@ def group_payload(chat, role, count):
          _row("Scope", "Only this accessible group")]}], "/info group")
 
 
-def system_payload(cpu, mem, disk, uptime, workers):
+def encoder_queue_snapshot():
+    """Read only process-local scheduler counts; never expose job records."""
+    try:
+        from VideoEncoder.utils import scheduler
+        return len(scheduler.running()), len(scheduler.waiting())
+    except Exception:
+        return None, None
+
+
+def system_payload(cpu, mem, disk, uptime, workers, *, encoder_running=None, encoder_waiting=None):
     def mb(n): return f"{int(n) // 1048576:,} MiB" if n is not None else None
     now = _now()
     return _payload("VIDEL · SYSTEM", "Host resources", "Captured " + now, [
@@ -104,7 +113,8 @@ def system_payload(cpu, mem, disk, uptime, workers):
          _row("Disk used", mb(disk.used)), _row("Disk total", mb(disk.total)),
          _row("Disk free", mb(getattr(disk, "free", None)))]},
         {"label": "Runtime", "rows": [_row("Host uptime", str(uptime).split(".")[0]),
-         _row("Active clone workers", workers), _row("Scope", "This host / process only")]}], "/sys")
+         _row("Active clone workers", workers), _row("Encoder running", encoder_running),
+         _row("Encoder waiting", encoder_waiting), _row("Scope", "This host / process only")]}], "/sys")
 
 
 def detail_html(data):

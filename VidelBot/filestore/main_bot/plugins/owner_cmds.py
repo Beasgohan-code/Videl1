@@ -120,8 +120,11 @@ async def system_stats(client: Client, message: Message):
         await rich.reply(message, doc)
         # Widgets are optional; the existing owner-only response remains the fallback.
         try:
-            from plugins.widget.details import send_detail, system_payload
-            await send_detail(client, message, system_payload(cpu, mem, disk, uptime, active_workers), owner_only=True)
+            from plugins.widget.details import encoder_queue_snapshot, send_detail, system_payload
+            running, waiting = encoder_queue_snapshot()
+            payload = system_payload(cpu, mem, disk, uptime, active_workers,
+                                     encoder_running=running, encoder_waiting=waiting)
+            await send_detail(client, message, payload, owner_only=True)
         except Exception as exc:
             log.debug("System detail widget preparation failed (%s)", type(exc).__name__)
     except Exception as e:

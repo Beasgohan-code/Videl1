@@ -1,6 +1,7 @@
 """Admin-only, outgoing-only statistics widget. No queries or live sync."""
 from datetime import datetime, timedelta, timezone
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -60,7 +61,11 @@ def _compact_series(values):
 def dashboard_html(data: dict) -> str:
     shell = (ASSETS / "shell.html").read_text(encoding="utf-8")
     css = (ASSETS / "dashboard.css").read_text(encoding="utf-8")
-    js = (ASSETS / "dashboard.js").read_text(encoding="utf-8")
+    # Keep the generated, compact runtime tied to its readable source.
+    source = (ASSETS / "dashboard.js").read_bytes()
+    header, js = (ASSETS / "dashboard.min.js").read_text(encoding="utf-8").split("\n", 1)
+    if header != f"/* source-sha256:{hashlib.sha256(source).hexdigest()} */":
+        raise ValueError("dashboard runtime needs rebuilding")
     if any(shell.count(marker) != 1 for marker in ("/*CSS*/", "/*JS*/", "/*DATA*/")):
         raise ValueError("Invalid dashboard widget template")
     # The caller constructs data with snapshot_data: bounded numbers, ISO dates
@@ -71,15 +76,16 @@ def dashboard_html(data: dict) -> str:
     for key in ("active", "new", "jobs", "stars"):
         values = packed.get(key)
         if isinstance(values, list) and len(values) == 90 and all(type(v) is int and v >= 0 for v in values):
-            # Daily detail is needed for the latest 30 days; the 90-day graph
-            # uses exact three-day buckets. Keep exact peak and prior-30 total.
-            packed[key] = {"r": _compact_series(values[-30:]),
-                           "g": _compact_series([sum(values[i:i + 3]) for i in range(0, 90, 3)]),
-                           "p": sum(values[-60:-30]), "x": max(values)}
+            # 31 daily values support 30 complete days without the latest day.
+            # The two previous 30-day totals cover both comparison windows.
+            buckets = [sum(values[i:i + 3]) for i in range(0, 90, 3)]
+            packed[key] = _compact_series(values[-31:] + buckets +
+                                          [sum(values[-60:-30]), sum(values[-61:-31]), max(values)])
     serialized = json.dumps(packed, separators=(",", ":"), ensure_ascii=True, allow_nan=False).replace("<", "\\u003c")
     html = shell.replace("/*CSS*/", css).replace("/*JS*/", js).replace("/*DATA*/", serialized)
     raw = html.encode("utf-8")
-    if len(raw) > 32768 or len(zlib.compress(raw, 9)) > 4096:
+    # Allow some headroom for differences between zlib implementations.
+    if len(raw) > 32768 or len(zlib.compress(raw, 9)) > 4000:
         raise WidgetPayloadTooLarge("Dashboard widget exceeds Telegram's HTML size limit")
     return html
 

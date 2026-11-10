@@ -170,11 +170,13 @@ def test_system_handler_keeps_reply_and_adds_owner_snapshot(monkeypatch):
     async def reply(msg, doc): output.append(doc.classic())
     async def widget(client, msg, payload, *, owner_only=False): widgets.append((payload, owner_only))
     monkeypatch.setattr(owner_cmds.rich, 'reply', reply); monkeypatch.setattr(details, 'send_detail', widget)
+    monkeypatch.setattr(details, 'encoder_queue_snapshot', lambda: (1, 4))
     run(owner_cmds.system_stats(FakeClient(), FakeMsg('/sys', uid=111)))
     assert output and 'CPU' in output[0] and len(widgets) == 1 and widgets[0][1] is True
     rows = {r['label']: r for s in widgets[0][0]['sections'] for r in s['rows']}
     assert rows['CPU']['value'] == '12.4%' and rows['RAM']['value'] == '37.5%'
     assert rows['Active clone workers']['value'] == '7'
+    assert rows['Encoder running']['value'] == '1' and rows['Encoder waiting']['value'] == '4'
 
 
 def test_info_group_widget_text_sanitizes_user_controlled_content():
@@ -303,3 +305,27 @@ def test_system_capacity_shows_actual_available_values_or_unavailable():
     del mem.available; del disk.free
     rows = {r['label']: r['value'] for s in details.system_payload(12.4, mem, disk, timedelta(), 1)['sections'] for r in s['rows']}
     assert rows['RAM available'] == 'Unavailable' and rows['Disk free'] == 'Unavailable'
+
+
+def test_encoder_queue_snapshot_reads_real_scheduler_and_handles_failure(monkeypatch):
+    from VideoEncoder import data
+    from VideoEncoder.utils import scheduler
+    first, second, third = object(), object(), object()
+    original_data, original_running = list(data), list(scheduler._running)
+    try:
+        data[:] = [first, second, third]
+        scheduler._running[:] = [first]
+        assert details.encoder_queue_snapshot() == (1, 2)
+        mem = SimpleNamespace(percent=30.0, used=1048576, total=10485760)
+        payload = details.system_payload(20.0, mem, mem, timedelta(), 2, encoder_running=1, encoder_waiting=2)
+        rows = {r['label']: r['value'] for section in payload['sections'] for r in section['rows']}
+        assert rows['Encoder running'] == '1' and rows['Encoder waiting'] == '2'
+        def unavailable(): raise RuntimeError('unavailable')
+        monkeypatch.setattr(scheduler, 'running', unavailable)
+        assert details.encoder_queue_snapshot() == (None, None)
+        payload = details.system_payload(20.0, mem, mem, timedelta(), 2)
+        rows = {r['label']: r['value'] for section in payload['sections'] for r in section['rows']}
+        assert rows['Encoder running'] == rows['Encoder waiting'] == 'Unavailable'
+    finally:
+        data[:] = original_data
+        scheduler._running[:] = original_running

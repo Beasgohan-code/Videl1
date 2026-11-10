@@ -25,7 +25,7 @@ def test_snapshot_contains_only_aggregates_and_is_bounded():
     assert data["jobs"] == [15] * 90 and data["generated"] == "2026-04-01 00:00"
     html = dashboard.dashboard_html(data)
     assert len(html.encode()) <= 32768 and len(zlib.compress(html.encode(), 9)) <= 4096
-    assert '"jobs":{"r":"Dw8P' in html and "allow_queries" not in html
+    assert '"jobs":"Dw8P' in html and "allow_queries" not in html
     assert "TelegramWidget.request" not in html and "eval(" not in html
     malformed = sample(); malformed["active"][0] = -1
     with pytest.raises(ValueError): dashboard.snapshot_data(malformed, datetime.now(timezone.utc))
@@ -85,7 +85,7 @@ def test_widget_sends_real_series_and_no_queries(monkeypatch):
     monkeypatch.setattr(analytics, "series", series); monkeypatch.setattr(dashboard_sender, "send", send)
     msg = FakeMsg("/dashboard 7", uid=222)
     assert run(dashboard.send_dashboard(FakeClient(), msg))
-    assert calls[0][0] == 222 and calls[0][2] == "beta" and '"jobs":{"r":"Dw8P' in calls[0][1]
+    assert calls[0][0] == 222 and calls[0][2] == "beta" and '"jobs":"Dw8P' in calls[0][1]
     assert '"default_range":7' in calls[0][1]
     method = dashboard_sender.SendDashboardWidget(chat_id=222, html=calls[0][1]).model_dump(exclude_none=True)
     assert method["is_shared"] is False and method["allow_queries"] is False
@@ -226,17 +226,20 @@ def test_compact_payload_round_trips_exact_buckets_peaks_and_dates():
         return result
     encoded = payload['active']
     assert payload['days'] == original['days'][0]
-    assert unpack(encoded['r']) == original['active'][-30:]
-    assert unpack(encoded['g']) == [sum(original['active'][i:i+3]) for i in range(0, 90, 3)]
-    assert encoded['p'] == sum(original['active'][-60:-30]) and encoded['x'] == max(original['active'])
+    values = unpack(encoded)
+    assert len(values) == 64 and values[:31] == original['active'][-31:]
+    assert values[31:61] == [sum(original['active'][i:i+3]) for i in range(0, 90, 3)]
+    assert values[61] == sum(original['active'][-60:-30])
+    assert values[62] == sum(original['active'][-61:-31]) and values[63] == max(original['active'])
     original['days'][1] = original['days'][0]
     with pytest.raises(ValueError): dashboard.snapshot_data(original, now)
 
 
 def test_snapshot_template_markers_remain_data():
     html = dashboard.dashboard_html({'x': '/*JS*/'})
-    assert '/*JS*/' in html and html.count("(()=>{'use strict'") == 1
-    assert html.index('/*JS*/') < html.index("(()=>{'use strict'")
+    runtime = (dashboard.ASSETS / 'dashboard.min.js').read_text().split('\n', 1)[1]
+    assert '/*JS*/' in html and html.count(runtime) == 1
+    assert html.index('/*JS*/') < html.index(runtime)
 
 
 def test_oversized_snapshot_reports_limit_without_retry(monkeypatch):
@@ -252,3 +255,20 @@ def test_oversized_snapshot_reports_limit_without_retry(monkeypatch):
     msg = FakeMsg('/dashboard', uid=222)
     assert not run(dashboard.send_dashboard(FakeClient(), msg))
     assert 'too large' in msg.replies[-1] and 'charts are still available' in msg.replies[-1]
+
+
+def test_dashboard_rejects_stale_generated_runtime(monkeypatch, tmp_path):
+    for name in ('shell.html', 'dashboard.css', 'dashboard.min.js'):
+        (tmp_path / name).write_bytes((dashboard.ASSETS / name).read_bytes())
+    (tmp_path / 'dashboard.js').write_text('changed source')
+    monkeypatch.setattr(dashboard, 'ASSETS', tmp_path)
+    with pytest.raises(ValueError, match='needs rebuilding'):
+        dashboard.dashboard_html({})
+
+
+def test_dashboard_retains_compression_headroom(monkeypatch):
+    monkeypatch.setattr(dashboard.zlib, 'compress', lambda raw, level: b'x' * 4001)
+    with pytest.raises(dashboard.WidgetPayloadTooLarge):
+        dashboard.dashboard_html({})
+    monkeypatch.setattr(dashboard.zlib, 'compress', lambda raw, level: b'x' * 4000)
+    assert dashboard.dashboard_html({})
