@@ -326,7 +326,7 @@ async def send_analytics(client, chat_id: int, days: int = 30, private: bool | N
                               disable_web_page_preview=True)
 
 
-@Client.on_message(filters.command(["analytics", "dashboard"]) & filters.user(config.ADMINS))
+@Client.on_message(filters.command("analytics") & filters.user(config.ADMINS))
 async def analytics_cmd(client: Client, message: Message):
     parts = (message.text or "").split()
     days = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 30
@@ -337,6 +337,17 @@ async def analytics_cmd(client: Client, message: Message):
         await wait.delete()
     except Exception:
         pass
+
+
+@Client.on_message(filters.command("dashboard"))
+async def dashboard_cmd(client: Client, message: Message):
+    # One handler owns /dashboard. Everyone gets the local widget; only bot
+    # admins retain the existing charts and web-dashboard sign-in buttons.
+    from plugins.widget.dashboard import send_dashboard
+    await send_dashboard(client, message)
+    sender = getattr(message, "from_user", None)
+    if sender is not None and sender.id in config.ADMINS:
+        await analytics_cmd(client, message)
 
 
 @Client.on_callback_query(filters.regex(r"^anl:\d+$"))

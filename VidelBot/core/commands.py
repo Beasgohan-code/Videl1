@@ -25,6 +25,7 @@ USER_COMMANDS = [
     ("guide", "📖 Illustrated guide (rich message)"),
     ("about", "ℹ️ About the bot"),
     ("settings", "⚙️ Settings dashboard"),
+    ("dashboard", "🧰 Local toolkit widget (private chat)"),
     ("commands", "📜 All commands"),
     ("cancel", "❌ Cancel the current task / flow"),
     ("lang", "🌐 Language"),
@@ -201,8 +202,7 @@ OWNER_COMMANDS = [
     ("check", "🩺 Health-check every clone bot"),
     ("plugins", "🧩 Manage, toggle & install plugins"),
     ("sys", "🖥 CPU / RAM / disk"),
-    ("exec", "🐍 Run Python"),
-    # /sh remains owner-only but is not advertised to keep the owner menu compact.
+    # /exec and /sh remain owner-only but are not advertised to keep the menu under 100.
 ]
 
 

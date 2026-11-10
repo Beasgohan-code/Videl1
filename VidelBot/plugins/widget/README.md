@@ -14,7 +14,7 @@ The HTML has no network access, external assets, forms, or third-party JavaScrip
 
 ## Tests
 
-From `VidelBot`, run `python -m pytest tests/test_widget.py -q`. UI behavior is exercised by `npm ci && npm test` in `tests/ui`. These tests use a mocked Telegram widget bridge and do not prove delivery through Telegram's live beta API or compatibility on every client. Validate on a separate test bot before depending on shared play.
+From `VidelBot`, run `python -m pytest tests/test_widget.py tests/test_telegram_dashboard_widget.py -q`. UI behavior is exercised by `npm ci && npm test` in `tests/ui`. These tests use a mocked Telegram widget bridge and do not prove delivery through Telegram's live beta API or compatibility on every client. Validate on a separate test bot before depending on shared play.
 
 ## Troubleshooting a failed send
 
@@ -26,10 +26,14 @@ A failed `/widget` does **not** by itself prove that Telegram's beta is down or 
 - Sending and client rendering are separate: after a successful send, an incompatible client may show an unsupported-media placeholder. Test with an isolated bot and a compatible client.
 - **Shared-query safety:** the existing implementation starts a separate Bot API `getUpdates` poller. Checking the webhook does not detect another poller; `allowed_updates` does not isolate the token's update queue. It can conflict with another receiver and its offset can affect other pending updates. Do not enable/run it alongside an existing Bot API update consumer; this diagnostic change does not resolve that architectural risk or prove query delivery. WzGram remains the command receiver. Until a single coordinated incoming receiver supports these update types, shared-sync behavior is not production-validated.
 
-## Everyday tools in Studio
+## Everyday tools on Telegram and in Studio
 
-The bill splitter, converter and counter are available in the Studio dashboard, not as a Telegram widget. Open Studio with `/web` and select **Everyday Tools**. Dashboard calculations run locally and are not shared with Telegram. Previously sent widgets are not deleted or changed.
+Send `/dashboard` in a private chat for a native tabbed toolkit: calculator, bill splitter, two-way units and counter. It uses outgoing aiogram with `is_shared=false` and `allow_queries=false`; there is no incoming receiver, database state, network access or shared sync for this widget. Values live only in the current widget view and reset when reloaded. Calculator results are rounded to at most eight decimal places, conversions are approximate, and bill shares are independently rounded; adjust any rounding remainder manually. `/widget` is still the separate shared calculator; `/widget tools` is not restored.
+
+`/dashboard` is available to ordinary users, but only bot admins also receive the existing analytics charts and web-dashboard sign-in buttons. `/analytics` and its range callbacks remain admin-only. Group requests get private-chat instructions; the bot does not proactively DM. For an admin in a group the existing analytics behavior remains. Widget sends use the same plugin, beta/aiogram settings and primary-bot identity guard as `/widget`. Older clients may show only a caption. Timeout outcomes are ambiguous: check the chat before retrying. Forwarding is controlled by Telegram and is not prevented by the DM-only send guard.
+
+The Studio browser dashboard also has local everyday tools, date intervals and a short in-view calculator history; open it using `/web`. Neither local toolkit syncs with the shared `/widget` calculator. Previously sent widgets are not deleted or changed.
 
 ### Private chat availability
 
-Videl attempts to send the calculator widget only in a private chat with the bot. Group requests receive instructions to open a DM; they do not trigger a widget send or unsolicited private messages. This is Videl's conservative behavior based on reported availability, not a claim that every Telegram deployment rejects group widgets: the upstream sandbox documentation describes group support subject to server configuration.
+Videl attempts to send both dashboard and calculator widgets only in a private chat with the bot. Group requests receive instructions to open a DM; they do not trigger a widget send or unsolicited private messages. This is Videl's conservative behavior based on reported availability, not a claim that every Telegram deployment rejects group widgets: the upstream sandbox documentation describes group support subject to server configuration.

@@ -249,7 +249,8 @@ ADMIN_HELP = """<b>👮 Admin</b>
 
 <blockquote expandable><b>Bot</b>
 /stats — users, modules &amp; server stats
-/dashboard — charts + 🌐 web dashboard (opens inside Telegram)
+/dashboard — local toolkit widget in DM; admins also get charts + 🌐 web dashboard
+/analytics — admin charts + 🌐 web dashboard
 /users — user counts
 /user &lt;id | @name&gt; — full profile + ban / premium buttons
 /msg &lt;id&gt; &lt;text&gt; — message a user · /export — users CSV
