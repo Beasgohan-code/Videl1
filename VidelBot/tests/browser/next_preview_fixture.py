@@ -137,7 +137,7 @@ async def bot_item(request):
     bots = bot_records(token, ws)
     bot = next((b for b in bots if b['bot_id'] == request.match_info['bot']), None)
     if bot is None: return error('Bot not found', 404)
-    if request.method == 'GET': return web.json_response({'bot': bot})
+    if request.method == 'GET': return web.json_response({'bot': bot, 'capabilities': {'conditional_profile_update': True}})
     if request.method == 'DELETE':
         bots.remove(bot); return web.json_response({'deleted': True})
     data = await request.json()
@@ -146,6 +146,22 @@ async def bot_item(request):
     if 'archived' in data:
         bot['archived'] = data['archived'] is True
         bot['connection_state'] = 'archived' if bot['archived'] else 'disconnected'
+    return web.json_response({'bot': bot})
+
+
+async def bot_profile(request):
+    context, failure = authorized(request, write=True)
+    if failure is not None: return failure
+    token, ws = context
+    bot = next((b for b in bot_records(token, ws) if b['bot_id'] == request.match_info['bot']), None)
+    data = await request.json()
+    expected = data.get('expected', {})
+    keys = set(data) - {'expected'}
+    if not keys or not keys.issubset({'display_name', 'description'}) or not isinstance(expected, dict) or set(expected) != keys:
+        return error('Invalid conditional update', 400)
+    if not bot or any((bot.get(k) or '') != expected[k] for k in keys):
+        return web.json_response({'error':'The record changed or is no longer available.', 'code':'profile_conflict'}, status=409)
+    for field in keys: bot[field] = data[field].strip()
     return web.json_response({'bot': bot})
 
 
@@ -235,6 +251,7 @@ app.router.add_get('/api/v1/workspaces/{ws}/bots', workspace)
 app.router.add_post('/api/v1/workspaces/{ws}/bots/verify-token', verify_token)
 app.router.add_post('/api/v1/workspaces/{ws}/bots', create_bot)
 app.router.add_get('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
+app.router.add_patch('/api/v1/workspaces/{ws}/bots/{bot}/profile', bot_profile)
 app.router.add_patch('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_delete('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/bots/{bot}/commands', command_collection)

@@ -1,6 +1,6 @@
 'use client';
 import {useEffect, useRef, useState} from 'react';
-import {request, type Bot, type Session} from '../lib/api';
+import {ApiError, request, type Bot, type Session} from '../lib/api';
 
 type Profile = {display_name:string; description:string};
 type Props = {bot:Bot; workspace:string; session:Session; onDirty:(dirty:boolean)=>void; onPending:(pending:boolean)=>void; onError:(error:unknown)=>boolean; onClose:()=>void; onSaved:()=>void};
@@ -36,22 +36,29 @@ export default function BotProfileEditor({bot,workspace,session,onDirty,onPendin
     const endpoint=`/api/v1/workspaces/${encodeURIComponent(workspace)}/bots/${encodeURIComponent(bot.bot_id)}`;
     let attemptedWrite=false, saved=false;
     try {
-      const current=profileResponse(await request(endpoint,session),bot.bot_id);
+      const raw=await request(endpoint,session);
       if(!mounted.current)return;
+      const current=profileResponse(raw,bot.bot_id);
+      if(!raw || typeof raw!=='object' || !('capabilities' in raw) || !raw.capabilities || typeof raw.capabilities!=='object' || !('conditional_profile_update' in raw.capabilities) || raw.capabilities.conditional_profile_update!==true) {
+        setError('This server does not support safe conditional profile edits. Your draft has not been saved.');return;
+      }
       if((patch.display_name!==undefined && current.display_name!==initial.current.display_name) || (patch.description!==undefined && current.description!==initial.current.description)) {
         setError('This record changed since you opened it. Cancel and refresh before editing again. Your draft has not been saved.');return;
       }
       attemptedWrite=true;
-      const result=profileResponse(await request(endpoint,session,{method:'PATCH',body:patch}),bot.bot_id);
+      const expected:Partial<Profile>={};
+      if(patch.display_name!==undefined)expected.display_name=initial.current.display_name;
+      if(patch.description!==undefined)expected.description=initial.current.description;
+      const result=profileResponse(await request(`${endpoint}/profile`,session,{method:'PATCH',body:{...patch,expected}}),bot.bot_id);
       if(!mounted.current)return;
       if((patch.display_name!==undefined && result.display_name!==patch.display_name) || (patch.description!==undefined && result.description!==patch.description)) throw new Error('Saved record did not match');
       onDirty(false);saved=true;
     } catch(err) {
-      if(mounted.current && !onError(err))setError(attemptedWrite?'Could not confirm the save. Refresh the bot list before retrying; the result may be uncertain.':'Could not check the current record. Your draft has not been saved.');
+      if(mounted.current && !onError(err))setError(attemptedWrite && err instanceof ApiError && err.status===409?'This record changed or is no longer available. Cancel and refresh before editing again. Your draft has not been saved.':attemptedWrite && err instanceof ApiError && err.status===404?'This server does not support safe conditional profile edits. Your draft has not been saved.':attemptedWrite?'Could not confirm the save. Refresh the bot list before retrying; the result may be uncertain.':'Could not check the current record. Your draft has not been saved.');
     } finally {busy.current=false;if(mounted.current){setPending(false);onPending(false);if(saved)onSaved()}}
   }
   return <form className="bot-profile-editor" onSubmit={save} aria-label="Edit bot record">
-    <div><span className="kicker">BOT RECORD / EDIT</span><h3>Edit saved details.</h3><p>These fields change the Studio record, not the bot’s Telegram profile or running process. Only changed fields are sent. Concurrent edits can still overwrite one another.</p></div>
+    <div><span className="kicker">BOT RECORD / EDIT</span><h3>Edit saved details.</h3><p>These fields change the Studio record, not the bot’s Telegram profile or running process. Only changed fields are sent with their expected values. Older clients or workers may still make unconditional changes.</p></div>
     <div className="bot-profile-fields"><label>Record name<input autoFocus value={name} onChange={e=>update(e.target.value,description)} minLength={2} maxLength={80} required disabled={pending}/></label><label>Record description<textarea value={description} onChange={e=>update(name,e.target.value)} maxLength={300} rows={3} disabled={pending}/></label>
       {error&&<p className="form-error" role="alert">{error}</p>}
       <div className="form-actions"><button className="primary" disabled={pending||!dirty}>{pending?'Checking and saving…':'Save record'}</button><button type="button" className="secondary" disabled={pending} onClick={cancel}>Cancel editing</button></div>

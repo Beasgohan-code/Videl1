@@ -350,7 +350,8 @@ async def api_bot_item(request: web.Request) -> web.Response:
     if request.method == "GET":
         mem = await auth.require_workspace_access(ctx, ws_id)
         raw = await services_bots.get_owned_workspace_bot(ws_id, bot_id)
-        return _ok({"bot": _bot_for_member(services_bots._public_bot_doc(raw), ctx, mem)})
+        return _ok({"bot": _bot_for_member(services_bots._public_bot_doc(raw), ctx, mem),
+                    "capabilities": {"conditional_profile_update": True}})
     await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
     if request.method in ("PATCH", "PUT"):
         body = await _json_body(request)
@@ -360,6 +361,23 @@ async def api_bot_item(request: web.Request) -> web.Response:
         await services_bots.delete_bot(ws_id, bot_id, ctx.user_id)
         return _ok({"deleted": True})
     raise web.HTTPMethodNotAllowed(request.method, ["GET", "PATCH", "PUT", "DELETE"])
+
+
+@_api
+async def api_bot_profile(request: web.Request) -> web.Response:
+    # A separate endpoint ensures older workers cannot silently ignore the
+    # conditional precondition and fall back to an unconditional update.
+    from webapp import profile_cas
+
+    ctx = await auth.authenticate_request(request)
+    ws_id = request.match_info["ws_id"]
+    bot_id = request.match_info["bot_id"]
+    mem = await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
+    updated = await profile_cas.update_profile(ws_id, bot_id, await _json_body(request))
+    if updated is None:
+        return web.json_response({"error": "The record changed or is no longer available.",
+                                  "code": "profile_conflict"}, status=409, headers=_security_headers())
+    return _ok({"bot": _bot_for_member(updated, ctx, mem)})
 
 
 @_api
@@ -1151,6 +1169,7 @@ def mount_webapp(app: web.Application) -> None:
     r.add_post("/api/v1/workspaces/{ws_id}/bots/verify-token", api_bots_verify_token)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots", api_bots_collection)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}", api_bot_item)
+    r.add_patch("/api/v1/workspaces/{ws_id}/bots/{bot_id}/profile", api_bot_profile)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/config", api_bot_config)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/environments", api_bot_environments)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/commands", api_bot_commands)

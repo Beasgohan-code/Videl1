@@ -33,8 +33,15 @@ The branch's older backend may not yet contain them. Do not point this preview
 at an older or production backend assuming contract compatibility; the backend
 reconciliation and real-service validation are still pending.
 
-Bot management can edit the saved Studio record name and description; this does not change the Telegram profile. The preview checks changed fields before saving, but the backend write is not atomic with that check: concurrent edits can still overwrite each other.
+Bot management can edit the saved Studio record name and description; this does not change the Telegram profile. It requires the conditional-profile capability and uses a separate atomic, workspace-scoped endpoint for changed fields. Older servers fail closed for this editor; legacy clients and old workers may still make unconditional writes. This does not resolve authorization-revocation races or all concurrent updates.
 
 Team mutations require the backend to explicitly advertise reviewed membership
 guards; older servers are read-only in this preview. These guards do not solve
 all concurrent membership or authorization races.
+
+The conditional profile endpoint uses one document update with the expected
+values in its filter, following [MongoDB's single-document atomicity guidance](https://www.mongodb.com/docs/manual/core/write-operations-atomicity/).
+The local test suite uses mock Mongo, not a real multi-worker deployment. The
+legacy generic bot endpoint remains unconditional for existing clients, and
+permission-revocation races, index readiness and mixed-version operation are
+not solved by this change.
