@@ -302,43 +302,55 @@ def _extract_media_url(message: Message) -> str:
 async def _probe_http_header(url: str, path: str, max_bytes: int = 8 * 1024 * 1024) -> dict:
     """Download up to *max_bytes* of a public HTTP(S) media link via Range request."""
     from urllib.parse import unquote, urlparse
-    from VideoEncoder.utils.leech import check_public
+    from VideoEncoder.utils.leech import LeechError
+    from core.public_http import PublicResolver, UnsafeMediaURL, get_public, validate_url
 
-    await check_public(url)
+    try:
+        url = validate_url(url)
+    except UnsafeMediaURL as exc:
+        raise LeechError(str(exc)) from None
     headers = {"Range": f"bytes=0-{max_bytes - 1}", "User-Agent": "VidelMediaInfo/3.2"}
     total_size = 0
     mime_type = ""
     fname = os.path.basename(unquote(urlparse(url).path)) or "remote_media"
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35)) as session:
-        async with session.get(url, headers=headers, allow_redirects=True) as resp:
-            if resp.status not in (200, 206):
-                raise RuntimeError(f"HTTP {resp.status} while reading media URL")
-            await check_public(str(resp.url))
-            mime_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
-            cd = resp.headers.get("Content-Disposition") or ""
-            if "filename=" in cd:
-                fname = cd.split("filename=", 1)[1].strip().strip('"\'') or fname
-            cr = resp.headers.get("Content-Range") or ""
-            if "/" in cr:
-                tail = cr.rsplit("/", 1)[-1].strip()
-                if tail.isdigit():
-                    total_size = int(tail)
-            if not total_size:
-                cl = resp.headers.get("Content-Length") or ""
-                if cl.isdigit():
-                    total_size = int(cl)
-            written = 0
-            with open(path, "wb") as fp:
-                async for chunk in resp.content.iter_chunked(65536):
-                    take = chunk[: max_bytes - written]
-                    if take:
-                        fp.write(take)
-                        written += len(take)
-                    if written >= max_bytes:
-                        break
-            if not total_size:
-                total_size = written
+    resolver = PublicResolver()
+    connector = aiohttp.TCPConnector(resolver=resolver, use_dns_cache=False)
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35), connector=connector, trust_env=False) as session:
+            try:
+                resp, _ = await get_public(session, url, headers=headers)
+            except UnsafeMediaURL as exc:
+                raise LeechError(str(exc)) from None
+            async with resp:
+                if resp.status not in (200, 206):
+                    raise RuntimeError(f"HTTP {resp.status} while reading media URL")
+                mime_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+                cd = resp.headers.get("Content-Disposition") or ""
+                if "filename=" in cd:
+                    fname = cd.split("filename=", 1)[1].strip().strip('"\'') or fname
+                cr = resp.headers.get("Content-Range") or ""
+                if "/" in cr:
+                    tail = cr.rsplit("/", 1)[-1].strip()
+                    if tail.isdigit():
+                        total_size = int(tail)
+                if not total_size:
+                    cl = resp.headers.get("Content-Length") or ""
+                    if cl.isdigit():
+                        total_size = int(cl)
+                written = 0
+                with open(path, "wb") as fp:
+                    async for chunk in resp.content.iter_chunked(65536):
+                        take = chunk[: max_bytes - written]
+                        if take:
+                            fp.write(take)
+                            written += len(take)
+                        if written >= max_bytes:
+                            break
+                if not total_size:
+                    total_size = written
+    finally:
+        await resolver.close()
     return {"file_name": fname, "file_size": total_size, "mime_type": mime_type}
 
 
@@ -373,7 +385,10 @@ async def mediainfo_cmd(client: Client, message: Message):
             size = getattr(media, "file_size", 0)
             mime = getattr(media, "mime_type", None) or "?"
         proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path,
+            # The downloaded header is untrusted: do not let embedded playlists
+            # trigger additional HTTP or other network protocol requests.
+            "ffprobe", "-v", "quiet", "-protocol_whitelist", "file,pipe",
+            "-print_format", "json", "-show_format", "-show_streams", path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         try:
@@ -409,8 +424,10 @@ async def mediainfo_cmd(client: Client, message: Message):
             doc.text("<i>No streams detected in the header.</i>")
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Direct Link", url=url)]]) if url else None
         await rich.edit(status, doc, reply_markup=kb)
-    except Exception as e:
-        await status.edit_text(f"❌ mediainfo failed: <code>{html.escape(str(e))}</code>")
+    except Exception as exc:
+        # HTTP client exceptions can contain signed URLs or upstream data.
+        log.warning("mediainfo failed (type=%s)", type(exc).__name__)
+        await status.edit_text("❌ Could not read media. Check the link or file and try again.")
     finally:
         if os.path.exists(path):
             os.remove(path)
