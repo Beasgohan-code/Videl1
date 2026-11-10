@@ -226,8 +226,10 @@ def test_long_values_are_clipped_and_marked_as_previews():
         username='u' * 32, description='D' * 200)
     payload = details.group_payload(chat, 'Member', 123)
     rows = {r['label']: r['value'] for s in payload['sections'] for r in s['rows']}
-    assert len(payload['title']) == 28 and payload['title'].endswith('…')
-    assert len(rows['Description']) == 48 and rows['Description'].endswith('…')
+    assert len(payload['title']) == 24 and payload['title'].endswith('…')
+    assert len(rows['Description']) == 32
+    description = payload['sections'][2]['rows'][0]
+    assert ''.join(description['pages']) == 'D' * 200
 
 
 def test_group_info_rejects_channels_and_missing_bot_identity():
@@ -258,7 +260,7 @@ def test_group_regular_reply_escapes_and_shows_more_description(monkeypatch):
     assert 'Group &lt;name&gt;' in replies[0] and '&lt;hello&gt;' in replies[0]
     assert 'x' * 80 in replies[0]
     rows = {r['label']: r['value'] for s in widgets[0]['sections'] for r in s['rows']}
-    assert rows['Members'] == 'Unavailable' and len(rows['Description']) == 48
+    assert rows['Members'] == 'Unavailable' and len(rows['Description']) == 32
 
 
 def test_template_markers_inside_untrusted_profile_stay_data():
@@ -276,3 +278,28 @@ def test_private_chat_identity_mismatch_never_resolves_or_sends(monkeypatch):
     assert not client.group_calls and not msg.replies
     monkeypatch.setattr(details, 'plugin_enabled', lambda _: pytest.fail('identity check must run first'))
     assert not run(details.send_detail(client, msg, details.user_payload(fake_user())))
+
+
+def test_paged_group_description_is_bounded_and_id_copy_is_explicit():
+    chat = SimpleNamespace(id=-10055, title='Example', type=enums.ChatType.GROUP,
+        username='example', description='D' * 600)
+    payload = details.group_payload(chat, 'Member', None)
+    group_id = payload['sections'][0]['rows'][0]
+    description = payload['sections'][2]['rows'][0]
+    assert group_id['value'] == '-10055' and group_id['copy'] is True
+    assert len(description['pages']) == 15
+    assert ''.join(description['pages']) == 'D' * 479 + '…'
+    assert all(len(page) <= 32 for page in description['pages'])
+    user = fake_user(); user.id = 'untrusted string'
+    assert 'copy' not in details.user_payload(user)['sections'][0]['rows'][0]
+
+
+def test_system_capacity_shows_actual_available_values_or_unavailable():
+    mem = SimpleNamespace(percent=37.5, used=1048576 * 40, total=1048576 * 100, available=1048576 * 58)
+    disk = SimpleNamespace(percent=68, used=1048576 * 68, total=1048576 * 100, free=1048576 * 30)
+    payload = details.system_payload(12.4, mem, disk, timedelta(), 1)
+    rows = {r['label']: r['value'] for s in payload['sections'] for r in s['rows']}
+    assert rows['RAM available'] == '58 MiB' and rows['Disk free'] == '30 MiB'
+    del mem.available; del disk.free
+    rows = {r['label']: r['value'] for s in details.system_payload(12.4, mem, disk, timedelta(), 1)['sections'] for r in s['rows']}
+    assert rows['RAM available'] == 'Unavailable' and rows['Disk free'] == 'Unavailable'

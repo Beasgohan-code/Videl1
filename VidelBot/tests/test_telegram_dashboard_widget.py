@@ -21,11 +21,11 @@ def sample():
 
 def test_snapshot_contains_only_aggregates_and_is_bounded():
     data = dashboard.snapshot_data(sample(), datetime(2026, 4, 1, tzinfo=timezone.utc))
-    assert set(data) == {"days", "active", "new", "jobs", "stars", "generated"}
+    assert set(data) == {"days", "active", "new", "jobs", "stars", "generated", "default_range"}
     assert data["jobs"] == [15] * 90 and data["generated"] == "2026-04-01 00:00"
     html = dashboard.dashboard_html(data)
     assert len(html.encode()) <= 32768 and len(zlib.compress(html.encode(), 9)) <= 4096
-    assert '"jobs":[15,15' in html and "allow_queries" not in html
+    assert '"jobs":{"r":"Dw8P' in html and "allow_queries" not in html
     assert "TelegramWidget.request" not in html and "eval(" not in html
     malformed = sample(); malformed["active"][0] = -1
     with pytest.raises(ValueError): dashboard.snapshot_data(malformed, datetime.now(timezone.utc))
@@ -83,9 +83,10 @@ def test_widget_sends_real_series_and_no_queries(monkeypatch):
         return sample()
     async def send(bot, chat_id, html, mode): calls.append((chat_id, html, mode))
     monkeypatch.setattr(analytics, "series", series); monkeypatch.setattr(dashboard_sender, "send", send)
-    msg = FakeMsg("/dashboard", uid=222)
+    msg = FakeMsg("/dashboard 7", uid=222)
     assert run(dashboard.send_dashboard(FakeClient(), msg))
-    assert calls[0][0] == 222 and calls[0][2] == "beta" and '"jobs":[15,15' in calls[0][1]
+    assert calls[0][0] == 222 and calls[0][2] == "beta" and '"jobs":{"r":"Dw8P' in calls[0][1]
+    assert '"default_range":7' in calls[0][1]
     method = dashboard_sender.SendDashboardWidget(chat_id=222, html=calls[0][1]).model_dump(exclude_none=True)
     assert method["is_shared"] is False and method["allow_queries"] is False
     assert "public_data" not in method and "chat_data" not in method
@@ -195,3 +196,59 @@ def test_analytics_still_sent_if_stats_widget_disabled(monkeypatch):
     msg = FakeMsg("/dashboard 12", uid=222)
     run(analytics.dashboard_cmd(FakeClient(), msg))
     assert "disabled" in msg.replies[0] and calls == [(222, 12)] and msg.sent[-1].deleted
+
+
+def test_dashboard_default_range_is_bounded():
+    now = datetime.now(timezone.utc)
+    assert dashboard.snapshot_data(sample(), now, default_range=7)['default_range'] == 7
+    assert dashboard.snapshot_data(sample(), now, default_range=90)['default_range'] == 90
+    assert dashboard.snapshot_data(sample(), now, default_range=180)['default_range'] == 30
+
+
+def test_compact_payload_round_trips_exact_buckets_peaks_and_dates():
+    import base64
+    import json
+    now = datetime.now(timezone.utc)
+    original = sample()
+    original['active'] = [i * 9876543 for i in range(90)]
+    data = dashboard.snapshot_data(original, now)
+    html = dashboard.dashboard_html(data)
+    payload = json.loads(html.split('const DATA=', 1)[1].split(';', 1)[0])
+    def unpack(text):
+        result, value, mul = [], 0, 1
+        for byte in base64.b64decode(text):
+            value += (byte & 127) * mul
+            if byte < 128:
+                result.append(value); value, mul = 0, 1
+            else:
+                mul *= 128
+        assert mul == 1
+        return result
+    encoded = payload['active']
+    assert payload['days'] == original['days'][0]
+    assert unpack(encoded['r']) == original['active'][-30:]
+    assert unpack(encoded['g']) == [sum(original['active'][i:i+3]) for i in range(0, 90, 3)]
+    assert encoded['p'] == sum(original['active'][-60:-30]) and encoded['x'] == max(original['active'])
+    original['days'][1] = original['days'][0]
+    with pytest.raises(ValueError): dashboard.snapshot_data(original, now)
+
+
+def test_snapshot_template_markers_remain_data():
+    html = dashboard.dashboard_html({'x': '/*JS*/'})
+    assert '/*JS*/' in html and html.count("(()=>{'use strict'") == 1
+    assert html.index('/*JS*/') < html.index("(()=>{'use strict'")
+
+
+def test_oversized_snapshot_reports_limit_without_retry(monkeypatch):
+    from plugins.widget import dashboard_sender
+    monkeypatch.setattr(config, 'ADMINS', [222]); monkeypatch.setattr(dashboard, 'plugin_enabled', lambda _: True)
+    monkeypatch.setattr(dashboard.botapi, 'enabled', lambda: True)
+    monkeypatch.setattr(dashboard.botapi, 'bot', lambda: SimpleNamespace(id=123456, token='secret'))
+    monkeypatch.setenv('WIDGET_API_BETA', 'true'); monkeypatch.setenv('WIDGET_API_MODE', 'beta')
+    async def series(*args, **kwargs): return sample()
+    monkeypatch.setattr(analytics, 'series', series)
+    monkeypatch.setattr(dashboard, 'dashboard_html', lambda _: (_ for _ in ()).throw(dashboard.WidgetPayloadTooLarge()))
+    monkeypatch.setattr(dashboard_sender, 'send', lambda *args: pytest.fail('must not send'))
+    msg = FakeMsg('/dashboard', uid=222)
+    assert not run(dashboard.send_dashboard(FakeClient(), msg))
+    assert 'too large' in msg.replies[-1] and 'charts are still available' in msg.replies[-1]

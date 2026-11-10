@@ -1,5 +1,6 @@
 """Admin-only, outgoing-only statistics widget. No queries or live sync."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import base64
 import json
 import logging
 import os
@@ -18,11 +19,21 @@ log = logging.getLogger("videl.dashboard.widget")
 ASSETS = Path(__file__).with_name("dashboard_assets")
 
 
-def snapshot_data(series: dict, generated: datetime) -> dict:
+class WidgetPayloadTooLarge(ValueError):
+    """The exact snapshot cannot fit Telegram's widget size limit."""
+
+
+def snapshot_data(series: dict, generated: datetime, *, default_range: int = 30) -> dict:
     """Reduce trusted analytics to bounded numeric aggregates; never embed user records."""
     days = series["days"]
     if len(days) != 90 or any(not isinstance(d, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) for d in days):
         raise ValueError("Invalid snapshot dates")
+    try:
+        first = datetime.strptime(days[0], "%Y-%m-%d")
+        if any((first + timedelta(days=i)).strftime("%Y-%m-%d") != d for i, d in enumerate(days)):
+            raise ValueError("Non-consecutive snapshot dates")
+    except (ValueError, OverflowError):
+        raise ValueError("Invalid snapshot dates") from None
     def values(key):
         data = series[key]
         if len(data) != 90 or any(type(v) is not int or v < 0 or v > 1_000_000_000 for v in data):
@@ -31,8 +42,19 @@ def snapshot_data(series: dict, generated: datetime) -> dict:
     work = [values(k) for k in ("encode", "rename", "save", "leech", "tool")]
     jobs = [sum(row) for row in zip(*work)]
     return {"days": days, "active": values("active"), "new": values("new"),
-            "jobs": jobs, "stars": values("stars"),
+            "jobs": jobs, "stars": values("stars"), "default_range": default_range if default_range in (7, 30, 90) else 30,
             "generated": generated.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")}
+
+
+def _compact_series(values):
+    """Encode non-negative counts as unsigned varints without losing precision."""
+    packed = bytearray()
+    for value in values:
+        while value >= 128:
+            packed.append((value & 127) | 128)
+            value >>= 7
+        packed.append(value)
+    return base64.b64encode(packed).decode("ascii")
 
 
 def dashboard_html(data: dict) -> str:
@@ -43,11 +65,22 @@ def dashboard_html(data: dict) -> str:
         raise ValueError("Invalid dashboard widget template")
     # The caller constructs data with snapshot_data: bounded numbers, ISO dates
     # and a UTC timestamp only. Escaping protects the HTML script context too.
-    serialized = json.dumps(data, separators=(",", ":"), ensure_ascii=True, allow_nan=False).replace("<", "\\u003c")
-    html = shell.replace("/*CSS*/", css).replace("/*DATA*/", serialized).replace("/*JS*/", js)
+    packed = dict(data)
+    if isinstance(packed.get("days"), list) and len(packed["days"]) == 90:
+        packed["days"] = packed["days"][0]
+    for key in ("active", "new", "jobs", "stars"):
+        values = packed.get(key)
+        if isinstance(values, list) and len(values) == 90 and all(type(v) is int and v >= 0 for v in values):
+            # Daily detail is needed for the latest 30 days; the 90-day graph
+            # uses exact three-day buckets. Keep exact peak and prior-30 total.
+            packed[key] = {"r": _compact_series(values[-30:]),
+                           "g": _compact_series([sum(values[i:i + 3]) for i in range(0, 90, 3)]),
+                           "p": sum(values[-60:-30]), "x": max(values)}
+    serialized = json.dumps(packed, separators=(",", ":"), ensure_ascii=True, allow_nan=False).replace("<", "\\u003c")
+    html = shell.replace("/*CSS*/", css).replace("/*JS*/", js).replace("/*DATA*/", serialized)
     raw = html.encode("utf-8")
     if len(raw) > 32768 or len(zlib.compress(raw, 9)) > 4096:
-        raise ValueError("Dashboard widget exceeds Telegram's HTML size limit")
+        raise WidgetPayloadTooLarge("Dashboard widget exceeds Telegram's HTML size limit")
     return html
 
 
@@ -73,9 +106,15 @@ async def send_dashboard(client, message) -> bool:
         return False
     try:
         from core.analytics import series
-        data = snapshot_data(await series(90, strict=True), datetime.now(timezone.utc))
+        parts = (getattr(message, "text", "") or "").split()
+        requested = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 30
+        data = snapshot_data(await series(90, strict=True), datetime.now(timezone.utc), default_range=requested)
         html = dashboard_html(data)
         from plugins.widget.dashboard_sender import send
+    except WidgetPayloadTooLarge:
+        log.warning("Stats widget exceeds Telegram's size limit")
+        await message.reply_text("The stats widget is too large for Telegram. The regular analytics charts are still available.")
+        return False
     except Exception as exc:
         log.warning("Stats widget preparation failed (type=%s)", type(exc).__name__)
         await message.reply_text("Could not prepare the stats widget. Analytics may be unavailable; "

@@ -30,8 +30,10 @@ def _flag(value):
     return "Yes" if value is True else "No" if value is False else "Unavailable"
 
 
-def _row(label, value, percent=None):
+def _row(label, value, percent=None, *, copy_id=False):
     result = {"label": label, "value": _text(value, 48)}
+    if copy_id and type(value) is int:
+        result["copy"] = True
     if percent is not None:
         p = float(percent)
         if not math.isfinite(p) or not 0 <= p <= 100:
@@ -40,8 +42,22 @@ def _row(label, value, percent=None):
     return result
 
 
+def _paged_row(label, value):
+    """Bound long Telegram-visible text, but let the viewer page through it."""
+    text = _text(value, 480)
+    pages = [text[i:i + 32] for i in range(0, len(text), 32)]
+    row = {"label": label, "value": pages[0]}
+    if len(pages) > 1:
+        row["pages"] = pages
+    return row
+
+
+def _now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
 def _payload(kicker, title, subtitle, sections, refresh):
-    return {"kicker": kicker, "title": _text(title, 28), "subtitle": _text(subtitle, 64),
+    return {"kicker": kicker, "title": _text(title, 24), "subtitle": _text(subtitle, 64),
             "sections": sections, "foot": f"Snapshot · {refresh} to refresh"}
 
 
@@ -52,8 +68,8 @@ def user_payload(user):
     status = getattr(user, "status", None)
     seen = getattr(status, "name", None).replace("_", " ").title() if status and getattr(status, "name", None) else "Hidden or unavailable"
     is_bot = getattr(user, "is_bot", None)
-    return _payload("VIDEL · USER", name, "Telegram-visible profile", [
-        {"label": "Profile", "rows": [_row("User ID", getattr(user, "id", None)),
+    return _payload("VIDEL · USER", name, "Telegram-visible · " + _now(), [
+        {"label": "Profile", "rows": [_row("User ID", getattr(user, "id", None), copy_id=True),
          _row("Username", "@" + str(username) if username else None),
          _row("Account", "Bot" if is_bot is True else "User" if is_bot is False else None), _row("Last seen", seen)]},
         {"label": "Signals", "rows": [_row("Premium", _flag(getattr(user, "is_premium", None))),
@@ -68,24 +84,25 @@ def user_payload(user):
 def group_payload(chat, role, count):
     username = getattr(chat, "username", None)
     chat_type = getattr(getattr(chat, "type", None), "name", "Group").replace("_", " ").title()
-    return _payload("VIDEL · GROUP", getattr(chat, "title", None), "Membership verified at lookup", [
-        {"label": "Overview", "rows": [_row("Group ID", getattr(chat, "id", None)),
+    return _payload("VIDEL · GROUP", getattr(chat, "title", None), "Verified · " + _now(), [
+        {"label": "Overview", "rows": [_row("Group ID", getattr(chat, "id", None), copy_id=True),
          _row("Username", "@" + str(username) if username else None), _row("Type", chat_type), _row("Members", count)]},
         {"label": "Access", "rows": [_row("Your role", role), _row("Forum", _flag(getattr(chat, "is_forum", None))),
          _row("Protected content", _flag(getattr(chat, "has_protected_content", None))),
          _row("Verified", _flag(getattr(chat, "is_verified", None)))]},
-        {"label": "About", "rows": [_row("Description", getattr(chat, "description", None)),
+        {"label": "About", "rows": [_paged_row("Description", getattr(chat, "description", None)),
          _row("Scope", "Only this accessible group")]}], "/info group")
 
 
 def system_payload(cpu, mem, disk, uptime, workers):
-    def mb(n): return f"{int(n) // 1048576:,} MiB"
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    def mb(n): return f"{int(n) // 1048576:,} MiB" if n is not None else None
+    now = _now()
     return _payload("VIDEL · SYSTEM", "Host resources", "Captured " + now, [
         {"label": "Resources", "rows": [_row("CPU", f"{cpu:.1f}%", cpu),
          _row("RAM", f"{mem.percent:.1f}%", mem.percent), _row("Disk", f"{disk.percent:.1f}%", disk.percent)]},
-        {"label": "Capacity", "rows": [_row("RAM used", mb(mem.used)), _row("RAM total", mb(mem.total)),
-         _row("Disk used", mb(disk.used)), _row("Disk total", mb(disk.total))]},
+        {"label": "Capacity", "rows": [_row("RAM used", mb(mem.used)), _row("RAM total", mb(mem.total)), _row("RAM available", mb(getattr(mem, "available", None))),
+         _row("Disk used", mb(disk.used)), _row("Disk total", mb(disk.total)),
+         _row("Disk free", mb(getattr(disk, "free", None)))]},
         {"label": "Runtime", "rows": [_row("Host uptime", str(uptime).split(".")[0]),
          _row("Active clone workers", workers), _row("Scope", "This host / process only")]}], "/sys")
 

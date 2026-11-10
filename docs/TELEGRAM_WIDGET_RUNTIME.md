@@ -1,0 +1,17 @@
+# Telegram widget runtime notes
+
+Research based on TelegramMessenger/widget-sandbox revision `7a2ec35e3e7698377626e982e98e5a1161b1aac8`:
+
+- [`docs/widget-runtime-profile.md`](https://github.com/TelegramMessenger/widget-sandbox/blob/7a2ec35e3e7698377626e982e98e5a1161b1aac8/docs/widget-runtime-profile.md): widget HTML is immutable after sending, network and text input are unavailable, and the visible bubble is 200–600 px wide and at most 600 px high with hard clipping. HTML is limited to 32,768 raw bytes and 4,096 zlib-9 bytes. The SDK and rendering profile—not ordinary browser capabilities—govern interactions.
+- [`docs/sdk-v1.md`](https://github.com/TelegramMessenger/widget-sandbox/blob/7a2ec35e3e7698377626e982e98e5a1161b1aac8/docs/sdk-v1.md): `copyText` is a client-mediated action permitted during a user gesture; it may be unavailable. Storage is per message and is not bot-wide state. Request-enabled widgets require an incoming query handler; this work adds **no incoming receiver** or requests.
+- [`packages/core/scripts/sandbox-node.ts`](https://github.com/TelegramMessenger/widget-sandbox/blob/7a2ec35e3e7698377626e982e98e5a1161b1aac8/packages/core/scripts/sandbox-node.ts) executes the real QuickJS worker and can use Chromium to test dimensions and gestures. Its output is a local compatibility signal, not evidence of live Telegram delivery.
+
+## Dashboard semantics
+
+`/dashboard` remains admin-only and the widget is sent only in a bot DM. The existing real recorded 90-day series feeds the chart. In the 7- and 30-day views the comparison is against the immediately preceding equal-length period. The current period includes today in UTC, which may be incomplete; stored zeroes represent no recorded events, not a guarantee of complete historical tracking. When the previous total is zero, the widget shows “New activity vs prior 0” or “No change”, not an infinite percentage. A 90-day prior comparison is unavailable. The active metric sums daily unique counts (user-days), not unique people across the range; Stars excludes refunds and is not profit. Navigation selects an actual day or an exact three-day bucket; peak remains the highest single day.
+
+To fit the payload, the snapshot contains exact recent 30 daily values, exact 90-day three-day buckets, prior-30 totals and 90-day single-day maxima. Values use unsigned varints and base64; consecutive UTC dates are reconstructed from the start date. No numerical rounding or fabricated history is used. Python validates the 90 days and rejects out-of-range metrics. An oversized payload gets a clear message and leaves the existing chart reply intact. Already-sent messages are immutable; `/dashboard` sends a fresh snapshot.
+
+## Detail widgets and privacy
+
+`/info` and owner-only `/sys` keep their existing text responses. Detail widgets are sent only in the requester's private chat and only by the primary bot. Group details require the existing fail-closed requester and bot membership checks. Group descriptions are paged locally up to 480 characters; longer descriptions have an ellipsis. IDs can be copied only by an explicit tap through Telegram's `copyText` bridge. This is a copy **request**, not proof the clipboard was updated; unsupported clients are reported. No phone numbers, private user messages, new network calls, shared widget state or added query receiver are used. Forwarding a snapshot can reveal its embedded data; the DM-only send policy does not prevent forwarding.
