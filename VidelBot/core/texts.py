@@ -236,6 +236,7 @@ TOOLS_HELP = """<b>🧰 Tools</b>
 /qr &lt;text&gt; — make a QR code
 /id — chat / user / forwarded IDs
 /info — user info (reply / id / username)
+/info group &lt;id | @username&gt; — group info in DM (membership required)
 /json — raw JSON of a message (reply)
 /ping — bot latency
 /guide — illustrated guide (rich message with plans &amp; FAQ)</blockquote>
@@ -290,7 +291,7 @@ Support: users send /support → it lands in your DM → <b>reply</b> to answer.
 /gifts — Telegram gifts · /sendgift &lt;user&gt; &lt;gift_id&gt; [text]
 
 <b>Clone bots</b>
-/clonestats — platform stats · /bots — list all clone bots · /sys — system
+/clonestats — platform stats · /bots — list all clone bots · /sys — system snapshot
 /check — health-check every clone (<code>/check fix</code> restarts broken ones)</blockquote>
 """
 

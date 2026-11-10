@@ -82,8 +82,72 @@ async def id_cmd(client: Client, message: Message):
 
 
 # ─────────────────────────── /info ───────────────────────────
+def _verified_member(member):
+    """Only positive Telegram membership results count; unknown states fail closed."""
+    from pyrogram import enums
+    status = getattr(member, "status", None)
+    if status in (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR,
+                  enums.ChatMemberStatus.MEMBER):
+        return True
+    return status == enums.ChatMemberStatus.RESTRICTED and getattr(member, "is_member", None) is True
+
+
+async def _group_info(client: Client, message: Message):
+    """Resolve group details only in DM after checking both requester and bot membership."""
+    from pyrogram import enums
+    if getattr(getattr(message, "chat", None), "type", None) != enums.ChatType.PRIVATE:
+        return await message.reply_text("Send <code>/info group &lt;group ID or @username&gt;</code> in my private chat.")
+    if not message.from_user or message.chat.id != message.from_user.id:
+        return
+    if len(message.command) != 3:
+        return await message.reply_text("Usage: <code>/info group &lt;group ID or @username&gt;</code>")
+    arg = message.command[2]
+    target = int(arg) if arg.lstrip("-").isdigit() else arg
+    try:
+        chat = await client.get_chat(target)
+        if getattr(chat, "type", None) not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
+            raise ValueError("Not a group")
+        me = getattr(client, "me", None)
+        if me is None or not getattr(me, "id", None):
+            raise ValueError("Bot identity unavailable")
+        requester = await client.get_chat_member(chat.id, message.from_user.id)
+        if not _verified_member(requester):
+            raise ValueError("Requester membership unavailable")
+        bot = await client.get_chat_member(chat.id, me.id)
+        if not _verified_member(bot):
+            raise ValueError("Bot membership unavailable")
+    except Exception:
+        return await message.reply_text("Group unavailable or membership could not be verified. Both you and the bot must be members.")
+    try:
+        count = await client.get_chat_members_count(chat.id)
+        if type(count) is not int or count < 0:
+            count = None
+    except Exception:
+        count = None
+    role = getattr(getattr(requester, "status", None), "name", "Member").replace("_", " ").title()
+    from plugins.widget.details import group_payload, send_detail
+    data = group_payload(chat, role, count)
+    # The compact widget uses shortened previews; the regular reply can show
+    # more of a Telegram-provided title/description without rendering raw HTML.
+    def preview(value, limit):
+        value = str(value or "").strip()
+        return (value[:limit - 1] + "…" if len(value) > limit else value) or "Unavailable"
+    rows = [("Group", preview(getattr(chat, "title", None), 120))]
+    for section in data["sections"]:
+        for row in section["rows"]:
+            value = preview(getattr(chat, "description", None), 500) if row["label"] == "Description" else row["value"]
+            rows.append((row["label"], value))
+    await rich.reply(message, Doc("👥", "Group info").table(rows, header=("Field", "Value")))
+    try:
+        await send_detail(client, message, data)
+    except Exception as exc:
+        log.debug("Group detail widget preparation failed (%s)", type(exc).__name__)
+
+
 @Client.on_message(filters.command("info"))
 async def info_cmd(client: Client, message: Message):
+    if len(message.command) > 1 and message.command[1].lower() == "group":
+        return await _group_info(client, message)
     target = None
     if message.reply_to_message and message.reply_to_message.from_user:
         target = message.reply_to_message.from_user.id
@@ -107,6 +171,14 @@ async def info_cmd(client: Client, message: Message):
         ("Last seen", status),
     ], header=("Field", "Value"))
     await rich.reply(message, doc)
+    # Preserve group behavior; widgets are only attempted in private chats.
+    from pyrogram import enums
+    if getattr(getattr(message, "chat", None), "type", None) == enums.ChatType.PRIVATE:
+        try:
+            from plugins.widget.details import send_detail, user_payload
+            await send_detail(client, message, user_payload(u))
+        except Exception as exc:
+            log.debug("User detail widget preparation failed (%s)", type(exc).__name__)
 
 
 # ─────────────────────────── /json ───────────────────────────
