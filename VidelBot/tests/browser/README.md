@@ -104,8 +104,8 @@ guards, no search requests and small-screen overflow using the synthetic API.
 This does not search workspace records or validate real authorization, assistive
 technology, Telegram clients or production data.
 
-`node next-bot-profile.test.cjs` checks saved bot record name/description edits
+`node next-bot-profile.test.cjs` checks saved bot record name, description, category and tag edits
 against the synthetic fixture, including changed-field-only writes, read-only
 permissions, draft and pending navigation, conditional conflicts, old/mixed
-server handling and uncertain responses. Browser tests use a simulated API;
+server handling, per-field capability fallback, tag validation and uncertain responses. Browser tests use a simulated API;
 real MongoDB concurrency, Telegram and physical devices are not tested.

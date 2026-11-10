@@ -121,3 +121,52 @@ def test_conditional_profile_scope_validation_and_conflicts():
             await coll.update_one({'bot_id':bot_id}, {'$set':{'deleted':True}})
             assert (await client.patch(uri, headers=owner, json={'display_name':'No','expected':{'display_name':'Literal'}})).status == 409
     run(go())
+
+
+def test_conditional_category_tags_validation_and_exact_comparison():
+    import asyncio
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as client:
+            owner, ws = await login(client, 65201)
+            created = await client.post(f'/api/v1/workspaces/{ws}/bots', headers=owner,
+                json={'display_name':'Record', 'category':'Tools', 'tags':['alpha', '$category'], 'template':'custom'})
+            assert created.status == 201
+            bot_id = (await created.json())['bot']['bot_id']
+            root = f'/api/v1/workspaces/{ws}/bots/{bot_id}'
+            read = await (await client.get(root, headers=owner)).json()
+            assert read['capabilities']['conditional_profile_fields'] == ['display_name','description','category','tags']
+            uri = root+'/profile'
+            invalid = [
+                {'tags':'x','expected':{'tags':['alpha','$category']}},
+                {'tags':[''],'expected':{'tags':['alpha','$category']}},
+                {'tags':['x'*25],'expected':{'tags':['alpha','$category']}},
+                {'tags':['x']*13,'expected':{'tags':['alpha','$category']}},
+                {'tags':['x'],'expected':{'tags':'alpha'}},
+                {'tags':['x'],'expected':{'tags':[{'$ne':'alpha'}]}},
+                {'category':'x'*41,'expected':{'category':'Tools'}},
+                {'tags':['x'],'expected':{'tags':['x'*25]}},
+            ]
+            for payload in invalid:
+                assert (await client.patch(uri, headers=owner, json=payload)).status == 400
+            # Arrays are compared in order and leading dollars stay literal values.
+            stale = await client.patch(uri, headers=owner, json={'tags':['no'],'expected':{'tags':['$category','alpha']}})
+            assert stale.status == 409
+            result = await client.patch(uri, headers=owner, json={'category':' Media ','tags':[' one ','$literal'],
+                'expected':{'category':'Tools','tags':['alpha','$category']}})
+            assert result.status == 200
+            bot=(await result.json())['bot']
+            assert bot['category']=='Media' and bot['tags']==['one','$literal'] and bot['display_name']=='Record'
+            # Same original tags may only be updated once, independent of category.
+            one, two = await asyncio.gather(
+                client.patch(uri,headers=owner,json={'tags':['first'],'expected':{'tags':['one','$literal']}}),
+                client.patch(uri,headers=owner,json={'tags':['second'],'expected':{'tags':['one','$literal']}}))
+            assert sorted([one.status,two.status])==[200,409]
+            assert (await client.patch(uri,headers=owner,json={'category':'Other','expected':{'category':'Media'}})).status==200
+            coll=db_models.bots_col()
+            await coll.update_one({'bot_id':bot_id},{'$unset':{'category':'','tags':''}})
+            assert (await client.patch(uri,headers=owner,json={'category':'New','tags':[],'expected':{'category':'','tags':[]}})).status==200
+            await coll.update_one({'bot_id':bot_id},{'$set':{'category':None,'tags':None}})
+            assert (await client.patch(uri,headers=owner,json={'category':'Again','tags':['again'],'expected':{'category':'','tags':[]}})).status==200
+            await coll.update_one({'bot_id':bot_id},{'$set':{'tags':'again'}})
+            assert (await client.patch(uri,headers=owner,json={'tags':['bad'],'expected':{'tags':['again']}})).status==409
+    run(go())

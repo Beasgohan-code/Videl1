@@ -351,7 +351,8 @@ async def api_bot_item(request: web.Request) -> web.Response:
         mem = await auth.require_workspace_access(ctx, ws_id)
         raw = await services_bots.get_owned_workspace_bot(ws_id, bot_id)
         return _ok({"bot": _bot_for_member(services_bots._public_bot_doc(raw), ctx, mem),
-                    "capabilities": {"conditional_profile_update": True}})
+                    "capabilities": {"conditional_profile_update": True,
+                                     "conditional_profile_fields": ["display_name", "description", "category", "tags"]}})
     await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
     if request.method in ("PATCH", "PUT"):
         body = await _json_body(request)

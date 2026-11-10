@@ -33,7 +33,7 @@ The branch's older backend may not yet contain them. Do not point this preview
 at an older or production backend assuming contract compatibility; the backend
 reconciliation and real-service validation are still pending.
 
-Bot management can edit the saved Studio record name and description; this does not change the Telegram profile. It requires the conditional-profile capability and uses a separate atomic, workspace-scoped endpoint for changed fields. Older servers fail closed for this editor; legacy clients and old workers may still make unconditional writes. This does not resolve authorization-revocation races or all concurrent updates.
+Bot management can edit the saved Studio record name, description, category and tags; this does not change the Telegram profile. It requires the conditional-profile capability and uses a separate atomic, workspace-scoped endpoint for changed fields. Category and tags additionally require explicit per-field capabilities; servers without them retain safe name/description editing. Malformed or out-of-range existing category/tag values cannot be edited here. Legacy clients and old workers may still make unconditional writes; this does not resolve authorization-revocation races or all concurrent updates.
 
 Team mutations require the backend to explicitly advertise reviewed membership
 guards; older servers are read-only in this preview. These guards do not solve
