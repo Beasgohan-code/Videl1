@@ -59,3 +59,7 @@ Join-request auto-approval and the blanket emergency raid shield now require exp
 ## Stage 8 — group knowledge (implemented in branch)
 
 The separate `group_knowledge` plugin adds a group-visible `/faq` knowledge base with key search, pagination and buttons, admin-only creation, revision-checked replacement and renaming, and explicit revision-checked deletion. Entries are manually supplied and scoped by bot and group. Limits, retention, permission checks and visibility are documented in `VidelBot/plugins/group_knowledge/README.md`. It is not a confidential moderation casebook or evidence of live Telegram/real Mongo concurrency verification. The broader group-management, security, plugin and frontend roadmaps remain open.
+
+## Stage 9 — private moderation casebook (implemented in branch)
+
+`group_cases` adds a manually maintained casebook in private chat using `/modcase`. Each read, write and callback checks the caller's live Telegram group-admin restriction privilege and the bot's membership; data is scoped by bot and group. Cases support searching by subject ID, revision-checked notes, close/reopen and explicit purge; no Telegram moderation action is performed. Records contain user/admin IDs and manually entered text, are not encrypted by the plugin, and persist until explicit purge; see `VidelBot/plugins/group_cases/README.md` for limits, permission races and retention caveats. This is not an immutable audit ledger or verification of live Telegram/MongoDB. Other advanced plugin, security and frontend roadmap work remains outstanding.
