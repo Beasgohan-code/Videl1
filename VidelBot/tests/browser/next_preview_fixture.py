@@ -173,7 +173,7 @@ async def command_collection(request):
     bot = next((b for b in bot_records(token, ws) if b['bot_id'] == request.match_info['bot']), None)
     if bot is None: return error('Bot not found', 404)
     rows = commands[token].setdefault((ws['workspace_id'], bot['bot_id']), [])
-    if request.method == 'GET': return web.json_response({'commands': rows, 'capabilities': {'command_create_only': True}})
+    if request.method == 'GET': return web.json_response({'commands': rows, 'capabilities': {'command_create_only': True, 'command_conditional_mutations': True}})
     data = await request.json()
     old = next((c for c in rows if c['command'] == data.get('command')), None)
     if request.method == 'DELETE':
@@ -200,6 +200,30 @@ async def command_create(request):
     entry = {**data, 'custom_reply_text':'', 'handler_bound':False}
     rows.append(entry)
     return web.json_response({'command':entry},status=201)
+
+
+async def command_conditional(request):
+    context, failure = authorized(request, write=True)
+    if failure is not None: return failure
+    token, ws = context
+    if not roles[token]: return error('Forbidden', 403)
+    bot = next((b for b in bot_records(token, ws) if b['bot_id'] == request.match_info['bot']), None)
+    if bot is None: return error('Bot not found', 404)
+    rows = commands[token].setdefault((ws['workspace_id'], bot['bot_id']), [])
+    data = await request.json()
+    old = next((c for c in rows if c['command'] == data.get('command')), None)
+    expected = data.get('expected', {})
+    fields = {'description', 'category', 'permission', 'visibility', 'enabled', 'custom_reply_text', 'handler_bound'}
+    if not isinstance(expected, dict) or set(expected) != fields: return error('Invalid conditional update', 400)
+    if not old or any((old.get(k) if old.get(k) is not None else (False if k in ('enabled','handler_bound') else '')) != v for k,v in expected.items()):
+        return web.json_response({'error':'The command changed or is no longer available.', 'code':'command_conflict'},status=409)
+    if request.method == 'DELETE':
+        rows.remove(old)
+        return web.json_response({'deleted':True})
+    changes = data.get('changes', {})
+    if not changes or not set(changes).issubset({'description','category','permission','visibility','enabled'}): return error('Invalid changes',400)
+    old.update(changes)
+    return web.json_response({'command':old})
 
 
 
@@ -272,6 +296,8 @@ app.router.add_patch('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_delete('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/bots/{bot}/commands', command_collection)
 app.router.add_post('/api/v1/workspaces/{ws}/bots/{bot}/commands/create', command_create)
+app.router.add_patch('/api/v1/workspaces/{ws}/bots/{bot}/commands/conditional', command_conditional)
+app.router.add_delete('/api/v1/workspaces/{ws}/bots/{bot}/commands/conditional', command_conditional)
 app.router.add_get('/api/v1/workspaces/{ws}/filestore', file_collection)
 app.router.add_post('/api/v1/workspaces/{ws}/filestore', file_collection)
 app.router.add_post('/api/v1/workspaces/{ws}/filestore/{file}', file_item)

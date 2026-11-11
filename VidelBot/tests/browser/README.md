@@ -111,3 +111,5 @@ server handling, per-field capability fallback, tag validation and uncertain res
 real MongoDB concurrency, Telegram and physical devices are not tested.
 
 `node next-command-create.test.cjs` checks the Next command create-only path, collision drafts, old/mixed-worker failure, uncertain responses and responsive layout with a synthetic API. It does not establish real Mongo index behavior, live Telegram or multi-worker safety.
+
+`node next-command-cas.test.cjs` covers conditional command edits, state changes, deletion confirmations, stale snapshots and older/mixed workers in synthetic Chromium. It does not exercise real MongoDB, live Telegram, physical devices or production.

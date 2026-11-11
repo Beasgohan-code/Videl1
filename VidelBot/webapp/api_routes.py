@@ -470,7 +470,7 @@ async def api_bot_commands(request: web.Request) -> web.Response:
             search=request.query.get("search", ""),
             category=request.query.get("category", ""),
         )
-        return _ok({"commands": cmds, "capabilities": {"command_create_only": True}})
+        return _ok({"commands": cmds, "capabilities": {"command_create_only": True, "command_conditional_mutations": True}})
     await auth.require_workspace_access(ctx, ws_id, scope="commands")
     body = await _json_body(request)
     if request.method == "DELETE":
@@ -494,6 +494,22 @@ async def api_bot_command_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "A command with this name already exists.",
                                   "code": "command_exists"}, status=409, headers=_security_headers())
     return _ok({"command": command}, status=201)
+
+
+@_api
+async def api_bot_command_conditional(request: web.Request) -> web.Response:
+    # Older workers have no matching route and cannot ignore these preconditions.
+    from webapp import command_cas
+
+    ctx = await auth.authenticate_request(request)
+    ws_id, bot_id = request.match_info["ws_id"], request.match_info["bot_id"]
+    await auth.require_workspace_access(ctx, ws_id, scope="commands")
+    deleting = request.method == "DELETE"
+    command = await command_cas.mutate(ws_id, bot_id, ctx.user_id, await _json_body(request), deleting=deleting)
+    if command is None:
+        return web.json_response({"error": "The command changed or is no longer available.",
+                                  "code": "command_conflict"}, status=409, headers=_security_headers())
+    return _ok({"deleted": True} if deleting else {"command": command})
 
 
 # ─────────────────────────── Clone Studio & Migration Center ───────────────────────────
@@ -1191,6 +1207,8 @@ def mount_webapp(app: web.Application) -> None:
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/environments", api_bot_environments)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/commands", api_bot_commands)
     r.add_post("/api/v1/workspaces/{ws_id}/bots/{bot_id}/commands/create", api_bot_command_create)
+    r.add_patch("/api/v1/workspaces/{ws_id}/bots/{bot_id}/commands/conditional", api_bot_command_conditional)
+    r.add_delete("/api/v1/workspaces/{ws_id}/bots/{bot_id}/commands/conditional", api_bot_command_conditional)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/fleet", api_fleet)
 
     # Clone Studio & Migration
