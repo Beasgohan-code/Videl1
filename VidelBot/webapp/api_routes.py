@@ -153,6 +153,16 @@ async def api_auth_demo(request: web.Request) -> web.Response:
 
 
 @_api
+async def api_account_legacy_bots(request: web.Request) -> web.Response:
+    """Private account view; legacy registrations are not workspace members."""
+    ctx = await auth.authenticate_request(request, require_csrf=False)
+    if ctx.auth_kind != "session" or not ctx.telegram_verified or ctx.user_id <= 0:
+        raise web.HTTPForbidden(text='{"error":"Sign in with your own Telegram account to view its clone registrations."}', content_type="application/json")
+    from webapp.legacy_bot_directory import list_owned_clones
+    return _ok(await list_owned_clones(ctx.user_id))
+
+
+@_api
 async def api_auth_logout(request: web.Request) -> web.Response:
     await auth.authenticate_request(request)
     hdr = (request.headers.get("Authorization") or "").strip()
@@ -1190,6 +1200,7 @@ def mount_webapp(app: web.Application) -> None:
     r.add_post("/api/v1/auth/demo", api_auth_demo)
     r.add_post("/api/v1/auth/logout", api_auth_logout)
     r.add_get("/api/v1/auth/me", api_auth_me)
+    r.add_get("/api/v1/account/legacy-bots", api_account_legacy_bots)
     r.add_route("*", "/api/v1/settings", api_user_settings)
 
     # Workspaces & Team

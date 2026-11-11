@@ -76,6 +76,7 @@ def create_session(
     display_name: str = "",
     is_demo: bool = False,
     via_admin_token: bool = False,
+    telegram_verified: bool = False,
 ) -> dict[str, Any]:
     now = time.time()
     _prune(now)
@@ -91,6 +92,7 @@ def create_session(
         "display_name": str(display_name or f"User {uid}")[:64],
         "is_demo": bool(is_demo),
         "via_admin_token": bool(via_admin_token),
+        "telegram_verified": bool(telegram_verified),
         "csrf_token": csrf_tok,
         "created_ts": now,
         "expires_ts": now + hours * 3600.0,
@@ -111,6 +113,7 @@ class AuthContext:
     is_demo: bool = False
     csrf_token: str = ""
     auth_kind: str = "session"  # session | api_key | admin_token
+    telegram_verified: bool = False
     api_key_workspace_id: str = ""
     api_key_scopes: set[str] = field(default_factory=set)
 
@@ -258,6 +261,7 @@ async def authenticate_request(request: web.Request, *, require_csrf: bool | Non
             is_demo=is_demo,
             csrf_token=sess["csrf_token"],
             auth_kind="session",
+            telegram_verified=bool(sess.get("telegram_verified")) and not is_demo and not bool(sess.get("via_admin_token")),
         )
 
     # 3. Direct Platform Admin Token (`X-Admin-Token`)
@@ -338,7 +342,8 @@ def require_platform_admin(ctx: AuthContext) -> None:
 
 
 async def _logged_session(uid: int, display_name: str, event: str, *, role: str, via_admin_token: bool = False) -> dict[str, Any]:
-    session = create_session(uid, display_name=display_name, via_admin_token=via_admin_token)
+    session = create_session(uid, display_name=display_name, via_admin_token=via_admin_token,
+                             telegram_verified=role == "user" and not via_admin_token)
     try:
         await models_db.log_audit(uid, event, actor_role=role, outcome="ok")
     except BaseException:

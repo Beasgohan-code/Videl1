@@ -479,6 +479,12 @@ CLIENT_JS = r"""
         </div>
 
         <div id="bots-container"></div>
+        <div class="card" style="margin-top:20px">
+          <h3>Telegram /clone registrations</h3>
+          <p>These belong to your Telegram account, not this workspace. This read-only list does not import or change bots. Sign in using your own Telegram link.</p>
+          <button class="btn" id="legacy-bots-load" type="button">Show my Telegram clones</button>
+          <div id="legacy-bots-result" role="status"></div>
+        </div>
       `;
 
       const renderList = () => {
@@ -564,6 +570,16 @@ CLIENT_JS = r"""
         });
       };
 
+      $("legacy-bots-load").onclick = async () => {
+        const button = $("legacy-bots-load"), result = $("legacy-bots-result");
+        button.disabled = true; result.textContent = "Loading…";
+        try {
+          const data = await api("/api/v1/account/legacy-bots");
+          if (!Array.isArray(data.bots)) throw new Error("Invalid response");
+          result.innerHTML = data.bots.length ? `<ul>${data.bots.map(b => `<li>${esc(b.username ? "@" + b.username : "Bot " + b.telegram_bot_id)} — ${b.enabled ? "enabled in registration" : "disabled in registration"}</li>`).join("")}</ul>${data.truncated ? "<p>Showing the first 100 registrations.</p>" : ""}` : "No non-deleted registrations found for this account on this backend. They may be on another database.";
+        } catch (e) { result.textContent = e.status === 403 ? "Sign in with your own Telegram link to see your clones." : "Could not load Telegram clones. The backend may be unavailable or not yet updated."; }
+        finally { button.disabled = false; }
+      };
       $("btn-add-bot").onclick = () => navigate("bot_create");
       $("btn-view-grid").onclick = () => { S.botViewMode = "grid"; navigate("bots", true); };
       $("btn-view-list").onclick = () => { S.botViewMode = "list"; navigate("bots", true); };
@@ -619,6 +635,7 @@ CLIENT_JS = r"""
 
           ${w.step === 2 ? `
             <div class="callout callout-info">
+              <strong>Backend encryption:</strong> Saving a token requires a valid ENCRYPTION_KEY on the backend host, not the Vercel proxy. If tokens already exist, restore the original key; do not replace it blindly. A token-free draft does not need a key.<br><br>
               <strong>How Telegram Bot Creation Works:</strong> Telegram requires interactive owner confirmation inside <code>@BotFather</code> (<code>/newbot</code>) to mint a brand-new bot username. Create or copy your token from <code>@BotFather</code>, then verify it below — or leave blank to save a draft blueprint first.
             </div>
             <div class="field">

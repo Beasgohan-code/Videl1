@@ -728,6 +728,9 @@ async def create_or_register_bot(
     diag_note = "Registered as draft configuration (no bot token attached yet)."
 
     if raw_token:
+        # Do not contact Telegram or attempt credential storage without a usable key.
+        if not security.is_encryption_enabled():
+            raise SaaSValidationError("A valid ENCRYPTION_KEY is required before storing bot credentials.")
         diag = await verify_telegram_token_diagnostic(raw_token)
         if not diag["verified_with_telegram"] and not allow_unverified_offline:
             raise SaaSValidationError(diag["diagnostic"])
@@ -736,8 +739,6 @@ async def create_or_register_bot(
         clash = await db_models.bots_col().find_one({"telegram_bot_id": tg_bot_id})
         if clash:
             raise SaaSValidationError("This Telegram bot is already registered in a workspace.")
-        if not security.is_encryption_enabled():
-            raise SaaSValidationError("A valid ENCRYPTION_KEY is required before storing bot credentials.")
         if diag.get("username"):
             username = diag["username"]
         if diag.get("first_name") and not payload.get("display_name"):
