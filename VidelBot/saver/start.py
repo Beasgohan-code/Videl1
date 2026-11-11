@@ -29,6 +29,7 @@ from core.style import hdr, quote, row, sc
 from core.ui import contact_row, rows
 from database.db import db
 from logger import LOGGER
+from saver.links import parse_post_link
 
 logger = LOGGER(__name__)
 
@@ -128,6 +129,7 @@ def TimeFormatter(milliseconds: int) -> str:
 class batch_temp(object):
     # user_id -> True (idle / cancelled) | False (task running)
     IS_BATCH = {}
+    ACTIVE = set()  # process-local: claimed until a running handler has finished cleanup
 
 
 def get_message_type(msg):
@@ -225,8 +227,24 @@ async def forward_to_dump(client: Client, user_id: int, sent: Message):
 # ──────────────────────────────────────────────────────────────
 # Link handler (only fires for messages containing a t.me link)
 # ──────────────────────────────────────────────────────────────
-@Client.on_message(filters.text & filters.private & ~filters.regex(r"^/") & filters.regex(r"https?://t\.me/"))
+@Client.on_message(filters.text & filters.private & ~filters.regex(r"^/") & filters.regex(r"(?i)https?://t\.me/"))
 async def save(client: Client, message: Message):
+    user_id = message.from_user.id
+    # Claim synchronously before the first await. A cancelled task is still active
+    # until its session and job have been cleaned up; do not overlap its successor.
+    if user_id in batch_temp.ACTIVE:
+        return await message.reply_text(
+            "<b>⚠️ A task is currently running or cleaning up.</b>\n<i>Wait for it to finish before starting another.</i>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    batch_temp.ACTIVE.add(user_id)
+    try:
+        return await _save_claimed(client, message)
+    finally:
+        batch_temp.ACTIVE.discard(user_id)
+
+
+async def _save_claimed(client: Client, message: Message):
     user_id = message.from_user.id
     if not await db.is_user_exist(user_id):
         await db.add_user(user_id, message.from_user.first_name)
@@ -241,31 +259,14 @@ async def save(client: Client, message: Message):
             parse_mode=enums.ParseMode.HTML,
         )
 
-    link = re.search(r"https?://t\.me/\S+", message.text).group(0).rstrip("/")
-    datas = link.split("/")
-    is_private_link = "t.me/c/" in link
-    is_batch = "t.me/b/" in link
-    is_public_link = not is_private_link and not is_batch
-    min_parts = 6 if (is_private_link or is_batch) else 5
-    if len(datas) < min_parts or not datas[3]:
-        return await message.reply_text("❌ <b>Invalid post link.</b>", parse_mode=enums.ParseMode.HTML)
-    if is_private_link and not datas[4].isdigit():
-        return await message.reply_text("❌ <b>Invalid private channel link.</b>", parse_mode=enums.ParseMode.HTML)
-    if is_batch and not datas[4]:
-        return await message.reply_text("❌ <b>Invalid bot post link.</b>", parse_mode=enums.ParseMode.HTML)
-
-    temp = datas[-1].replace("?single", "").split("?")[0].split("-")
     try:
-        fromID = int(temp[0].strip())
+        post = parse_post_link(message.text)
     except ValueError:
-        return await message.reply_text("❌ <b>Invalid post link.</b>", parse_mode=enums.ParseMode.HTML)
-    try:
-        toID = int(temp[1].strip())
-    except (IndexError, ValueError):
-        toID = fromID
-
-    if fromID < 1 or toID < fromID:
-        return await message.reply_text("❌ <b>Invalid message range in link.</b>", parse_mode=enums.ParseMode.HTML)
+        return await message.reply_text(
+            "❌ <b>Invalid or unsupported post link.</b> Send a Telegram post link or a post range.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    fromID, toID = post.first, post.last
 
     is_premium = await db.check_premium(user_id)
     if not is_premium and toID - fromID + 1 > 5:
@@ -305,8 +306,8 @@ async def save(client: Client, message: Message):
                     pct=round((step_idx - 1) * 100.0 / total_posts, 1) if total_posts > 1 else None,
                 )
 
-            if is_public_link:
-                username = datas[3]
+            if post.kind == "public":
+                username = post.chat
                 try:
                     sent = await client.copy_message(
                         chat_id=message.chat.id, from_chat_id=username,
@@ -344,13 +345,7 @@ async def save(client: Client, message: Message):
                         parse_mode=enums.ParseMode.HTML,
                     )
 
-            if is_private_link:
-                chat_target = int("-100" + datas[4])
-            elif is_batch:
-                chat_target = datas[4]
-            else:
-                chat_target = datas[3]
-            await handle_restricted_content(client, acc, message, chat_target, msgid)
+            await handle_restricted_content(client, acc, message, post.chat, msgid)
             await asyncio.sleep(2)
     finally:
         batch_temp.IS_BATCH[user_id] = True
