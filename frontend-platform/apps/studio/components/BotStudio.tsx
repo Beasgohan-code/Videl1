@@ -38,7 +38,13 @@ export default function BotStudio({workspace,session,bots,canManage,onReload,onE
   async function create(event:React.FormEvent){event.preventDefault();if(busy.current||!canManage)return;const clean=name.trim();if(clean.length<2||clean.length>80){setMessage('Display name must be 2–80 characters.');return}
     busy.current=true;setPending(true);onPending(true);setMessage('');
     try{await request(base,session,{method:'POST',body:{display_name:clean,description:description.trim(),template,bot_token:token.trim()}});if(!mounted.current)return;setToken('');setDirty(false);onDirty(false);setShowCreate(false);onReload()}
-    catch(error){if(mounted.current&&!onError(error))setMessage((token.trim()?(error instanceof ApiError && error.status===400 && error.message==='A valid ENCRYPTION_KEY is required before storing bot credentials.'?'The backend needs its valid ENCRYPTION_KEY before saving tokens. If tokens already exist, restore the original key; do not replace it blindly.':'Could not register the bot. Check credentials and service availability.'):error instanceof Error?error.message:'Could not create the bot.')+' The result may be uncertain; refresh before retrying.')}
+    catch(error){if(mounted.current&&!onError(error)){
+      const known=error instanceof ApiError&&error.status===400?error.message:'';
+      if(known==='A valid ENCRYPTION_KEY is required before storing bot credentials.')setMessage('The backend needs its valid ENCRYPTION_KEY before saving tokens. If tokens already exist, restore the original key; do not replace it blindly.');
+      else if(known==='This Telegram bot is already registered in a workspace.'||known==='This bot is already registered in a workspace.')setMessage('This bot is already registered. Check your existing workspace records or ask the workspace owner. This request did not replace an existing record.');
+      else if(error instanceof ApiError&&error.status===503&&error.message==='The backend cannot verify safe bot registration. Ask the operator to check database indexes. No record was created by this request.')setMessage(error.message);
+      else setMessage((token.trim()?'Could not register the bot. Check credentials and backend availability.':error instanceof Error?error.message:'Could not create the bot.')+' The result may be uncertain; refresh before retrying.');
+    }}
     finally{busy.current=false;if(mounted.current){setPending(false);onPending(false)}}
   }
   async function change(bot:Bot,del:boolean){if(busy.current||!canManage)return;busy.current=true;setPending(true);onPending(true);setMessage('');

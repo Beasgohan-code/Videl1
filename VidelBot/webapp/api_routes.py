@@ -343,12 +343,18 @@ async def api_bots_collection(request: web.Request) -> web.Response:
         return _ok({"bots": [_bot_for_member(b, ctx, mem) for b in bots]})
     await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
     body = await _json_body(request)
-    bot = await services_bots.create_or_register_bot(
-        ws_id,
-        ctx.user_id,
-        body,
-        allow_unverified_offline=False,
-    )
+    try:
+        bot = await services_bots.create_or_register_bot(
+            ws_id,
+            ctx.user_id,
+            body,
+            allow_unverified_offline=False,
+        )
+    except services_bots.BotRegistrationUnavailable:
+        return web.json_response(
+            {"error": "The backend cannot verify safe bot registration. Ask the operator to check database indexes. No record was created by this request."},
+            status=503, headers=_security_headers(),
+        )
     return _ok({"bot": bot}, status=201)
 
 

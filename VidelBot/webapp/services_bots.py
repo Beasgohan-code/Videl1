@@ -176,6 +176,10 @@ class SaaSValidationError(ValueError):
     """Raised when input, dependency, or ownership checks fail."""
 
 
+class BotRegistrationUnavailable(Exception):
+    """Safe creation cannot proceed without a verified unique bot index."""
+
+
 def validate_feature_dependencies(features: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for child, (parent, explanation) in FEATURE_DEPENDENCIES.items():
@@ -785,7 +789,21 @@ async def create_or_register_bot(
         "last_active_at": db_models.utcnow_iso(),
         "last_error": "",
     }
-    await db_models.bots_col().update_one({"bot_id": bid}, {"$set": bot_doc}, upsert=True)
+    # A preflight lookup is not a lock: two workspaces may register the same
+    # Telegram ID simultaneously. Verify global bot-id uniqueness and insert
+    # only; never let a create request replace an existing record.
+    from pymongo.errors import DuplicateKeyError
+    from webapp.command_create import _require_unique_index
+    bots = db_models.bots_col()
+    try:
+        await _require_unique_index(bots, [("bot_id", 1)])
+    except Exception:
+        # Index diagnostics can include database details; never send or log them.
+        raise BotRegistrationUnavailable from None
+    try:
+        await bots.insert_one(dict(bot_doc))
+    except DuplicateKeyError:
+        raise SaaSValidationError("This bot is already registered in a workspace.") from None
     await _seed_bot_defaults(bid, int(owner_id), features, settings)
     await models_db.log_audit(owner_id, "bot_register", actor_role="owner", target=f"{workspace_id}:{bid}", detail=f"@{username}")
     await db_models.create_notification(
