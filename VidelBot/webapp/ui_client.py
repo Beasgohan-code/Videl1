@@ -424,7 +424,7 @@ CLIENT_JS = r"""
         <div id="bots-container"></div>
         <div class="card" style="margin-top:20px">
           <h3>Telegram /clone registrations</h3>
-          <p>These belong to your Telegram account, not this workspace. This read-only list does not import or change bots. Sign in using your own Telegram link.</p>
+          <p>These belong to your Telegram account, not this workspace. This read-only list does not import or change bots. Sign in using your own Telegram link. Registrations can change between pages; refresh to start again.</p>
           <button class="btn" id="legacy-bots-load" type="button">Show my Telegram clones</button>
           <div id="legacy-bots-result" role="status"></div>
         </div>
@@ -513,16 +513,53 @@ CLIENT_JS = r"""
         });
       };
 
-      $("legacy-bots-load").onclick = async () => {
+      {
         const button = $("legacy-bots-load"), result = $("legacy-bots-result");
-        button.disabled = true; result.textContent = "Loading…";
-        try {
-          const data = await api("/api/v1/account/legacy-bots");
-          if (!Array.isArray(data.bots)) throw new Error("Invalid response");
-          result.innerHTML = data.bots.length ? `<ul>${data.bots.map(b => `<li>${esc(b.username ? "@" + b.username : "Bot " + b.telegram_bot_id)} — ${b.enabled ? "enabled in registration" : "disabled in registration"}</li>`).join("")}</ul>${data.truncated ? "<p>Showing the first 100 registrations.</p>" : ""}` : "No non-deleted registrations found for this account on this backend. They may be on another database.";
-        } catch (e) { result.textContent = e.status === 403 ? "Sign in with your own Telegram link to see your clones." : "Could not load Telegram clones. The backend may be unavailable or not yet updated."; }
-        finally { button.disabled = false; }
-      };
+        let page = null, current = null, history = [], loading = false, error = "";
+        const validId = (id) => typeof id === "string" && /^[1-9][0-9]{0,18}$/.test(id) && (id.length < 19 || id <= "9223372036854775807");
+        const compare = (a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
+        const parse = (data, after, legacy) => {
+          if (!data || !Array.isArray(data.bots) || data.bots.length > 100 || !data.bots.every(b => b && validId(b.telegram_bot_id) && typeof b.username === "string" && typeof b.enabled === "boolean")) throw new Error("Invalid page");
+          if (legacy) {
+            if (typeof data.truncated !== "boolean") throw new Error("Invalid page");
+            return {bots: data.bots, next: null, legacy: true, truncated: data.truncated};
+          }
+          if (data.pagination !== "id-v1" || !(data.next_after === null || validId(data.next_after))) throw new Error("Invalid page");
+          let last = after || "0";
+          for (const bot of data.bots) { if (compare(bot.telegram_bot_id, last) <= 0) throw new Error("Invalid order"); last = bot.telegram_bot_id; }
+          if (data.next_after !== null && (!data.bots.length || data.next_after !== data.bots[data.bots.length - 1].telegram_bot_id)) throw new Error("Invalid cursor");
+          return {bots: data.bots, next: data.next_after, legacy: false, truncated: false};
+        };
+        const draw = () => {
+          button.disabled = loading;
+          button.textContent = loading ? "Loading…" : page ? "Refresh my Telegram clones" : "Show my Telegram clones";
+          let content = error ? `<p>${esc(error)}</p>` : "";
+          if (page) {
+            content += page.bots.length ? `<p>Page ${history.length + 1} · ${page.bots.length} registrations</p><ul>${page.bots.map(b => `<li>${esc(b.username ? "@" + b.username : "Bot " + b.telegram_bot_id)} — ${b.enabled ? "enabled in registration" : "disabled in registration"}</li>`).join("")}</ul>${page.legacy && page.truncated ? "<p>Showing the first 100 registrations. More pages require an updated backend.</p>" : ""}` : `<p>${history.length ? "No registrations remain on this page. Refresh to update the list." : "No non-deleted registrations found for this account on this backend. They may be on another database."}</p>`;
+            if (!page.legacy) content += `${history.length ? `<button class="btn" type="button" data-page="previous" ${loading ? "disabled" : ""}>Previous page</button> ` : ""}${page.next ? `<button class="btn" type="button" data-page="next" ${loading ? "disabled" : ""}>Next page</button>` : ""}`;
+          }
+          result.innerHTML = content;
+          const next = result.querySelector('[data-page="next"]'), previous = result.querySelector('[data-page="previous"]');
+          if (next) next.onclick = () => load(page.next, "next");
+          if (previous) previous.onclick = () => load(history[history.length - 1], "previous");
+        };
+        const load = async (after, kind) => {
+          if (loading) return;
+          loading = true; error = ""; draw();
+          try {
+            let data;
+            try { data = parse(await api("/api/v1/account/legacy-bots/pages" + (after ? "?after=" + encodeURIComponent(after) : "")), after, false); }
+            catch (e) { if (kind !== "start" || e.status !== 404) throw e; data = parse(await api("/api/v1/account/legacy-bots"), null, true); }
+            page = data;
+            history = kind === "start" ? [] : kind === "next" ? [...history, current] : history.slice(0, -1);
+            current = after;
+          } catch (e) {
+            if (e.status === 403) { page = null; history = []; current = null; error = "Sign in with your own Telegram link to see your clones."; }
+            else error = "Could not load this page. The backend may be unavailable or not yet updated; try again.";
+          } finally { loading = false; draw(); }
+        };
+        button.onclick = () => load(null, "start");
+      }
       $("btn-add-bot").onclick = () => navigate("bot_create");
       $("btn-view-grid").onclick = () => { S.botViewMode = "grid"; navigate("bots", true); };
       $("btn-view-list").onclick = () => { S.botViewMode = "list"; navigate("bots", true); };
