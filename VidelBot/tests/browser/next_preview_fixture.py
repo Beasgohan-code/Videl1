@@ -173,7 +173,7 @@ async def command_collection(request):
     bot = next((b for b in bot_records(token, ws) if b['bot_id'] == request.match_info['bot']), None)
     if bot is None: return error('Bot not found', 404)
     rows = commands[token].setdefault((ws['workspace_id'], bot['bot_id']), [])
-    if request.method == 'GET': return web.json_response({'commands': rows})
+    if request.method == 'GET': return web.json_response({'commands': rows, 'capabilities': {'command_create_only': True}})
     data = await request.json()
     old = next((c for c in rows if c['command'] == data.get('command')), None)
     if request.method == 'DELETE':
@@ -184,6 +184,22 @@ async def command_collection(request):
     entry = {'command': data['command'], 'description': data['description'], 'category': data['category'], 'permission': data['permission'], 'visibility':data['visibility'], 'enabled':data['enabled'], 'custom_reply_text':data.get('custom_reply_text', ''), 'handler_bound': False}
     rows.append(entry)
     return web.json_response({'command':entry, 'commands':rows})
+
+
+async def command_create(request):
+    context, failure = authorized(request, write=True)
+    if failure is not None: return failure
+    token, ws = context
+    if not roles[token]: return error('Forbidden', 403)
+    bot = next((b for b in bot_records(token, ws) if b['bot_id'] == request.match_info['bot']), None)
+    if bot is None: return error('Bot not found', 404)
+    rows = commands[token].setdefault((ws['workspace_id'], bot['bot_id']), [])
+    data = await request.json()
+    if any(c['command'] == data.get('command') for c in rows):
+        return web.json_response({'error':'A command with this name already exists.', 'code':'command_exists'},status=409)
+    entry = {**data, 'custom_reply_text':'', 'handler_bound':False}
+    rows.append(entry)
+    return web.json_response({'command':entry},status=201)
 
 
 
@@ -255,6 +271,7 @@ app.router.add_patch('/api/v1/workspaces/{ws}/bots/{bot}/profile', bot_profile)
 app.router.add_patch('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_delete('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/bots/{bot}/commands', command_collection)
+app.router.add_post('/api/v1/workspaces/{ws}/bots/{bot}/commands/create', command_create)
 app.router.add_get('/api/v1/workspaces/{ws}/filestore', file_collection)
 app.router.add_post('/api/v1/workspaces/{ws}/filestore', file_collection)
 app.router.add_post('/api/v1/workspaces/{ws}/filestore/{file}', file_item)

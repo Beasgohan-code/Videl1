@@ -470,7 +470,7 @@ async def api_bot_commands(request: web.Request) -> web.Response:
             search=request.query.get("search", ""),
             category=request.query.get("category", ""),
         )
-        return _ok({"commands": cmds})
+        return _ok({"commands": cmds, "capabilities": {"command_create_only": True}})
     await auth.require_workspace_access(ctx, ws_id, scope="commands")
     body = await _json_body(request)
     if request.method == "DELETE":
@@ -478,6 +478,22 @@ async def api_bot_commands(request: web.Request) -> web.Response:
         return _ok({"deleted": deleted})
     cmd = await services_bots.upsert_bot_command(ws_id, bot_id, ctx.user_id, body)
     return _ok({"command": cmd, "commands": await services_bots.list_bot_commands(ws_id, bot_id)})
+
+
+@_api
+async def api_bot_command_create(request: web.Request) -> web.Response:
+    # Distinct route: old workers cannot silently ignore create-only semantics.
+    from webapp import command_create
+
+    ctx = await auth.authenticate_request(request)
+    ws_id, bot_id = request.match_info["ws_id"], request.match_info["bot_id"]
+    await auth.require_workspace_access(ctx, ws_id, scope="commands")
+    try:
+        command = await command_create.create(ws_id, bot_id, ctx.user_id, await _json_body(request))
+    except command_create.CommandExists:
+        return web.json_response({"error": "A command with this name already exists.",
+                                  "code": "command_exists"}, status=409, headers=_security_headers())
+    return _ok({"command": command}, status=201)
 
 
 # ─────────────────────────── Clone Studio & Migration Center ───────────────────────────
@@ -1174,6 +1190,7 @@ def mount_webapp(app: web.Application) -> None:
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/config", api_bot_config)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/environments", api_bot_environments)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/commands", api_bot_commands)
+    r.add_post("/api/v1/workspaces/{ws_id}/bots/{bot_id}/commands/create", api_bot_command_create)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/fleet", api_fleet)
 
     # Clone Studio & Migration

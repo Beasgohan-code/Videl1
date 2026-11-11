@@ -109,3 +109,5 @@ against the synthetic fixture, including changed-field-only writes, read-only
 permissions, draft and pending navigation, conditional conflicts, old/mixed
 server handling, per-field capability fallback, tag validation and uncertain responses. Browser tests use a simulated API;
 real MongoDB concurrency, Telegram and physical devices are not tested.
+
+`node next-command-create.test.cjs` checks the Next command create-only path, collision drafts, old/mixed-worker failure, uncertain responses and responsive layout with a synthetic API. It does not establish real Mongo index behavior, live Telegram or multi-worker safety.
