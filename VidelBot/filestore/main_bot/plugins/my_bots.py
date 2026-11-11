@@ -23,8 +23,8 @@ async def _clone_log(client, tag: str, user, bot: dict, extra: str = ""):
         if extra:
             body += f"\n{extra}"
         await botlog.event(tag, body, client=client)
-    except Exception as e:
-        log.warning(f"clone log failed: {e}")
+    except Exception:
+        log.warning("Clone event logging failed.")
 main_db = MainDB()
 
 
@@ -380,15 +380,16 @@ async def confirm_delete_callback(client: Client, query: CallbackQuery):
         await query.answer("❌ Access denied!", show_alert=True)
         return
 
-    username = bot.get("bot_username", "unknown")
+    username = html.escape(str(bot.get("bot_username", "unknown")))
 
     await query.message.edit_text(
         f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ 𝗗𝗘𝗟𝗘𝗧𝗘 @{username}?\n"
         f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-        f"<blockquote>ᴛʜɪs ᴡɪʟʟ ᴘᴇʀᴍᴀɴᴇɴᴛʟʏ ᴅᴇʟᴇᴛᴇ ᴛʜᴇ ʙᴏᴛ "
-        f"ᴀɴᴅ ᴀʟʟ ɪᴛs ᴅᴀᴛᴀ (ᴜsᴇʀs, ᴄʜᴀɴɴᴇʟs, sᴇᴛᴛɪɴɢs).\n\n"
-        f"<b>ᴛʜɪs ᴀᴄᴛɪᴏɴ ᴄᴀɴɴᴏᴛ ʙᴇ ᴜɴᴅᴏɴᴇ!</b></blockquote>",
+        f"<blockquote>This removes the clone from My Bots and attempts to stop its worker in this process. "
+        f"It does <b>not</b> delete the Telegram bot or revoke its token. "
+        f"The stored token, settings and associated data remain in the database for restoration or transfer. "
+        f"Other workers may still need to be stopped separately.</blockquote>",
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("✅ ʏᴇs, ᴅᴇʟᴇᴛᴇ", callback_data=f"delete_bot_{bot_id}"),
@@ -422,7 +423,7 @@ async def delete_bot_callback(client: Client, query: CallbackQuery):
     # Soft-delete (keeps collections for data transfer)
     await main_db.delete_bot(bot_id)
 
-    username = bot.get("bot_username", "unknown")
+    username = html.escape(str(bot.get("bot_username", "unknown")))
 
     remaining = await main_db.bots.count_documents({"owner_id": query.from_user.id, "is_deleted": {"$ne": True}})
     await _clone_log(client, "CloneDeleted", query.from_user, bot, f"<b>📊 User's remaining clones:</b> {remaining}")
@@ -432,8 +433,8 @@ async def delete_bot_callback(client: Client, query: CallbackQuery):
         f"🗑 𝗕𝗢𝗧 𝗗𝗘𝗟𝗘𝗧𝗘𝗗\n"
         f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
         f"<blockquote>@{username} ʜᴀs ʙᴇᴇɴ ʀᴇᴍᴏᴠᴇᴅ.\n\n"
-        f"📦 <b>ʏᴏᴜʀ ᴅᴀᴛᴀ ɪs sᴀꜰᴇ!</b>\n"
-        f"ᴜsᴇʀs, ᴀᴅᴍɪɴs, ᴄʜᴀɴɴᴇʟs ᴀʀᴇ ᴘʀᴇsᴇʀᴠᴇᴅ.\n"
+        f"📦 <b>Stored data and token are retained.</b>\n"
+        f"This did not revoke the Telegram token or delete the Telegram bot.\n"
         f"ʏᴏᴜ ᴄᴀɴ ᴛʀᴀɴsꜰᴇʀ ᴛʜᴇᴍ ᴛᴏ ᴀ ɴᴇᴡ ʙᴏᴛ\n"
         f"ᴠɪᴀ ᴛʜᴇ <b>📦 ᴛʀᴀɴsꜰᴇʀ ᴅᴀᴛᴀ</b> ʙᴜᴛᴛᴏɴ\n"
         f"ɪɴ ʏᴏᴜʀ ɴᴇᴡ ʙᴏᴛ's ᴅᴀsʜʙᴏᴀʀᴅ.</blockquote>",
