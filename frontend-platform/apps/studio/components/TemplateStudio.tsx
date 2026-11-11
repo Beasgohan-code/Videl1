@@ -2,7 +2,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {Blocks, Search} from 'lucide-react';
 import {request,templateList,type Session,type TemplateRecord} from '../lib/api';
-const categories=['bot_config','filestore_config','command_metadata','permission_presets','automation_workflow','welcome_message','dashboard_layout','notification_prefs'];
+const categories=['bot_config','filestore_config','command_metadata','permission_presets','automation_workflow','welcome_message','notification_prefs'];
 type Props={workspace:string;session:Session;permitted:boolean;onError:(error:unknown)=>boolean;onDirty:(dirty:boolean)=>void;onPending:(pending:boolean)=>void};
 function TemplateCard({record,disabled,copy,remove}:{record:TemplateRecord;disabled:boolean;copy:()=>void;remove:()=>void}){
  const [open,setOpen]=useState(false);

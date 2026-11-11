@@ -1,58 +1,22 @@
-# Widget platform
+# Telegram dashboard and detail snapshots
 
-In a private chat with the bot, `/widget` (or `/widget calculator`) sends a native, self-contained Telegram HTML calculator. Arithmetic is evaluated immediately in the widget as buttons are pressed. Pressing `=` sends a short expression through Telegram's Bot API 10.4 beta widget-query mechanism; Videl validates it without `eval`, answers that request, and updates the shared widget's public state. Copies sent with `/widget` use the same persisted `widget_id`, so supported clients that watch public state can see the latest committed result.
+This package supports existing outgoing-only Telegram snapshots; it does **not** register a `/widget` command or run a Bot API update poller.
 
-## Availability and safety
+## Retained commands
 
-`WIDGET_API_BETA` now defaults to `True` in the app and sample configuration, as requested. Set it to `False` to disable the beta transport. The feature requires `AIOGRAM_ENABLED=True` and defaults to `WIDGET_API_MODE=beta`. The query poller subscribes only to `widget_query` and `shared_widget_query`, checks for an existing webhook, and refuses to start if one is configured. Do not use this on a bot whose Bot API update stream is already consumed by another poller. WzGram continues handling regular commands and callbacks. A Git push changes source defaults only; it does not change environment variables in a separately deployed service.
+- **`/dashboard`** remains admin-only and sends a fresh aggregate snapshot in private chat, along with the existing charts and web-dashboard entry point. Group requests keep the normal analytics reply and DM guidance. It does not track live updates, embed individual user records, or synchronize a shared widget state.
+- **`/info`** and **`/sys`** retain their existing replies and may send bounded detail snapshots in private chat where enabled. `/info` group lookup continues to verify membership and fail closed; `/sys` is owner-only. Existing fallback replies remain if the outgoing snapshot cannot be sent.
 
-The current Telegram Bot API changelog could not be independently verified in this environment. Telegram's official widget sandbox documents a Bot API 10.4 mapping and notes verification against the beta endpoint, but real widget delivery and compatible clients still need validation. The default-on flag is experimental, not a claim that production availability is guaranteed. Test on an isolated bot with a compatible Telegram client before relying on it.
+These snapshots are distinct from the retired interactive calculator. They are not part of the SaaS Studio's Overview layout, and they do not expose the removed Studio Everyday Tools page.
 
-`WIDGET_API_MODE=configured` sends requests to `BOT_API_URL` (or the standard Bot API if unset); use it only when that endpoint supports Bot API 10.4 widgets. The default `beta` mode uses `https://api.telegram.org/beta`. A primary-bot identity check prevents the primary token from being used by clone clients. API errors and URLs are not logged because they may contain credentials. The shared widget ID is stored in Videl's bot-wide Mongo settings so later `/widget` calls reuse the same object.
+## Configuration and operation
 
-The HTML has no network access, external assets, forms, or third-party JavaScript. Its source and zlib-compressed payload are checked against Telegram's 32 KiB / 4 KiB limits. Server-side arithmetic accepts only numeric literals, parentheses, unary signs, and `+`, `-`, `*`, `/`; it has expression, complexity and output bounds. Widget queries are validated. Telegram's beta specification documents a limit of five requests per five seconds per user and bot, and one shared-object edit per second, so future game features should keep gameplay local and send only occasional bounded updates. Older Telegram clients may display only the caption or may not render the widget. Local arithmetic remains in the widget; shared updates require a client with the widget SDK and query support.
+`WIDGET_API_BETA=True` permits the outgoing sender to use Telegram's beta endpoint; set it to `False` to use the stable/configured API route. `WIDGET_API_MODE=beta` selects Telegram's beta base URL; `configured` uses `BOT_API_URL` or the standard endpoint. An endpoint must support the relevant `sendWidget` request. `AIOGRAM_ENABLED` must also be enabled. Sends use a primary-bot identity check; clone workers and disabled/unavailable clients retain their normal non-widget behavior.
+
+There is no query receiver, `getUpdates` call, webhook probe, shared widget ID, or live shared-state mutation. WzGram remains the bot's incoming update receiver. Previously sent Telegram messages are not deleted or edited by this source change. Existing legacy calculator IDs in bot settings are ignored and are not destructively removed.
+
+The base Overview keeps its fixed API-backed workspace summary. User-customized dashboard layouts are no longer supported; old exported bundles may include an ignored `dashboard_layout` member. General workspace bundles, templates and automations are unaffected.
 
 ## Tests
 
-From `VidelBot`, run `python -m pytest tests/test_widget.py tests/test_telegram_dashboard_widget.py -q`. UI behavior is exercised by `npm ci && npm test` in `tests/ui`. These tests use a mocked Telegram widget bridge and do not prove delivery through Telegram's live beta API or compatibility on every client. Validate on a separate test bot before depending on shared play.
-
-## Troubleshooting a failed send
-
-A failed `/widget` does **not** by itself prove that Telegram's beta is down or that the receiving client is incompatible. The bot now reports a safe category: request rejected, authentication/permission, endpoint/method not found, conflict, rate limit, upstream server, network/timeout, unreadable response, or local preparation/storage. Operators can use the `Calculator widget send failed` log entry's method, mode, category and numeric code; raw API descriptions, response bodies, URLs and tokens are never logged by this transport. Never post credentials or raw URLs when seeking help.
-
-- Check `WIDGET_API_BETA`, `AIOGRAM_ENABLED`, primary bot identity and `WIDGET_API_MODE`. The endpoint is not switched automatically. `configured` depends on the operator's Bot API server.
-- A `sendSharedWidget` rejection can have several causes, including a stale ID, chat restrictions or an unsupported request. Investigate before changing the saved bot-wide `shared_calculator_widget_id`; deleting it affects shared copies and does not guarantee recovery. This change never clears it or silently retries.
-- A timeout/network error has an uncertain delivery outcome: check the chat before trying again. If the bot says the widget was sent but the ID could not be stored, do not assume no message was delivered. Resolve database availability first.
-- Sending and client rendering are separate: after a successful send, an incompatible client may show an unsupported-media placeholder. Test with an isolated bot and a compatible client.
-- **Shared-query safety:** the existing implementation starts a separate Bot API `getUpdates` poller. Checking the webhook does not detect another poller; `allowed_updates` does not isolate the token's update queue. It can conflict with another receiver and its offset can affect other pending updates. Do not enable/run it alongside an existing Bot API update consumer; this diagnostic change does not resolve that architectural risk or prove query delivery. WzGram remains the command receiver. Until a single coordinated incoming receiver supports these update types, shared-sync behavior is not production-validated.
-
-## Telegram statistics dashboard
-
-`/dashboard` is admin-only, as it was before the toolkit experiment. In a private chat it sends an interactive statistics widget plus the existing charts and web-dashboard buttons. The widget shows a snapshot of the past 90 UTC days with Active, New users, Jobs and Stars tabs and 7/30/90-day views. Active is the sum of daily active users (user-days, not distinct people for the whole range); Jobs combines the existing encode, rename, save, leech and tool counters; Stars excludes refunded payments and is not profit. Bars are daily, or grouped in three-day buckets for the 90-day view. Use **Prev / Next** to inspect a specific date or three-day bucket and its recorded count. Peak is the highest **day**, not bucket. The 7- and 30-day views compare their recorded totals with the preceding equal-length period; the 90-day comparison is unavailable because the widget contains only 90 days. A zero prior total is reported as new activity rather than an infinite percentage. By default the latest UTC day may be partial; choose **Completed days** in the 7/30-day views to exclude it and compare equal completed-day windows. The 90-day view includes the latest day because older daily values are not stored. `/dashboard 7`, `/dashboard 30` or `/dashboard 90` chooses the widget's initial range. Only aggregate counters and dates are embedded; no individual user records are sent.
-
-This is not live: press `/dashboard` again for a fresh snapshot. The widget uses outgoing aiogram with `is_shared=false` and `allow_queries=false`; no incoming widget receiver or widget-specific database state is needed. If any source fails to read, it reports unavailable rather than treating the missing source as zero. No recorded activity appears as zero; existing counters may be incomplete if previous tracking writes failed. Data and totals are bot-wide, not workspace analytics. The widget uses the same plugin, beta/aiogram settings and primary-bot identity guard as `/widget`; compatible clients and supported endpoint are required, and older clients may show the caption. The widget compacts exact recent daily values and exact older three-day buckets to stay within Telegram's size limit; if an unusually large snapshot still cannot fit, it reports the size limit and the regular analytics charts remain available. A timeout may have sent the widget, so check the chat before retrying.
-
-Widget sends are DM-only; admin group commands still get the existing analytics charts and guidance to open a DM. Telegram forwarding is not blocked by this guard: the snapshot contains sensitive aggregate data, so do not forward it to untrusted chats. Previously sent toolkit messages are not deleted or modified. `/widget` is still the separate shared calculator; `/widget tools` is not restored. The Studio browser dashboard separately provides local everyday tools via `/web`; it does not sync with either widget.
-
-## User, group and system detail widgets
-
-In a private chat, `/info` or `/info @username` keeps the existing user-information reply and additionally attempts a tabbed widget with the profile, Telegram-visible status, account flags and data center. Missing fields are labeled unavailable. Long titles and values are shortened for the small widget; group descriptions can be paged in-widget (up to 480 characters). The ID **Copy ID** button requests a client-side copy only when tapped and reports if the bridge is unavailable. It never fetches or embeds phone numbers, private messages, session data or extra private user records.
-
-For a group, send `/info group <group ID or @username>` in DM. The bot verifies that **both the requester and the bot are current group members** before showing any group information. Unknown, unavailable or restricted-but-not-member status fails closed; a member count is optional and shown as unavailable if Telegram does not return it. This includes only the group identity, public-to-members description, member count when available, requester role and Telegram-returned group flags. Channels are not accepted. Group requests receive DM instructions, without an unsolicited DM. Telegram may not permit all membership lookups for every bot; if verification fails the command cannot show that group.
-
-The existing owner-only, private `/sys` command also attempts a system snapshot widget with actual CPU, RAM and disk gauges, used/total/available RAM, used/total/free disk, host uptime, active clone-worker count and process-local encoder running/waiting queue counts. Encoder counts are a momentary local snapshot, not cluster-wide and do not include job details. Values not returned by the host are labeled unavailable. These are host/process measurements, not a live graph or a cluster-wide view. Re-run the command for a fresh sample. Both commands retain their existing normal replies if widgets are disabled, unsupported or cannot be sent. Snapshot widgets use outgoing aiogram with no shared state or queries, so they do not introduce an incoming receiver. Widget sends follow the widget plugin, primary-bot, aiogram and beta configuration. No widget is sent to groups. Telegram forwarding may reveal embedded profile, group or system details to recipients; users should not forward sensitive widgets.
-
-### Private chat availability
-
-Videl attempts to send both the stats and calculator widgets only in a private chat with the bot. Group requests receive instructions to open a DM; they do not trigger a widget send or unsolicited private messages. This is Videl's conservative behavior based on reported availability, not a claim that every Telegram deployment rejects group widgets: the upstream sandbox documentation describes group support subject to server configuration.
-
-### Dashboard runtime build
-
-`dashboard_assets/dashboard.js` is the readable source. After editing it, regenerate `dashboard.min.js` with esbuild 0.28.2 (Node/npm required):
-
-```sh
-cd VidelBot/plugins/widget/dashboard_assets
-{ printf '/* source-sha256:%s */\n' "$(sha256sum dashboard.js | cut -d' ' -f1)"; npx --yes esbuild@0.28.2 dashboard.js --minify --target=es2020; } > dashboard.min.js
-```
-
-The sender checks the source hash so an outdated generated runtime fails safely. A conservative compressed-size margin is used; oversized snapshots fall back to the regular chart reply.
+From `VidelBot`, run `python -m pytest tests/test_telegram_dashboard_widget.py tests/test_detail_widgets.py tests/test_widget_surface_removal.py -q`. These use local/mocked data and verify code paths, not live Telegram delivery, all clients, or production service configuration.

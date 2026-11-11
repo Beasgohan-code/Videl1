@@ -13,7 +13,6 @@ CLIENT_JS = r"""
   const STUDIOS = [
     { group: "Core Workspace", items: [
       { id: "overview", label: "Workspace Overview", icon: "⌂" },
-      { id: "everyday_tools", label: "Everyday Tools", icon: "⊞" },
       { id: "bots", label: "Bot Management", icon: "🤖" },
       { id: "bot_create", label: "Bot Creation Studio", icon: "✨" },
       { id: "fleet", label: "Bot Fleet & Health", icon: "🛰" },
@@ -294,13 +293,9 @@ CLIENT_JS = r"""
 
   /* ── Studio Renderers ── */
   const RENDERERS = {
-    async everyday_tools(vp) { window.VidelTools.mount(vp); },
-    /* 1. Workspace Overview & Custom Dashboard Builder */
+    /* 1. Workspace Overview */
     async overview(vp) {
-      const [wsData, layoutData] = await Promise.all([
-        api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}`),
-        api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/dashboard-layout`),
-      ]);
+      const wsData = await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}`);
       const u = wsData.usage || {};
       const runningBots = S.bots.filter((b) => b.connection_state === "running").length;
       const verifiedBots = S.bots.filter((b) => b.has_credentials).length;
@@ -308,47 +303,7 @@ CLIENT_JS = r"""
         S.bots.length > 0,
         u.files_count > 0,
       ];
-
-      const widgetsHtml = (layoutData.widgets || []).map((wid, idx) => {
-        if (wid === "bot_fleet") {
-          return `<div class="card">
-            <div class="card-header"><h3 class="card-title">🤖 Bot Fleet Summary</h3><button class="btn btn-sm" data-goto="bots">Manage Bots</button></div>
-            <div style="font-size:26px;font-weight:700">${S.bots.length}</div>
-            <div class="stat-meta">${S.bots.filter((b) => b.connection_state === "running").length} reported running · ${S.bots.filter((b) => b.has_credentials).length} with saved credentials</div>
-          </div>`;
-        }
-        if (wid === "filestore_usage") {
-          return `<div class="card">
-            <div class="card-header"><h3 class="card-title">📦 File Store Usage</h3>${u.files_count == null ? "" : '<button class="btn btn-sm" data-goto="filestore">Open Vault</button>'}</div>
-            <div style="font-size:26px;font-weight:700">${u.files_count == null ? "Unavailable" : `${u.files_count} files`}</div>
-            <div class="stat-meta">${u.storage_bytes == null ? "File Store permission required." : `${fmtBytes(u.storage_bytes)} indexed${u.files_count >= u.filestore_sample_limit ? ` (sample of up to ${u.filestore_sample_limit} records)` : " across workspace"}`}</div>
-          </div>`;
-        }
-        if (wid === "active_tasks") {
-          return `<div class="card">
-            <div class="card-header"><h3 class="card-title">⬇ Active Transfer Queue</h3></div>
-            <div class="stat-meta">Workspace-attributed transfers are not available yet.</div>
-          </div>`;
-        }
-        if (wid === "notifications") {
-          const ntfs = (wsData.recent_notifications || []).slice(0, 4);
-          return `<div class="card">
-            <div class="card-header"><h3 class="card-title">🔔 Recent Alerts</h3><span class="badge badge-neutral">${u.unread_notifications == null ? "Permission required" : `${u.unread_notifications} unread`}</span></div>
-            ${ntfs.length ? ntfs.map((n) => `<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:12.5px"><strong>${esc(n.title)}</strong> — <span style="color:var(--text-secondary)">${esc(n.message)}</span></div>`).join("") : `<div class="stat-meta">${u.unread_notifications == null ? "Logs permission required." : "No alerts recorded yet."}</div>`}
-          </div>`;
-        }
-        if (wid === "scheduled_jobs") {
-          return `<div class="card">
-            <div class="card-header"><h3 class="card-title">⏱ Scheduled Jobs</h3></div>
-            <div class="stat-meta">Workspace-attributed schedules are not available yet.</div>
-          </div>`;
-        }
-        return `<div class="card">
-          <div class="card-header"><h3 class="card-title">${esc(wid.replace(/_/g, " ").toUpperCase())}</h3>
-          <button class="btn btn-sm" data-remove-widget="${esc(wid)}" title="Remove widget">✕</button></div>
-          <div class="stat-meta">This widget's data is not available yet.</div>
-        </div>`;
-      }).join("");
+      const notices = (wsData.recent_notifications || []).slice(0, 4);
 
       vp.innerHTML = `
         <div class="page-header">
@@ -360,7 +315,6 @@ CLIENT_JS = r"""
           <div class="toolbar-group">
             <button id="btn-new-ws" class="btn">+ New Workspace</button>
             <button id="btn-rename-ws" class="btn">Rename Workspace</button>
-            <button id="btn-customize-dash" class="btn">Customize Widgets</button>
             <button class="btn btn-primary" data-goto="bot_create">+ Connect a bot</button>
           </div>
         </div>
@@ -373,7 +327,6 @@ CLIENT_JS = r"""
             <div class="overview-hero-actions">
               <button class="btn btn-primary" data-goto="bot_create">Connect a bot <span aria-hidden="true">→</span></button>
               <button class="btn overview-secondary-action" data-goto="bots">Explore bot studio</button>
-              <button class="btn overview-secondary-action" type="button" data-goto="everyday_tools">Open everyday tools</button>
             </div>
           </div>
           <div class="overview-snapshot" aria-label="Current workspace snapshot">
@@ -396,35 +349,25 @@ CLIENT_JS = r"""
           </div>
         </div>
 
-        <div id="dash-customizer" class="card" style="margin-bottom:18px" hidden>
-          <div class="card-header"><h3 class="card-title">Custom Dashboard Builder</h3><button id="btn-reset-dash" class="btn btn-sm">Restore Default Layout</button></div>
-          <div class="toolbar-group">
-            ${(layoutData.catalog || []).map((w) => {
-              const on = (layoutData.widgets || []).includes(w.id);
-              return `<button class="btn btn-sm ${on ? "btn-primary" : ""}" data-toggle-widget="${esc(w.id)}">${on ? "✓ " : "+ "}${esc(w.title)}</button>`;
-            }).join("")}
-          </div>
+        <div class="grid grid-3">
+          <section class="card">
+            <div class="card-header"><h3 class="card-title">Bot Fleet</h3><button class="btn btn-sm" data-goto="bots">Manage Bots</button></div>
+            <div style="font-size:26px;font-weight:700">${S.bots.length.toLocaleString()}</div>
+            <div class="stat-meta">${runningBots.toLocaleString()} marked running · ${verifiedBots.toLocaleString()} with saved credentials</div>
+          </section>
+          <section class="card">
+            <div class="card-header"><h3 class="card-title">File Store</h3>${u.files_count == null ? "" : '<button class="btn btn-sm" data-goto="filestore">Open Vault</button>'}</div>
+            <div style="font-size:26px;font-weight:700">${u.files_count == null ? "Unavailable" : `${Number(u.files_count).toLocaleString()} files`}</div>
+            <div class="stat-meta">${u.storage_bytes == null ? "File Store permission required or data unavailable." : `${fmtBytes(u.storage_bytes)} indexed${u.files_count >= u.filestore_sample_limit ? ` (sample of up to ${u.filestore_sample_limit} records)` : " across workspace"}`}</div>
+          </section>
+          <section class="card">
+            <div class="card-header"><h3 class="card-title">Workspace Activity</h3><span class="badge badge-neutral">${u.unread_notifications == null ? "Permission required" : `${u.unread_notifications} unread`}</span></div>
+            ${notices.length ? notices.map((n) => `<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:12.5px"><strong>${esc(n.title)}</strong> — <span style="color:var(--text-secondary)">${esc(n.message)}</span></div>`).join("") : `<div class="stat-meta">${u.unread_notifications == null ? "Logs permission required." : "No recent notifications."}</div>`}
+          </section>
         </div>
-
-        <div class="grid grid-3">${widgetsHtml}</div>
       `;
 
       vp.querySelectorAll("[data-goto]").forEach((b) => { b.onclick = () => navigate(b.dataset.goto); });
-      $("btn-customize-dash").onclick = () => { $("dash-customizer").hidden = !$("dash-customizer").hidden; };
-      $("btn-reset-dash").onclick = async () => {
-        await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/dashboard-layout`, { method: "POST", body: { reset: true } });
-        toast("Dashboard restored to default layout", "success");
-        navigate("overview", true);
-      };
-      vp.querySelectorAll("[data-toggle-widget]").forEach((b) => {
-        b.onclick = async () => {
-          const wid = b.dataset.toggleWidget;
-          const cur = layoutData.widgets || [];
-          const next = cur.includes(wid) ? cur.filter((x) => x !== wid) : [...cur, wid];
-          await api(`/api/v1/workspaces/${encodeURIComponent(S.wsId)}/dashboard-layout`, { method: "POST", body: { widgets: next } });
-          navigate("overview", true);
-        };
-      });
       $("btn-new-ws").onclick = async () => {
         const name = prompt("New workspace name:");
         if (!name) return;
@@ -2456,6 +2399,3 @@ CLIENT_JS = r"""
 })();
 
 """
-
-from pathlib import Path
-CLIENT_JS = Path(__file__).with_name("studio_tools.js").read_text(encoding="utf-8") + "\n;\n" + CLIENT_JS

@@ -1,13 +1,10 @@
 name: widget
 version: "1.0.0"
 author: Videl
-description: Native Telegram HTML widget with a live shared calculator
+description: Outgoing Telegram dashboard and detail snapshots
 entry: plugin.py
 enabled: true
 min_bot_version: "3.0.0"
-tags: [widgets, calculator, telegram-bot-api-10-4]
+tags: [telegram, dashboard, snapshots]
 permissions: []
-commands:
-  - name: widget
-    description: Open the shared live calculator widget
-    access: user
+commands: []

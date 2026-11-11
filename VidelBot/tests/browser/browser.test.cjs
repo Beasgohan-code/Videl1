@@ -45,16 +45,13 @@ const out=path.resolve(__dirname,'../../../docs/screenshots'); fs.mkdirSync(out,
      assert.equal(await page.locator('[data-nav-group="storage"]').getAttribute('aria-expanded'),'false'); await page.locator('[data-nav-group="storage"]').click();
    }
    if(v.name==='desktop') { await page.locator('#profile-menu summary').click(); await page.locator('#btn-theme-toggle').click(); assert.equal(await page.locator('html').getAttribute('data-theme'),'light'); await page.screenshot({path:path.join(out,'studio-overview-desktop-light.png'),fullPage:true}); await page.locator('#profile-menu summary').click(); await page.locator('#btn-theme-toggle').click(); }
-   const customize=page.getByRole('button',{name:'Customize view'});
-   await customize.click(); assert.equal(await customize.getAttribute('aria-expanded'),'true');
-   await page.getByRole('button',{name:'Restore defaults'}).click();
-   await page.getByText('This local preview is read-only. No backend is connected.').waitFor();
+   assert.equal(await page.getByRole('button',{name:'Customize view'}).count(),0);
+   assert.equal(await page.getByRole('button',{name:'Restore defaults'}).count(),0);
    if(v.name==='desktop') {
      page.once('dialog', dialog => dialog.accept('Synthetic workspace'));
      await page.getByRole('button',{name:'New workspace'}).click();
-     await page.waitForFunction(() => document.querySelectorAll('.toast').length >= 2);
+     await page.waitForFunction(() => document.querySelectorAll('.toast').length >= 1);
    }
-   await customize.click(); assert.equal(await customize.getAttribute('aria-expanded'),'false');
    await page.waitForFunction(() => document.querySelectorAll('.toast').length === 0);
    if(v.name==='mobile') { const menu=page.locator('#btn-mobile-menu'); await menu.click(); assert.equal(await menu.getAttribute('aria-expanded'),'true'); await page.locator('#mobile-bottom-nav').waitFor({state:'hidden'}); await page.locator('#sidebar-nav [data-nav-group="overview"]').waitFor({state:'visible'}); await page.waitForFunction(() => document.activeElement === document.querySelector('#sidebar-nav [data-nav-group="overview"]')); assert((await page.locator('#sidebar-nav [data-studio="overview"]').boundingBox()).height>=44); assert((await page.locator('[data-nav-group="overview"]').boundingBox()).height>=44); await page.screenshot({path:path.join(out,'studio-navigation-drawer-mobile.png'),fullPage:false}); await page.keyboard.press('Escape'); assert.equal(await menu.getAttribute('aria-expanded'),'false'); await page.locator('#mobile-bottom-nav').waitFor({state:'visible'}); assert(await menu.evaluate(el=>document.activeElement===el)); await menu.click(); await page.locator('#sidebar-backdrop').click({position:{x:380,y:400}}); assert.equal(await menu.getAttribute('aria-expanded'),'false'); }
    await page.waitForFunction(() => document.querySelectorAll('.toast').length === 0);
@@ -167,10 +164,9 @@ const out=path.resolve(__dirname,'../../../docs/screenshots'); fs.mkdirSync(out,
  await page.goto(base+'/app',{waitUntil:'networkidle'});
  await page.getByRole('heading',{name:'Northstar workspace'}).waitFor();
  assert(await page.evaluate(() => !!(window.mojs && window.mojs.Html)), 'local Mo.js should load in Studio');
- await page.getByRole('button',{name:'Customize view'}).click();
- await page.getByRole('button',{name:'Restore defaults'}).click();
- await page.getByText('This local preview is read-only. No backend is connected.').waitFor();
- results.push('motion-enabled Studio: local GSAP and Mo.js loaded, error feedback rendered');
+ assert.equal(await page.getByRole('button',{name:'Customize view'}).count(),0);
+ assert.equal(await page.getByRole('button',{name:'Restore defaults'}).count(),0);
+ results.push('motion-enabled Studio: local GSAP and Mo.js loaded, fixed Overview has no customizer');
  await browser.close();
  assert.deepEqual(errors,[]);
  console.log(results.join('\n'));

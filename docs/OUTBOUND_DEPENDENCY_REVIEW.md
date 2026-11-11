@@ -6,7 +6,7 @@ This is a source-level inventory of selected paths, **not** a comprehensive depe
 
 | Surface | Current source behavior | Disclosure / unresolved risk |
 | --- | --- | --- |
-| Telegram | WzGram handles incoming updates; aiogram sends Bot API calls; widgets can use a configured server or beta endpoint. | Shared widget-query polling may conflict with another incoming receiver. Do not add another consumer; the conflict remains unresolved. |
+| Telegram | WzGram handles incoming updates; aiogram sends Bot API calls; retained dashboard/detail snapshots can use a configured server or beta endpoint. | No widget-query poller remains. Snapshot delivery/client compatibility still depends on the configured Telegram endpoint and client; no live production delivery is implied. |
 | MongoDB | Bot/platform records rely on configured MongoDB and multiple repositories. | Not verified with a real multi-worker cluster, failover, permissions or backup recovery. |
 | Inline utilities | `core/inline.py` sends URL queries to is.gd and TinyURL automatically; QR images use `api.qrserver.com`, with input in the URL. | Input can contain sensitive data; typing an inline query can disclose it to providers without a separate confirmation. This review does **not** change inline behavior. Avoid sensitive input; design explicit opt-in and a local/Telegram-hosted QR flow. |
 | `/short` and `/upload` | Shortening passes the full URL to external shorteners. Uploading sends file bytes to freeimage.host when configured, otherwise catbox.moe, to create a public URL. | Provider retention, access and terms are unverified. Do not send secrets; a public upload can be accessible to anyone holding its link. |

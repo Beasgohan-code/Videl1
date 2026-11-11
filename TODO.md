@@ -7,11 +7,15 @@
 
 ## Completed Milestones
 
-### Telegram Bot API 10.4 — Shared Calculator Widget
-- [x] Removed the legacy `/game` arcade and its game-only plugin, assets, environment flags, Python tests and browser harness; replaced it with `/widget`, a self-contained calculator that evaluates locally as the user types.
-- [x] Added the Bot API 10.4 beta integration and, per the follow-up request, set `WIDGET_API_BETA=True` by default in code and the sample config (explicit `False` disables it): create/reuse a shared widget, validate calculator expressions server-side without `eval`, answer widget queries and publish shared state; poll only widget-query updates and refuse to start when a webhook exists.
-- [x] Verified `python -m pytest tests -q` (**891 passed**) plus `npm test` in `VidelBot/tests/ui` (Telegram login and calculator widget DOM tests passed); no live Telegram API delivery was attempted.
-- [ ] Validate on an isolated Telegram test bot and compatible clients before relying on the default-on setting; the beta API's live delivery and client rendering are not verified by local tests.
+### Retired by request — `/widget` calculator and query listener
+- [x] Removed the shared calculator command, HTML, arithmetic/query handler, saved-ID reads, widget-query polling, and calculator-only Python/browser tests. Retained only the separate outgoing admin `/dashboard` and private `/info`/`/sys` snapshots.
+- [x] `WIDGET_API_BETA=True` and `WIDGET_API_MODE` remain for those outgoing snapshots; no second Bot API update receiver is started. Existing calculator IDs are not destructively erased.
+- [x] Targeted retirement/snapshot/webapp tests: **85 passed**; full Python suite: **1,049 passed, 97 warnings**; retained UI DOM suite passed; `frontend-platform` typecheck passed (Astro 0 errors/warnings, Studio `tsc --noEmit` passed). Python compile, bundle JSON, served JavaScript syntax and `git diff --check` passed.
+- [ ] Full Chromium visual run remains blocked by the existing test fixture's import of missing `webapp.public_site` (`ModuleNotFoundError`) before server startup. The stale customizer assertions were replaced with absence checks; `node --check` is run separately.
+
+### Retired by request — Studio Everyday Tools
+- [x] Removed its Studio navigation item, Overview shortcut, renderer, JS/CSS assets and dedicated tests; the fixed API-backed Overview and other Studios remain.
+- [x] Removed the stale customizer expectation from the isolated browser test and the retired `dashboard_layout` category from the companion Studio template library.
 
 ### Phase 1 — Repository, Dependency & API Audit
 - [x] Audited `VidelBot/` runtime, MongoDB schemas, 21 existing test suites, and deploy manifests.
@@ -221,7 +225,7 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 
 ### 17. Webhook and Event Monitor
 - [ ] Show supported outbound/integration webhook configuration status, endpoint health, observed successful/failed deliveries, errors, retries and recent filterable events, with diagnostics and secret-safe storage/logging.
-- [ ] Preserve the authoritative Telegram update architecture; the only narrow exception is the explicitly enabled Bot API 10.4 widget-query-only listener, which refuses to start beside a webhook. Do not add another general-purpose incoming update receiver.
+- [x] Preserve WzGram as the authoritative Telegram update receiver; no separate Bot API widget-query or general-purpose update poller is enabled.
 
 ### 18. Automation Studio
 - [ ] Build a supported Trigger → Conditions → Actions → Result editor with trigger/condition/action selection, preview, validation, enable/disable, execution history, retry, errors, duplicate and version history.
@@ -233,7 +237,7 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 - [ ] Enable only implemented reports, notifications, backups, approved cleanup and health checks; ensure scheduling does not cause unsafe automatic deletion.
 
 ### 20. Template Library and Marketplace
-- [ ] Support official and user templates for bot/File Store configuration, command metadata, permission presets, automations, welcome messages, dashboard layouts and notification preferences.
+- [ ] Support official and user templates for bot/File Store configuration, command metadata, permission presets, automations, welcome messages and notification preferences.
 - [ ] Add create/edit/duplicate, preview, safe import/export, version history and compatibility checks. Optional community marketplace: submission, review/moderation, publisher, version, installation preview and reporting.
 - [ ] Templates must not silently execute arbitrary code or include credentials/private data.
 
@@ -253,9 +257,9 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 - [ ] Support owned source/destination selection, compatibility, comparison, conflict detection, selective migration, preview, confirmation, progress, report and rollback where safe.
 - [ ] Migrate only supported command metadata, feature/File Store settings, templates, notification preferences and automation workflows; never migrate credentials or private user data.
 
-### 25. Custom Dashboard Builder
-- [ ] Support bot health, fleet, recent activity, File Store usage, storage trends, active tasks, command usage, integration health, failed operations, scheduled jobs and notifications using actual authorized data.
-- [ ] Add/remove/reorder widgets, resize where supported, save/reset layouts and multiple presets; persist separately per user and workspace.
+### 25. Customizable Overview Widgets (retired)
+- [x] Removed the user-facing widget catalog/customizer, layout API and persistence, plus the official layout template. The Overview remains a fixed API-backed summary page.
+- [x] Legacy Mongo layout rows are left untouched and ignored. General bundles ignore any older extra `dashboard_layout` field.
 
 ### 26. Notification and Activity Center
 - [ ] Provide supported bot/connection/task/job/File Store/storage/integration/permission/configuration/clone/automation/report notifications with read/unread, filters, search, preferences and per-bot/workspace views.
@@ -265,7 +269,7 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 - [ ] Search authorized bots, files, commands, templates, tasks, integrations, settings and activity; add keyboard navigation, recent searches/resources, suggestions, quick navigation and permitted actions.
 
 ### 28. Export, Import and Backup
-- [ ] Safely export/import supported bot configuration, command metadata, templates, File Store settings, automations and dashboard layouts with preview, validation, compatibility, conflict detection, confirmation and history.
+- [ ] Safely export/import supported bot configuration, command metadata, templates, File Store settings and automations with preview, validation, compatibility, conflict detection, confirmation and history.
 - [ ] Implement tested configuration backup/restore; never export tokens, credentials or private user information. Current bundle import is incomplete.
 
 ### 29. Platform Admin Center

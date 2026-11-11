@@ -796,6 +796,3 @@ table.data-table {
 @media(max-width:360px) { .entry-intro,.auth-card.entry-card { padding:20px; }.entry-intro h1 { font-size:34px; }.entry-top { font-size:9px; } }
 
 """
-
-from pathlib import Path
-STYLES_CSS += "\n" + Path(__file__).with_name("studio_tools.css").read_text(encoding="utf-8")

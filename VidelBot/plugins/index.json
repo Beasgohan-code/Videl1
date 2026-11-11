@@ -49,13 +49,6 @@
       "author": "Videl",
       "description": "Private group-admin case notes without automatic enforcement",
       "commands": ["modcase"]
-    },
-    {
-      "name": "game",
-      "version": "1.0.0",
-      "author": "Videl",
-      "description": "Single-player chat arcade with optional beta widgets",
-      "commands": ["game"]
     }
   ]
 }

@@ -44,22 +44,7 @@ TEMPLATE_CATEGORIES = (
     "permission_presets",
     "automation_workflow",
     "welcome_message",
-    "dashboard_layout",
     "notification_prefs",
-)
-
-DASHBOARD_WIDGETS_CATALOG = (
-    {"id": "bot_fleet", "title": "Bot Fleet Summary", "size": "md"},
-    {"id": "bot_health", "title": "Bot Health & Alerts", "size": "md"},
-    {"id": "filestore_usage", "title": "File Store Usage", "size": "md"},
-    {"id": "storage_trends", "title": "Storage & Transfer Trends", "size": "lg"},
-    {"id": "active_tasks", "title": "Active Download & Studio Tasks", "size": "lg"},
-    {"id": "recent_activity", "title": "Recent Workspace Activity", "size": "md"},
-    {"id": "command_usage", "title": "Command Inventory", "size": "sm"},
-    {"id": "integration_health", "title": "Cloud & Webhook Integrations", "size": "sm"},
-    {"id": "failed_ops", "title": "Failed Operations Watch", "size": "sm"},
-    {"id": "scheduled_jobs", "title": "Upcoming Scheduled Tasks", "size": "md"},
-    {"id": "notifications", "title": "Unread Notifications", "size": "md"},
 )
 
 OFFICIAL_TEMPLATES: list[dict[str, Any]] = [
@@ -103,18 +88,6 @@ OFFICIAL_TEMPLATES: list[dict[str, Any]] = [
             "trigger": "download_completed",
             "conditions": [{"field": "size_mb", "op": ">=", "value": 10}],
             "actions": [{"type": "create_notification", "title": "Large download finished"}],
-        },
-    },
-    {
-        "template_id": "tpl_off_exec_layout",
-        "name": "Operations Command Deck Layout",
-        "category": "dashboard_layout",
-        "official": True,
-        "publisher": "Videl Official",
-        "version": "1.0.0",
-        "description": "Prioritizes Bot Health, Active Tasks, Failed Operations, and Scheduled Jobs.",
-        "payload": {
-            "widgets": ["bot_health", "active_tasks", "failed_ops", "scheduled_jobs", "bot_fleet", "notifications"],
         },
     },
 ]
@@ -679,8 +652,6 @@ async def export_workspace_bundle(workspace_id: str, user_id: int) -> dict[str, 
     autos = await db_models.automations_col().find({"workspace_id": workspace_id}).to_list(length=100)
     for a in autos:
         a.pop("_id", None)
-    dash = await get_dashboard_layout(user_id, workspace_id)
-
     envelope = {
         "format": BUNDLE_FORMAT,
         "exported_at": db_models.utcnow_iso(),
@@ -689,7 +660,6 @@ async def export_workspace_bundle(workspace_id: str, user_id: int) -> dict[str, 
         "bots": clean_bots,
         "templates": db_models.strip_sensitive_fields(tpls),
         "automations": db_models.strip_sensitive_fields(autos),
-        "dashboard_layout": dash,
     }
     raw_bytes = json.dumps(envelope, sort_keys=True).encode("utf-8")
     envelope["checksum_sha256"] = hashlib.sha256(raw_bytes).hexdigest()
@@ -740,9 +710,6 @@ async def import_workspace_bundle(
             a_copy = dict(a)
             a_copy.pop("workflow_id", None)
             await upsert_automation_workflow(workspace_id, actor_id, a_copy)
-    if isinstance(clean.get("dashboard_layout"), dict) and clean["dashboard_layout"].get("widgets"):
-        await save_dashboard_layout(actor_id, workspace_id, clean["dashboard_layout"]["widgets"])
-
     await models_db.log_audit(actor_id, "workspace_bundle_import", target=workspace_id)
     return {
         "preview": False,
@@ -752,42 +719,7 @@ async def import_workspace_bundle(
     }
 
 
-# ─────────────────────────── 7. Custom Dashboard Builder & Global Search (Sections 25 & 27) ───────────────────────────
-DEFAULT_WIDGET_ORDER = ["bot_fleet", "filestore_usage", "active_tasks", "bot_health", "storage_trends", "notifications"]
-
-
-async def get_dashboard_layout(user_id: int, workspace_id: str) -> dict[str, Any]:
-    doc = await db_models.dashboards_col().find_one({"user_id": int(user_id), "workspace_id": workspace_id})
-    widgets = doc.get("widgets") if (doc and isinstance(doc.get("widgets"), list)) else list(DEFAULT_WIDGET_ORDER)
-    return {
-        "workspace_id": workspace_id,
-        "widgets": widgets,
-        "catalog": list(DASHBOARD_WIDGETS_CATALOG),
-    }
-
-
-async def save_dashboard_layout(
-    user_id: int, workspace_id: str, widgets: list[str], *, preset_name: str = "Custom"
-) -> dict[str, Any]:
-    allowed = {w["id"] for w in DASHBOARD_WIDGETS_CATALOG}
-    clean_widgets = [w for w in widgets if w in allowed]
-    if not clean_widgets:
-        clean_widgets = list(DEFAULT_WIDGET_ORDER)
-    doc = {
-        "user_id": int(user_id),
-        "workspace_id": workspace_id,
-        "preset_name": str(preset_name)[:40],
-        "widgets": clean_widgets,
-        "updated_at": db_models.utcnow_iso(),
-    }
-    await db_models.dashboards_col().update_one(
-        {"user_id": int(user_id), "workspace_id": workspace_id},
-        {"$set": doc},
-        upsert=True,
-    )
-    return {"workspace_id": workspace_id, "widgets": clean_widgets, "catalog": list(DASHBOARD_WIDGETS_CATALOG)}
-
-
+# ─────────────────────────── 7. Global Workspace Search (Section 27) ───────────────────────────
 async def global_workspace_search(workspace_id: str, user_id: int, query: str) -> dict[str, Any]:
     """Permission-aware global search across bots, files, commands, templates, tasks, and notifications."""
     q = (query or "").strip().lower()

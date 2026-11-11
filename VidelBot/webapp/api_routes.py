@@ -1046,21 +1046,6 @@ async def api_bundle_backup(request: web.Request) -> web.Response:
 
 
 @_api
-async def api_dashboard_layout(request: web.Request) -> web.Response:
-    ctx = await auth.authenticate_request(request)
-    ws_id = request.match_info["ws_id"]
-    await auth.require_workspace_access(ctx, ws_id)
-    if request.method == "GET":
-        return _ok(await services_ops.get_dashboard_layout(ctx.user_id, ws_id))
-    body = await _json_body(request)
-    if body.get("reset"):
-        return _ok(await services_ops.save_dashboard_layout(ctx.user_id, ws_id, list(services_ops.DEFAULT_WIDGET_ORDER)))
-    return _ok(await services_ops.save_dashboard_layout(
-        ctx.user_id, ws_id, list(body.get("widgets") or []), preset_name=str(body.get("preset_name") or "Custom")
-    ))
-
-
-@_api
 async def api_notifications_and_activity(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
@@ -1249,7 +1234,6 @@ def mount_webapp(app: web.Application) -> None:
     r.add_route("*", "/api/v1/workspaces/{ws_id}/integrations", api_integrations)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/api-keys", api_developer_keys)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bundle", api_bundle_backup)
-    r.add_route("*", "/api/v1/workspaces/{ws_id}/dashboard-layout", api_dashboard_layout)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/notifications", api_notifications_and_activity)
     r.add_get("/api/v1/workspaces/{ws_id}/search", api_global_search)
 

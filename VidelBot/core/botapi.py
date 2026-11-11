@@ -5,10 +5,10 @@ Why both?
   • WzGram receives **all normal updates** on MTProto layer 232
     with pooled multi-DC transfers, user sessions, native RichMessage, Checklists,
     ManagedBotUpdated, MessageGenerationStopped, and EphemeralMessageParameters.
-  • aiogram serves as an optional **outgoing Bot API 10.3 HTTP client** for Videl's
+  • aiogram serves as an optional **outgoing Bot API HTTP client** for Videl's
     primary token (shared message IDs with WzGram), while WzGram provides full
-    native MTProto equivalents for clone workers and standalone deployments. A
-    separate opt-in Bot API 10.4 beta listener handles widget queries only.
+    native MTProto equivalents for clone workers and standalone deployments.
+    There is no Bot API update poller; WzGram remains the normal update receiver.
 """
 import logging
 import time

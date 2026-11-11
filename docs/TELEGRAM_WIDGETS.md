@@ -1,25 +1,15 @@
-# Telegram Bot API 10.4 HTML Widgets — Videl Calculator
+# Telegram snapshot widgets
 
-## What changed
+## Current code surface
 
-The former `/game` arcade and its bespoke game catalog were removed. `/widget` now sends one self-contained HTML calculator. The widget computes arithmetic locally while buttons are pressed; `=` sends a short query to the bot. Videl parses the expression using a bounded arithmetic grammar, returns the result with `answerWidgetQuery`, and updates the shared widget's `public_data` with `editSharedWidgetData`. Subsequent `/widget` commands send the persisted shared object via `sendSharedWidget`. Compatible clients watching shared public data can render the latest committed result across copies.
+The bot retains outgoing-only Telegram HTML snapshot sends for its admin `/dashboard` statistics and supported private `/info` and `/sys` detail replies. These use the shared safe HTTP sender under `VidelBot/plugins/widget/`, are guarded by the primary-bot identity check and Bot API configuration, and have non-widget reply/chart fallbacks. Snapshot content is not live; users request a fresh snapshot by invoking the existing command again.
 
-## Runtime shape and boundaries
+There is no interactive `/widget` calculator, shared-calculator ID, widget-query handler, `getUpdates` poller, or shared-state mutation path. WzGram remains the incoming update receiver. `WIDGET_API_BETA` and `WIDGET_API_MODE` remain only for the retained outgoing dashboard/detail sends; they do not enable a separate receiver.
 
-- Bot API 10.4 widget methods and update types are not included in the repository's pinned aiogram 3.31 / Bot API 10.3 models. The plugin makes explicit HTTP calls to the beta API (or to a configured endpoint when deliberately selected).
-- `WIDGET_API_BETA` now defaults to `True` as requested and can be explicitly set to `False`. The query listener requests only `widget_query` and `shared_widget_query`, checks `getWebhookInfo`, and refuses to start if a webhook is registered. Do not use it if another Bot API poller consumes that token's update stream. The public Bot API page/changelog still lists 10.3, while Telegram's official widget-sandbox spec maps these methods to 10.4 and says it checked them against the beta endpoint on 2026-10-28; live deployment remains unverified.
-- WzGram remains the primary receiver for normal commands/callbacks. The extra receiver is restricted to the widget query types, not a general aiogram dispatcher.
-- The widget has no network access, no external assets or libraries, and no `<input>`/form controls. HTML is checked against 32 KiB raw and 4 KiB zlib-compressed limits. Query data is kept well below Telegram's 64-byte limit; state/results are bounded to 1024 bytes. The beta spec documents five requests per five seconds per user/bot and at most one shared-object edit per second, so game actions should primarily run locally and sync sparingly.
-- Telegram client rendering and API support are beta/client-version dependent. Older or incompatible clients may show only the caption or an unsupported-media placeholder. Local arithmetic and shared-state delivery are distinct: only a compatible widget client can submit a query or watch live shared state.
-- Calculator input accepts numbers, parentheses, unary `+`/`-`, and binary `+`, `-`, `*`, `/`; code execution, exponentiation, oversized expressions, deep syntax, divide-by-zero and out-of-range results are rejected.
+The three retired surfaces and compatibility boundaries are documented in [Widget Surfaces Removal](WIDGET_SURFACES_REMOVAL.md). Existing calculator IDs and customized dashboard-layout records, if present in a deployment database, are left untouched but are no longer read. Old workspace bundles may contain an additional `dashboard_layout` field, which the current importer ignores.
 
-## Verification
+## Runtime constraints
 
-Automated coverage checks expression safety, widget size, sender identity and shared-object reuse, query answer/update order, invalid payload rejection, webhook refusal, local calculator behavior, and simulated public-state refresh. It does not validate Telegram's live beta server or real mobile/desktop clients. Those need a separately configured test bot before production rollout.
+Snapshot requests depend on the configured Bot API endpoint accepting the outgoing widget method. Local unit/DOM tests do not prove live Telegram API availability, supported-client rendering, or production configuration. The project does not start a second update consumer for widgets. Sensitive data handling, private-chat guards, role checks, and normal fallback behavior are retained for the existing dashboard/detail handlers.
 
-## Sources
-
-- [Telegram Bot API](https://core.telegram.org/bots/api) and [Bot API changelog](https://core.telegram.org/bots/api-changelog)
-- Telegram's [widget sandbox format](https://github.com/TelegramMessenger/widget-sandbox/blob/main/docs/tgw-format.md), especially the Bot API 10.4 mapping, widget query and public state behavior, size limits, and method names
-- Telegram's [widget SDK v1](https://github.com/TelegramMessenger/widget-sandbox/blob/main/docs/sdk-v1.md), particularly `TelegramWidget.request`, `watchPublicData`, and `publicDataChanged`
-- Telegram's [widget runtime profile](https://github.com/TelegramMessenger/widget-sandbox/blob/main/docs/widget-runtime-profile.md), which defines the no-network mini-HTML runtime
+See `VidelBot/plugins/widget/README.md` for operator setup, supported commands and local test commands. The supporting [Telegram widget runtime notes](TELEGRAM_WIDGET_RUNTIME.md) explain local protocol tooling; they are not evidence that removed query/shared-state features are deployed.

@@ -362,10 +362,6 @@ def notifications_col():
     return col("saas_notifications")
 
 
-def dashboards_col():
-    return col("saas_dashboards")
-
-
 def user_prefs_col():
     return col("saas_user_prefs")
 
@@ -406,7 +402,6 @@ async def ensure_saas_indexes() -> None:
         (api_keys_col(), "key_id", {"unique": True}),
         (api_keys_col(), "key_hash", {"unique": True}),
         (notifications_col(), [("workspace_id", 1), ("created_ts", -1)], {}),
-        (dashboards_col(), [("user_id", 1), ("workspace_id", 1)], {"unique": True}),
         (user_prefs_col(), "user_id", {"unique": True}),
         (backups_meta_col(), "backup_id", {"unique": True}),
     ]

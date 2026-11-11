@@ -1,13 +1,18 @@
 # Isolated browser visual checks
 
 These tests use a deliberately **synthetic, read-only** server on port 8082.
-It imports the real public and Studio templates, styles, scripts and local vendor
-assets, but does not use MongoDB, Telegram, any live account or production APIs.
-It returns explicit sample data for the overview, bot directory, commands, configuration, fleet and File Store and refuses all mutations;
-other Studio data endpoints return 503. The banner is part of the fixture.
-Never point the test at a production service.
+The fixture is intended to return real Studio shell assets and explicit sample data
+for the overview, bot directory, commands, configuration, fleet and File Store;
+it does not use MongoDB, Telegram, a live account or production APIs and refuses
+mutations. Never point the test at a production service.
 
-In a separate terminal, from the repository root:
+**Current branch blocker:** `design_preview.py` imports `webapp.public_site`, which
+is absent from this checkout. The preview therefore exits with `ModuleNotFoundError`
+before starting; the Chromium suite is not runnable until that fixture is updated.
+The customizer checks were changed to assert that the retired controls are absent,
+but those browser assertions have not been executed here.
+
+Once the fixture import is repaired, start it in a separate terminal from the repository root:
 
 ```sh
 python VidelBot/tests/browser/design_preview.py
@@ -22,7 +27,7 @@ VIDEL_BROWSER_EXECUTABLE=/path/to/chromium npm test
 ```
 
 The test runs actual Chromium at 1440×900, 768×1024 and 390×844, takes screenshots under
-`docs/screenshots/`, checks overflow at those three widths, the widget customizer, bot directory search and layout, command metadata workflow, configuration editor, fleet selection, File Store sample/pagination, guided setup and token-state clearing, failure states, menu semantics, palette keyboard navigation, browser history, persisted groups, mobile drawer/Escape focus return, reduced-motion asset fallback and a local
+`docs/screenshots/`, checks overflow at those three widths, the fixed Overview and absence of the retired customizer, bot directory search and layout, command metadata workflow, configuration editor, fleet selection, File Store sample/pagination, guided setup and token-state clearing, failure states, menu semantics, palette keyboard navigation, browser history, persisted groups, mobile drawer/Escape focus return, reduced-motion asset fallback and a local
 motion-enabled desktop path. For a serverless Chromium binary, a test-only npm
 install of `@sparticuz/chromium@143.0.4` can provide an executable; system
 shared libraries are still required. Tests use `--no-sandbox` and should only
