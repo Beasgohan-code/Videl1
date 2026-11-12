@@ -26,7 +26,7 @@ type Props={session:Session;onError:(error:unknown)=>boolean};
 export default function LegacyCloneDirectory({session,onError}:Props){
   const [page,setPage]=useState<Page|null>(null),[cursor,setCursor]=useState<string|null>(null),[history,setHistory]=useState<(string|null)[]>([]);
   const [error,setError]=useState(''),[loading,setLoading]=useState(false);
-  const busy=useRef(false),mounted=useRef(false);
+  const busy=useRef(false),mounted=useRef(false),refresh=useRef<HTMLButtonElement|null>(null),pages=useRef<HTMLDivElement|null>(null);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false}},[]);
   async function load(after:string|null,kind:'start'|'next'|'previous'){
     if(busy.current)return;busy.current=true;setLoading(true);setError('');
@@ -38,13 +38,13 @@ export default function LegacyCloneDirectory({session,onError}:Props){
       setPage(result);setCursor(after);
       setHistory(kind==='start'?[]:kind==='next'?[...history,cursor]:history.slice(0,-1));
     }catch(e){if(mounted.current&&!onError(e)){
-      if(e instanceof ApiError&&e.status===403){setPage(null);setHistory([]);setCursor(null);setError('Sign in with your own Telegram link to see your clones.')}
+      if(e instanceof ApiError&&e.status===403){if(pages.current?.contains(document.activeElement))refresh.current?.focus();setPage(null);setHistory([]);setCursor(null);setError('Sign in with your own Telegram link to see your clones.')}
       else setError('Could not load this page. The backend may be unavailable or not yet updated; try again.');
     }}finally{busy.current=false;if(mounted.current)setLoading(false)}
   }
   return <div className="studio-note"><div><strong>Telegram /clone registrations</strong><p>These belong to your Telegram account, not this workspace. This read-only list does not import or change bots. Sign in with your own Telegram link. Registrations can change between pages; refresh to start again.</p>
-    <button className="secondary" type="button" disabled={loading} onClick={()=>load(null,'start')}>{loading?'Loading…':page?'Refresh my Telegram clones':'Show my Telegram clones'}</button>
+    <button ref={refresh} className="secondary" type="button" aria-disabled={loading} style={{opacity:loading?0.55:1}} onClick={()=>load(null,'start')}>{loading?'Loading…':page?'Refresh my Telegram clones':'Show my Telegram clones'}</button>
     <div role="status" aria-live="polite">{error&&<p>{error}</p>}{page&&(page.bots.length?<><p>Page {history.length+1} · {page.bots.length} registrations</p><ul>{page.bots.map(b=><li key={b.telegram_bot_id}>{b.username?'@'+b.username:'Bot '+b.telegram_bot_id} — {b.enabled?'enabled in registration':'disabled in registration'}</li>)}</ul>{page.legacy&&page.truncated&&<p>Showing the first 100 registrations. More pages require an updated backend.</p>}</>:<p>{history.length?'No registrations remain on this page. Refresh to update the list.':'No non-deleted registrations found for this account on this backend. They may be on another database.'}</p>)}</div>
-    {page&&!page.legacy&&<div className="form-actions">{history.length>0&&<button className="secondary" type="button" disabled={loading} onClick={()=>load(history[history.length-1],'previous')}>Previous page</button>}{page.next&&<button className="secondary" type="button" disabled={loading} onClick={()=>load(page.next,'next')}>Next page</button>}</div>}
+    {page&&!page.legacy&&<div ref={pages} className="form-actions" role="group" aria-label="Telegram clone pages"><button className="secondary" type="button" aria-disabled={loading||!history.length} style={{opacity:loading||!history.length?0.55:1}} onClick={()=>{if(!loading&&history.length)load(history[history.length-1],'previous')}}>Previous page</button><button className="secondary" type="button" aria-disabled={loading||!page.next} style={{opacity:loading||!page.next?0.55:1}} onClick={()=>{if(!loading&&page.next)load(page.next,'next')}}>Next page</button></div>}
   </div></div>;
 }

@@ -427,6 +427,10 @@ CLIENT_JS = r"""
           <p>These belong to your Telegram account, not this workspace. This read-only list does not import or change bots. Sign in using your own Telegram link. Registrations can change between pages; refresh to start again.</p>
           <button class="btn" id="legacy-bots-load" type="button">Show my Telegram clones</button>
           <div id="legacy-bots-result" role="status"></div>
+          <div id="legacy-bots-pages" role="group" aria-label="Telegram clone pages" hidden>
+            <button class="btn" type="button" data-page="previous">Previous page</button>
+            <button class="btn" type="button" data-page="next">Next page</button>
+          </div>
         </div>
       `;
 
@@ -514,7 +518,12 @@ CLIENT_JS = r"""
       };
 
       {
-        const button = $("legacy-bots-load"), result = $("legacy-bots-result");
+        const button = $("legacy-bots-load"), result = $("legacy-bots-result"), pages = $("legacy-bots-pages");
+        const next = pages.querySelector('[data-page="next"]'), previous = pages.querySelector('[data-page="previous"]');
+        const available = (element, enabled) => {
+          element.setAttribute("aria-disabled", enabled ? "false" : "true");
+          element.style.opacity = enabled ? "" : "0.55";
+        };
         let page = null, current = null, history = [], loading = false, error = "";
         const validId = (id) => typeof id === "string" && /^[1-9][0-9]{0,18}$/.test(id) && (id.length < 19 || id <= "9223372036854775807");
         const compare = (a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
@@ -531,17 +540,18 @@ CLIENT_JS = r"""
           return {bots: data.bots, next: data.next_after, legacy: false, truncated: false};
         };
         const draw = () => {
-          button.disabled = loading;
+          available(button, !loading);
           button.textContent = loading ? "Loading…" : page ? "Refresh my Telegram clones" : "Show my Telegram clones";
           let content = error ? `<p>${esc(error)}</p>` : "";
           if (page) {
             content += page.bots.length ? `<p>Page ${history.length + 1} · ${page.bots.length} registrations</p><ul>${page.bots.map(b => `<li>${esc(b.username ? "@" + b.username : "Bot " + b.telegram_bot_id)} — ${b.enabled ? "enabled in registration" : "disabled in registration"}</li>`).join("")}</ul>${page.legacy && page.truncated ? "<p>Showing the first 100 registrations. More pages require an updated backend.</p>" : ""}` : `<p>${history.length ? "No registrations remain on this page. Refresh to update the list." : "No non-deleted registrations found for this account on this backend. They may be on another database."}</p>`;
-            if (!page.legacy) content += `${history.length ? `<button class="btn" type="button" data-page="previous" ${loading ? "disabled" : ""}>Previous page</button> ` : ""}${page.next ? `<button class="btn" type="button" data-page="next" ${loading ? "disabled" : ""}>Next page</button>` : ""}`;
           }
           result.innerHTML = content;
-          const next = result.querySelector('[data-page="next"]'), previous = result.querySelector('[data-page="previous"]');
-          if (next) next.onclick = () => load(page.next, "next");
-          if (previous) previous.onclick = () => load(history[history.length - 1], "previous");
+          const showPages = !!page && !page.legacy;
+          if (!showPages && pages.contains(document.activeElement)) button.focus();
+          pages.hidden = !showPages;
+          available(previous, showPages && !loading && history.length > 0);
+          available(next, showPages && !loading && !!page.next);
         };
         const load = async (after, kind) => {
           if (loading) return;
@@ -559,6 +569,8 @@ CLIENT_JS = r"""
           } finally { loading = false; draw(); }
         };
         button.onclick = () => load(null, "start");
+        next.onclick = () => { if (!loading && page && page.next) load(page.next, "next"); };
+        previous.onclick = () => { if (!loading && history.length) load(history[history.length - 1], "previous"); };
       }
       $("btn-add-bot").onclick = () => navigate("bot_create");
       $("btn-view-grid").onclick = () => { S.botViewMode = "grid"; navigate("bots", true); };

@@ -3,20 +3,25 @@ const {chromium}=require('playwright-core'),assert=require('node:assert/strict')
 (async()=>{
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});
  try {for(const width of [320,390,1440]){
-  const page=await browser.newPage({viewport:{width,height:900},reducedMotion:'reduce'});let reads=[],mode='pages';
-  await page.route('**/api/v1/account/legacy-bots**',route=>{
+  const page=await browser.newPage({viewport:{width,height:900},reducedMotion:'reduce'});let reads=[],mode='pages',releaseDelay,startedDelay;const gate=new Promise(r=>releaseDelay=r),seenDelay=new Promise(r=>startedDelay=r);
+  await page.route('**/api/v1/account/legacy-bots**',async route=>{
    const url=new URL(route.request().url());reads.push(url.pathname+url.search);
    const fulfill=(body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
    if(mode==='deny')return fulfill({error:'denied'},403);
    if(url.pathname.endsWith('/legacy-bots'))return fulfill({bots:[{telegram_bot_id:'1',username:'<sample>',enabled:true}],truncated:true});
-   if(mode==='old')return fulfill({},404);if(mode==='malformed')return fulfill({bots:[],pagination:'id-v1',next_after:'7'});if(mode==='failure')return fulfill({},500);
+   if(mode==='old')return fulfill({},404);if(mode==='malformed')return fulfill({bots:[],pagination:'id-v1',next_after:'7'});if(mode==='failure')return fulfill({},500);if(mode==='delay'){startedDelay();await gate;}
    return fulfill(url.search?{pagination:'id-v1',bots:[{telegram_bot_id:'9223372036854775807',username:'last',enabled:false}],next_after:null}:{pagination:'id-v1',bots:[{telegram_bot_id:'1',username:'<sample>',enabled:true}],next_after:'1'});
   });
   await page.goto((process.env.NEXT_PREVIEW_TEST_URL||'http://localhost:3001/next-preview')+'/bots');await page.getByLabel('One-time key or link').fill('l.valid');await page.getByRole('button',{name:'Continue to workspace'}).click();await page.getByRole('heading',{name:/Your bots/}).waitFor();
   assert.equal(reads.length,0);await page.getByRole('button',{name:'Show my Telegram clones'}).click();await page.getByText('@<sample> — enabled in registration').waitFor();assert.equal(await page.locator('sample').count(),0);
-  await page.getByRole('button',{name:'Next page'}).focus();await page.keyboard.press('Enter');await page.getByText('@last — disabled in registration').waitFor();assert.equal(reads.at(-1),'/api/v1/account/legacy-bots/pages?after=1');
+  assert.equal(await page.getByRole('button',{name:'Previous page'}).getAttribute('aria-disabled'),'true');
+  await page.getByRole('button',{name:'Next page'}).focus();await page.keyboard.press('Enter');await page.getByText('@last — disabled in registration').waitFor();assert.equal(reads.at(-1),'/api/v1/account/legacy-bots/pages?after=1');assert.equal(await page.getByRole('button',{name:'Next page'}).getAttribute('aria-disabled'),'true');assert.equal(await page.getByRole('button',{name:'Next page'}).evaluate(e=>e===document.activeElement),true);const count=reads.length;await page.keyboard.press('Enter');assert.equal(reads.length,count);
   mode='failure';await page.getByRole('button',{name:'Previous page'}).click();await page.getByText('Could not load this page.',{exact:false}).waitFor();assert.equal(await page.getByText('@last — disabled in registration').count(),1);
+  mode='pages';await page.getByRole('button',{name:'Previous page'}).focus();await page.keyboard.press('Enter');await page.getByText('@<sample> — enabled in registration').waitFor();assert.equal(await page.getByRole('button',{name:'Previous page'}).getAttribute('aria-disabled'),'true');assert.equal(await page.getByRole('button',{name:'Previous page'}).evaluate(e=>e===document.activeElement),true);
+  mode='delay';await page.getByRole('button',{name:'Next page'}).focus();await page.keyboard.press('Enter');await seenDelay;await page.getByPlaceholder('Search bot records').focus();releaseDelay();await page.getByText('@last — disabled in registration').waitFor();assert.equal(await page.getByPlaceholder('Search bot records').evaluate(e=>e===document.activeElement),true);
   mode='pages';await page.getByRole('button',{name:'Previous page'}).click();await page.getByText('@<sample> — enabled in registration').waitFor();
+  mode='deny';await page.getByRole('button',{name:'Next page'}).focus();await page.keyboard.press('Enter');await page.getByText('Sign in with your own Telegram link to see your clones.').waitFor();assert.equal(await page.getByRole('button',{name:'Show my Telegram clones'}).evaluate(e=>e===document.activeElement),true);
+  mode='pages';await page.getByRole('button',{name:'Show my Telegram clones'}).click();await page.getByText('@<sample> — enabled in registration').waitFor();
   mode='malformed';await page.getByRole('button',{name:'Refresh my Telegram clones'}).click();await page.getByText('Could not load this page.',{exact:false}).waitFor();
   mode='old';await page.getByRole('button',{name:'Refresh my Telegram clones'}).click();await page.getByText('Showing the first 100 registrations.',{exact:false}).waitFor();assert.equal(await page.getByRole('button',{name:'Next page'}).count(),0);
   mode='deny';await page.getByRole('button',{name:'Refresh my Telegram clones'}).click();await page.getByText('Sign in with your own Telegram link to see your clones.').waitFor();assert.equal(await page.getByText('@<sample> — enabled in registration').count(),0);
