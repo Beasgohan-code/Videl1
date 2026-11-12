@@ -16,18 +16,49 @@ if ((${#missing[@]})); then
     printf 'Ubuntu apt source file is missing or unreadable: %s\n' "$sources" >&2
     exit 1
   fi
-  apt_options=(
-    -o "Dir::Etc::sourcelist=$sources"
+  apt_common=(
     -o Dir::Etc::sourceparts=-
     -o Acquire::Retries=1
     -o Acquire::http::Timeout=30
     -o Acquire::https::Timeout=30
   )
-  # Explicit command limits and error-on-any-source-failure make a network or
-  # repository outage visible rather than silently using stale package lists.
-  timeout --signal=TERM --kill-after=10s 240s sudo apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update
-  timeout --signal=TERM --kill-after=10s 240s sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install -y --no-install-recommends \
-    ffmpeg mediainfo mkvtoolnix p7zip-full git
+  # Keep retries bounded. If the runner's configured mirror is unavailable,
+  # retry against signed, official Ubuntu 24.04 archives. Never use stale lists.
+  if timeout --signal=TERM --kill-after=10s 120s sudo apt-get \
+      -o "Dir::Etc::sourcelist=$sources" "${apt_common[@]}" -o APT::Update::Error-Mode=any update; then
+    echo "Ubuntu runner package index updated."
+  else
+    rc=$?
+    echo "::warning title=Runner Ubuntu index update failed::apt update exited $rc; retrying the official Ubuntu 24.04 archives."
+    fallback_dir=$(mktemp -d)
+    trap 'rm -f "$fallback_dir/ubuntu.sources"; rmdir "$fallback_dir"' EXIT
+    sources="$fallback_dir/ubuntu.sources"
+    # The Ubuntu archive keyring authenticates Release files as usual. This file
+    # is temporary and never changes system or production apt configuration.
+    printf '%s\n' \
+      'Types: deb' \
+      'URIs: https://archive.ubuntu.com/ubuntu' \
+      'Suites: noble noble-updates noble-backports noble-security' \
+      'Components: main restricted universe multiverse' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' > "$sources"
+    if timeout --signal=TERM --kill-after=10s 120s sudo apt-get \
+        -o "Dir::Etc::sourcelist=$sources" "${apt_common[@]}" -o APT::Update::Error-Mode=any update; then
+      echo "Official Ubuntu package index updated."
+    else
+      rc=$?
+      echo "::error title=Ubuntu package index unavailable::Official archive apt update exited $rc; native checks cannot continue."
+      exit "$rc"
+    fi
+  fi
+  if timeout --signal=TERM --kill-after=10s 240s sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+      -o "Dir::Etc::sourcelist=$sources" "${apt_common[@]}" install -y --no-install-recommends \
+      ffmpeg mediainfo mkvtoolnix p7zip-full git; then
+    echo "Native packages installed."
+  else
+    rc=$?
+    echo "::error title=Native package install failed::apt install exited $rc; the native check is incomplete."
+    exit "$rc"
+  fi
 fi
 
 # Do not let missing tools silently turn real-media tests into skips.

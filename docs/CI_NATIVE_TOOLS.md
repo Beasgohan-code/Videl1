@@ -22,9 +22,16 @@ The **Ubuntu native media & archive tools** job checks `ffmpeg`, `ffprobe`,
 `scripts/ci/install-native-tools.sh` installs the existing Ubuntu packages from
 the image's Ubuntu source file only; unrelated third-party apt feeds are not
 updated. If all are present, it does not contact apt. The image's Ubuntu mirror
-configuration still applies. The update and install commands each have a
-four-minute process timeout; apt network requests have a 30-second timeout and
-one retry. Source errors, missing tools or unusable FFmpeg fail the native job.
+configuration is tried first. If its update fails or times out, the check retries
+with a temporary source file for the official Ubuntu 24.04 archive, verified
+with the existing Ubuntu archive keyring. Each update attempt has a two-minute
+process timeout and the install has a four-minute timeout; apt network requests
+have a 30-second timeout and one retry. Install uses only whichever source passed
+update. The temporary source is removed afterwards and does not change system
+apt configuration. Phase-specific GitHub annotations report exit codes without
+copying repository URLs or apt output into annotations. Source errors on both
+attempts, missing tools or unusable FFmpeg fail the native job. This fallback is
+an attempted recovery, not proof that the original failure was caused by a mirror.
 
 Offline regression tests use temporary fake commands and never invoke real apt
 or sudo: `python -m unittest VidelBot.tests.test_ci_native_tools -v` from the
