@@ -35,6 +35,7 @@ export default function BotStudio({workspace,session,bots,canManage,onReload,onE
     catch(error){if(mounted.current&&!onError(error)){
       const known=error instanceof ApiError&&error.status===400?error.message:'';
       if(known==='A valid ENCRYPTION_KEY is required before storing bot credentials.')setMessage('The backend needs its valid ENCRYPTION_KEY before saving tokens. If tokens already exist, restore the original key; do not replace it blindly.');
+      else if(known==='Unable to encrypt credentials. This request did not save the bot; ask the operator to check the original ENCRYPTION_KEY.')setMessage('The backend could not safely encrypt this token. This request did not save the bot. Ask the operator to check the original ENCRYPTION_KEY; do not replace it blindly.');
       else if(known==='This Telegram bot is already registered in a workspace.'||known==='This bot is already registered in a workspace.')setMessage('This bot is already registered. Check your existing workspace records or ask the workspace owner. This request did not replace an existing record.');
       else if(error instanceof ApiError&&error.status===503&&error.message==='The backend cannot verify safe bot registration. Ask the operator to check database indexes. No record was created by this request.')setMessage(error.message);
       else setMessage((token.trim()?'Could not register the bot. Check credentials and backend availability.':error instanceof Error?error.message:'Could not create the bot.')+' The result may be uncertain; refresh before retrying.');

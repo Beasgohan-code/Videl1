@@ -691,6 +691,37 @@ async def verify_telegram_token_diagnostic(raw_token: str) -> dict[str, Any]:
     }
 
 
+# Legacy File Store callers intentionally retain their existing plaintext
+# fallback. Workspace token writes must never use that fallback.
+_WORKSPACE_ENCRYPTION_ERROR = "A valid ENCRYPTION_KEY is required before storing bot credentials."
+_WORKSPACE_SEAL_ERROR = ("Unable to encrypt credentials. This request did not save the bot; "
+                         "ask the operator to check the original ENCRYPTION_KEY.")
+
+
+def _workspace_token_cipher():
+    # Capture the same process-local Fernet object used by File Store. A later
+    # identity check detects observed changes while Telegram verification awaits.
+    if not security.is_encryption_enabled():
+        raise SaaSValidationError(_WORKSPACE_ENCRYPTION_ERROR)
+    cipher = security._get_fernet()
+    if cipher is None:
+        raise SaaSValidationError(_WORKSPACE_ENCRYPTION_ERROR)
+    return cipher
+
+
+def _seal_workspace_token(token: str, cipher: Any) -> str:
+    """Never persist a plaintext fallback; keep error details and tokens private."""
+    try:
+        if security._get_fernet() is not cipher:
+            raise ValueError("Encryption context changed")
+        encrypted = "enc:" + cipher.encrypt(token.encode("utf-8")).decode("ascii")
+        if security._get_fernet() is not cipher:
+            raise ValueError("Encryption context changed")
+        return encrypted
+    except Exception:
+        raise SaaSValidationError(_WORKSPACE_SEAL_ERROR) from None
+
+
 async def create_or_register_bot(
     workspace_id: str,
     owner_id: int,
@@ -733,8 +764,7 @@ async def create_or_register_bot(
 
     if raw_token:
         # Do not contact Telegram or attempt credential storage without a usable key.
-        if not security.is_encryption_enabled():
-            raise SaaSValidationError("A valid ENCRYPTION_KEY is required before storing bot credentials.")
+        cipher = _workspace_token_cipher()
         diag = await verify_telegram_token_diagnostic(raw_token)
         if not diag["verified_with_telegram"] and not allow_unverified_offline:
             raise SaaSValidationError(diag["diagnostic"])
@@ -747,7 +777,7 @@ async def create_or_register_bot(
             username = diag["username"]
         if diag.get("first_name") and not payload.get("display_name"):
             display_name = diag["first_name"]
-        token_sealed = security.encrypt_token(raw_token)
+        token_sealed = _seal_workspace_token(raw_token, cipher)
         token_masked = diag["token_masked"]
         connected = bool(diag["verified_with_telegram"])
         diag_note = diag["diagnostic"]
@@ -889,14 +919,13 @@ async def update_bot_profile_or_state(
         upd["token_masked"] = ""
         upd["has_credentials"] = False
     if patch.get("rotate_token"):
-        if not security.is_encryption_enabled():
-            raise SaaSValidationError("A valid ENCRYPTION_KEY is required before storing bot credentials.")
+        cipher = _workspace_token_cipher()
         diag = await verify_telegram_token_diagnostic(str(patch["rotate_token"]))
         if not diag["verified_with_telegram"]:
             raise SaaSValidationError("Telegram could not verify the supplied credentials.")
         if int(diag["telegram_bot_id"]) != int(doc.get("telegram_bot_id") or 0):
             raise SaaSValidationError("The replacement token does not belong to this bot.")
-        upd["token_sealed"] = security.encrypt_token(str(patch["rotate_token"]).strip())
+        upd["token_sealed"] = _seal_workspace_token(str(patch["rotate_token"]).strip(), cipher)
         upd["token_masked"] = diag["token_masked"]
         upd["has_credentials"] = True
         upd["connected"] = bool(diag["verified_with_telegram"])
