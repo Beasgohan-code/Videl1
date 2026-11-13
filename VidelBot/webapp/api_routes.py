@@ -401,6 +401,17 @@ async def api_bot_item(request: web.Request) -> web.Response:
 
 
 @_api
+async def api_bot_feature_summary(request: web.Request) -> web.Response:
+    """Selected saved flags only; authorization is workspace and bot scoped."""
+    from webapp.bot_feature_summary import summary
+
+    ctx = await auth.authenticate_request(request, require_csrf=False)
+    ws_id, bot_id = request.match_info["ws_id"], request.match_info["bot_id"]
+    await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
+    return _ok(await summary(ws_id, bot_id))
+
+
+@_api
 async def api_bot_profile(request: web.Request) -> web.Response:
     # A separate endpoint ensures older workers cannot silently ignore the
     # conditional precondition and fall back to an unconditional update.
@@ -1226,6 +1237,7 @@ def mount_webapp(app: web.Application) -> None:
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots", api_bots_collection)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}", api_bot_item)
     r.add_patch("/api/v1/workspaces/{ws_id}/bots/{bot_id}/profile", api_bot_profile)
+    r.add_get("/api/v1/workspaces/{ws_id}/bots/{bot_id}/feature-summary", api_bot_feature_summary)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/config", api_bot_config)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/environments", api_bot_environments)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/commands", api_bot_commands)
