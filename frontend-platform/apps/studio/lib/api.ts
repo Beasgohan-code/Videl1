@@ -1,6 +1,6 @@
 export type Session = {token:string; csrf:string};
 export type Workspace = {workspace_id:string; name:string};
-export type Bot = {bot_id:string; display_name?:string; username?:string; telegram_bot_id?:number; connection_state?:string; archived?:boolean; description?:string; category?:string; tags?:string[]};
+export type Bot = {bot_id:string; display_name?:string; username?:string; telegram_bot_id?:number; connection_state?:string; archived?:boolean; updated_ts?:number; description?:string; category?:string; tags?:string[]};
 export type Identity = {user:{display_name:string; is_platform_admin:boolean; csrf_token?:string; user_id?:number}; workspaces:Workspace[]; catalogs:{workspace_roles:string[]; permission_scopes:string[]}};
 export type WorkspaceDetail = {workspace:{name:string}; my_role:string; my_permissions:Record<string,boolean>};
 export class ApiError extends Error { constructor(message:string,public status:number){super(message)} }
@@ -36,7 +36,7 @@ export function workspaceDetail(value:unknown):WorkspaceDetail {
 }
 export function botList(value:unknown):Bot[] {
   if(!object(value)||!Array.isArray(value.bots))throw new Error('The server returned an invalid bot list.');
-  return value.bots.map(bot=>{if(!object(bot)||typeof bot.bot_id!=='string')throw new Error('The server returned an invalid bot record.');return {bot_id:bot.bot_id,display_name:typeof bot.display_name==='string'?bot.display_name:undefined,username:typeof bot.username==='string'?bot.username:undefined,telegram_bot_id:typeof bot.telegram_bot_id==='number'?bot.telegram_bot_id:undefined,connection_state:typeof bot.connection_state==='string'?bot.connection_state:undefined,archived:bot.archived===true,description:typeof bot.description==='string'?bot.description:undefined,category:typeof bot.category==='string'?bot.category:undefined,tags:Array.isArray(bot.tags)?bot.tags.filter((t):t is string=>typeof t==='string'):[]};});
+  return value.bots.map(bot=>{if(!object(bot)||typeof bot.bot_id!=='string')throw new Error('The server returned an invalid bot record.');return {bot_id:bot.bot_id,display_name:typeof bot.display_name==='string'?bot.display_name:undefined,username:typeof bot.username==='string'?bot.username:undefined,telegram_bot_id:typeof bot.telegram_bot_id==='number'?bot.telegram_bot_id:undefined,connection_state:typeof bot.connection_state==='string'?bot.connection_state:undefined,archived:typeof bot.archived==='boolean'?bot.archived:undefined,updated_ts:typeof bot.updated_ts==='number'&&Number.isFinite(bot.updated_ts)&&bot.updated_ts>=0?bot.updated_ts:undefined,description:typeof bot.description==='string'?bot.description:undefined,category:typeof bot.category==='string'?bot.category:undefined,tags:Array.isArray(bot.tags)?bot.tags.filter((t):t is string=>typeof t==='string'):[]};});
 }
 
 export function createdWorkspaceId(value:unknown):string {

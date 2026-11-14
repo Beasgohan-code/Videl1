@@ -120,3 +120,7 @@ real MongoDB concurrency, Telegram and physical devices are not tested.
 `node next-command-cas.test.cjs` covers conditional command edits, state changes, deletion confirmations, stale snapshots and older/mixed workers in synthetic Chromium. It does not exercise real MongoDB, live Telegram, physical devices or production.
 
 `node next-bot-features.test.cjs` checks the read-only feature summary with intercepted synthetic responses, access presentation, unavailable backends, malformed responses, workspace races and keyboard focus at 320/390/1440px. The mock is not real MongoDB, Telegram, production or a full accessibility test.
+
+`next-bot-lifecycle.test.cjs` uses intercepted responses and the synthetic
+fixture to check reviewed-state delete conflicts, older backend behavior, and
+responsive layout at 320/390/1440px. It does not exercise real Mongo or Telegram.

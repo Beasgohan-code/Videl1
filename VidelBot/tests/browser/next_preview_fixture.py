@@ -98,7 +98,7 @@ async def workspace(request):
 
 
 def bot_records(token, ws):
-    return records[token].setdefault(ws['workspace_id'], [{'bot_id': ws['workspace_id'] + '_bot', 'display_name': ws['name'] + ' bot', 'category': 'Utility', 'tags': ['alpha', 'beta'], 'connection_state': 'disconnected', 'archived': False}])
+    return records[token].setdefault(ws['workspace_id'], [{'bot_id': ws['workspace_id'] + '_bot', 'display_name': ws['name'] + ' bot', 'category': 'Utility', 'tags': ['alpha', 'beta'], 'connection_state': 'disconnected', 'archived': False, 'updated_ts': 1.0}])
 
 
 def authorized(request, *, write=False):
@@ -125,7 +125,7 @@ async def create_bot(request):
     if failure is not None: return failure
     token, ws = context
     data = await request.json()
-    bot = {'bot_id': 'bot_' + secrets.token_hex(4), 'display_name': data.get('display_name', ''), 'description': data.get('description', ''), 'connection_state':'disconnected', 'archived':False}
+    bot = {'bot_id': 'bot_' + secrets.token_hex(4), 'display_name': data.get('display_name', ''), 'description': data.get('description', ''), 'connection_state':'disconnected', 'archived':False, 'updated_ts':1.0}
     bot_records(token, ws).append(bot)
     return web.json_response({'bot': bot}, status=201)
 
@@ -149,6 +149,26 @@ async def bot_item(request):
     return web.json_response({'bot': bot})
 
 
+async def bot_lifecycle(request):
+    context, failure = authorized(request, write=True)
+    if failure is not None: return failure
+    token, ws = context
+    bots = bot_records(token, ws)
+    bot = next((b for b in bots if b['bot_id'] == request.match_info['bot']), None)
+    data = await request.json()
+    if not bot or data.get('expected_updated_ts') != bot.get('updated_ts') or data.get('expected_archived') is not bot.get('archived'):
+        return web.json_response({'error':'The record changed or is no longer available.', 'code':'lifecycle_conflict'}, status=409)
+    if data.get('operation') == 'delete':
+        bots.remove(bot)
+        return web.json_response({'deleted':True})
+    if data.get('operation') not in ('archive', 'unarchive'):
+        return error('Invalid operation', 400)
+    bot['archived'] = data['operation'] == 'archive'
+    bot['connection_state'] = 'archived' if bot['archived'] else 'disconnected'
+    bot['updated_ts'] += 1
+    return web.json_response({'bot':bot})
+
+
 async def bot_profile(request):
     context, failure = authorized(request, write=True)
     if failure is not None: return failure
@@ -162,6 +182,7 @@ async def bot_profile(request):
     if not bot or any((bot.get(k) or ([] if k=='tags' else '')) != expected[k] for k in keys):
         return web.json_response({'error':'The record changed or is no longer available.', 'code':'profile_conflict'}, status=409)
     for field in keys: bot[field] = [t.strip() for t in data[field]] if field=='tags' else data[field].strip()
+    bot['updated_ts'] += 1
     return web.json_response({'bot': bot})
 
 
@@ -292,6 +313,7 @@ app.router.add_post('/api/v1/workspaces/{ws}/bots/verify-token', verify_token)
 app.router.add_post('/api/v1/workspaces/{ws}/bots', create_bot)
 app.router.add_get('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_patch('/api/v1/workspaces/{ws}/bots/{bot}/profile', bot_profile)
+app.router.add_post('/api/v1/workspaces/{ws}/bots/{bot}/lifecycle', bot_lifecycle)
 app.router.add_patch('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_delete('/api/v1/workspaces/{ws}/bots/{bot}', bot_item)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/bots/{bot}/commands', command_collection)

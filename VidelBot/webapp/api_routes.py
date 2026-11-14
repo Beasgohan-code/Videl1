@@ -429,6 +429,25 @@ async def api_bot_profile(request: web.Request) -> web.Response:
 
 
 @_api
+async def api_bot_lifecycle(request: web.Request) -> web.Response:
+    # Separate route: an old worker cannot silently ignore the preconditions.
+    from webapp import bot_lifecycle_cas
+
+    ctx = await auth.authenticate_request(request)
+    ws_id, bot_id = request.match_info["ws_id"], request.match_info["bot_id"]
+    mem = await auth.require_workspace_access(ctx, ws_id, scope="bot_settings")
+    body = await _json_body(request)
+    updated = await bot_lifecycle_cas.change(ws_id, bot_id, body)
+    if updated is None:
+        return web.json_response({"error": "The record changed or is no longer available.",
+                                  "code": "lifecycle_conflict"}, status=409, headers=_security_headers())
+    if body["operation"] == "delete":
+        await models_db.log_audit(ctx.user_id, "bot_delete", target=f"{ws_id}:{bot_id}", detail=updated.get("username", ""))
+        return _ok({"deleted": True})
+    return _ok({"bot": _bot_for_member(services_bots._public_bot_doc(updated), ctx, mem)})
+
+
+@_api
 async def api_fleet(request: web.Request) -> web.Response:
     ctx = await auth.authenticate_request(request)
     ws_id = request.match_info["ws_id"]
@@ -1237,6 +1256,7 @@ def mount_webapp(app: web.Application) -> None:
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots", api_bots_collection)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}", api_bot_item)
     r.add_patch("/api/v1/workspaces/{ws_id}/bots/{bot_id}/profile", api_bot_profile)
+    r.add_post("/api/v1/workspaces/{ws_id}/bots/{bot_id}/lifecycle", api_bot_lifecycle)
     r.add_get("/api/v1/workspaces/{ws_id}/bots/{bot_id}/feature-summary", api_bot_feature_summary)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/config", api_bot_config)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bots/{bot_id}/environments", api_bot_environments)
