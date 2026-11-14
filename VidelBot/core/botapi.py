@@ -1,27 +1,14 @@
 """
-aiogram bridge — Bot API 10.3 next to pyrofork (MTProto layer 220).
+aiogram bridge — Bot API 10.3 next to WzGram (MTProto layer 232).
 
 Why both?
-  • pyrofork receives **all updates** (one consumer per token – running aiogram
-    polling as well would split the updates between the two libraries) and does
-    everything MTProto is great at: 4 GB files, user sessions for the saver,
-    clone workers, raw API.
-  • aiogram is used as an **outgoing Bot API client** for the features that only
-    exist in the newest Bot API and are missing from layer 220:
-      – coloured inline buttons (``style`` = success / danger / primary)
-      – ephemeral messages in groups (visible only to one user)
-      – rich messages (headings, tables, collapsible details)
-      – managed bots (one-tap clone creation, token rotation)
-      – Stars subscription links / cancel, star balance & transactions,
-        Telegram Premium gifts, profile photos, message drafts
-  Message IDs are shared, so a message sent by aiogram can be edited/deleted by
-  pyrofork and vice-versa; callback buttons sent by aiogram arrive through
-  pyrofork's normal handlers.
-
-Every helper here is best-effort: when aiogram is disabled, not installed, or
-Telegram rejects a call, it returns ``None``/``False`` and the caller uses the
-pyrofork path instead. Nothing in this module raises into a handler unless the
-function name says so (``call``).
+  • WzGram receives **all normal updates** on MTProto layer 232
+    with pooled multi-DC transfers, user sessions, native RichMessage, Checklists,
+    ManagedBotUpdated, MessageGenerationStopped, and EphemeralMessageParameters.
+  • aiogram serves as an optional **outgoing Bot API HTTP client** for Videl's
+    primary token (shared message IDs with WzGram), while WzGram provides full
+    native MTProto equivalents for clone workers and standalone deployments.
+    There is no Bot API update poller; WzGram remains the normal update receiver.
 """
 import logging
 import time
@@ -129,7 +116,8 @@ def _failed(e: Exception):
 
 
 async def call(coro_factory):
-    """Run ``coro_factory(bot)`` and return its result. Raises on Telegram errors."""
+    """Run ``coro_factory(bot)`` and return its result. Retries once on short RetryAfter."""
+    import asyncio
     b = bot()
     if b is None:
         raise RuntimeError("aiogram bridge disabled")
@@ -138,6 +126,16 @@ async def call(coro_factory):
         _ok()
         return res
     except Exception as e:
+        retry_after = getattr(e, "retry_after", None)
+        if retry_after is not None and 0 < float(retry_after) <= 5.0:
+            await asyncio.sleep(float(retry_after))
+            try:
+                res = await coro_factory(b)
+                _ok()
+                return res
+            except Exception as e2:
+                _failed(e2)
+                raise
         _failed(e)
         raise
 
@@ -199,9 +197,22 @@ def is_noop(data: str) -> bool:
     return data == "noop" or data.startswith("noop:")
 
 
+def _explicit_button_style(b) -> str | None:
+    """Extract an explicit WzGram ButtonStyle enum value from *b* if set."""
+    if not COLORED_BUTTONS:
+        return None
+    st = getattr(b, "style", None)
+    if st is None:
+        return None
+    val = getattr(st, "name", str(st)).lower()
+    if val in ("primary", "success", "danger"):
+        return val
+    return None
+
+
 def convert_markup(markup):
-    """pyrofork InlineKeyboardMarkup → aiogram InlineKeyboardMarkup with styles.
-    Returns None if a button can't be represented (caller then uses pyrofork)."""
+    """WzGram InlineKeyboardMarkup → aiogram InlineKeyboardMarkup with styles.
+    Returns None if a button can't be represented (caller then uses WzGram)."""
     if markup is None or not HAVE_AIOGRAM:
         return None
     rows = getattr(markup, "inline_keyboard", None)
@@ -211,8 +222,15 @@ def convert_markup(markup):
     for row in rows:
         new_row = []
         for b in row:
-            kw = {"text": b.text, "style": style_for(b.text, getattr(b, "callback_data", "") or "")}
-            if getattr(b, "callback_data", None) is not None:
+            cb_raw = getattr(b, "callback_data", "") or ""
+            cb_str = cb_raw.decode() if isinstance(cb_raw, bytes) else str(cb_raw)
+            kw = {"text": b.text, "style": _explicit_button_style(b) or style_for(b.text, cb_str)}
+            if getattr(b, "icon_custom_emoji_id", None):
+                kw["icon_custom_emoji_id"] = str(b.icon_custom_emoji_id)
+            if getattr(b, "disabled", None) is not None and hasattr(at, "DisabledButton"):
+                kw["disabled"] = at.DisabledButton()
+                kw["style"] = None
+            elif getattr(b, "callback_data", None) is not None:
                 data = b.callback_data
                 data = data.decode() if isinstance(data, bytes) else data
                 if is_noop(data) and hasattr(at, "DisabledButton"):
@@ -223,7 +241,8 @@ def convert_markup(markup):
             elif getattr(b, "url", None):
                 kw["url"] = b.url
             elif getattr(b, "copy_text", None):
-                kw["copy_text"] = at.CopyTextButton(text=b.copy_text)
+                ct = b.copy_text
+                kw["copy_text"] = at.CopyTextButton(text=ct.text if hasattr(ct, "text") else str(ct))
             elif getattr(b, "switch_inline_query_current_chat", None) is not None:
                 kw["switch_inline_query_current_chat"] = b.switch_inline_query_current_chat
             elif getattr(b, "switch_inline_query", None) is not None:
@@ -233,7 +252,7 @@ def convert_markup(markup):
             elif getattr(b, "user_id", None):
                 kw["url"] = f"tg://user?id={b.user_id}"
             else:
-                return None  # login_url / callback_game / pay … → keep pyrofork
+                return None  # login_url / callback_game / pay … → keep WzGram
             if kw["style"] is None:
                 kw.pop("style")
             new_row.append(at.InlineKeyboardButton(**kw))
@@ -309,8 +328,7 @@ async def ephemeral(chat_id: int, user_id: int, text: str, reply_markup=None) ->
     """Send a group message only *user_id* can see (Bot API 10.3). True on success."""
     if not (EPHEMERAL_REPLIES and enabled()) or int(chat_id) > 0:
         return False
-    # MTProto layer 220 can't parse callbacks coming from ephemeral messages →
-    # only link / copy buttons are allowed on them.
+    # Only link / copy / disabled buttons are sent via Bot API ephemeral helper.
     for row in getattr(reply_markup, "inline_keyboard", None) or []:
         if any(getattr(b, "callback_data", None) is not None for b in row):
             return False
@@ -323,12 +341,130 @@ async def ephemeral(chat_id: int, user_id: int, text: str, reply_markup=None) ->
     return res is not None
 
 
+async def edit_ephemeral_text(chat_id: int, user_id: int, message_id: int, text: str = None,
+                              reply_markup=None, rich_html: str = None) -> bool:
+    """Bot API 10.3 ``editEphemeralMessageText`` (text or rich HTML)."""
+    if not (EPHEMERAL_REPLIES and enabled()) or int(chat_id) > 0:
+        return False
+    kb = convert_markup(reply_markup) if reply_markup is not None else None
+    if reply_markup is not None and kb is None:
+        return False
+    try:
+        if rich_html is not None:
+            await call(lambda b: b.edit_ephemeral_message_text(
+                chat_id=chat_id,
+                receiver_user_id=user_id,
+                ephemeral_message_id=message_id,
+                parse_mode=None,
+                link_preview_options=None,
+                reply_markup=kb,
+                rich_message=at.InputRichMessage(html=rich_html),
+            ))
+        else:
+            await call(lambda b: b.edit_ephemeral_message_text(
+                chat_id=chat_id,
+                receiver_user_id=user_id,
+                ephemeral_message_id=message_id,
+                text=text,
+                link_preview_options=at.LinkPreviewOptions(is_disabled=True),
+                reply_markup=kb,
+            ))
+        return True
+    except Exception as e:
+        return "not modified" in str(e).lower()
+
+
+async def delete_ephemeral(chat_id: int, user_id: int, message_id: int) -> bool:
+    """Bot API 10.3 ``deleteEphemeralMessage``."""
+    if not (EPHEMERAL_REPLIES and enabled()) or int(chat_id) > 0:
+        return False
+    return bool(await try_call(lambda b: b.delete_ephemeral_message(
+        chat_id=chat_id, receiver_user_id=user_id, ephemeral_message_id=message_id)))
+
+
+async def set_chat_member_tag(chat_id: int, user_id: int, tag: str | None = None) -> bool:
+    """Bot API ``setChatMemberTag`` (pass ``tag=None`` or ``""`` to clear)."""
+    if not enabled():
+        return False
+    clean = (tag or "").strip()[:16] or None
+    return bool(await try_call(lambda b: b.set_chat_member_tag(chat_id=chat_id, user_id=user_id, tag=clean)))
+
+
+async def delete_message_reaction(chat_id: int, message_id: int, user_id: int | None = None,
+                                  actor_chat_id: int | None = None) -> bool:
+    """Bot API 10.3 ``deleteMessageReaction``."""
+    if not enabled():
+        return False
+    return bool(await try_call(lambda b: b.delete_message_reaction(
+        chat_id=chat_id, message_id=message_id, user_id=user_id, actor_chat_id=actor_chat_id)))
+
+
+async def delete_all_message_reactions(chat_id: int, user_id: int | None = None,
+                                       actor_chat_id: int | None = None) -> bool:
+    """Bot API 10.3 ``deleteAllMessageReactions`` (wipes a participant's reactions across *chat_id*)."""
+    if not enabled():
+        return False
+    return bool(await try_call(lambda b: b.delete_all_message_reactions(
+        chat_id=chat_id, user_id=user_id, actor_chat_id=actor_chat_id)))
+
+
+async def get_managed_bot_access_settings(bot_user_id: int):
+    """Bot API 10.3 ``getManagedBotAccessSettings``."""
+    if not enabled():
+        return None
+    return await try_call(lambda b: b.get_managed_bot_access_settings(user_id=bot_user_id))
+
+
+async def set_managed_bot_access_settings(bot_user_id: int, is_access_restricted: bool,
+                                          added_user_ids: list[int] | None = None) -> bool:
+    """Bot API 10.3 ``setManagedBotAccessSettings``."""
+    if not enabled():
+        return False
+    return bool(await try_call(lambda b: b.set_managed_bot_access_settings(
+        user_id=bot_user_id, is_access_restricted=is_access_restricted, added_user_ids=added_user_ids)))
+
+
 async def draft(chat_id: int, draft_id: int, text: str = "") -> bool:
     """Bot API ``sendMessageDraft`` (empty text → “Thinking…”)."""
     if not enabled() or int(chat_id) <= 0:
         return False
     res = await try_call(lambda b: b.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=text or ""))
     return bool(res)
+
+
+async def rich_draft(chat_id: int, draft_id: int, rich_html: str = "") -> bool:
+    """Bot API 10.3 ``sendRichMessageDraft`` (streaming rich HTML draft)."""
+    if not enabled() or int(chat_id) <= 0:
+        return False
+    if hasattr(Bot, "send_rich_message_draft"):
+        rm = at.InputRichMessage(html=rich_html) if rich_html else None
+        res = await try_call(lambda b: b.send_rich_message_draft(
+            chat_id=chat_id, draft_id=draft_id, rich_message=rm))
+        if res:
+            return True
+    return await draft(chat_id, draft_id, rich_html)
+
+
+async def send_checklist(business_connection_id: str, chat_id: int, title: str, tasks: list[str],
+                         others_can_add_tasks: bool = False, others_can_mark_tasks_as_done: bool = True,
+                         reply_to: int = None):
+    """Bot API ``sendChecklist`` for Telegram Business chats."""
+    if not enabled() or not business_connection_id or not hasattr(at, "InputChecklist"):
+        return None
+    items = [at.InputChecklistTask(id=i + 1, text=t[:100]) for i, t in enumerate(tasks[:30])]
+    cl = at.InputChecklist(
+        title=title[:255],
+        tasks=items,
+        others_can_add_tasks=others_can_add_tasks,
+        others_can_mark_tasks_as_done=others_can_mark_tasks_as_done,
+    )
+    rp = at.ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
+    return await try_call(lambda b: b.send_checklist(
+        business_connection_id=business_connection_id,
+        chat_id=chat_id,
+        checklist=cl,
+        reply_parameters=rp,
+    ))
 
 
 async def send_rich(chat_id: int, blocks: list, reply_markup=None) -> bool:
@@ -341,7 +477,8 @@ async def send_rich(chat_id: int, blocks: list, reply_markup=None) -> bool:
     return res is not None
 
 
-async def send_rich_html(chat_id: int, rich_html: str, reply_markup=None, reply_to: int = None):
+async def send_rich_html(chat_id: int, rich_html: str, reply_markup=None, reply_to: int = None,
+                         message_thread_id: int = None):
     """sendRichMessage in HTML mode (headings, tables, details …). Returns the message id or None."""
     if not enabled():
         return None
@@ -352,6 +489,8 @@ async def send_rich_html(chat_id: int, rich_html: str, reply_markup=None, reply_
                   reply_markup=kb)
     if reply_to:
         kwargs["reply_parameters"] = at.ReplyParameters(message_id=reply_to, allow_sending_without_reply=True)
+    if message_thread_id:
+        kwargs["message_thread_id"] = int(message_thread_id)
     res = await try_call(lambda b: b.send_rich_message(**kwargs))
     return getattr(res, "message_id", None) if res is not None else None
 

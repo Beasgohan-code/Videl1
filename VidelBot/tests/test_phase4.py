@@ -232,8 +232,8 @@ def test_gift_picker_shared_user():
     from core.payments import GIFT_BUTTON, gift_target_shared, shared_peer_filter
     c = FakeClient()
     m = FakeMsg(text=None, uid=5)
-    m.chats_shared = types.RequestedChats(button_id=GIFT_BUTTON,
-                                          users=[types.RequestedUser(user_id=42, first_name="Friend")])
+    m.users_shared = types.UsersShared(button_id=GIFT_BUTTON,
+                                       users=[types.User(id=42, first_name="Friend")])
     assert run(shared_peer_filter(GIFT_BUTTON)(c, m))
     assert not run(shared_peer_filter(11)(c, m))
     with pytest.raises(StopPropagation):
@@ -270,8 +270,8 @@ def test_clone_wizard_accepts_shared_channel(monkeypatch):
     c = FakeClient()
     m = FakeMsg(text=None, uid=5)
     m.photo = m.document = None
-    m.chats_shared = types.RequestedChats(button_id=cb.CHANNEL_PICKER_ID, chats=[
-        types.RequestedChat(chat_id=-1009876, chat_type=enums.ChatType.CHANNEL, name="My DB")])
+    m.chat_shared = types.ChatShared(button_id=cb.CHANNEL_PICKER_ID,
+                                     chat=types.Chat(id=-1009876, type=enums.ChatType.CHANNEL, title="My DB"))
     try:
         run(cb.handle_creation_input(c, m))
     finally:

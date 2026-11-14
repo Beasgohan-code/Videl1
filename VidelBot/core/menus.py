@@ -16,7 +16,7 @@ import time
 
 from pyrogram import Client, enums, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup, Message,
-                            ReplyKeyboardRemove)
+                            ReplyKeyboardRemove, WebAppInfo)
 
 from config import (ADMINS, BOT_NAME, CLONE_ENABLED, FREE_LIMIT_DAILY, GIFTS_ENABLED, OWNERS, STARS_PLANS,
                     SUBSCRIPTION, SUBSCRIPTION_STARS, SUPPORT_ENABLED, SUPPORT_URL, TRIAL_DAYS, UPDATES_URL)
@@ -116,7 +116,11 @@ def help_doc():
 def tools_doc(username: str):
     doc = Doc("🧰", "Tools", "handy utilities – reply to a file or send text")
     doc.table([
-        ("/mediainfo", "Reply to a file: codecs, resolution, bitrate, tracks"),
+        ("/mediainfo", "Reply to media or pass a direct HTTP link: codecs, tracks, bitrate"),
+        ("/imdb", "Movie & TV series cards with ratings, cast & trailers"),
+        ("/anime", "AniList anime, /manga & /character cards"),
+        ("/mdl", "MyDramaList Asian drama search & cast"),
+        ("/checklist", "Interactive task checklists (DM, group & Business)"),
         ("/rename", "Reply to a file with a new name to re-upload it"),
         ("/upload", "Reply to a file (≤ 200 MB) for a public download link"),
         ("/short", "Shorten a long link"),
@@ -127,8 +131,13 @@ def tools_doc(username: str):
         ("/ping", "Bot latency"),
         ("/guide", "Illustrated guide with plans & FAQ"),
     ], header=("Command", "What it does"))
+    doc.details("🛡 Group moderation (Bot API 10.3)", Doc().items([
+        Raw("/gsettings · /rules · /setrules · /welcome · /goodbye"),
+        Raw("/gban · /gunban · /kick · /mute · /unmute · /warn · /warns"),
+        Raw("/tag · /deltag · /clearreactions · /topic · /joinmode · /lock · /antiraid · /modreport"),
+    ]))
     doc.details("💡 Tips", Doc().items([
-        "In groups, /help /id /info /guide answer only you (ephemeral messages).",
+        "In groups, /help /id /info /guide /rules answer only you (ephemeral messages).",
         Raw(f"Inline: type <code>@{html.escape(username)} text</code> in any chat to share a QR / short link."),
     ]), open_=True)
     return doc
@@ -144,8 +153,8 @@ async def about_doc(client):
     doc = Doc("ℹ️", f"About {b['first_name']}")
     doc.table([
         ("🤖 Bot", link(f"@{b['username']}", f"https://t.me/{b['username']}")),
-        ("🧩 Modules", "Saver · Encoder · Auto-Rename · Clone · Tools"),
-        ("📡 Protocol", f"MTProto (Pyrofork) + Bot API {api}"),
+        ("🧩 Modules", "Saver · Encoder · Auto-Rename · Clone · Plugins"),
+        ("📡 Protocol", f"MTProto (WzGram Layer 232) + Richgram + Bot API {api}"),
         ("🐍 Language", link("Python 3.11", "https://www.python.org/")),
         ("🗄 Database", link("MongoDB", "https://www.mongodb.com/")),
         ("🎞 Engine", link("FFmpeg", "https://ffmpeg.org/")),
@@ -527,3 +536,42 @@ async def noop_callback(client: Client, query: CallbackQuery):
         await query.answer()
     except Exception:
         pass
+
+
+@Client.on_message(filters.command(["web", "studio"]) & filters.private)
+async def web_studio_cmd(client: Client, message: Message):
+    """Offer Telegram Mini App sign-in and retain a one-time browser fallback."""
+    import config as cfg
+    from webapp.auth import LinkCapacityError, issue_saas_link
+
+    user = message.from_user
+    if not user:
+        return
+    base_url = (getattr(cfg, "KEEP_ALIVE_URL", "") or "").rstrip("/")
+    # The button must never embed credentials or an unexpected path/query.
+    from urllib.parse import urlsplit
+    try:
+        parsed = urlsplit(base_url)
+        is_https = bool(parsed.scheme == "https" and parsed.hostname and parsed.port != 0
+                        and parsed.username is None and parsed.password is None
+                        and parsed.path in ("", "/") and not parsed.query and not parsed.fragment)
+    except ValueError:
+        is_https = False
+    try:
+        token = issue_saas_link(user.id, username=user.username or "", first_name=user.first_name or "")
+    except LinkCapacityError:
+        token = ""
+    buttons = []
+    if is_https:
+        buttons.append([Btn("🚀 Open Studio in Telegram", web_app=WebAppInfo(url=f"{base_url}/app"))])
+        if token:
+            buttons.append([Btn("🔗 Open in browser", url=f"{base_url}/app#{token}")])
+    fallback = (f"<b>Browser fallback:</b> single-use key, valid for 10 minutes:\n<code>{html.escape(token)}</code>"
+                if token else "Browser sign-in is temporarily unavailable; please try again later.")
+    instruction = ("Tap <b>Open Studio in Telegram</b> to continue automatically.\n\n" if is_https else
+                   "Set an HTTPS public address to enable the Telegram Studio button.\n\n")
+    await message.reply_text(
+        f"<b>🚀 {html.escape(cfg.BOT_NAME)} Multi-Bot SaaS Studio</b>\n\n" + instruction + fallback,
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
+        disable_web_page_preview=True,
+    )

@@ -1,0 +1,17 @@
+name: group_cases
+version: "1.0.0"
+author: Videl
+description: Private, admin-authorized case notes without automatic enforcement
+entry: plugin.py
+enabled: true
+min_bot_version: "3.0.0"
+tags: [group, moderation, workflow]
+permissions: [database, group_admin_verification]
+commands:
+  - name: modcase
+    description: Private group-admin moderation casebook
+    access: user
+callbacks:
+  - pattern: "^plg_case:[a-zA-Z0-9_:-]+$"
+    description: Browse cases in a private chat after live group-admin verification
+    access: user

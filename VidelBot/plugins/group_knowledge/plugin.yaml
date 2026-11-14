@@ -1,0 +1,17 @@
+name: group_knowledge
+version: "1.0.0"
+author: Videl
+description: Searchable per-group FAQ with admin-controlled, versioned edits
+entry: plugin.py
+enabled: true
+min_bot_version: "3.0.0"
+tags: [group, knowledge, community]
+permissions: [database, group_admin_verification]
+commands:
+  - name: faq
+    description: Browse group FAQs; admins can save, revise and delete
+    access: user
+callbacks:
+  - pattern: "^plg_faq:[a-zA-Z0-9_:-]+$"
+    description: Browse group FAQ entries and pages
+    access: user

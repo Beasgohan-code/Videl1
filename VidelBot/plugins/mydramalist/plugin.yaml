@@ -1,0 +1,13 @@
+name: mydramalist
+version: 1.1.0
+author: Videl
+description: MyDramaList Asian drama & movie metadata search with cast, ratings & poster cards
+entry: plugin.py
+min_bot_version: 3.0.0
+dependencies:
+  - aiohttp>=3.9.0
+permissions:
+  - network
+commands:
+  - name: mdl
+    description: Search Asian dramas & movies on MyDramaList

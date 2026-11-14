@@ -1,0 +1,3 @@
+# CI-only x86_64 FFmpeg 6.0/ffprobe wheel. Do not install into the app environment.
+# The PyPI wheel embeds a GPLv3 static build; see docs/CI_NATIVE_TOOLS.md.
+ffmpeg-binaries==1.1.0 --hash=sha256:b8a6d67f5895a8a105e25746db3bb3a4d6b76629cde22814f9866fd9af76a399

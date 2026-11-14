@@ -90,7 +90,7 @@ def _naive(dt):
     return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
 
 
-async def series(days: int = 30) -> dict:
+async def series(days: int = 30, *, strict: bool = False) -> dict:
     """{'days': [...labels], metric: [values per day], ...} for the last `days` days (today included)."""
     days = max(1, min(366, int(days)))
     end = datetime.now(timezone.utc)
@@ -107,6 +107,8 @@ async def series(days: int = 30) -> dict:
                 if k in doc and k not in ("new", "stars"):
                     out[k][i] = int(doc.get(k) or 0)
     except Exception as e:
+        if strict:
+            raise RuntimeError("Stats unavailable") from None
         log.warning(f"stats_daily read: {e}")
     since = _naive(end - timedelta(days=days))
     try:
@@ -115,6 +117,8 @@ async def series(days: int = 30) -> dict:
             if i is not None:
                 out["new"][i] += 1
     except Exception as e:
+        if strict:
+            raise RuntimeError("New-user stats unavailable") from None
         log.warning(f"new users read: {e}")
     try:
         async for p in db["payments"].find({"date": {"$gte": since}}, {"date": 1, "stars": 1, "refunded": 1}):
@@ -122,6 +126,8 @@ async def series(days: int = 30) -> dict:
             if i is not None and not p.get("refunded"):
                 out["stars"][i] += int(p.get("stars") or 0)
     except Exception as e:
+        if strict:
+            raise RuntimeError("Payment stats unavailable") from None
         log.warning(f"payments read: {e}")
     return out
 
@@ -326,7 +332,7 @@ async def send_analytics(client, chat_id: int, days: int = 30, private: bool | N
                               disable_web_page_preview=True)
 
 
-@Client.on_message(filters.command(["analytics", "dashboard"]) & filters.user(config.ADMINS))
+@Client.on_message(filters.command("analytics") & filters.user(config.ADMINS))
 async def analytics_cmd(client: Client, message: Message):
     parts = (message.text or "").split()
     days = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 30
@@ -337,6 +343,17 @@ async def analytics_cmd(client: Client, message: Message):
         await wait.delete()
     except Exception:
         pass
+
+
+@Client.on_message(filters.command("dashboard") & filters.user(config.ADMINS))
+async def dashboard_cmd(client: Client, message: Message):
+    # Defense in depth: neither stats data nor links may reach a non-admin.
+    sender = getattr(message, "from_user", None)
+    if sender is None or sender.id not in config.ADMINS:
+        return
+    from plugins.widget.dashboard import send_dashboard
+    await send_dashboard(client, message)
+    await analytics_cmd(client, message)
 
 
 @Client.on_callback_query(filters.regex(r"^anl:\d+$"))

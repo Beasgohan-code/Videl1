@@ -9,7 +9,11 @@ class Database:
     # and their saves were never counted against the daily limit.
    
     def __init__(self, uri, database_name):
-        self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
+        from filestore.database.mongo import CLIENT_TIMEOUT_KW, MONGO_URI, get_motor_client
+        if uri == MONGO_URI:
+            self._client = get_motor_client()
+        else:
+            self._client = motor.motor_asyncio.AsyncIOMotorClient(uri, **CLIENT_TIMEOUT_KW)
         self.db = self._client[database_name]
         self.col = self.db.users
     def new_user(self, id, name):
@@ -41,10 +45,18 @@ class Database:
         await self.col.delete_many({'id': int(user_id)})
         logger.info(f"User deleted from DB: {user_id}")
     async def set_session(self, id, session):
-        await self.col.update_one({'id': int(id)}, {'$set': {'session': session}}, upsert=True)
+        stored = session
+        if isinstance(session, str) and session and not session.startswith("enc:"):
+            from filestore.utils.security import encrypt_token
+            stored = encrypt_token(session)
+        await self.col.update_one({'id': int(id)}, {'$set': {'session': stored}}, upsert=True)
     async def get_session(self, id):
         user = await self.col.find_one({'id': int(id)}) or {}
-        return user.get('session')
+        raw = user.get('session')
+        if isinstance(raw, str) and raw.startswith("enc:"):
+            from filestore.utils.security import decrypt_token
+            return decrypt_token(raw)
+        return raw
     # Caption Support
     async def set_caption(self, id, caption):
         await self.col.update_one({'id': int(id)}, {'$set': {'caption': caption}}, upsert=True)

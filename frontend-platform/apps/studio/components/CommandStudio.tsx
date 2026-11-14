@@ -1,0 +1,78 @@
+'use client';
+import {useEffect,useRef,useState} from 'react';
+import {Terminal,Search} from 'lucide-react';
+import {ApiError,commandList,request,type Bot,type CommandRecord,type Session} from '../lib/api';
+
+type Props={workspace:string;session:Session;bots:Bot[];permitted:boolean;onError:(error:unknown)=>boolean;onDirty:(dirty:boolean)=>void;onPending:(pending:boolean)=>void};
+const categories=['General','File Store','Administration','Media','Group Management','Utilities','Owner Tools','Custom'];
+const permissions=['everyone','owner','administrators','authorized_users','custom_role'];
+function snapshot(c:CommandRecord){return {description:c.description,category:c.category,permission:c.permission,visibility:c.visibility,enabled:c.enabled,custom_reply_text:c.custom_reply_text,handler_bound:c.handler_bound}}
+function supported(c:CommandRecord){return /^[a-z0-9_]{1,32}$/.test(c.command)&&c.description.length<=256&&categories.includes(c.category)&&permissions.includes(c.permission)&&['public','scoped'].includes(c.visibility)&&c.custom_reply_text.length<=1000}
+function sameChanges(c:CommandRecord,changes:Record<string,unknown>){return Object.entries(changes).every(([k,v])=>c[k as keyof CommandRecord]===v)}
+
+export default function CommandStudio({workspace,session,bots,permitted,onError,onDirty,onPending}:Props){
+ const [botId,setBotId]=useState(bots[0]?.bot_id||''),[commands,setCommands]=useState<CommandRecord[]>([]),[createSupported,setCreateSupported]=useState(false),[conditionalSupported,setConditionalSupported]=useState(false),[loading,setLoading]=useState(false),[error,setError]=useState(''),[search,setSearch]=useState(''),[refresh,setRefresh]=useState(0);
+ const [editing,setEditing]=useState<CommandRecord|null>(null),[name,setName]=useState(''),[description,setDescription]=useState(''),[category,setCategory]=useState('Custom'),[permission,setPermission]=useState('everyone'),[dirty,setDirty]=useState(false),[pending,setPending]=useState(false),[deleting,setDeleting]=useState<CommandRecord|null>(null);
+ const selected=useRef(botId),busy=useRef(false),mounted=useRef(false);useEffect(()=>{mounted.current=true;return()=>{mounted.current=false}},[]);
+ const endpoint=`/api/v1/workspaces/${encodeURIComponent(workspace)}/bots/${encodeURIComponent(botId)}/commands`;
+ useEffect(()=>{if(!botId||!permitted){setLoading(false);return}const controller=new AbortController(),id=botId;setLoading(true);setCommands([]);setCreateSupported(false);setConditionalSupported(false);setError('');request(endpoint,session,{signal:controller.signal}).then(raw=>{if(!controller.signal.aborted&&selected.current===id){setCommands(commandList(raw));setCreateSupported(!!raw&&typeof raw==='object'&&'capabilities' in raw&&!!raw.capabilities&&typeof raw.capabilities==='object'&&'command_create_only' in raw.capabilities&&raw.capabilities.command_create_only===true);setConditionalSupported(!!raw&&typeof raw==='object'&&'capabilities' in raw&&!!raw.capabilities&&typeof raw.capabilities==='object'&&'command_conditional_mutations' in raw.capabilities&&raw.capabilities.command_conditional_mutations===true)}}).catch(err=>{if(!controller.signal.aborted&&selected.current===id&&!onError(err))setError(err instanceof Error?err.message:'Could not load commands.')}).finally(()=>{if(!controller.signal.aborted&&selected.current===id)setLoading(false)});return()=>controller.abort()},[botId,endpoint,onError,permitted,refresh,session]);
+ function resetEditor(){setEditing(null);setName('');setDescription('');setCategory('Custom');setPermission('everyone');setDirty(false);onDirty(false)}
+ function choose(id:string){if(dirty&&!window.confirm('Discard unsaved command changes?'))return;selected.current=id;setCommands([]);setCreateSupported(false);setConditionalSupported(false);setError('');setBotId(id);setDeleting(null);resetEditor()}
+ function edit(c:CommandRecord){if(!supported(c)){setError('This record has unsupported or incomplete metadata; edit it in the existing Studio after review.');return}if(dirty&&!window.confirm('Discard unsaved command changes?'))return;setEditing(c);setName(c.command);setDescription(c.description);setCategory(c.category);setPermission(c.permission);setDirty(false);onDirty(false);document.getElementById('command-description')?.focus()}
+ function changed(){setDirty(true);onDirty(true)}
+ async function save(e:React.FormEvent){e.preventDefault();if(busy.current||!botId||!permitted)return;if(editing&&!conditionalSupported){setError('This server cannot safely edit command records. Your draft is intact.');return}if(!editing&&!createSupported){setError('This server cannot safely create command records. Your draft is intact.');return}const cmd=name.trim().replace(/^\/+/, '').toLowerCase();if(!/^[a-z0-9_]{1,32}$/.test(cmd)){setError('Use 1–32 lowercase letters, numbers or underscores.');return}if(description.trim().length<2){setError('Description must be at least two characters.');return}
+  const id=botId;busy.current=true;setPending(true);onPending(true);setError('');
+  try{
+   const values={command:cmd,description:description.trim(),category,permission,visibility:editing&&permission===editing.permission?editing.visibility:permission==='everyone'?'public':'scoped',enabled:editing?editing.enabled:true};
+   if(editing){
+    const changes:Record<string,unknown>={};
+    if(description!==editing.description&&values.description!==editing.description)changes.description=values.description;
+    if(category!==editing.category)changes.category=category;
+    if(permission!==editing.permission){changes.permission=permission;changes.visibility=values.visibility}
+    if(!Object.keys(changes).length){if(mounted.current&&selected.current===id)resetEditor();return}
+    const response=await request(`${endpoint}/conditional`,session,{method:'PATCH',body:{command:cmd,expected:snapshot(editing),changes}});
+    if(!response||typeof response!=='object'||!('command' in response))throw new Error('Invalid update response');
+    const [updated]=commandList({commands:[response.command]});
+    if(updated.command!==cmd||!sameChanges(updated,{...snapshot(editing),...changes}))throw new Error('Unexpected update response');
+   }
+   else {
+    const response=await request(`${endpoint}/create`,session,{method:'POST',body:values});
+    if(!response||typeof response!=='object'||!('command' in response))throw new Error('Invalid create response');
+    const [created]=commandList({commands:[response.command]});
+    if(created.command!==cmd||created.description!==values.description||created.category!==category||created.permission!==permission||created.visibility!==values.visibility||created.enabled!==true||created.handler_bound)throw new Error('Unexpected create response');
+   }
+   if(mounted.current&&selected.current===id){resetEditor();setRefresh(n=>n+1)}
+  }
+  catch(err){if(mounted.current&&selected.current===id&&!onError(err))setError(err instanceof ApiError&&err.status===409?(editing?'This command changed or is no longer available. Refresh and review your draft.':'A command with this name already exists. Your draft was not saved.'):err instanceof ApiError&&err.status===404?(editing?'This server cannot safely apply this command change. Refresh and review your draft.':'This server cannot safely create command records. Refresh and review your draft.'):(err instanceof Error?err.message:'Could not save the command.')+' The result may be uncertain; refresh before retrying.') }
+  finally{busy.current=false;if(mounted.current){setPending(false);onPending(false)}}
+ }
+ async function toggle(c:CommandRecord){
+  if(busy.current||!permitted||dirty||!conditionalSupported)return;
+  if(!supported(c)){setError('This record has unsupported or incomplete metadata; edit it in the existing Studio after review.');return}
+  const id=botId,changes={enabled:!c.enabled};busy.current=true;setPending(true);onPending(true);setError('');
+  try{const response=await request(`${endpoint}/conditional`,session,{method:'PATCH',body:{command:c.command,expected:snapshot(c),changes}});
+   if(!response||typeof response!=='object'||!('command' in response))throw new Error('Invalid update response');
+   const [updated]=commandList({commands:[response.command]});if(updated.command!==c.command||!sameChanges(updated,{...snapshot(c),...changes}))throw new Error('Unexpected update response');
+   if(mounted.current&&selected.current===id)setRefresh(n=>n+1)
+  }catch(err){if(mounted.current&&selected.current===id&&!onError(err))setError(err instanceof ApiError&&err.status===409?'This command changed or is no longer available. Refresh before trying again.':err instanceof ApiError&&err.status===404?'This server cannot safely apply this command change. Refresh before trying again.':'Could not confirm the change. The result may be uncertain; refresh before retrying.')}
+  finally{busy.current=false;if(mounted.current){setPending(false);onPending(false)}}
+ }
+ async function remove(c:CommandRecord){
+  if(busy.current||!permitted||!conditionalSupported)return;
+  if(!supported(c)){setError('This record has unsupported or incomplete metadata; review it in the existing Studio.');return}
+  const id=botId;busy.current=true;setPending(true);onPending(true);setError('');
+  try{const result=await request(`${endpoint}/conditional`,session,{method:'DELETE',body:{command:c.command,expected:snapshot(c)}});
+   if(!result||typeof result!=='object'||!('deleted' in result)||result.deleted!==true)throw new Error('Invalid deletion response');
+   if(mounted.current&&selected.current===id){if(editing?.command===c.command)resetEditor();setDeleting(null);setRefresh(n=>n+1)}
+  }catch(err){if(mounted.current&&selected.current===id&&!onError(err))setError(err instanceof ApiError&&err.status===409?'This command changed or is no longer available. Refresh before trying again.':err instanceof ApiError&&err.status===404?'This server cannot safely apply this command change. Refresh before trying again.':'Could not confirm deletion. The result may be uncertain; refresh before retrying.')}
+  finally{busy.current=false;if(mounted.current){setPending(false);onPending(false)}}
+ }
+ const filtered=commands.filter(c=>`${c.command} ${c.description} ${c.category}`.toLowerCase().includes(search.trim().toLowerCase()));
+ return <section className="studio-page" aria-labelledby="commands-title"><header className="studio-hero"><div><span className="kicker">YOUR WORKSPACE / COMMANDS</span><h1 id="commands-title">Give your bot<br/><em>a voice.</em></h1><p>Organize command records for the bot you choose.</p></div></header>
+ <div className="studio-note"><Terminal size={19}/><p><strong>Metadata only.</strong> Saving these records does not deploy code, sync a Telegram menu or guarantee a running handler. Up to 200 command records are returned for each bot. Conditional changes compare a snapshot of the record metadata. Older clients may still overwrite records without a check.</p></div>
+ {!permitted?<div className="directory-empty"><h3>Commands access required</h3><p>Ask a workspace administrator for access. The server enforces permissions.</p></div>:!bots.length?<div className="directory-empty"><h3>No bot records yet</h3><p>Connect a bot or save a draft before working with commands.</p></div>:<><div className="command-toolbar"><label>Bot record<select value={botId} onChange={e=>choose(e.target.value)} disabled={pending}>{bots.map(bot=><option value={bot.bot_id} key={bot.bot_id}>{bot.display_name||'Unnamed bot'}{bot.archived?' · archived':''}</option>)}</select></label><button className="secondary" onClick={()=>setRefresh(n=>n+1)} disabled={pending||loading}>Refresh records</button></div>
+ {error&&<p className="notice error" role="alert">{error}</p>}<div className="command-layout"><div><div className="directory-head"><div><span className="kicker">COMMAND LIBRARY</span><h2>Saved records.</h2></div><span className="record-count">{filtered.length} / {commands.length} records</span></div><label className="directory-search"><Search size={17}/><span className="sr-only">Search commands</span><input type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search commands"/></label>
+ {loading?<p className="loading" role="status">Loading commands…</p>:error&&commands.length===0?null:filtered.length?<div className="command-list">{filtered.map(c=><article className="command-card" key={c.command}><div><h3>/{c.command}</h3><p>{c.description}</p><small>{c.category} · {c.permission} · {c.handler_bound?'Built-in metadata':'Custom metadata'} · {c.enabled?'Enabled':'Disabled'}</small></div><div className="card-actions"><button className="secondary" disabled={pending||!conditionalSupported} onClick={()=>edit(c)} aria-label={`Edit /${c.command}`}>Edit</button><button className="secondary" disabled={pending||dirty||!conditionalSupported} onClick={()=>toggle(c)} aria-label={`${c.enabled?'Disable':'Enable'} /${c.command}`}>{c.enabled?'Disable':'Enable'}</button><button className="text-danger" disabled={pending||dirty||!conditionalSupported} onClick={()=>setDeleting(c)} aria-label={`Delete /${c.command}`}>Delete</button></div>{deleting?.command===c.command&&<div className="delete-confirm" role="group" aria-label={`Confirm delete /${c.command}`}><strong>Delete /{c.command}?</strong><p>This removes the record, not a running handler.</p><button className="text-danger" disabled={pending} onClick={()=>deleting&&remove(deleting)}>Confirm delete</button><button className="secondary" disabled={pending} onClick={()=>setDeleting(null)}>Cancel</button></div>}</article>)}</div>:<div className="directory-empty"><h3>{commands.length?'No matching commands':'No commands returned'}</h3><p>{commands.length?'Try another search.':'Add a command record using the editor.'}</p></div>}</div>
+ {!conditionalSupported&&!loading&&<p className="form-hint" role="status">Safe edits, state changes and deletion are unavailable on this server. Use the existing Studio only after reviewing its unconditional behavior.</p>} <aside className="command-editor"><span className="kicker">COMMAND DETAILS</span><h2>{editing?'Edit record':'New command'}</h2><p>Changes update metadata only.</p><form onSubmit={save}><label>Command name<input value={name} onChange={e=>{setName(e.target.value);changed()}} maxLength={32} placeholder="help" readOnly={!!editing} required disabled={pending}/></label><label htmlFor="command-description">Description</label><input id="command-description" value={description} onChange={e=>{setDescription(e.target.value);changed()}} minLength={2} maxLength={256} required disabled={pending}/><label>Category<select value={category} onChange={e=>{setCategory(e.target.value);changed()}} disabled={pending}>{categories.map(c=><option key={c}>{c}</option>)}</select></label><label>Permission metadata<select value={permission} onChange={e=>{setPermission(e.target.value);changed()}} disabled={pending}>{permissions.map(p=><option key={p} value={p}>{p.replaceAll('_',' ')}</option>)}</select></label><button className="primary" disabled={pending||(editing?!conditionalSupported:!createSupported)}>{pending?'Saving…':editing?'Update record':'Create record'}</button>{!editing&&!createSupported&&<p className="form-hint" role="status">{loading?'Checking safe creation support…':'Safe command creation is unavailable on this server. Your draft can be kept, but cannot be submitted here.'}</p>}{(editing||dirty)&&<button type="button" className="secondary" disabled={pending} onClick={resetEditor}>Discard edits</button>}</form></aside></div></>}
+ </section>;
+}

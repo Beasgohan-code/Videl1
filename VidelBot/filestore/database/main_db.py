@@ -6,9 +6,16 @@ Manages the registry of user-created bots and main bot users.
 
 import time
 from datetime import datetime, timezone
+from pymongo import ReturnDocument
+from pymongo.collation import Collation
+from pymongo.errors import DuplicateKeyError
 from filestore.database.mongo import get_db
 from filestore.fs_config import LOGGER
 log = LOGGER(__name__)
+
+class BotRegistrationConflict(Exception):
+    """The ID is already claimed or the requested restoration is no longer valid."""
+
 
 class MainDB:
     """Database operations for the main controller bot."""
@@ -77,8 +84,16 @@ class MainDB:
         bot_token_encrypted: str,
         bot_username: str,
         log_channel_id: int,
+        *,
+        managed: bool = False,
+        restore_deleted: bool = False,
+        expected_old_token: str | None = None,
     ) -> dict:
-        """Register a new user-created bot."""
+        """Insert a clone, or explicitly restore an owner's soft-deleted record.
+
+        MongoDB's unique _id prevents check-then-write races. Restoration uses
+        a single conditional update and leaves other stored data unchanged.
+        """
         doc = {
             "_id": bot_id,
             "owner_id": owner_id,
@@ -86,6 +101,8 @@ class MainDB:
             "bot_username": bot_username,
             "log_channel_id": log_channel_id,
             "is_active": True,
+            "is_deleted": False,
+            "managed": bool(managed),
             "created_at": datetime.now(timezone.utc),
             "settings": {
                 "auto_delete_time": 0,
@@ -102,8 +119,25 @@ class MainDB:
                 "domain": "",
             },
         }
-        await self.bots.replace_one({"_id": bot_id}, doc, upsert=True)
-        log.info(f"Bot @{bot_username} (ID:{bot_id}) registered by user {owner_id}")
+        if restore_deleted:
+            if not isinstance(expected_old_token, str):
+                raise BotRegistrationConflict
+            restored = await self.bots.find_one_and_update(
+                {"_id": bot_id, "owner_id": owner_id, "is_deleted": True,
+                 "bot_token_encrypted": expected_old_token},
+                {"$set": {"bot_token_encrypted": bot_token_encrypted,
+                          "bot_username": bot_username, "log_channel_id": log_channel_id,
+                          "is_active": True, "is_deleted": False, "managed": bool(managed)}},
+                return_document=ReturnDocument.AFTER,
+                collation=Collation("simple"),
+            )
+            if restored is None:
+                raise BotRegistrationConflict
+            return restored
+        try:
+            await self.bots.insert_one(dict(doc))
+        except DuplicateKeyError:
+            raise BotRegistrationConflict from None
         return doc
 
     async def get_bot(self, bot_id: int) -> dict | None:

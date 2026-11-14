@@ -1,0 +1,18 @@
+{
+  "name": "videl-frontend-platform",
+  "private": true,
+  "workspaces": [
+    "apps/site",
+    "apps/studio"
+  ],
+  "scripts": {
+    "build": "npm run build -w @videl/site && npm run build -w @videl/studio",
+    "typecheck": "npm run typecheck -w @videl/site && npm run typecheck -w @videl/studio"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "overrides": {
+    "vite": "7.3.7"
+  }
+}

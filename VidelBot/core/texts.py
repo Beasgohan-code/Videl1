@@ -62,8 +62,8 @@ HELP_TXT = f"""<b>📚 Comprehensive Help &amp; User Guide</b>
 ABOUT_TXT = """<b>ℹ️ About {first_name}</b>
 <blockquote><b>╭────[ 🧩 Overview ]────⍟</b>
 <b>├⍟ 🤖 Bot : <a href=https://t.me/{username}>@{username}</a></b>
-<b>├⍟ 🧩 Modules : Saver · Encoder · Auto-Rename · Clone · Tools</b>
-<b>├⍟ 📡 Protocol : MTProto (Pyrofork) + Bot API {api}</b>
+<b>├⍟ 🧩 Modules : Saver · Encoder · Auto-Rename · Clone · Plugins</b>
+<b>├⍟ 📡 Protocol : MTProto (WzGram Layer 232) + Richgram + Bot API {api}</b>
 <b>├⍟ 🐍 Language : <a href='https://www.python.org/'>Python 3.11</a></b>
 <b>├⍟ 🗄 Database : <a href='https://www.mongodb.com/'>MongoDB</a></b>
 <b>├⍟ 🎞 Engine : <a href='https://ffmpeg.org/'>FFmpeg</a></b>
@@ -236,6 +236,7 @@ TOOLS_HELP = """<b>🧰 Tools</b>
 /qr &lt;text&gt; — make a QR code
 /id — chat / user / forwarded IDs
 /info — user info (reply / id / username)
+/info group &lt;id | @username&gt; — group info in DM (membership required)
 /json — raw JSON of a message (reply)
 /ping — bot latency
 /guide — illustrated guide (rich message with plans &amp; FAQ)</blockquote>
@@ -249,7 +250,8 @@ ADMIN_HELP = """<b>👮 Admin</b>
 
 <blockquote expandable><b>Bot</b>
 /stats — users, modules &amp; server stats
-/dashboard — charts + 🌐 web dashboard (opens inside Telegram)
+/dashboard — stats widget in DM + charts and 🌐 web dashboard
+/analytics — admin charts + 🌐 web dashboard
 /users — user counts
 /user &lt;id | @name&gt; — full profile + ban / premium buttons
 /msg &lt;id&gt; &lt;text&gt; — message a user · /export — users CSV
@@ -289,7 +291,7 @@ Support: users send /support → it lands in your DM → <b>reply</b> to answer.
 /gifts — Telegram gifts · /sendgift &lt;user&gt; &lt;gift_id&gt; [text]
 
 <b>Clone bots</b>
-/clonestats — platform stats · /bots — list all clone bots · /sys — system
+/clonestats — platform stats · /bots — list all clone bots · /sys — system snapshot
 /check — health-check every clone (<code>/check fix</code> restarts broken ones)</blockquote>
 """
 

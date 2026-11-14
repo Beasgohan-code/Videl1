@@ -1,0 +1,130 @@
+# Isolated browser visual checks
+
+These tests use a deliberately **synthetic, read-only** server on port 8082.
+The fixture is intended to return real Studio shell assets and explicit sample data
+for the overview, bot directory, commands, configuration, fleet and File Store;
+it does not use MongoDB, Telegram, a live account or production APIs and refuses
+mutations. Never point the test at a production service.
+
+**Current branch blocker:** `design_preview.py` imports `webapp.public_site`, which
+is absent from this checkout. The preview therefore exits with `ModuleNotFoundError`
+before starting; the Chromium suite is not runnable until that fixture is updated.
+The customizer checks were changed to assert that the retired controls are absent,
+but those browser assertions have not been executed here.
+
+Once the fixture import is repaired, start it in a separate terminal from the repository root:
+
+```sh
+python VidelBot/tests/browser/design_preview.py
+```
+
+With Chromium (and its system libraries, including NSS/NSPR) installed:
+
+```sh
+cd VidelBot/tests/browser
+npm ci
+VIDEL_BROWSER_EXECUTABLE=/path/to/chromium npm test
+```
+
+The test runs actual Chromium at 1440×900, 768×1024 and 390×844, takes screenshots under
+`docs/screenshots/`, checks overflow at those three widths, the fixed Overview and absence of the retired customizer, bot directory search and layout, command metadata workflow, configuration editor, fleet selection, File Store sample/pagination, guided setup and token-state clearing, failure states, menu semantics, palette keyboard navigation, browser history, persisted groups, mobile drawer/Escape focus return, reduced-motion asset fallback and a local
+motion-enabled desktop path. For a serverless Chromium binary, a test-only npm
+install of `@sparticuz/chromium@143.0.4` can provide an executable; system
+shared libraries are still required. Tests use `--no-sandbox` and should only
+run against this isolated fixture in a trusted test environment. Results are
+not a substitute for real authenticated APIs, Telegram Mini App, a device
+matrix, accessibility audit, performance profiling or deployed testing.
+
+
+## Navigation shell — 2026-11-04 (uncommitted)
+
+The suite exercises local palette search and keyboard selection, query history, group persistence, active role-visible navigation, mobile drawer/Escape/focus return, and desktop/tablet/mobile layouts. `studio-navigation-palette-desktop.png` and `studio-navigation-drawer-mobile.png` show the synthetic read-only fixture. JSDOM additionally tests partial scopes, synthetic fragment sign-in, denied deep links, canceled unsaved history, stale search and bot selection. These are targeted checks, not a full accessibility audit, physical-device/Telegram Mini App test, live authentication or production evidence.
+
+## Hosting center — rewrite foundation (uncommitted)
+
+`npm run test:hosting` runs a targeted reduced-motion Chromium check at 320, 390 and 1440px against the same read-only synthetic fixture, checking overflow, unavailable provider labels and Fleet navigation. Screenshots `hosting-synthetic-{320,390,1440}.png` use sample records and are not live backend or provider evidence. Set `VIDEL_BROWSER_EXECUTABLE` and any required system library path as above. The check does not cover the full application, physical devices or assistive technologies.
+
+### Next migration preview (synthetic fixture only)
+
+`next_preview_fixture.py` implements a small in-memory fake API and binds only
+to loopback; never use it with production data. `next-preview.test.cjs` checks
+one-time-key handling, workspace switching/creation, errors and session clearing
+in Chromium at several widths. Start the fixture with a Python environment that
+has aiohttp, then start the Next dev server in a separate terminal:
+
+```sh
+python VidelBot/tests/browser/next_preview_fixture.py
+# separately, from frontend-platform/apps/studio:
+VIDEL_BACKEND_ORIGIN=http://127.0.0.1:8084 npm run dev -- --port 3001
+# separately, from VidelBot/tests/browser:
+CHROMIUM_PATH=/path/to/chromium node next-preview.test.cjs
+```
+
+The browser visits `http://localhost:3001/next-preview`; the Next server proxies
+relative API requests to the local fixture. This is not a real Telegram, MongoDB,
+production service or device test, and no screenshot or fixture data is a real
+customer workspace. Stop both test servers afterwards.
+
+With the same two test servers running, `node next-studios.test.cjs` exercises
+synthetic Bot, Command and File Studio CRUD, permission-denied presentation,
+token-diagnostic handling and selected unsaved-navigation checks.
+`node next-library-inbox.test.cjs` checks Hosting observations, template
+create/copy/delete, notification read state, workspace isolation and permission
+presentation at 320/390/1440px. `node next-team.test.cjs` checks direct member grants, reviewed role changes,
+removal and role denial against the fixture. `npm run test:next` runs all eleven
+Next browser suites. `node next-analytics.test.cjs` checks time/bot filters,
+CSV download, workspace changes, sample disclosure, permissions and responsive
+layout with fixture data. These assertions do not establish
+live Telegram verification, real file safety, production RBAC or full parity.
+
+`node next-settings.test.cjs` exercises account preference saves, account-wide workspace behavior, empty-workspace access, older-backend safety gating, draft/pending guards and uncertain responses at synthetic browser widths. These are in-memory fixtures, not evidence of Mongo concurrency or production behavior.
+
+`node next-file-filters.test.cjs` checks category and active-record filters with synthetic uploads, trash visibility and responsive layout. The fixture is not a storage or authorization integration test.
+
+`node next-theme.test.cjs` checks synthetic saved theme application, device color-scheme changes, navigation, sign-out/account switching, older backend reads, failures, and delayed reads at representative widths. It does not establish production or physical-device accessibility.
+
+`node next-file-view.test.cjs` exercises synthetic account list/grid saves, workspace switching, failed saves and responsive layout. No production file storage or permissions are tested.
+
+`node next-compact-tables.test.cjs` checks the saved account preference on the synthetic Analytics table, including workspace/reload behavior, drafts, failed saves, default values and responsive layout. It is not a real database or accessibility test.
+
+`node next-telegram-login.test.cjs` tests Next Mini App launch and sign-out behavior with a synthetic SDK and fake API. It does not verify real Telegram signatures or MongoDB.
+
+`telegram_auth_fixture.py` is a separate, loopback-only aiohttp app with mock
+Mongo. With that fixture running and Chromium configured as above,
+`node telegram-auth-backend.test.cjs` verifies a **synthetic signed** Mini App
+launch against the actual login backend, including reload, sign-out and replay.
+It does not prove live Telegram, real Mongo write concern or multi-worker safety.
+
+For first-visit coverage, start `telegram_auth_fixture.py` on loopback as above,
+then run `npm run test:signup` with the Chromium environment configured. The
+suite checks the served entry screen and a signed **synthetic** first visit,
+workspace creation/reuse and navigation to bot setup at 320/390/768/1440px.
+Set `VIDEL_TEST_SCREENSHOTS_DIR` to an existing directory to save optional
+screenshots. It uses mock Mongo and cannot establish live Telegram, production
+MongoDB or real-device behavior.
+
+`node next-navigation-palette.test.cjs` checks the local Studio page finder,
+keyboard shortcut and focus, native modal behavior, filtering, unsaved-change
+guards, no search requests and small-screen overflow using the synthetic API.
+This does not search workspace records or validate real authorization, assistive
+technology, Telegram clients or production data.
+
+`node next-bot-profile.test.cjs` checks saved bot record name, description, category and tag edits
+against the synthetic fixture, including changed-field-only writes, read-only
+permissions, draft and pending navigation, conditional conflicts, old/mixed
+server handling, per-field capability fallback, tag validation and uncertain responses. Browser tests use a simulated API;
+real MongoDB concurrency, Telegram and physical devices are not tested.
+
+`node next-command-create.test.cjs` checks the Next command create-only path, collision drafts, old/mixed-worker failure, uncertain responses and responsive layout with a synthetic API. It does not establish real Mongo index behavior, live Telegram or multi-worker safety.
+
+`node next-command-cas.test.cjs` covers conditional command edits, state changes, deletion confirmations, stale snapshots and older/mixed workers in synthetic Chromium. It does not exercise real MongoDB, live Telegram, physical devices or production.
+
+`node next-bot-features.test.cjs` checks the read-only feature summary with intercepted synthetic responses, access presentation, unavailable backends, malformed responses, workspace races and keyboard focus at 320/390/1440px. The mock is not real MongoDB, Telegram, production or a full accessibility test.
+
+`next-bot-lifecycle.test.cjs` uses intercepted responses and the synthetic
+fixture to check reviewed-state delete conflicts, older backend behavior, and
+responsive layout at 320/390/1440px. It does not exercise real Mongo or Telegram.
+
+`next-bot-directory-availability.test.cjs` exercises isolated bot-list
+failures, clone-panel availability, focused retry, draft preservation,
+workspace/session races and unrelated tools using synthetic responses only.

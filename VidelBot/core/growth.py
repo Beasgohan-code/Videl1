@@ -75,7 +75,7 @@ async def on_new_user(client, user, text: str) -> bool:
                 ref, f"<b>🎉 Referral reward unlocked!</b>\n\n<blockquote><b>{name}</b> joined with your link.\n"
                      f"<b>👥 Referrals:</b> {count}\n<b>💎 Reward:</b> +{_label(REFERRAL_REWARD_DAYS)} Premium\n"
                      f"<b>📅 Premium until:</b> {until_text(expiry)}</blockquote>",
-                message_effect_id=effect("party"))
+                effect_id=effect("party"))
         else:
             left = (REFERRAL_TARGET - count % REFERRAL_TARGET) if REFERRAL_TARGET > 0 else 0
             extra = f"\n<i>{left} more for +{_label(REFERRAL_REWARD_DAYS)} Premium!</i>" if left and REFERRAL_REWARD_DAYS else ""
@@ -199,7 +199,7 @@ async def redeem_cmd(client: Client, message: Message):
     await message.reply_text(
         f"<b>🎟 Code redeemed!</b>\n\n<blockquote><b>💎 Premium:</b> +{_label(days)}\n"
         f"<b>📅 Valid until:</b> {until_text(result)}</blockquote>",
-        message_effect_id=effect("party"),
+        effect_id=effect("party"),
         reply_markup=InlineKeyboardMarkup([[Btn("📊 My Plan", callback_data="myplan_back_btn")]]))
     from core import botlog
     await botlog.event("Redeem", botlog.user_block(message.from_user, (
@@ -281,7 +281,7 @@ async def _trial_reply(client, user, send):
 @Client.on_message(filters.command("trial") & filters.private)
 async def trial_cmd(client: Client, message: Message):
     await _trial_reply(client, message.from_user,
-                       lambda t: message.reply_text(t, message_effect_id=effect("party") if "activated" in t else None))
+                       lambda t: message.reply_text(t, effect_id=effect("party") if "activated" in t else None))
 
 
 @Client.on_callback_query(filters.regex(r"^trial_btn$"))

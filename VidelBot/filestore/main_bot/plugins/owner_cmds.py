@@ -5,6 +5,7 @@ Owner commands for the Videl clone (FileStore) platform
 /sys    - System resource usage
 """
 
+import asyncio
 import html
 import time
 import psutil
@@ -13,6 +14,8 @@ from datetime import datetime, timezone
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
+from core import rich
+from core.rich import Doc
 from filestore.fs_config import OWNERS, LOGGER, HIBERNATION_HOURS, MAX_BOTS_PER_USER
 from filestore.database.main_db import MainDB
 
@@ -26,19 +29,16 @@ async def platform_stats(client: Client, message: Message):
     try:
         total_users = await main_db.total_users()
         all_bots = await main_db.get_all_bots() if hasattr(main_db, "get_all_bots") else []
-        
-        # Fallback if method missing
         if not all_bots:
             try:
-                active = await main_db.get_all_active_bots()
-                all_bots = active
+                all_bots = await main_db.get_all_active_bots()
             except Exception:
                 all_bots = []
 
         active_count = 0
         stopped_count = 0
         from filestore.worker_bot.engine import worker_engine
-        
+
         for bot in all_bots:
             bid = bot.get("_id") or bot.get("bot_id")
             if worker_engine.get_worker(bid):
@@ -46,21 +46,15 @@ async def platform_stats(client: Client, message: Message):
             else:
                 stopped_count += 1
 
-        text = (
-            f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 𝗖𝗟𝗢𝗡𝗘 𝗣𝗟𝗔𝗧𝗙𝗢𝗥𝗠 𝗦𝗧𝗔𝗧𝗦\n"
-            f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-            f"<blockquote>"
-            f"◈ <b>Total Users:</b> <code>{total_users}</code>\n"
-            f"◈ <b>Total Bots:</b> <code>{len(all_bots)}</code>\n"
-            f"◈ <b>Running:</b> 🟢 <code>{active_count}</code>\n"
-            f"◈ <b>Stopped:</b> 🔴 <code>{stopped_count}</code>\n"
-            f"◈ <b>Max Bots/User:</b> <code>{MAX_BOTS_PER_USER}</code>\n"
-            f"◈ <b>Auto-off:</b> <code>{str(HIBERNATION_HOURS // 24) + ' days unused' if HIBERNATION_HOURS else 'off'}</code>\n"
-            f"</blockquote>\n"
-
-        )
-        await message.reply(text)
+        doc = Doc("📊", "Clone Platform Stats", "FileStore worker fleet").kv_table([
+            ("👥 Total Users", f"{total_users:,}"),
+            ("🤖 Total Bots", f"{len(all_bots):,}"),
+            ("🟢 Running", str(active_count)),
+            ("🔴 Stopped", str(stopped_count)),
+            ("🔢 Max Bots/User", str(MAX_BOTS_PER_USER)),
+            ("💤 Auto-Off", f"{HIBERNATION_HOURS // 24} days unused" if HIBERNATION_HOURS else "Off"),
+        ], key_header="Metric", val_header="Value")
+        await rich.reply(message, doc)
     except Exception as e:
         log.error(f"Stats error: {e}")
         await message.reply(f"<b>❌ Error fetching stats:</b> <code>{html.escape(str(e))}</code>")
@@ -77,25 +71,26 @@ async def list_all_bots(client: Client, message: Message):
             pass
 
         if not bots:
-            await message.reply("<b>❌ No bots found in database.</b>")
-            return
+            return await rich.reply(
+                message,
+                Doc("🤖", "Registered Clone Bots").status("empty", "No bots found", "No clone bots registered in database."),
+            )
 
         from filestore.worker_bot.engine import worker_engine
-        lines = []
-        for i, bot in enumerate(bots[:30], 1):  # Limit to 30
+        rows = []
+        for bot in bots[:30]:
             username = bot.get("bot_username", "unknown")
             owner = bot.get("owner_id", "?")
             bid = bot.get("_id")
-            live = "🟢" if worker_engine.get_worker(bid) else "🔴"
-            lines.append(f"{i}. {live} @{username} | Owner: <code>{owner}</code>")
+            live = "🟢 Live" if worker_engine.get_worker(bid) else "🔴 Idle"
+            rows.append((f"@{username}", rich.code(owner), live))
 
-        text = (
-            f"<b>🤖 All Bots ({len(bots)})</b>\n\n"
-            f"<blockquote>" + "\n".join(lines) + "</blockquote>"
+        doc = Doc("🤖", f"All Clone Bots · {len(bots)}").table(
+            rows, header=("Bot", "Owner ID", "Worker")
         )
         if len(bots) > 30:
-            text += f"\n\n<i>...and {len(bots)-30} more</i>"
-        await message.reply(text)
+            doc.footer(f"Showing 30 of {len(bots)} bots")
+        await rich.reply(message, doc)
     except Exception as e:
         log.error(f"Bots list error: {e}")
         await message.reply(f"<b>❌ Error:</b> <code>{html.escape(str(e))}</code>")
@@ -105,7 +100,7 @@ async def list_all_bots(client: Client, message: Message):
 async def system_stats(client: Client, message: Message):
     """Show server resource usage."""
     try:
-        cpu = psutil.cpu_percent(interval=0.5)
+        cpu = await asyncio.to_thread(psutil.cpu_percent, 0.2)
         mem = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
         boot = datetime.fromtimestamp(psutil.boot_time())
@@ -114,20 +109,24 @@ async def system_stats(client: Client, message: Message):
         from filestore.worker_bot.engine import worker_engine
         active_workers = worker_engine.active_count
 
-        text = (
-            f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🖥 𝗦𝗬𝗦𝗧𝗘𝗠 𝗦𝗧𝗔𝗧𝗦\n"
-            f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-            f"<blockquote>"
-            f"◈ <b>CPU:</b> <code>{cpu}%</code>\n"
-            f"◈ <b>RAM:</b> <code>{mem.percent}%</code> "
-            f"({mem.used // (1024**2)} / {mem.total // (1024**2)} MB)\n"
-            f"◈ <b>Disk:</b> <code>{disk.percent}%</code>\n"
-            f"◈ <b>Uptime:</b> <code>{str(uptime).split('.')[0]}</code>\n"
-            f"◈ <b>Active Workers:</b> <code>{active_workers}</code>\n"
-            f"</blockquote>"
-        )
-        await message.reply(text)
+        doc = Doc("🖥", "System Resources", "host & worker telemetry")
+        doc.progress(cpu, 100, label="CPU")
+        doc.progress(mem.percent, 100, label="RAM", detail=f"{mem.used // (1024**2)} / {mem.total // (1024**2)} MB")
+        doc.progress(disk.percent, 100, label="Disk")
+        doc.kv_table([
+            ("⏱ Host Uptime", str(uptime).split(".")[0]),
+            ("👷 Active Clone Workers", str(active_workers)),
+        ], key_header="Item", val_header="Value")
+        await rich.reply(message, doc)
+        # Widgets are optional; the existing owner-only response remains the fallback.
+        try:
+            from plugins.widget.details import encoder_queue_snapshot, send_detail, system_payload
+            running, waiting = encoder_queue_snapshot()
+            payload = system_payload(cpu, mem, disk, uptime, active_workers,
+                                     encoder_running=running, encoder_waiting=waiting)
+            await send_detail(client, message, payload, owner_only=True)
+        except Exception as exc:
+            log.debug("System detail widget preparation failed (%s)", type(exc).__name__)
     except Exception as e:
         await message.reply(f"<b>❌ System stats error:</b> <code>{html.escape(str(e))}</code>")
 

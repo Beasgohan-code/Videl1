@@ -10,12 +10,12 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     KeyboardButton,
+    KeyboardButtonRequestChat,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
-    RequestPeerTypeChannel,
 )
 from filestore.fs_config import BOT_CREATION_COOLDOWN, API_ID, API_HASH, LOGGER, CLONE_ENABLED, OWNERS
-from filestore.database.main_db import MainDB
+from filestore.database.main_db import BotRegistrationConflict, MainDB
 from filestore.utils.helpers import validate_bot_token, send_main_log
 from filestore.utils.security import encrypt_token, mask_token
 
@@ -34,8 +34,15 @@ CHANNEL_STEPS = ("awaiting_channel", "awaiting_new_log_channel", "awaiting_fsub_
 
 def channel_picker_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("📢 Select channel",
-                         request_chat=RequestPeerTypeChannel(button_id=CHANNEL_PICKER_ID))]],
+        [[KeyboardButton(
+            "📢 Select channel",
+            request_chat=KeyboardButtonRequestChat(
+                button_id=CHANNEL_PICKER_ID,
+                chat_is_channel=True,
+                request_title=True,
+                request_username=True,
+            ),
+        )]],
         resize_keyboard=True, one_time_keyboard=True, placeholder="Pick a channel or type its ID",
     )
 
@@ -48,8 +55,8 @@ async def offer_channel_picker(client, user_id: int, state: dict = None):
             reply_markup=channel_picker_kb())
         if state is not None:
             state["picker"] = True
-    except Exception as e:
-        log.debug(f"channel picker failed: {e}")
+    except Exception:
+        log.debug("Channel picker could not be displayed.")
 
 
 async def remove_channel_picker(client, user_id: int, state: dict = None, text: str = None):
@@ -63,7 +70,7 @@ async def remove_channel_picker(client, user_id: int, state: dict = None, text: 
 
 
 async def _has_shared_chat(_, __, m: Message) -> bool:
-    return bool(getattr(m, "chats_shared", None))
+    return bool(getattr(m, "chat_shared", None) or getattr(m, "chats_shared", None))
 
 
 shared_chat_filter = filters.create(_has_shared_chat)
@@ -75,8 +82,9 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
     Shared by the classic "paste your token" flow and the one-tap managed-bot flow."""
     state = _creation_state.setdefault(user_id, {"step": "awaiting_token", "data": {}})
     state.setdefault("data", {})
-    if managed:
-        state["data"]["managed"] = True
+    state["data"].pop("restore_deleted", None)
+    state["data"].pop("restore_expected_token", None)
+    state["data"]["managed"] = bool(managed)
     bot_info = await validate_bot_token(token)
     if not bot_info:
         await status_msg.edit_text(
@@ -93,12 +101,15 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
     bot_id = bot_info["id"]
     existing = await main_db.get_bot(bot_id)
     if existing:
-        if existing.get("is_deleted") and existing.get("owner_id") == user_id:
-            pass # Allow recreating a soft-deleted bot
+        if (existing.get("is_deleted") is True and existing.get("owner_id") == user_id
+                and isinstance(existing.get("bot_token_encrypted"), str)):
+            state["data"]["restore_deleted"] = True
+            # Compare the saved credential at commit time; never display it.
+            state["data"]["restore_expected_token"] = existing["bot_token_encrypted"]
         else:
             await status_msg.edit_text(
                 "<b>❌ This bot is already registered!</b>\n\n"
-                f"Bot @{bot_info.get('username', 'unknown')} is already in use.",
+                f"Bot @{html.escape(str(bot_info.get('username', 'unknown')))} is already in use.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
                 ]),
@@ -113,10 +124,17 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
 
     bot_name = bot_info.get("first_name", "Unknown")
     bot_username = bot_info.get("username", "unknown")
+    restore_notice = (
+        "<b>Restoring a removed clone:</b> Continuing will update its token and channel "
+        "and reactivate its saved settings, including any shortener configuration. "
+        "Existing stored data is retained. Cancel if you do not want to restore it.\n\n"
+        if state["data"].get("restore_deleted") else ""
+    )
 
     await status_msg.edit_text(
         f"<b>✅ Token verified!</b>\n\n"
-        f"<blockquote>Bot: <b>{html.escape(str(bot_name))}</b> (@{bot_username})\n\n"
+        f"<blockquote>Bot: <b>{html.escape(str(bot_name))}</b> (@{html.escape(str(bot_username))})\n\n"
+        f"{restore_notice}"
         f"<b>Step 2/2:</b> Send me the <b>Log Channel ID</b>.\n\n"
         f"This is where your bot will store files.\n"
         f"Make sure the bot (@{bot_username}) is an admin in the channel.\n\n"
@@ -238,7 +256,7 @@ async def handle_creation_input(client: Client, message: Message):
     step = state["step"]
 
     # 📢 Channel shared through the native picker → treat it as a typed ID
-    if getattr(message, "chats_shared", None):
+    if getattr(message, "chat_shared", None) or getattr(message, "chats_shared", None):
         from core.payments import shared_ids
         picked = shared_ids(message)
         if step not in CHANNEL_STEPS or not picked:
@@ -313,82 +331,114 @@ async def handle_creation_input(client: Client, message: Message):
         bot_info = state["data"]["bot_info"]
         channel_title = str(channel_id)
 
+        import html
+        temp_client = None
         try:
-            # Create a temporary Pyrogram client to verify channel access
             temp_client = Client(
                 name=f"verify_{bot_info['id']}",
                 api_id=API_ID,
                 api_hash=API_HASH,
                 bot_token=token,
                 in_memory=True,
+                no_updates=True,
             )
-
             await temp_client.start()
 
             try:
                 chat = await temp_client.get_chat(channel_id)
                 channel_title = chat.title or str(channel_id)
-                # Try sending a test message
                 test_msg = await temp_client.send_message(
                     chat_id=channel_id, text="✅ Channel verified for FileStore bot."
                 )
                 await test_msg.delete()
-            except Exception as e:
+            except Exception:
                 await status_msg.edit_text(
                     f"<b>❌ Cannot access channel!</b>\n\n"
                     f"<blockquote>Make sure:\n"
                     f"1. The channel ID is correct\n"
-                    f"2. The bot (@{bot_info.get('username', '')}) is an admin in the channel\n"
-                    f"3. The bot has permission to send messages\n\n"
-                    f"Error: <code>{str(e)[:100]}</code></blockquote>",
+                    f"2. The bot (@{html.escape(str(bot_info.get('username', '')))}) is an admin in the channel\n"
+                    f"3. The bot has permission to send messages.\n\n"
+                    f"Telegram may also be temporarily unavailable.</blockquote>",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
                     ]),
                 )
-                await temp_client.stop()
                 return
-
-            await temp_client.stop()
-
-        except Exception as e:
-            log.error(f"Channel validation error: {e}")
+        except Exception:
+            # Telegram/network exceptions may contain credentials or URLs.
+            log.error("Clone channel verification failed.")
             await status_msg.edit_text(
-                f"<b>❌ Verification failed!</b>\n\n"
-                f"<blockquote>Error: <code>{str(e)[:150]}</code></blockquote>",
+                "<b>❌ Verification failed!</b>\n\n"
+                "<blockquote>Could not connect to Telegram. Please try again later.</blockquote>",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
                 ]),
             )
             return
+        finally:
+            if getattr(temp_client, "is_connected", False):
+                try:
+                    await temp_client.stop(block=False)
+                except Exception:
+                    pass
 
         # Everything valid — save to database
-        encrypted_token = encrypt_token(token)
         bot_id = bot_info["id"]
         bot_username = bot_info.get("username", "unknown")
 
-        await main_db.add_bot(
-            bot_id=bot_id,
-            owner_id=user_id,
-            bot_token_encrypted=encrypted_token,
-            bot_username=bot_username,
-            log_channel_id=channel_id,
-        )
-        if state["data"].get("managed"):
-            # created through Bot Management Mode → Videl can rotate its token later
-            await main_db.bots.update_one({"_id": bot_id}, {"$set": {"managed": True}})
+        try:
+            encrypted_token = encrypt_token(token)
+            await main_db.add_bot(
+                bot_id=bot_id,
+                owner_id=user_id,
+                bot_token_encrypted=encrypted_token,
+                bot_username=bot_username,
+                log_channel_id=channel_id,
+                managed=bool(state["data"].get("managed")),
+                restore_deleted=bool(state["data"].get("restore_deleted")),
+                expected_old_token=state["data"].get("restore_expected_token"),
+            )
+        except BotRegistrationConflict:
+            _creation_state.pop(user_id, None)
+            await status_msg.edit_text(
+                "<b>❌ Registration could not be completed.</b>\n\n"
+                "This bot is already registered or its saved record changed. "
+                "No existing record was replaced by this request. Check My Bots before trying again.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]),
+            )
+            return
+        except Exception:
+            # A write may have succeeded before an error was returned. Never
+            # repeat it automatically or leak database errors / credentials.
+            _creation_state.pop(user_id, None)
+            log.error("Clone registration could not be confirmed.")
+            await status_msg.edit_text(
+                "<b>⚠️ Registration could not be confirmed.</b>\n\n"
+                "The result may be uncertain. Check My Bots before retrying, or contact the operator.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]),
+            )
+            return
 
-        # Set cooldown
-        await main_db.set_cooldown(user_id)
-
-        # Clear creation state
+        # Clear the token before any subsequent action can fail or be retried.
         _creation_state.pop(user_id, None)
+        try:
+            await main_db.set_cooldown(user_id)
+        except Exception:
+            log.error("Clone creation cooldown could not be recorded.")
+            await status_msg.edit_text(
+                "<b>⚠️ Registration saved; this request did not attempt startup.</b>\n\n"
+                "The cooldown could not be recorded. Check My Bots and contact the operator before retrying.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]),
+            )
+            return
 
         # Start the worker bot
         try:
             from filestore.worker_bot.engine import worker_engine
             bot_doc = await main_db.get_bot(bot_id)
             await worker_engine.start_worker(bot_doc)
-            worker_started = True
+            # start_worker can return without starting (e.g. a decryption failure).
+            worker_started = worker_engine.get_worker(bot_id) is not None
             
             # Log to the owner log channel (+ owner DM)
             try:
@@ -404,23 +454,25 @@ async def handle_creation_input(client: Client, message: Message):
                     f"<b>🔑 Token:</b> <code>{mask_token(token)}</code>\n"
                     f"<b>📊 Clones of this user:</b> {user_bots} · <b>Platform total:</b> {total_bots}"
                 ), client=client)
-            except Exception as e:
-                log.warning(f"clone log failed: {e}")
+            except Exception:
+                log.warning("Clone event logging failed.")
             
-        except Exception as e:
-            log.error(f"Failed to start worker for bot {bot_id}: {e}")
+        except Exception:
+            log.error("Clone worker start could not be confirmed.")
             worker_started = False
 
         status_icon = "🟢" if worker_started else "🟡"
-        status_text = "Running" if worker_started else "Pending restart"
+        status_text = "Observed running in this process" if worker_started else "Not observed running in this process"
+        title = "Clone restored" if state["data"].get("restore_deleted") else "Clone registered"
 
         await status_msg.edit_text(
-            f"<b>✅ Bot Created Successfully!</b>\n\n"
+            f"<b>✅ {title}</b>\n\n"
             f"<blockquote>"
-            f"<b>Bot:</b> @{bot_username}\n"
+            f"<b>Bot:</b> @{html.escape(str(bot_username))}\n"
             f"<b>Channel:</b> <code>{channel_id}</code>\n"
             f"<b>Status:</b> {status_icon} {status_text}\n\n"
-            f"Your bot is ready! Use the dashboard to configure it."
+            f"The registration is saved. Use the dashboard to configure it; "
+            f"a saved record alone does not guarantee a running worker or confirm which token a running worker uses."
             f"</blockquote>",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⚙️ Bot Dashboard", callback_data=f"dashboard_{bot_id}")],

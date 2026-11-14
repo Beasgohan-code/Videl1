@@ -1,0 +1,144 @@
+name: Videl1 CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Syntax, Security, Config & Pytest (Python 3.11)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install pinned test-only FFmpeg and ffprobe
+        timeout-minutes: 5
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps --require-hashes --only-binary=:all: \
+            --target "$RUNNER_TEMP/ci-media" -r scripts/ci/media-requirements.txt
+          media_bin="$RUNNER_TEMP/ci-media/ffmpeg/binaries"
+          test -x "$media_bin/ffmpeg"
+          test -x "$media_bin/ffprobe"
+          "$media_bin/ffmpeg" -version
+          "$media_bin/ffprobe" -version
+          echo "$media_bin" >> "$GITHUB_PATH"
+
+      - name: Check dependency & deployment configuration consistency
+        run: |
+          cmp -s requirements.txt VidelBot/requirements.txt
+          test -f Dockerfile
+          test -f .dockerignore
+          test ! -e VidelBot/Dockerfile
+          test ! -e VidelBot/.dockerignore
+          python -c '
+          import json, pathlib, yaml
+          json.loads(pathlib.Path("app.json").read_text())
+          for fn in ("docker-compose.yml", "render.yaml", "heroku.yml"):
+              assert isinstance(yaml.safe_load(pathlib.Path(fn).read_text()), dict), fn
+          print("Deploy manifests valid")
+          ' || true
+
+      - name: Install Python dependencies (preserving WzGram over Kurigram)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r VidelBot/requirements.txt -r VidelBot/requirements-dev.txt
+          pip uninstall -y kurigram || true
+          pip install --no-deps --force-reinstall wzgram==3.1.6
+
+      - name: Verify deployment manifests (YAML & JSON)
+        run: |
+          python -c '
+          import json, pathlib, yaml
+          json.loads(pathlib.Path("app.json").read_text())
+          for fn in ("docker-compose.yml", "render.yaml", "heroku.yml"):
+              assert isinstance(yaml.safe_load(pathlib.Path(fn).read_text()), dict), fn
+          print("All deployment manifests validated")
+          '
+
+      - name: Compile Python bytecode & verify runtime stack imports
+        run: |
+          python -m compileall -q VidelBot
+          python -c '
+          import sys
+          sys.path.insert(0, "VidelBot")
+          import os
+          os.environ.setdefault("API_ID", "1")
+          os.environ.setdefault("API_HASH", "x")
+          os.environ.setdefault("BOT_TOKEN", "123456:TEST")
+          os.environ.setdefault("DB_URI", "mongodb://localhost:27017")
+          os.environ.setdefault("OWNER_ID", "1")
+          import client
+          st = client.runtime_stack()
+          assert (
+              st["engine"] == "WzGram"
+              and st["rich_available"] is True
+              and bool(st["richgram"])
+              and st.get("botapi_engine") == "aiogram"
+          ), st
+          print("Runtime stack OK:", st)
+          '
+
+      - name: Static lint & security sanity scan
+        run: |
+          python -c '
+          import ast, pathlib, re
+          root = pathlib.Path("VidelBot")
+          sources = [p for p in root.rglob("*.py") if "__pycache__" not in p.parts and "tests" not in p.parts]
+          for p in sources:
+              text = p.read_text(encoding="utf-8")
+              tree = ast.parse(text, filename=str(p))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.ExceptHandler) and node.type is None:
+                      raise SystemExit(f"Bare except in {p}:{node.lineno}")
+                  if isinstance(node, ast.Call):
+                      fn = ast.unparse(node.func)
+                      if fn in ("yaml.load", "pickle.loads", "pickle.load"):
+                          raise SystemExit(f"Unsafe deserializer {fn} in {p}:{node.lineno}")
+          sample = (root / "config.env.sample").read_text(encoding="utf-8")
+          assert not re.search(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b", sample), "Token-like secret in config.env.sample"
+          print(f"Static security scan passed across {len(sources)} modules")
+          '
+
+      - name: Run full pytest suite
+        working-directory: VidelBot
+        run: python -m pytest tests -q
+
+      - name: Set up Node.js for Studio interaction tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Test Telegram sign-in interface (synthetic JSDOM)
+        run: |
+          npm ci --prefix VidelBot/tests/ui --ignore-scripts --no-audit --no-fund
+          npm test --prefix VidelBot/tests/ui
+
+  native-tools:
+    name: Ubuntu native media & archive tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install and verify native tools
+        timeout-minutes: 10
+        run: bash scripts/ci/install-native-tools.sh

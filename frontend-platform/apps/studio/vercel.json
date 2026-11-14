@@ -1,0 +1,13 @@
+{
+  "redirects": [
+    {"source": "/", "destination": "/app", "permanent": false},
+    {"source": "/admin", "destination": "https://videl1.onrender.com/admin", "permanent": false}
+  ],
+  "headers": [
+    {"source": "/(.*)", "headers": [
+      {"key": "Cache-Control", "value": "no-store"},
+      {"key": "X-Content-Type-Options", "value": "nosniff"},
+      {"key": "Referrer-Policy", "value": "no-referrer"}
+    ]}
+  ]
+}
