@@ -124,3 +124,7 @@ real MongoDB concurrency, Telegram and physical devices are not tested.
 `next-bot-lifecycle.test.cjs` uses intercepted responses and the synthetic
 fixture to check reviewed-state delete conflicts, older backend behavior, and
 responsive layout at 320/390/1440px. It does not exercise real Mongo or Telegram.
+
+`next-bot-directory-availability.test.cjs` exercises isolated bot-list
+failures, clone-panel availability, focused retry, draft preservation,
+workspace/session races and unrelated tools using synthetic responses only.

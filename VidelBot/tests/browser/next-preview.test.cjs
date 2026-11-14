@@ -53,7 +53,8 @@ const base = process.env.NEXT_PREVIEW_TEST_URL || 'http://localhost:3001/next-pr
     await failed.getByRole('button', {name: 'Continue to workspace'}).click();
     await failed.waitForFunction(() => { const e = document.querySelector('#workspace'); return e && !e.disabled; });
     await failed.getByLabel('Select workspace').selectOption('bravo');
-    await failed.getByText('Synthetic outage').waitFor();
+    await failed.getByText('Could not load workspace bot records.', {exact:false}).waitFor();
+    assert.equal(await failed.getByText('Synthetic outage').count(), 0, 'private server diagnostics must not render');
     assert.equal(await failed.getByText('No bot records returned.').count(), 0, 'failed reads must not be shown as empty records');
     assert.equal(await failed.getByText('Loading workspace…').count(), 0, 'failed reads must not be shown as loading');
     console.log('Next preview synthetic read-failure check passed');
