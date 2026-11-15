@@ -6,13 +6,15 @@ Growth tools — referrals, redeem codes and a one-time free trial.
   /redeem CODE                 redeem a premium code
   /trial                       TRIAL_DAYS of premium, once per account
   /gencode <days> [count] [uses]   (admins) create codes – 0 days = lifetime
-  /codes · /delcode CODE           (admins) list / delete codes
+  /codes [page] · /delcode CODE    (admins) list / delete codes
 
 Only users who have never talked to the bot before count as referrals (the
 hook runs from the #NewUser middleware), self-referrals are ignored and each
 user can be referred once.
 """
+import html
 import logging
+import re
 import secrets
 import string
 from datetime import datetime, timezone
@@ -27,6 +29,8 @@ from core.ui import copy_button, effect
 
 log = logging.getLogger("videl.growth")
 CODE_ALPHABET = string.ascii_uppercase + string.digits
+CODE_PAGE_SIZE = 30
+CODE_MAX_PAGE = 1000
 
 
 def _label(days: int) -> str:
@@ -168,6 +172,21 @@ async def _allow_code_management(message: Message) -> bool:
     return True
 
 
+async def _send_code_message(message: Message, text: str, **kwargs) -> bool:
+    """Avoid logging bearer codes if Telegram delivery fails or is uncertain."""
+    try:
+        await message.reply_text(text, **kwargs)
+        return True
+    except Exception:
+        log.warning("Premium code message delivery could not be confirmed.")
+        try:
+            await message.reply_text("⚠️ Could not confirm delivery of the code message. "
+                                     "Codes may already exist; check /codes privately before taking further action.")
+        except Exception:
+            log.warning("Premium code delivery notice could not be sent.")
+        return False
+
+
 def new_code(length: int = 10) -> str:
     raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(length))
     return f"VIDEL-{raw[:5]}-{raw[5:]}"
@@ -207,7 +226,15 @@ async def redeem(user_id: int, code: str, name: str = ""):
 async def redeem_cmd(client: Client, message: Message):
     if len(message.command) < 2:
         return await message.reply_text("<b>🎟 Redeem a code</b>\n\nUsage: <code>/redeem VIDEL-XXXXX-XXXXX</code>")
-    ok, result, days = await redeem(message.from_user.id, message.command[1], message.from_user.first_name)
+    try:
+        ok, result, days = await redeem(message.from_user.id, message.command[1], message.from_user.first_name)
+    except Exception:
+        # The claim and entitlement writes are separate, and a timeout can occur
+        # after either write. Never roll back or retry an uncertain operation.
+        log.warning("Redeem result could not be confirmed.")
+        return await message.reply_text(
+            "⚠️ Could not confirm redemption. The code may have been used or Premium may have been granted. "
+            "Check /myplan and contact a bot admin before trying again.")
     if not ok:
         return await message.reply_text(result)
     from core.payments import until_text
@@ -237,25 +264,66 @@ async def gencode_cmd(client: Client, message: Message):
             "<b>🎟 Generate redeem codes</b>\n\n<code>/gencode &lt;days&gt; [count] [uses]</code>\n"
             "• days: premium days (0 = lifetime)\n• count: codes to create (1-50)\n• uses: redemptions per code\n\n"
             "Example: <code>/gencode 30 5</code> → five 30-day codes")
-    codes = await create_codes(days, count, uses, message.from_user.id)
+    try:
+        codes = await create_codes(days, count, uses, message.from_user.id)
+    except Exception:
+        # Partial inserts or an acknowledged write with a lost response are
+        # possible. Do not delete anything or auto-retry the batch.
+        log.warning("Premium code creation result could not be confirmed.")
+        return await message.reply_text(
+            "⚠️ Could not confirm code creation. Some codes may have been saved. "
+            "Check /codes and its pages before trying again; no automatic retry was made.")
+    # Audit the acknowledged batch before sending the secret-bearing reply;
+    # logging remains best-effort and must not block delivery of saved codes.
+    try:
+        from core import botlog
+        await botlog.event("CodesCreated", botlog.user_block(message.from_user,
+                           f"<b>🎟 Codes:</b> {count} × {_label(days)} ({uses} use(s) each)"), client=client)
+    except Exception:
+        log.warning("Premium code creation audit could not be sent.")
     body = "\n".join(f"<code>{c}</code>" for c in codes)
     kb = InlineKeyboardMarkup([[copy_button("📋 Copy code", codes[0])]]) if count == 1 else None
-    await message.reply_text(f"<b>🎟 {count} code(s) · {_label(days)} · {uses} use(s) each</b>\n\n{body}\n\n"
+    await _send_code_message(message, f"<b>🎟 {count} code(s) · {_label(days)} · {uses} use(s) each</b>\n\n{body}\n\n"
                              f"<i>Users redeem with</i> <code>/redeem CODE</code>", reply_markup=kb)
-    from core import botlog
-    await botlog.event("CodesCreated", botlog.user_block(message.from_user,
-                       f"<b>🎟 Codes:</b> {count} × {_label(days)} ({uses} use(s) each)"), client=client)
 
 
 @Client.on_message(filters.command("codes") & filters.user(ADMINS))
 async def codes_cmd(client: Client, message: Message):
     if not await _allow_code_management(message):
         return
-    docs = await vdb.db["codes"].find({"uses_left": {"$gt": 0}}).sort("created_at", -1).limit(30).to_list(30)
+    command = message.command or []
+    if len(command) > 2 or (len(command) == 2 and not re.fullmatch(r"[0-9]{1,4}", command[1])):
+        return await message.reply_text("Usage: <code>/codes [page]</code> (pages 1–1000).")
+    page = int(command[1]) if len(command) == 2 else 1
+    if not 1 <= page <= CODE_MAX_PAGE:
+        return await message.reply_text("Usage: <code>/codes [page]</code> (pages 1–1000).")
+    try:
+        docs = await (vdb.db["codes"].find({"uses_left": {"$gt": 0}})
+                      .sort([("created_at", -1), ("_id", -1)])
+                      .skip((page - 1) * CODE_PAGE_SIZE).limit(CODE_PAGE_SIZE + 1)
+                      .to_list(CODE_PAGE_SIZE + 1))
+    except Exception:
+        log.warning("Premium code list could not be loaded.")
+        return await message.reply_text("⚠️ Could not load active codes. Please try again privately.")
     if not docs:
-        return await message.reply_text("🎟 No active codes. Create some with /gencode.")
-    lines = [f"• <code>{d['code']}</code> · {_label(d['days'])} · {d['uses_left']}/{d.get('uses', 1)} left" for d in docs]
-    await message.reply_text("<b>🎟 Active redeem codes</b>\n\n" + "\n".join(lines))
+        return await message.reply_text(
+            f"🎟 No active codes on page {page}. Pages can change as codes are created or used. "
+            "Start again with <code>/codes 1</code>.")
+    def esc(value):
+        return html.escape(str(value), quote=False)
+    lines = [f"• <code>{esc(d.get('code', ''))}</code> · {esc(_label(d.get('days', 0)))} · "
+             f"{esc(d.get('uses_left', ''))}/{esc(d.get('uses', 1))} left" for d in docs[:CODE_PAGE_SIZE]]
+    navigation = []
+    if page > 1:
+        navigation.append(f"Previous: <code>/codes {page - 1}</code>")
+    if len(docs) > CODE_PAGE_SIZE and page < CODE_MAX_PAGE:
+        navigation.append(f"Next: <code>/codes {page + 1}</code>")
+    if len(docs) > CODE_PAGE_SIZE and page == CODE_MAX_PAGE:
+        navigation.append("Page limit reached; additional active codes are not shown.")
+    nav = "\n".join(navigation)
+    await _send_code_message(message, f"<b>🎟 Active redeem codes · page {page}</b>\n\n" + "\n".join(lines)
+                             + (f"\n\n{nav}" if nav else "")
+                             + "\n\n<i>Pages can shift when codes are created, redeemed or deleted.</i>")
 
 
 @Client.on_message(filters.command("delcode") & filters.user(ADMINS))
@@ -264,7 +332,12 @@ async def delcode_cmd(client: Client, message: Message):
         return
     if len(message.command) < 2:
         return await message.reply_text("Usage: <code>/delcode CODE</code>")
-    res = await vdb.db["codes"].delete_one({"code": message.command[1].upper()})
+    try:
+        res = await vdb.db["codes"].delete_one({"code": message.command[1].upper()})
+    except Exception:
+        log.warning("Premium code deletion result could not be confirmed.")
+        return await message.reply_text("⚠️ Could not confirm deletion. The result may be uncertain. "
+                                        "Check active codes with /codes before retrying; absence alone does not prove deletion.")
     await message.reply_text("🗑 Code deleted." if res.deleted_count else "❌ Code not found.")
 
 

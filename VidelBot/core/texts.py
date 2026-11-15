@@ -281,7 +281,7 @@ ADMIN_HELP = """<b>👮 Admin</b>
 
 <b>Growth (bot admins, private chat only)</b>
 /gencode &lt;days&gt; [count] [uses] — redeem codes (0 days = lifetime)
-/codes — active codes · /delcode &lt;code&gt;
+/codes [page] — active codes · /delcode &lt;code&gt;
 Support: users send /support → it lands in your DM → <b>reply</b> to answer.
 
 <b>Owner</b>

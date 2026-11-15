@@ -163,7 +163,7 @@ ADMIN_COMMANDS = [
     ("msg", "✉️ Message a user: id text"),
     ("export", "📤 Export users as CSV"),
     ("gencode", "🎟 Create redeem codes: days count uses"),
-    ("codes", "📋 Active redeem codes"),
+    ("codes", "📋 Active redeem codes: optional page"),
     ("delcode", "🗑 Delete a redeem code"),
     ("broadcast", "📢 Broadcast (reply to a message)"),
     ("ban", "🚫 Ban a user"),
