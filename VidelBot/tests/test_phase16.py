@@ -140,8 +140,9 @@ def test_real_vfr_source_is_not_padded_with_duplicate_frames(tmp_path):
     cmd = ffcmd.build_command(src, new, s, None, fps_flag=hw.fps_mode_flag())
     assert subprocess.run([FF] + cmd[1:], capture_output=True).returncode == 0
     old = str(tmp_path / "old.mp4")
-    subprocess.run([FF] + ffcmd.build_command(src, old, s, None, fps_flag=None)[1:], capture_output=True, check=True)
-    assert _frames(new) == 60 and _frames(old) > 120                         # CFR default duplicated ~90 frames
+    cfr_cmd = ffcmd.build_command(src, old, s, None, fps_flag=None)
+    subprocess.run([FF] + cfr_cmd[1:-1] + [hw.fps_mode_flag(), "cfr", old], capture_output=True, check=True)
+    assert _frames(new) == 60 and _frames(old) > 120                         # CFR pads ~90 duplicate frames
 
 
 @needs_ffmpeg

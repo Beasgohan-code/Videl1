@@ -11,7 +11,7 @@ from datetime import datetime
 import psutil
 from pyrogram import Client, enums, filters
 from pyrogram.errors import FloodWait, InputUserDeactivated, PeerIdInvalid, UserIsBlocked
-from pyrogram.types import Message
+from pyrogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from config import ADMINS, BOT_NAME, OWNERS
 from core.db import vdb
@@ -33,15 +33,104 @@ def _target_id(message: Message):
     return None, ""
 
 
+def _stats_kb(active: str = "main") -> InlineKeyboardMarkup:
+    from core.ui import styled_button as btn
+
+    refresh_cb = {"runtime": "adm_st:runtime", "health": "adm_st:health"}.get(active, "adm_st:main")
+    return InlineKeyboardMarkup([
+        [
+            btn("📊 Overview", callback_data="adm_st:main", style="primary" if active == "main" else None),
+            btn("⚡ Runtime", callback_data="adm_st:runtime", style="primary" if active == "runtime" else None),
+            btn("🩺 Health", callback_data="adm_st:health", style="primary" if active == "health" else None),
+        ],
+        [
+            btn("🔄 Refresh", callback_data=refresh_cb, style="success"),
+            btn("✖️ Close", callback_data="close_btn", style="danger"),
+        ],
+    ])
+
+
 # ─────────────────────────── /stats ───────────────────────────
 @Client.on_message(filters.command("stats") & admin_filter)
 async def stats_cmd(client: Client, message: Message):
     from core import stream
+    arg = (message.command[1].lower() if getattr(message, "command", None) and len(message.command) > 1 else "")
+    tab = "runtime" if arg in ("runtime", "stack", "plugins") else ("health" if arg in ("health", "db", "security") else "main")
     async with stream.progress(message, "📊 <i>Collecting stats…</i>") as msg:
-        await _stats(message, msg)
+        await _stats(message, msg, tab=tab)
 
 
-async def _stats(message: Message, msg):
+async def _build_stats_doc(tab: str = "main"):
+    from core.rich import Doc
+
+    if tab == "runtime":
+        import client as client_mod
+        from core import bg, botapi
+        from core.plugin_manager import plugin_manager
+        import run as run_mod
+
+        st = client_mod.runtime_stack()
+        plg = plugin_manager.health_report()
+        bg_tasks = bg.running()
+        enc_workers = int(getattr(__import__("config"), "ENCODER_WORKERS", 1))
+        doc = Doc("⚡", f"{BOT_NAME} Runtime & Plugins", "engine & plugin telemetry")
+        doc.h("🚀", "Transport & rich stack").kv_table([
+            ("⚙️ MTProto engine", f"{st['engine']} {st['version']} (Layer {st['layer']})"),
+            ("🔐 Crypto backend", f"WarpCrypto {st['warpcrypto']}"),
+            ("🎨 Richgram UI", f"{st['richgram']} ({'native active' if st['rich_available'] else 'fallback'})"),
+            ("🤖 Bot API 10.3", "🟢 Enabled (aiogram)" if botapi.enabled() else "⚪ Disabled (WzGram native)"),
+            ("🧵 Background tasks", f"{bg_tasks} active · {enc_workers} encoder slot(s)"),
+        ], key_header="Component", val_header="Status")
+        err_total = len(plg["errors"]) + len(plg["manifest_errors"]) + len(getattr(run_mod, "boot_import_errors", {}))
+        doc.h("🔌", "Plugin manager").kv_table([
+            ("📦 Discovered", f"{plg['total']} plugin(s) · {plg['enabled']} enabled · {plg['healthy']} healthy"),
+            ("🩺 Import/manifest", "🟢 Clean (0 errors)" if err_total == 0 else f"⚠️ {err_total} error(s)"),
+            ("⏱ Uptime", readable_time(time.time() - BOOT_TIME)),
+        ], key_header="Metric", val_header="Value")
+        return doc
+
+    if tab == "health":
+        from core import db_doctor, diagnostics
+
+        rep = await db_doctor.inspect_and_deduplicate(dry_run=True)
+        diag = diagnostics.collect_diagnostics()
+        exec_on = diag["security"]["owner_exec_enabled"]
+        pt_sec = rep.get("plaintext_secrets", 0)
+        enc_state = (
+            f"🟢 Fernet ({'all encrypted' if pt_sec == 0 else f'{pt_sec} legacy plaintext'})"
+            if rep.get("encryption_enabled")
+            else f"⚪ ENCRYPTION_KEY unset ({pt_sec} plaintext)"
+        )
+        doc = Doc("🩺", f"{BOT_NAME} DB, Storage & Security Health", "read-only integrity snapshot")
+        doc.h("🗄", "Database integrity").kv_table([
+            ("📥 Saver duplicates", f"{rep['saver_duplicate_users']} user(s) ({rep['saver_redundant_docs']} extra)"),
+            ("🎬 Encoder duplicates", f"{rep['encoder_duplicate_users']} user(s) ({rep['encoder_redundant_docs']} extra)"),
+            ("👤 Core duplicates", f"{rep['videl_duplicate_users']} user(s)"),
+            ("⭐ Stars payments", f"{rep['payments_total']} recorded ({rep['payments_missing_charge']} missing id)"),
+            ("🔁 Subscriptions", f"{rep['active_subscriptions']} active"),
+        ], key_header="Check", val_header="Result")
+        storage_rows = [
+            (
+                f"{'🟢' if s['available'] else ('⚪' if s['optional'] else '🔴')} {s['label']}",
+                s["detail"],
+            )
+            for s in diag["storage"]
+        ]
+        doc.h("☁️", "Storage & transfer backends").kv_table(storage_rows, key_header="Backend", val_header="Readiness")
+        bin_summary = " · ".join(
+            f"{'✅' if b['available'] else '⚪'} {b['cmd']}" for b in diag["binaries"]
+        )
+        doc.h("🛡", "Security & runtime checks").kv_table([
+            ("🔐 Secret encryption", enc_state),
+            ("🔒 Single-instance lease", "🟢 Active" if diag["security"]["single_instance"] else "⚠️ Disabled"),
+            ("🧰 Native binaries", bin_summary),
+            ("💻 Owner /exec & /sh", "🟡 Enabled (owners + redacted)" if exec_on else "🟢 Disabled"),
+            ("🩺 Repair tool", "/backup check (owners)"),
+        ], key_header="Control", val_header="State")
+        if diag["warnings"]:
+            doc.quote(" · ".join(diag["warnings"][:3]))
+        return doc
+
     videl_users = await vdb.total_users()
     banned = len(vdb._banned)
 
@@ -55,11 +144,14 @@ async def _stats(message: Message, msg):
 
     enc_users = 0
     queue = 0
+    running_enc = 0
     try:
         from VideoEncoder import data as enc_queue
+        from VideoEncoder.utils import scheduler as enc_sched
         from VideoEncoder.utils.database.access_db import db as enc_db
         enc_users = await enc_db.total_users_count()
         queue = len(enc_queue)
+        running_enc = len(enc_sched.running())
     except Exception as e:
         log.warning(f"encoder stats: {e}")
 
@@ -82,41 +174,66 @@ async def _stats(message: Message, msg):
     except Exception as e:
         log.warning(f"rename stats: {e}")
 
-    du = shutil.disk_usage(".")
-    mem = psutil.virtual_memory()
-    text = (
-        f"<b>📊 {BOT_NAME} Statistics</b>\n\n"
-        "<b>👥 Users</b>\n"
-        f"<blockquote>Total: <code>{videl_users}</code> · Banned: <code>{banned}</code>\n"
-        f"Saver: <code>{saver_users}</code> (💎 <code>{premium}</code> premium)\n"
-        f"Encoder: <code>{enc_users}</code> · Queue: <code>{queue}</code></blockquote>\n"
-        "<b>🤖 Clone bots</b>\n"
-        f"<blockquote>Registered: <code>{clones}</code> · Active: <code>{active_clones}</code> · "
-        f"Running now: <code>{running}</code></blockquote>\n"
-        "<b>✏️ Auto-Rename</b>\n"
-        f"<blockquote>Files renamed: <code>{renames}</code> · Users with a template: <code>{renamers}</code></blockquote>\n"
-        "<b>🖥 Server</b>\n"
-        f"<blockquote>CPU: <code>{psutil.cpu_percent(interval=0.5)}%</code> · "
-        f"RAM: <code>{mem.percent}%</code> ({humanbytes(mem.used)} / {humanbytes(mem.total)})\n"
-        f"Disk: <code>{humanbytes(du.used)}</code> / <code>{humanbytes(du.total)}</code> "
-        f"(free {humanbytes(du.free)})\n"
-        f"Uptime: <code>{readable_time(time.time() - BOOT_TIME)}</code></blockquote>"
-    )
-    await msg.finish(text)
+    from core.sysinfo import system_snapshot
+
+    snap = system_snapshot(".")
+    cpu_pct = await asyncio.to_thread(psutil.cpu_percent, 0.2)
+    mem_tag = " (container quota)" if snap["container_mem"] else ""
+    cpu_tag = f" · {snap['cpu_cores']} vCPU"
+    doc = Doc("📊", f"{BOT_NAME} Statistics", "admin telemetry")
+    doc.h("👥", "Users & modules").kv_table([
+        ("👥 Total users", f"{videl_users:,} (🚫 {banned} banned)"),
+        ("📥 Saver users", f"{saver_users:,} (💎 {premium:,} premium)"),
+        ("🎬 Encoder", f"{enc_users:,} users · {running_enc} active · {queue} queued"),
+        ("🤖 Clone bots", f"{clones} total · {active_clones} active · 🟢 {running} running"),
+        ("✏️ Auto-Rename", f"{renames:,} renamed · {renamers:,} templated"),
+    ], key_header="Module", val_header="Metrics")
+    doc.h("🖥", "Server resources").kv_table([
+        ("⚙️ CPU", f"{cpu_pct}%{cpu_tag}"),
+        ("🧠 RAM", f"{snap['mem_percent']}% ({humanbytes(snap['mem_used_bytes'])} / {humanbytes(snap['mem_total_bytes'])}){mem_tag}"),
+        ("📦 Process RSS", humanbytes(snap["rss_bytes"])),
+        ("💽 Disk", f"{humanbytes(snap['disk_total_bytes'] - snap['disk_free_bytes'])} / {humanbytes(snap['disk_total_bytes'])} (free {humanbytes(snap['disk_free_bytes'])})"),
+        ("⏱ Uptime", readable_time(time.time() - BOOT_TIME)),
+    ], key_header="Resource", val_header="Usage")
+    return doc
+
+
+async def _stats(message: Message, msg, tab: str = "main"):
+    doc = await _build_stats_doc(tab)
+    await msg.finish_doc(doc, reply_markup=_stats_kb(tab))
+
+
+@Client.on_callback_query(filters.regex(r"^adm_st:\w+$"))
+async def stats_tab_cb(client: Client, query: CallbackQuery):
+    import config as cfg
+    from core import rich
+
+    uid = query.from_user.id if query.from_user else 0
+    if uid not in cfg.ADMINS:
+        return await query.answer("Admins only.", show_alert=True)
+    raw_tab = query.data.split(":", 1)[1] if ":" in (query.data or "") else "main"
+    tab = raw_tab if raw_tab in ("main", "runtime", "health") else "main"
+    await query.answer()
+    doc = await _build_stats_doc(tab)
+    await rich.edit(query.message, doc, reply_markup=_stats_kb(tab))
 
 
 # ─────────────────────────── /users ───────────────────────────
 @Client.on_message(filters.command("users") & admin_filter)
 async def users_cmd(client: Client, message: Message):
+    from core import rich
+    from core.rich import Doc
     total = await vdb.total_users()
     blocked = await vdb.users.count_documents({"blocked": True})
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     new_today = await vdb.users.count_documents({"joined": {"$gte": today}})
-    await message.reply_text(
-        f"<b>👥 Users</b>\n\n<blockquote>Total: <code>{total}</code>\n"
-        f"New today: <code>{new_today}</code>\nBlocked the bot: <code>{blocked}</code>\n"
-        f"Banned: <code>{len(vdb._banned)}</code></blockquote>"
-    )
+    doc = Doc("👥", "User Directory Summary", BOT_NAME).kv_table([
+        ("👥 Total users", f"{total:,}"),
+        ("🆕 Joined today", f"{new_today:,}"),
+        ("🔕 Blocked bot", f"{blocked:,}"),
+        ("🚫 Banned", f"{len(vdb._banned):,}"),
+    ], key_header="Metric", val_header="Count")
+    await rich.reply(message, doc)
 
 
 # ─────────────────────────── /broadcast ───────────────────────────
@@ -317,17 +434,30 @@ async def restart_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command("update") & owner_filter)
 async def update_cmd(client: Client, message: Message):
+    import html
+    import re
     status = await message.reply_text("📥 <i>Pulling latest code…</i>")
-    proc = await asyncio.create_subprocess_shell(
-        "git pull --ff-only", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+    proc = await asyncio.create_subprocess_exec(
+        "git", "pull", "--ff-only",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
     )
-    out, _ = await proc.communicate()
-    out = out.decode(errors="ignore").strip()[-3000:] or "no output"
+    try:
+        raw_out, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return await status.edit_text("❌ <b>git pull timed out after 60s.</b>")
+    out = raw_out.decode(errors="ignore").strip()[-3000:] or "no output"
+    out = re.sub(r"(https?://)[^@\s/]+@", r"\1***@", out)
+    safe_out = html.escape(out)
     if proc.returncode != 0:
-        return await status.edit_text(f"❌ <b>git pull failed</b>\n<pre>{out}</pre>")
+        return await status.edit_text(f"❌ <b>git pull failed</b>\n<pre>{safe_out}</pre>")
     if "Already up to date" in out:
         return await status.edit_text("✅ Already up to date.")
-    await status.edit_text(f"<pre>{out}</pre>\n\n♻️ <i>Restarting…</i>")
+    await status.edit_text(f"<pre>{safe_out}</pre>\n\n♻️ <i>Restarting…</i>")
     await _restart(client, status, reason="Update")
 
 

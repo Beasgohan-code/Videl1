@@ -152,6 +152,7 @@ async def _remove_text(client, uid: int, by: int) -> str:
 
 
 async def _admins_view(viewer: int):
+    import html
     owners = set(config.OWNERS)
     lines = ["<b>👮 Bot admins</b>\n"]
     for uid in config.OWNERS:
@@ -162,7 +163,8 @@ async def _admins_view(viewer: int):
     for d in await db_admins():
         uid = int(d["_id"])
         name = d.get("name") or ""
-        lines.append(f"➕ <code>{uid}</code> {name[:30]}".rstrip())
+        safe_name = html.escape(name[:30])
+        lines.append(f"➕ <code>{uid}</code> {safe_name}".rstrip())
         if viewer in owners:
             kb.append([Btn(f"🗑 Remove {name[:20] or uid}", callback_data=f"vadm:rm:{uid}")])
     lines.append("\n<i>Owners: /add_admin id · /deladmin id</i>")

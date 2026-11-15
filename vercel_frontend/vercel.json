@@ -1,0 +1,18 @@
+{
+  "redirects": [
+    {"source": "/", "destination": "/app", "permanent": false},
+    {"source": "/admin", "destination": "https://videl1.onrender.com/admin", "permanent": false}
+  ],
+  "rewrites": [
+    {"source": "/app", "destination": "https://videl1.onrender.com/app"},
+    {"source": "/app/:path*", "destination": "https://videl1.onrender.com/app/:path*"},
+    {"source": "/api/v1/:path*", "destination": "https://videl1.onrender.com/api/v1/:path*"}
+  ],
+  "headers": [
+    {"source": "/(.*)", "headers": [
+      {"key": "Cache-Control", "value": "no-store"},
+      {"key": "X-Content-Type-Options", "value": "nosniff"},
+      {"key": "Referrer-Policy", "value": "no-referrer"}
+    ]}
+  ]
+}

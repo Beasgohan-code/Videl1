@@ -1,12 +1,12 @@
 # ─────────────────────────────────────────────────────────────
-#  Videl – all-in-one Telegram bot
+#  Videl – all-in-one Telegram utility & group-management bot
 #
-#  UNIVERSAL Dockerfile: the same file lives at ./Dockerfile and
-#  ./VidelBot/Dockerfile and works with ANY of these settings:
-#    • Dockerfile = Dockerfile           context = repo root
-#    • Dockerfile = VidelBot/Dockerfile  context = repo root
-#    • Dockerfile = Dockerfile           context = VidelBot/
-#  (Railway, Render, Koyeb, Heroku, Northflank, Fly.io, compose …)
+#  Root Dockerfile (outside VidelBot/):
+#    • docker build -t videl .                 (repo root context — default)
+#    • docker compose up -d --build
+#    • Railway / Render / Koyeb / Heroku / Fly.io / Northflank
+#
+#  Also supports `-f ../Dockerfile VidelBot` if invoked with VidelBot/ context.
 # ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim-bookworm
 
@@ -29,13 +29,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Dependencies first → cached layer when only code changes.
-# ./requirements.txt and ./VidelBot/requirements.txt are identical copies, so this
-# line works whichever folder is the build context.
+# Dependencies first → cached layer when only application code changes.
+# Install requirements, then remove richgram's transitive `kurigram` package and
+# force-reinstall `wzgram==3.1.6` so `pyrogram` resolves to WzGram Layer 232.
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt && rm /tmp/requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r /tmp/requirements.txt \
+    && (pip uninstall -y kurigram || true) \
+    && pip install --no-deps --force-reinstall wzgram==3.1.6 \
+    && python3 -c "import pyrogram, richgram, aiogram; assert pyrogram.__version__ == '3.1.6' and richgram.RICH_AVAILABLE" \
+    && rm /tmp/requirements.txt
 
-# Copy the code; if the context is the repo root, take only the VidelBot/ folder.
+# Copy VidelBot/ from the repo root context into /app (falls back cleanly if context is VidelBot/).
 COPY . /tmp/src
 RUN set -eu; \
     if [ -f /tmp/src/VidelBot/run.py ]; then SRC=/tmp/src/VidelBot; else SRC=/tmp/src; fi; \
@@ -44,6 +49,8 @@ RUN set -eu; \
     test -f /app/run.py || { echo "run.py not found – check the build context"; exit 1; }; \
     chmod +x /app/extract 2>/dev/null || true; \
     mkdir -p /app/downloads /app/logs
+
+RUN python3 -m compileall -q /app
 
 EXPOSE 8080
 HEALTHCHECK --interval=2m --timeout=10s --start-period=90s --retries=3 \

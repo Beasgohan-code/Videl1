@@ -17,7 +17,16 @@ REPORT_EVERY = 60  # seconds per distinct error
 
 
 @Client.on_error()
-async def on_error(client: Client, update, error: Exception):
+async def on_error(client: Client, *args):
+    # WzGram Dispatcher invokes: (client, exc, update_handler, update, users, chats)
+    # Direct / legacy calls pass: (client, update, error)
+    if len(args) >= 3 and isinstance(args[0], BaseException):
+        error = args[0]
+        update = args[2]
+    elif len(args) >= 2:
+        update, error = args[0], args[1]
+    else:
+        return
     if isinstance(error, _IGNORED):
         return
     if isinstance(error, FloodWait):
@@ -36,9 +45,22 @@ async def on_error(client: Client, update, error: Exception):
     trim(_last_sent, 2000)
     who = ""
     user = getattr(update, "from_user", None)
-    if user:
-        who = f"\n<b>User:</b> <code>{user.id}</code>"
-    what = getattr(update, "text", None) or getattr(update, "data", None) or ""
+    uid = getattr(user, "id", None) or getattr(update, "user_id", None)
+    if uid is None:
+        raw_msg = getattr(update, "message", None)
+        from_id = getattr(raw_msg, "from_id", None)
+        uid = getattr(from_id, "user_id", None)
+    if uid:
+        who = f"\n<b>User:</b> <code>{uid}</code>"
+    raw_msg = getattr(update, "message", None)
+    what = (
+        getattr(update, "text", None)
+        or getattr(update, "data", None)
+        or (getattr(raw_msg, "message", None) if not isinstance(raw_msg, str) else raw_msg)
+        or ""
+    )
+    if isinstance(what, (bytes, bytearray)):
+        what = what.decode("utf-8", "replace")
     try:
         await client.send_message(
             LOG_CHANNEL,

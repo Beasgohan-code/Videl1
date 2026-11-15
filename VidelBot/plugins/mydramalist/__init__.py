@@ -1,0 +1,1 @@
+"""MyDramaList modular plugin."""

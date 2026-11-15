@@ -363,15 +363,17 @@ async def batch_task(message, msg):
     await msg.edit('<b>📕 Encode Started!</b>')
     sentfiles = []
     # Encode
-    for dirpath, subdir, files_ in sorted(os.walk(path)):
+    for dirpath, subdir, files_ in sorted(os.walk(path, followlinks=False)):
         for i in sorted(files_):
-            msg_ = await message.reply('Encoding')
             filepath = os.path.join(dirpath, i)
-            await msg.edit('Encode Started!\nEncoding: <code>{}</code>'.format(i))
+            if os.path.islink(filepath):
+                continue
+            msg_ = await message.reply('Encoding')
+            await msg.edit('Encode Started!\nEncoding: <code>{}</code>'.format(html.escape(i, quote=False)))
             try:
                 url = await handle_encode(filepath, message, msg_)
             except Exception as e:
-                await msg_.edit(str(e) + '\n\n Continuing...')
+                await msg_.edit(html.escape(str(e), quote=False) + '\n\n Continuing...')
                 continue
             else:
                 sentfiles.append((i, url))
@@ -405,30 +407,32 @@ async def batch_task(message, msg):
 
 
 async def handle_download_url(message, msg, batch, dest_dir=None):
-    url = message.text.split(None, 1)[1].strip()
+    from .leech import check_public
+    raw_arg = message.text.split(None, 1)[1].strip()
+    url = raw_arg
+    explicit_name = ""
+    if "|" in raw_arg and not batch:
+        url, c_file_name = raw_arg.split("|", maxsplit=1)
+        url = url.strip()
+        explicit_name = c_file_name.strip()
+    elif " " in raw_arg and not batch:
+        parts = raw_arg.split()
+        if len(parts) > 1:
+            url = parts[0]
+            explicit_name = " ".join(parts[1:])
+
+    await check_public(url)
+
     if 'drive.google.com' in url:
         file_id = _get_file_id(url)
         n = Downloader()
-        custom_file_name = n.name(file_id)
+        custom_file_name = explicit_name or n.name(file_id)
     else:
-        # Default filename from URL basename
-        custom_file_name = unquote_plus(os.path.basename(url))
-
-    if "|" in url and not batch:
-        url, c_file_name = url.split("|", maxsplit=1)
-        url = url.strip()
-        if c_file_name:
-            custom_file_name = c_file_name.strip()
-    elif " " in url and not batch:
-        # Attempt to handle space-separated URL and filename
-        # This assumes the URL itself doesn't contain unencoded spaces, which is standard.
-        parts = url.split()
-        if len(parts) > 1:
-            url = parts[0]
-            custom_file_name = " ".join(parts[1:])
+        custom_file_name = explicit_name or unquote_plus(os.path.basename(url))
 
     direct = await asyncio.to_thread(direct_link_generator, url)   # uses blocking requests
     if direct:
+        await check_public(direct)
         url = direct
 
     # Ensure filename is safe/valid (no paths / traversal) or fallback

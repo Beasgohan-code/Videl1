@@ -1,6 +1,7 @@
 from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from ..utils.database.access_db import db
+import html
 import logging
 
 @Client.on_message(filters.command("thumb") & ~filters.photo)
@@ -27,7 +28,7 @@ async def thumb_command(client, message):
             )
     except Exception as e:
         logging.error(f"Error in thumb_command: {e}")
-        await message.reply_text(f"An error occurred: {str(e)}")
+        await message.reply_text(f"An error occurred: {html.escape(str(e), quote=False)}")
 
 @Client.on_callback_query(filters.regex("^(set_thumb|del_thumb)$"), group=1)
 async def cb_handler(client, query: CallbackQuery):
@@ -87,4 +88,4 @@ async def save_thumb(client, message):
             
     except Exception as e:
         logging.error(f"Error in save_thumb: {e}")
-        await message.reply_text(f"❌ An error occurred: {str(e)}")
+        await message.reply_text(f"❌ An error occurred: {html.escape(str(e), quote=False)}")

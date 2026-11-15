@@ -321,7 +321,12 @@ class Watchdog:
                 self.worker_failures[bot_id] = fails + 1
                 log.warning(f"clone {bot_id} start failed ({fails + 1}x): {e}")
                 if fails + 1 == 5:
-                    await self._clone_event("CloneFailed", doc, f"❌ failed to start 5× in a row: <code>{str(e)[:150]}</code>")
+                    import html
+                    await self._clone_event(
+                        "CloneFailed",
+                        doc,
+                        f"❌ failed to start 5× in a row: <code>{html.escape(str(e)[:150])}</code>",
+                    )
                     await self._notify(doc.get("owner_id"),
                                        f"⚠️ Your clone bot @{doc.get('bot_username', '?')} keeps failing to start. "
                                        "Was its token revoked? Check it in /clone → 📋 My Bots.")
@@ -387,6 +392,15 @@ class Watchdog:
         except Exception:
             pass
         self._trim_module_caches()
+        try:
+            from core.sysinfo import memory_pressure
+            high, pct = memory_pressure(getattr(config, "MEMORY_HIGH_WATERMARK_PCT", 85))
+            if high:
+                log.warning(f"🐕 container memory pressure {pct:.1f}% – pruning source cache")
+                from VideoEncoder.utils import srccache
+                srccache.prune()
+        except Exception:
+            pass
         gc.collect()
         return round(psutil.Process().memory_info().rss / 1048576, 1)
 
@@ -429,6 +443,23 @@ class Watchdog:
 def start(app) -> Watchdog:
     global dog
     dog = Watchdog(app)
-    dog._task = asyncio.get_event_loop().create_task(dog.run_forever())
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+    dog._task = loop.create_task(dog.run_forever())
     log.info(f"🐕 watchdog armed (every {config.WATCHDOG_INTERVAL}s, cleanup after {config.CLEANUP_AFTER_HOURS}h)")
     return dog
+
+
+async def stop() -> None:
+    """Cancel the background watchdog sweep loop cleanly on shutdown."""
+    global dog
+    if dog and dog._task:
+        dog._task.cancel()
+        try:
+            await dog._task
+        except (asyncio.CancelledError, Exception):
+            pass
+        dog._task = None
+    dog = None

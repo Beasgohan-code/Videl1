@@ -260,11 +260,14 @@ def test_railway_and_app_json_parse():
 
 
 def test_dockerfiles_run_videl():
-    root = open(os.path.join(REPO, "Dockerfile")).read()
-    inner = open(os.path.join(ROOT, "Dockerfile")).read()
-    assert root == inner          # one universal file – works from any build context
+    root_df = os.path.join(REPO, "Dockerfile")
+    inner_df = os.path.join(ROOT, "Dockerfile")
+    assert os.path.isfile(root_df)
+    assert not os.path.exists(inner_df)          # single canonical Dockerfile lives outside VidelBot/
+    root = open(root_df).read()
     assert "python:3.11" in root and "ffmpeg" in root and 'CMD ["python3", "run.py"]' in root
-    assert "COPY VidelBot/" not in root   # would fail when the context is VidelBot/
+    assert "wzgram==3.1.6" in root and "kurigram" in root
+    assert "COPY VidelBot/" not in root          # supports both root and VidelBot/ build contexts
 
 
 def test_requirements_copies_match():

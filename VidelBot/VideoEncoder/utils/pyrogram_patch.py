@@ -211,8 +211,10 @@ async def save_file(
             if isinstance(path, (str, PurePath)):
                 fp.close()
 
-# Apply the patch to SaveFile class
-SaveFile.save_file = save_file
-
-# Apply the patch to Client class directly to be sure
-pyrogram.Client.save_file = save_file
+# WzGram (v3+) already ships a pooled multi-session uploader (_media_pool) with
+# AdaptiveBucket flood pacing, ReadAhead double-buffered I/O and automatic part
+# retries. Only apply this single-session Pyrofork v2 patch on older forks that
+# lack Client._media_pool.
+if not hasattr(pyrogram.Client, "_media_pool"):
+    SaveFile.save_file = save_file
+    pyrogram.Client.save_file = save_file

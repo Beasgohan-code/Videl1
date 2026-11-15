@@ -34,6 +34,17 @@ async def _verify_ownership(query: CallbackQuery, bot_id: int):
     return bot
 
 
+async def _verify_message_ownership(message: Message, bot_id: int):
+    """Re-verify bot ownership before processing any pending text/media input."""
+    uid = message.from_user.id
+    bot = await main_db.get_bot(bot_id)
+    if not bot or bot.get("owner_id") != uid:
+        _get_state().pop(uid, None)
+        await message.reply("<b>❌ Access denied!</b>")
+        return None
+    return bot
+
+
 def _extract_bot_id(pattern: str, data: str) -> int | None:
     """Extract bot_id from callback data using a regex pattern."""
     match = re.match(pattern, data)
@@ -83,19 +94,32 @@ async def handle_log_channel_input(client: Client, message: Message, state: dict
         await message.reply("<b>❌ Invalid channel ID. Send a number like <code>-1001234567890</code></b>")
         return
 
-    # Validate access
+    # Validate ownership & access
+    import html
     bot = await main_db.get_bot(bot_id)
+    if not bot or bot.get("owner_id") != user_id:
+        _get_state().pop(user_id, None)
+        await message.reply("<b>❌ Access denied!</b>")
+        return
     token = decrypt_token(bot["bot_token_encrypted"])
 
+    temp_client = Client(
+        f"verify_{bot_id}", api_id=API_ID, api_hash=API_HASH,
+        bot_token=token, in_memory=True, no_updates=True,
+    )
     try:
-        temp_client = Client(f"verify_{bot_id}", api_id=API_ID, api_hash=API_HASH, bot_token=token, in_memory=True)
         await temp_client.start()
         test = await temp_client.send_message(channel_id, "✅ Channel verified.")
         await test.delete()
-        await temp_client.stop()
     except Exception as e:
-        await message.reply(f"<b>❌ Cannot access channel!</b>\n<code>{str(e)[:100]}</code>")
+        await message.reply(f"<b>❌ Cannot access channel!</b>\n<code>{html.escape(str(e))[:100]}</code>")
         return
+    finally:
+        if getattr(temp_client, "is_connected", False):
+            try:
+                await temp_client.stop(block=False)
+            except Exception:
+                pass
 
     await main_db.update_log_channel(bot_id, channel_id)
 
@@ -210,6 +234,8 @@ async def handle_auto_delete_input(client: Client, message: Message, state: dict
     """Process custom auto-delete time input."""
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    if not await _verify_message_ownership(message, bot_id):
+        return
 
     try:
         seconds = int(message.text.strip())
@@ -411,6 +437,9 @@ async def handle_fsub_channel_input(client: Client, message: Message, state: dic
     """Process force-sub channel ID input."""
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    bot = await _verify_message_ownership(message, bot_id)
+    if not bot:
+        return
 
     try:
         channel_id = int(message.text.strip())
@@ -421,43 +450,48 @@ async def handle_fsub_channel_input(client: Client, message: Message, state: dic
     status_msg = await message.reply("<b>⏳ Verifying channel access...</b>")
 
     # Verify that the cloned bot has access and can create invite links
-    bot = await main_db.get_bot(bot_id)
+    import html
     token = decrypt_token(bot["bot_token_encrypted"])
 
+    temp_client = Client(
+        name=f"verify_fsub_{bot_id}",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        bot_token=token,
+        in_memory=True,
+        no_updates=True,
+    )
     try:
-        temp_client = Client(
-            name=f"verify_fsub_{bot_id}",
-            api_id=API_ID,
-            api_hash=API_HASH,
-            bot_token=token,
-            in_memory=True
-        )
         await temp_client.start()
-        
+
         # 1. Check access
-        chat = await temp_client.get_chat(channel_id)
-        
+        await temp_client.get_chat(channel_id)
+
         # 2. Check ability to create join request links (needed for request mode)
         invite = await temp_client.create_chat_invite_link(
             chat_id=channel_id,
-            creates_join_request=True
+            creates_join_request=True,
         )
         await temp_client.revoke_chat_invite_link(channel_id, invite.invite_link)
-        
-        await temp_client.stop()
     except Exception as e:
         await status_msg.edit_text(
             f"<b>❌ Verification Failed!</b>\n\n"
             f"<blockquote>Make sure:\n"
             f"1. The channel ID is correct (<code>{channel_id}</code>)\n"
-            f"2. The bot (@{bot.get('bot_username', 'unknown')}) is an admin in the channel\n"
+            f"2. The bot (@{html.escape(str(bot.get('bot_username', 'unknown')))}) is an admin in the channel\n"
             f"3. The bot has 'Invite Users via Link' admin rights\n\n"
-            f"<b>Error:</b> <code>{str(e)[:100]}</code></blockquote>",
+            f"<b>Error:</b> <code>{html.escape(str(e))[:100]}</code></blockquote>",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back", callback_data=f"fsub_{bot_id}")],
             ])
         )
         return
+    finally:
+        if getattr(temp_client, "is_connected", False):
+            try:
+                await temp_client.stop(block=False)
+            except Exception:
+                pass
 
     worker_db = WorkerDB(bot_id)
     await worker_db.add_channel(channel_id, mode="off")
@@ -677,6 +711,8 @@ async def handle_admin_input(client: Client, message: Message, state: dict):
     """Process admin ID input."""
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    if not await _verify_message_ownership(message, bot_id):
+        return
 
     try:
         admin_id = int(message.text.strip())
@@ -852,6 +888,9 @@ async def handle_botphoto_input(client: Client, message: Message, state: dict):
     import os
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    doc = await _verify_message_ownership(message, bot_id)
+    if not doc:
+        return
     back = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"startcfg_{bot_id}")]])
     from filestore.worker_bot.engine import worker_engine
     from core.profile import download_photo, remove_bot_photo, set_bot_photo
@@ -861,18 +900,18 @@ async def handle_botphoto_input(client: Client, message: Message, state: dict):
     if botapi.enabled():  # Bot API with the clone's own token – works even while it's stopped
         try:
             from filestore.utils.security import decrypt_token
-            doc = await main_db.get_bot(bot_id)
-            token = decrypt_token(doc["bot_token_encrypted"]) if doc else ""
+            token = decrypt_token(doc["bot_token_encrypted"])
         except Exception:
             token = ""
     if not worker and not token:
         _get_state().pop(user_id, None)
         return await message.reply("<b>🔴 The bot is not running – start it and try again.</b>", reply_markup=back)
     if message.text and message.text.strip() == "0":
+        import html
         try:
             await remove_bot_photo(worker, token=token)
         except Exception as e:
-            return await message.reply(f"<b>❌ Couldn't remove the photo:</b> <code>{str(e)[:150]}</code>", reply_markup=back)
+            return await message.reply(f"<b>❌ Couldn't remove the photo:</b> <code>{html.escape(str(e))[:150]}</code>", reply_markup=back)
         _get_state().pop(user_id, None)
         return await message.reply("<b>🗑 Bot profile photo removed.</b>", reply_markup=back)
     if not (message.photo or (message.document and (message.document.mime_type or "").startswith("image/"))):
@@ -882,7 +921,8 @@ async def handle_botphoto_input(client: Client, message: Message, state: dict):
     try:
         await set_bot_photo(worker, path, token=token)
     except Exception as e:
-        return await status.edit_text(f"<b>❌ Telegram rejected the photo:</b>\n<code>{str(e)[:200]}</code>", reply_markup=back)
+        import html
+        return await status.edit_text(f"<b>❌ Telegram rejected the photo:</b>\n<code>{html.escape(str(e))[:200]}</code>", reply_markup=back)
     finally:
         if path and os.path.exists(path):
             os.remove(path)
@@ -914,6 +954,8 @@ async def captioncfg_callback(client: Client, query: CallbackQuery):
 async def handle_startcfg_input(client: Client, message: Message, state: dict):
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    if not await _verify_message_ownership(message, bot_id):
+        return
     action = state["action"]
 
     if action == "set_botphoto":  # no worker restart needed
@@ -1198,6 +1240,8 @@ async def handle_shortener_input(client: Client, message: Message, state: dict, 
     awaiting_shortener_api_key / awaiting_shortener_domain steps)."""
     user_id = message.from_user.id
     bot_id = state["data"]["bot_id"]
+    if not await _verify_message_ownership(message, bot_id):
+        return
     action = {"api_key": "short_api", "domain": "short_domain"}.get(field) or state.get("action", "")
     text = message.text.strip() if message.text else ""
 

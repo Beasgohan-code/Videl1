@@ -59,9 +59,9 @@ class WorkerEngine:
         """Start a worker with error handling (used in parallel batches)."""
         try:
             await self.start_worker(bot_doc)
-        except Exception as e:
+        except Exception:
             bot_id = bot_doc.get("_id", "?")
-            log.error(f"Failed to start worker bot {bot_id}: {e}")
+            log.error(f"Failed to start worker bot {bot_id}.")
 
     async def start_worker(self, bot_doc: dict):
         """Start a single worker bot."""
@@ -609,11 +609,12 @@ class WorkerEngine:
         @app.on_message(filters.command("id") & filters.private)
         async def handle_id(client: Client, message: Message):
             user = message.from_user
+            safe_name = _html.escape(user.first_name or "")
             text = (
                 f"<b>🆔 Your Info</b>\n\n"
                 f"<blockquote>"
                 f"◈ <b>User ID:</b> <code>{user.id}</code>\n"
-                f"◈ <b>Name:</b> {user.first_name}\n"
+                f"◈ <b>Name:</b> {safe_name}\n"
                 f"◈ <b>Username:</b> @{user.username or 'N/A'}\n"
                 f"◈ <b>Bot:</b> @{me.username}"
                 f"</blockquote>"
@@ -655,8 +656,16 @@ class WorkerEngine:
             async with self._lock:
                 self.workers[bot_id] = app
 
-        except Exception as e:
-            log.error(f"Failed to start worker {bot_id}: {e}")
+        except Exception:
+            for task in getattr(ctx, "tasks", []):
+                task.cancel()
+            if getattr(app, "is_connected", False):
+                try:
+                    await asyncio.wait_for(app.stop(block=False), timeout=3.0)
+                except Exception:
+                    pass
+            # Telegram/client exceptions may include token-bearing URLs.
+            log.error(f"Failed to start worker {bot_id}.")
             raise
 
     async def stop_worker(self, bot_id: int):
@@ -671,8 +680,8 @@ class WorkerEngine:
                 # Prevent app.stop() from hanging forever if there's a connection issue
                 await asyncio.wait_for(app.stop(block=False), timeout=3.0)
                 log.info(f"Worker stopped: {bot_id}")
-            except Exception as e:
-                log.error(f"Error stopping worker {bot_id}: {e}")
+            except Exception:
+                log.error(f"Error stopping worker {bot_id}.")
 
     async def stop_all_workers(self):
         """Stop all running worker bots."""

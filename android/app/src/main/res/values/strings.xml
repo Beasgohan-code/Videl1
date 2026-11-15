@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Videl Studio</string>
+    <string name="loading">Opening Videl Studio…</string>
+    <string name="offline_title">Can’t reach Videl Studio</string>
+    <string name="offline_message">Check your connection and try again. Your workspace is hosted online.</string>
+    <string name="retry">Try again</string>
+    <string name="external_unavailable">No app is available to open this link.</string>
+    <string name="download_unavailable">Downloads are not supported in this app yet. Open Studio in a browser for downloads.</string>
+</resources>

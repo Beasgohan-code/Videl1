@@ -18,7 +18,7 @@ import string
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from pyrogram import Client, filters
+from pyrogram import Client, enums, filters
 from pyrogram.types import CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup, Message
 
 from config import ADMINS, BOT_NAME, REFERRAL_REWARD_DAYS, REFERRAL_TARGET, TRIAL_DAYS
@@ -75,7 +75,7 @@ async def on_new_user(client, user, text: str) -> bool:
                 ref, f"<b>🎉 Referral reward unlocked!</b>\n\n<blockquote><b>{name}</b> joined with your link.\n"
                      f"<b>👥 Referrals:</b> {count}\n<b>💎 Reward:</b> +{_label(REFERRAL_REWARD_DAYS)} Premium\n"
                      f"<b>📅 Premium until:</b> {until_text(expiry)}</blockquote>",
-                message_effect_id=effect("party"))
+                effect_id=effect("party"))
         else:
             left = (REFERRAL_TARGET - count % REFERRAL_TARGET) if REFERRAL_TARGET > 0 else 0
             extra = f"\n<i>{left} more for +{_label(REFERRAL_REWARD_DAYS)} Premium!</i>" if left and REFERRAL_REWARD_DAYS else ""
@@ -153,6 +153,21 @@ async def refer_btn(client: Client, query: CallbackQuery):
 
 
 # ═══════════════════════════ redeem codes ═══════════════════════════
+async def _allow_code_management(message: Message) -> bool:
+    """Defence in depth: only a real bot admin may manage codes in their DM."""
+    user = getattr(message, "from_user", None)
+    if (not user or getattr(user, "is_bot", False) or getattr(message, "sender_chat", None)
+            or getattr(user, "id", None) not in ADMINS):
+        return False
+    chat = getattr(message, "chat", None)
+    if not chat or chat.type != enums.ChatType.PRIVATE or chat.id != user.id:
+        await message.reply_text("🔒 Manage redeem codes in a private chat with the bot. "
+                                 "No code was created, listed or deleted by this request. "
+                                 "If you posted a code here, treat it as exposed.")
+        return False
+    return True
+
+
 def new_code(length: int = 10) -> str:
     raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(length))
     return f"VIDEL-{raw[:5]}-{raw[5:]}"
@@ -199,16 +214,18 @@ async def redeem_cmd(client: Client, message: Message):
     await message.reply_text(
         f"<b>🎟 Code redeemed!</b>\n\n<blockquote><b>💎 Premium:</b> +{_label(days)}\n"
         f"<b>📅 Valid until:</b> {until_text(result)}</blockquote>",
-        message_effect_id=effect("party"),
+        effect_id=effect("party"),
         reply_markup=InlineKeyboardMarkup([[Btn("📊 My Plan", callback_data="myplan_back_btn")]]))
     from core import botlog
-    await botlog.event("Redeem", botlog.user_block(message.from_user, (
-        f"<b>🎟 Code:</b> <code>{botlog.esc(message.command[1].upper())}</code>\n"
-        f"<b>💎 Premium:</b> +{_label(days)} → {until_text(result)}")), client=client)
+    # Redeem codes are bearer secrets; do not copy them to a log channel.
+    await botlog.event("Redeem", botlog.user_block(message.from_user,
+                       f"<b>💎 Premium:</b> +{_label(days)} → {until_text(result)}"), client=client)
 
 
 @Client.on_message(filters.command("gencode") & filters.user(ADMINS))
 async def gencode_cmd(client: Client, message: Message):
+    if not await _allow_code_management(message):
+        return
     try:
         days = int(message.command[1])
         count = int(message.command[2]) if len(message.command) > 2 else 1
@@ -232,6 +249,8 @@ async def gencode_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command("codes") & filters.user(ADMINS))
 async def codes_cmd(client: Client, message: Message):
+    if not await _allow_code_management(message):
+        return
     docs = await vdb.db["codes"].find({"uses_left": {"$gt": 0}}).sort("created_at", -1).limit(30).to_list(30)
     if not docs:
         return await message.reply_text("🎟 No active codes. Create some with /gencode.")
@@ -241,6 +260,8 @@ async def codes_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command("delcode") & filters.user(ADMINS))
 async def delcode_cmd(client: Client, message: Message):
+    if not await _allow_code_management(message):
+        return
     if len(message.command) < 2:
         return await message.reply_text("Usage: <code>/delcode CODE</code>")
     res = await vdb.db["codes"].delete_one({"code": message.command[1].upper()})
@@ -281,7 +302,7 @@ async def _trial_reply(client, user, send):
 @Client.on_message(filters.command("trial") & filters.private)
 async def trial_cmd(client: Client, message: Message):
     await _trial_reply(client, message.from_user,
-                       lambda t: message.reply_text(t, message_effect_id=effect("party") if "activated" in t else None))
+                       lambda t: message.reply_text(t, effect_id=effect("party") if "activated" in t else None))
 
 
 @Client.on_callback_query(filters.regex(r"^trial_btn$"))

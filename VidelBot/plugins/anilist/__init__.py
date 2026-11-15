@@ -1,0 +1,1 @@
+"""AniList modular plugin."""

@@ -34,15 +34,24 @@ class VidelDB:
     # ---------------- lifecycle ----------------
     async def warm_up(self):
         await self.users.create_index("id", unique=True)
-        # phase-4 collections: support inbox routing, redeem codes, Stars subscriptions
-        try:
-            await self.db["support_map"].create_index([("chat", 1), ("msg", 1)])
-            await self.db["support_map"].create_index("date", expireAfterSeconds=60 * 60 * 24 * 30)
-            await self.db["codes"].create_index("code", unique=True)
-            await self.db["subscriptions"].create_index("user")
-            await self.users.create_index("referred_by", sparse=True)
-        except Exception:
-            pass
+        # Core operational & payment idempotency indexes
+        index_specs = [
+            (self.db["support_map"], [("chat", 1), ("msg", 1)], {}),
+            (self.db["support_map"], "date", {"expireAfterSeconds": 60 * 60 * 24 * 30}),
+            (self.db["codes"], "code", {"unique": True}),
+            (self.db["subscriptions"], "user", {}),
+            (self.db["payments"], "charge_id", {"unique": True, "sparse": True}),
+            (self.db["payments"], [("user", 1)], {}),
+            (self.db["payments"], [("date", -1)], {}),
+            (self.db["group_warns"], [("chat_id", 1), ("user_id", 1)], {}),
+            (self.db["checklists"], [("owner", 1)], {}),
+            (self.users, "referred_by", {"sparse": True}),
+        ]
+        for col, keys, kw in index_specs:
+            try:
+                await col.create_index(keys, **kw)
+            except Exception:
+                pass
         self._banned = {d["id"] async for d in self.users.find({"banned": True}, {"id": 1})}
         await self._reload_settings()
 
@@ -51,7 +60,6 @@ class VidelDB:
         """Insert user if unseen. Returns True when the user is brand new."""
         if user.id in self._known:
             return False
-        self._known.add(user.id)
         res = await self.users.update_one(
             {"id": user.id},
             {
@@ -60,6 +68,7 @@ class VidelDB:
             },
             upsert=True,
         )
+        self._known.add(user.id)
         return res.upserted_id is not None
 
     async def total_users(self) -> int:
@@ -83,16 +92,16 @@ class VidelDB:
         return user_id in self._banned
 
     async def ban(self, user_id: int, reason: str = ""):
-        self._banned.add(user_id)
         await self.users.update_one(
             {"id": user_id},
             {"$set": {"banned": True, "ban_reason": reason, "banned_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
+        self._banned.add(user_id)
 
     async def unban(self, user_id: int):
-        self._banned.discard(user_id)
         await self.users.update_one({"id": user_id}, {"$set": {"banned": False}, "$unset": {"ban_reason": ""}})
+        self._banned.discard(user_id)
 
     async def banned_users(self) -> list:
         return [d async for d in self.users.find({"banned": True})]

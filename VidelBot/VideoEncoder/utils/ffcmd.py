@@ -181,9 +181,15 @@ def hdr_kind(video: dict | None) -> str:
 
 # HDR → SDR: linearise, tone-map (hable keeps highlights without the grey wash of a plain conversion) and
 # convert to BT.709 8-bit. Runs *after* the downscale – a 480p picture tone-maps ~5× faster than 4K.
-TONEMAP_CHAIN = ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+TONEMAP_CHAIN = ("setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,"
+                 "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
                  "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
 SDR_TAGS = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+
+
+def tonemap_chain(hdr: str = "") -> str:
+    trc = "arib-std-b67" if hdr == "HLG" else "smpte2084"
+    return TONEMAP_CHAIN.replace("color_trc=smpte2084", f"color_trc={trc}")
 
 
 # ─────────────────────────── helpers ───────────────────────────
@@ -343,7 +349,7 @@ def build_command(src: str, out: str, s: dict, info: dict | None = None, *, prog
             vf.append(f"scale=-2:{target_h}:flags={scaler}")
         tonemap = bool(tonemap and hw not in ("vaapi", "qsv"))   # hw surfaces can't take the float chain
         if tonemap:
-            vf.append(TONEMAP_CHAIN)
+            vf.append(tonemap_chain(info.get("hdr", "")))
         if s["dedup"] and not avi:                   # drop repeated frames before the costly filters
             vf.append("mpdecimate")
         if s["denoise"]:

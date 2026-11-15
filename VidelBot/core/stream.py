@@ -1,22 +1,12 @@
 """
-Live reply streaming — Bot API 9.5+ ``sendMessageDraft``.
+Live reply streaming — Bot API 9.5+ ``sendMessageDraft`` + WzGram Layer 232 ``send_rich_message_draft``
+with native **Stop Generating** (``MessageGenerationStopped``) support.
 
 Telegram lets a bot show an animated *draft* of the message it is about to
-send (private chats only). The draft is a temporary preview that lives for
-≈30 seconds; the real message must still be sent afterwards. Updates that
-reuse the same ``draft_id`` are animated as a smooth "typing" effect, and a
-draft with **empty text** renders Telegram's native *“Thinking…”* placeholder.
-
-Videl runs on MTProto (pyrofork), where the same feature is exposed as
-``messages.setTyping`` with a ``sendMessageTextDraftAction``. Everything in
-this module is best-effort: it never raises, it silently disables itself if
-the server rejects drafts, and it is a no-op in groups/channels or when
-``STREAM_REPLIES`` is off.
-
-    await stream.typewriter(client, chat_id, text)          # animated preview
-    async with stream.thinking(client, chat_id):            # "Thinking…"
-        text = await build_slow_report()
-    await message.reply_text(text)
+send (private chats only). Updates that reuse the same ``draft_id`` animate
+smoothly, empty text renders Telegram's native *“Thinking…”* placeholder, and
+WzGram's ``can_stop=True`` offers Telegram's native **Stop** button so users
+can cancel long tasks mid-stream!
 """
 import asyncio
 import contextlib
@@ -24,7 +14,8 @@ import logging
 import random
 import re
 
-from pyrogram import enums, raw, utils
+from pyrogram import Client, enums, raw, utils
+from pyrogram.types import InputRichMessage
 
 from config import STREAM_REPLIES
 
@@ -33,6 +24,10 @@ log = logging.getLogger("videl.stream")
 DRAFT_TTL = 30          # seconds a draft stays visible (Telegram limit)
 REFRESH_EVERY = 20      # re-send the placeholder before it expires
 _disabled = False       # flipped when Telegram says drafts are not allowed
+
+# Active stoppable draft sessions: (chat_id, draft_id) -> asyncio.Event
+_STOP_EVENTS: dict[tuple[int, int], asyncio.Event] = {}
+_CHAT_LATEST_DRAFT: dict[int, int] = {}
 
 
 def enabled() -> bool:
@@ -47,21 +42,84 @@ def _private(chat_id) -> bool:
 
 
 def new_draft_id() -> int:
-    return random.randint(1, 2**62)
+    return random.randint(1, 2**31 - 2)
+
+
+def register_stop_event(chat_id: int, draft_id: int) -> asyncio.Event:
+    ev = _STOP_EVENTS.get((int(chat_id), int(draft_id)))
+    if ev is None:
+        ev = asyncio.Event()
+        _STOP_EVENTS[(int(chat_id), int(draft_id))] = ev
+    _CHAT_LATEST_DRAFT[int(chat_id)] = int(draft_id)
+    if len(_STOP_EVENTS) > 1000:
+        oldest = next(iter(_STOP_EVENTS))
+        _STOP_EVENTS.pop(oldest, None)
+    return ev
+
+
+def unregister_stop_event(chat_id: int, draft_id: int) -> None:
+    _STOP_EVENTS.pop((int(chat_id), int(draft_id)), None)
+    if _CHAT_LATEST_DRAFT.get(int(chat_id)) == int(draft_id):
+        _CHAT_LATEST_DRAFT.pop(int(chat_id), None)
+
+
+def is_stopped(chat_id: int, draft_id: int | None = None) -> bool:
+    cid = int(chat_id)
+    did = int(draft_id) if draft_id is not None else _CHAT_LATEST_DRAFT.get(cid)
+    if did is None:
+        return False
+    ev = _STOP_EVENTS.get((cid, did))
+    return bool(ev and ev.is_set())
+
+
+@Client.on_message_generation_stopped()
+async def on_generation_stopped(client: Client, update):
+    """Handle Telegram's native 'Stop Generating' button on a streaming draft."""
+    chat = getattr(update, "chat", None)
+    cid = getattr(chat, "id", None)
+    did = getattr(update, "draft_id", None)
+    if cid is None:
+        return
+    if did is not None and (int(cid), int(did)) in _STOP_EVENTS:
+        _STOP_EVENTS[(int(cid), int(did))].set()
+    latest = _CHAT_LATEST_DRAFT.get(int(cid))
+    if latest is not None and (int(cid), latest) in _STOP_EVENTS:
+        _STOP_EVENTS[(int(cid), latest)].set()
+    log.info(f"⏹ User stopped draft generation in chat {cid} (draft_id={did})")
 
 
 async def draft(client, chat_id, text: str = "", draft_id: int = None,
-                parse_mode=enums.ParseMode.HTML) -> int | None:
-    """Show/update a message draft. Returns the draft id (or None if skipped)."""
+                parse_mode=enums.ParseMode.HTML, can_stop: bool = False) -> int | None:
+    """Show/update a message draft. Returns the draft id (or None if skipped/stopped)."""
     global _disabled
     if not enabled() or not _private(chat_id):
         return None
     draft_id = draft_id or new_draft_id()
+    if is_stopped(chat_id, draft_id):
+        return None
+
     # 1) documented Bot API method through aiogram (sendMessageDraft)
     from core import botapi
     if botapi.enabled() and botapi.is_main(client) and await botapi.draft(chat_id, draft_id % 2**31 or 1, text or ""):
         return draft_id
-    # 2) MTProto equivalent (messages.setTyping + sendMessageTextDraftAction)
+
+    # 2) WzGram Layer 232 native send_rich_message_draft (supports Rich HTML + can_stop button)
+    from core.ui import is_wzgram_client
+    if is_wzgram_client(client) and hasattr(client, "send_rich_message_draft"):
+        try:
+            irm = InputRichMessage(html=f"<p>{text}</p>" if text and not text.startswith("<") else (text or None)) if text else None
+            ok = await client.send_rich_message_draft(
+                chat_id,
+                draft_id,
+                rich_message=irm,
+                can_stop=can_stop or None,
+            )
+            if ok:
+                return draft_id
+        except Exception as e:
+            log.debug(f"send_rich_message_draft fallback ({type(e).__name__}): {e}")
+
+    # 3) MTProto SetTyping + SendMessageTextDraftAction fallback
     try:
         message, entities = text or "", []
         if message:
@@ -98,7 +156,6 @@ def chunks(text: str, steps: int = 4) -> list[str]:
     text = text or ""
     if steps <= 1 or len(text) < 40:
         return [text]
-    # candidate cut points: after a newline or a space, outside tags/entities
     cuts, in_tag, in_ent = [], False, False
     for i, ch in enumerate(text):
         if ch == "<":
@@ -144,41 +201,46 @@ def _close_tags(fragment: str) -> str:
 
 
 async def typewriter(client, chat_id, text: str, steps: int = 3, delay: float = 0.25) -> None:
-    """Animate *text* growing in the chat's draft area. The caller sends the
-    final message right after, which replaces the draft."""
+    """Animate *text* growing in the chat's draft area. Honors Stop Generating."""
     if not enabled() or not _private(chat_id):
         return
     did = new_draft_id()
-    for part in chunks(text, steps)[:-1]:
-        if await draft(client, chat_id, part, did) is None:
-            return
-        await asyncio.sleep(delay)
+    ev = register_stop_event(chat_id, did)
+    try:
+        for part in chunks(text, steps)[:-1]:
+            if ev.is_set() or await draft(client, chat_id, part, did, can_stop=True) is None:
+                return
+            await asyncio.sleep(delay)
+    finally:
+        unregister_stop_event(chat_id, did)
 
 
 @contextlib.asynccontextmanager
-async def thinking(client, chat_id, label: str = ""):
+async def thinking(client, chat_id, label: str = "", can_stop: bool = False):
     """Show the native “Thinking…” placeholder (empty draft) – or *label* –
     while the body runs; refreshed so it never expires on slow work."""
     if not enabled() or not _private(chat_id):
-        yield
+        yield None
         return
     did = new_draft_id()
-    await draft(client, chat_id, label, did)
+    ev = register_stop_event(chat_id, did)
+    await draft(client, chat_id, label, did, can_stop=can_stop)
 
     async def _keep():
         try:
-            while True:
+            while not ev.is_set():
                 await asyncio.sleep(REFRESH_EVERY)
-                if await draft(client, chat_id, label, did) is None:
+                if ev.is_set() or await draft(client, chat_id, label, did, can_stop=can_stop) is None:
                     return
         except asyncio.CancelledError:
             pass
 
     task = asyncio.create_task(_keep())
     try:
-        yield
+        yield ev
     finally:
         task.cancel()
+        unregister_stop_event(chat_id, did)
 
 
 async def reply(message, text: str, **kwargs):
@@ -188,41 +250,66 @@ async def reply(message, text: str, **kwargs):
 
 
 class Progress:
-    """Feedback for a slow command.
+    """Feedback for a slow command with multi-step draft updates & Stop support."""
 
-    Private chat + streaming on → the native “Thinking…” draft (no extra
-    message; the final answer is sent as a normal reply).
-    Otherwise → the classic placeholder message that is edited at the end.
-    """
-
-    def __init__(self, message, placeholder: str):
+    def __init__(self, message, placeholder: str, can_stop: bool = False):
         self.message = message
         self.placeholder = placeholder
+        self.can_stop = can_stop
         self.msg = None
         self._cm = None
+        self.draft_id: int | None = None
+        self.stop_event: asyncio.Event | None = None
+
+    @property
+    def stopped(self) -> bool:
+        return bool(self.stop_event and self.stop_event.is_set())
 
     async def __aenter__(self):
         if enabled() and _private(self.message.chat.id):
-            self._cm = thinking(self.message._client, self.message.chat.id)
-            await self._cm.__aenter__()
+            self.draft_id = new_draft_id()
+            self.stop_event = register_stop_event(self.message.chat.id, self.draft_id)
+            await draft(self.message._client, self.message.chat.id, "", self.draft_id, can_stop=self.can_stop)
         else:
             self.msg = await self.message.reply_text(self.placeholder)
         return self
 
+    async def step(self, html_label: str):
+        """Update the live streaming draft (or edit the placeholder message in groups)."""
+        if self.stopped:
+            return
+        if self.draft_id is not None:
+            await draft(self.message._client, self.message.chat.id, html_label, self.draft_id, can_stop=self.can_stop)
+        elif self.msg is not None:
+            try:
+                await self.msg.edit_text(html_label)
+            except Exception:
+                pass
+
     async def finish(self, text: str, **kwargs):
-        if self._cm is not None:
-            await self._cm.__aexit__(None, None, None)
-            self._cm = None
+        if self.draft_id is not None:
+            unregister_stop_event(self.message.chat.id, self.draft_id)
+            self.draft_id = None
         if self.msg is not None:
             return await self.msg.edit_text(text, **kwargs)
         return await self.message.reply_text(text, **kwargs)
 
+    async def finish_doc(self, doc, reply_markup=None):
+        """Finish a streaming Progress by sending/editing a rich ``Doc``."""
+        from core import rich
+        if self.draft_id is not None:
+            unregister_stop_event(self.message.chat.id, self.draft_id)
+            self.draft_id = None
+        if self.msg is not None:
+            return await rich.edit(self.msg, doc, reply_markup=reply_markup)
+        return await rich.reply(self.message, doc, reply_markup=reply_markup)
+
     async def __aexit__(self, *exc):
-        if self._cm is not None:
-            await self._cm.__aexit__(*exc)
-            self._cm = None
+        if self.draft_id is not None:
+            unregister_stop_event(self.message.chat.id, self.draft_id)
+            self.draft_id = None
         return False
 
 
-def progress(message, placeholder: str = "⏳ <i>Working…</i>") -> Progress:
-    return Progress(message, placeholder)
+def progress(message, placeholder: str = "⏳ <i>Working…</i>", can_stop: bool = False) -> Progress:
+    return Progress(message, placeholder, can_stop=can_stop)

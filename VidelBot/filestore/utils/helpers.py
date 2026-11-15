@@ -88,8 +88,9 @@ async def validate_bot_token(token: str) -> dict | None:
     except asyncio.TimeoutError:
         log.warning("Bot token validation timed out")
         return None
-    except Exception as e:
-        log.error(f"Bot token validation error: {e}")
+    except Exception:
+        # HTTP exceptions may include the request URL, which contains the bot token.
+        log.error("Bot token validation failed; Telegram may be unavailable.")
         return None
 
 

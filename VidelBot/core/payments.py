@@ -20,8 +20,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from pyrogram import Client, StopPropagation, filters, raw
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup,
-                            KeyboardButton, LabeledPrice, Message, PreCheckoutQuery,
-                            ReplyKeyboardMarkup, ReplyKeyboardRemove, RequestPeerTypeUser)
+                            KeyboardButton, KeyboardButtonRequestUsers, LabeledPrice, Message,
+                            PreCheckoutQuery, ReplyKeyboardMarkup, ReplyKeyboardRemove)
 
 from config import ADMINS, BOT_NAME, GIFTS_ENABLED, OWNERS, STARS_PLANS, SUBSCRIPTION_STARS
 from core.db import vdb
@@ -335,7 +335,15 @@ async def sub_toggle_cb(client: Client, query: CallbackQuery):
 # ─────────────────────────── gifts ───────────────────────────
 def _gift_picker() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("👤 Choose a friend", request_user=RequestPeerTypeUser(button_id=GIFT_BUTTON, is_bot=False))],
+        [[KeyboardButton(
+            "👤 Choose a friend",
+            request_users=KeyboardButtonRequestUsers(
+                button_id=GIFT_BUTTON,
+                user_is_bot=False,
+                request_name=True,
+                request_username=True,
+            ),
+        )],
          [KeyboardButton(CANCEL_GIFT)]],
         resize_keyboard=True, one_time_keyboard=True, placeholder="Pick who gets Premium 🎁",
     )
@@ -381,13 +389,24 @@ async def gift_cmd(client: Client, message: Message):
     await _ask_gift_target(client, message.chat.id)
 
 
+def _iter_shared_containers(message: Message) -> list:
+    """Return all shared-peer payloads (WzGram UsersShared / ChatShared + legacy chats_shared)."""
+    containers = []
+    for attr in ("users_shared", "chat_shared", "chats_shared"):
+        val = getattr(message, attr, None)
+        if not val:
+            continue
+        if isinstance(val, list):
+            containers.extend(val)
+        else:
+            containers.append(val)
+    return containers
+
+
 def shared_peer_filter(button_id: int):
-    """Messages carrying a peer shared through a request_user/request_chat button."""
+    """Messages carrying a peer shared through a request_users/request_chat button."""
     async def func(_, __, m: Message):
-        shared = getattr(m, "chats_shared", None)
-        if not shared:
-            return False
-        for item in (shared if isinstance(shared, list) else [shared]):
+        for item in _iter_shared_containers(m):
             if getattr(item, "button_id", None) == button_id:
                 return True
         return False
@@ -396,12 +415,30 @@ def shared_peer_filter(button_id: int):
 
 def shared_ids(message: Message) -> list:
     """(id, name) pairs of the users/chats shared in *message*."""
-    out, shared = [], getattr(message, "chats_shared", None)
-    for item in (shared if isinstance(shared, list) else [shared] if shared else []):
+    out = []
+    for item in _iter_shared_containers(message):
         for u in getattr(item, "users", None) or []:
-            out.append((u.user_id, " ".join(x for x in (u.first_name, getattr(u, "last_name", None)) if x) or str(u.user_id)))
+            uid = getattr(u, "id", None)
+            if uid is None:
+                uid = getattr(u, "user_id", None)
+            if uid is not None:
+                name = " ".join(x for x in (getattr(u, "first_name", None), getattr(u, "last_name", None)) if x)
+                out.append((uid, name or getattr(u, "username", None) or str(uid)))
+        single_chat = getattr(item, "chat", None)
+        if single_chat is not None:
+            cid = getattr(single_chat, "id", None)
+            if cid is None:
+                cid = getattr(single_chat, "chat_id", None)
+            if cid is not None:
+                cname = getattr(single_chat, "title", None) or getattr(single_chat, "name", None) or str(cid)
+                out.append((cid, cname))
         for c in getattr(item, "chats", None) or []:
-            out.append((c.chat_id, c.name or str(c.chat_id)))
+            cid = getattr(c, "id", None)
+            if cid is None:
+                cid = getattr(c, "chat_id", None)
+            if cid is not None:
+                cname = getattr(c, "title", None) or getattr(c, "name", None) or str(cid)
+                out.append((cid, cname))
     return out
 
 
@@ -476,25 +513,95 @@ async def _record_subscription(uid: int, sp, expiry) -> tuple[bool, int]:
     return False, 0
 
 
+async def _claim_payment(charge_id: str, doc: dict) -> bool:
+    """Atomically claim `charge_id` once so replayed updates never double-grant entitlements."""
+    charge_id = (charge_id or "").strip()
+    if not charge_id:
+        return False
+    record = {**doc, "charge_id": charge_id, "fulfilled": False}
+    try:
+        res = await vdb.db["payments"].update_one(
+            {"charge_id": charge_id},
+            {"$setOnInsert": record},
+            upsert=True,
+        )
+        return res.upserted_id is not None
+    except Exception as exc:
+        if "E11000" in str(exc) or exc.__class__.__name__ == "DuplicateKeyError":
+            return False
+        raise
+
+
+async def _validate_settled_payment(sp, info: dict, from_user) -> bool:
+    """Re-verify currency, amount, charge ID, and intended payer before granting entitlements."""
+    charge_id = (getattr(sp, "telegram_payment_charge_id", "") or "").strip()
+    if not charge_id:
+        log.warning("successful_payment ignored: empty telegram_payment_charge_id")
+        return False
+    currency = getattr(sp, "currency", None)
+    if currency is not None and currency != "XTR":
+        log.warning("successful_payment rejected: unexpected currency %r (charge=%s)", currency, charge_id)
+        return False
+    stars = int(getattr(sp, "total_amount", 0) or 0)
+    if stars <= 0:
+        log.warning("successful_payment rejected: non-positive amount %s (charge=%s)", stars, charge_id)
+        return False
+    if from_user is not None and int(from_user.id) != int(info["payer"]):
+        log.warning(
+            "successful_payment rejected: payer mismatch payload=%s sender=%s (charge=%s)",
+            info["payer"], from_user.id, charge_id,
+        )
+        return False
+    expected = expected_amount(info)
+    allowed_amounts = {expected} if expected is not None else set()
+    if info["kind"] == "sub":
+        existing_sub = await vdb.db["subscriptions"].find_one({"user": info["payer"], "active": True})
+        if existing_sub and int(existing_sub.get("stars") or 0) > 0:
+            allowed_amounts.add(int(existing_sub["stars"]))
+    if stars not in allowed_amounts:
+        log.warning(
+            "successful_payment rejected: amount %s not in allowed=%s for kind=%s (charge=%s)",
+            stars, sorted(allowed_amounts), info["kind"], charge_id,
+        )
+        return False
+    return True
+
+
 async def _product_paid(client, message, info, buyer_name=""):
     """🎬 Encoder Pro / 🤖 Clone Plus / 🚀 Clone Pro purchase."""
     from core import plans
     sp = message.successful_payment
     product, payer = info["product"], info["payer"]
-    new_until = await plans.grant(payer, product, info["days"])
-    await vdb.db["payments"].insert_one({
+    charge_id = (sp.telegram_payment_charge_id or "").strip()
+    currency = getattr(sp, "currency", None) or "XTR"
+    provider_charge = (getattr(sp, "provider_payment_charge_id", "") or "").strip()
+    claimed = await _claim_payment(charge_id, {
         "user": payer, "target": payer, "kind": "product", "product": product, "days": info["days"],
-        "stars": sp.total_amount, "currency": sp.currency, "charge_id": sp.telegram_payment_charge_id,
-        "expiry": new_until.date().isoformat(), "date": datetime.now(timezone.utc), "refunded": False,
+        "stars": sp.total_amount, "currency": currency, "expiry": None,
+        "payload": str(getattr(sp, "payload", "") or "")[:128],
+        "provider_charge_id": provider_charge,
+        "date": datetime.now(timezone.utc), "refunded": False,
     })
+    if not claimed:
+        log.info("duplicate successful_payment ignored for charge_id=%s", charge_id)
+        return
+    try:
+        new_until = await plans.grant(payer, product, info["days"])
+        await vdb.db["payments"].update_one(
+            {"charge_id": charge_id},
+            {"$set": {"expiry": new_until.date().isoformat(), "fulfilled": True}},
+        )
+    except Exception:
+        await vdb.db["payments"].delete_one({"charge_id": charge_id, "fulfilled": False})
+        raise
     p = plans.PRODUCTS[product]
     perks = "\n".join(p["perks"])
     text = (f"<b>🎉 {p['label']} active – thank you!</b>\n\n<blockquote><b>📅 Valid until:</b> {new_until:%d %b %Y}\n"
             f"<b>⭐ Paid:</b> {sp.total_amount} Stars</blockquote>\n<blockquote expandable>{perks}</blockquote>")
     kb = InlineKeyboardMarkup([[Btn("💳 My plans", callback_data="vx_home")],
-                               [copy_button("📋 Copy receipt ID", sp.telegram_payment_charge_id)]])
+                               [copy_button("📋 Copy receipt ID", charge_id)]])
     try:
-        await client.send_message(message.chat.id, text, message_effect_id=effect("party"), reply_markup=kb)
+        await client.send_message(message.chat.id, text, effect_id=effect("party"), reply_markup=kb)
     except Exception:
         await message.reply_text(f"🎉 {p['label']} active until {new_until:%d %b %Y}. Thank you!")
     from core import botlog
@@ -507,25 +614,45 @@ async def _product_paid(client, message, info, buyer_name=""):
 @Client.on_message(filters.successful_payment, group=-10)
 async def successful_payment(client: Client, message: Message):
     sp = message.successful_payment
+    if not sp:
+        return
     try:
         info = decode_payload(sp.payload)
     except Exception:
+        return
+    if not await _validate_settled_payment(sp, info, message.from_user):
         return
     kind, days, payer, target = info["kind"], info["days"], info["payer"], info["target"]
     buyer_name = message.from_user.first_name if message.from_user else ""
     if kind == "product":
         return await _product_paid(client, message, info, buyer_name)
-    expiry = await grant_premium(target, days, buyer_name if target == payer else "")
-    renewal, renewals = False, 0
-    if kind == "sub":
-        renewal, renewals = await _record_subscription(payer, sp, expiry)
-    await vdb.db["payments"].insert_one({
+    charge_id = (sp.telegram_payment_charge_id or "").strip()
+    provider_charge = (getattr(sp, "provider_payment_charge_id", "") or "").strip()
+    currency = getattr(sp, "currency", None) or "XTR"
+    claimed = await _claim_payment(charge_id, {
         "user": payer, "target": target, "kind": kind, "days": days, "stars": sp.total_amount,
-        "currency": sp.currency, "charge_id": sp.telegram_payment_charge_id, "expiry": expiry,
+        "currency": currency, "expiry": None,
+        "payload": str(getattr(sp, "payload", "") or "")[:128],
+        "provider_charge_id": provider_charge,
         "date": datetime.now(timezone.utc), "refunded": False,
     })
+    if not claimed:
+        log.info("duplicate successful_payment ignored for charge_id=%s", charge_id)
+        return
+    try:
+        expiry = await grant_premium(target, days, buyer_name if target == payer else "")
+        renewal, renewals = False, 0
+        if kind == "sub":
+            renewal, renewals = await _record_subscription(payer, sp, expiry)
+        await vdb.db["payments"].update_one(
+            {"charge_id": charge_id},
+            {"$set": {"expiry": expiry, "fulfilled": True}},
+        )
+    except Exception:
+        await vdb.db["payments"].delete_one({"charge_id": charge_id, "fulfilled": False})
+        raise
     until = until_text(expiry)
-    receipt = [copy_button("📋 Copy receipt ID", sp.telegram_payment_charge_id)]
+    receipt = [copy_button("📋 Copy receipt ID", charge_id)]
     if kind == "gift":
         head = f"<b>🎁 Gift sent – thank you!</b>\n\n<blockquote><b>👤 Friend:</b> <code>{target}</code>\n" \
                f"<b>💎 Premium until:</b> {until}\n<b>⭐ Paid:</b> {sp.total_amount} Stars</blockquote>"
@@ -541,7 +668,7 @@ async def successful_payment(client: Client, message: Message):
                 "<i>Enjoy unlimited saves &amp; big files!</i>")
         kb = InlineKeyboardMarkup([[Btn("📊 My Plan", callback_data="myplan_back_btn")], receipt])
     try:
-        await client.send_message(message.chat.id, head, message_effect_id=effect("party"), reply_markup=kb)
+        await client.send_message(message.chat.id, head, effect_id=effect("party"), reply_markup=kb)
     except Exception:
         await message.reply_text(f"🎉 Premium active until {until}. Thank you!")
 
@@ -553,7 +680,7 @@ async def successful_payment(client: Client, message: Message):
                 target,
                 f"<b>🎁 You received a gift!</b>\n\n<blockquote>{giver} gifted you <b>{BOT_NAME} Premium</b> "
                 f"({_label(days)}).\n<b>📅 Valid until:</b> {until}</blockquote>\n<i>Enjoy unlimited saves &amp; big files!</i>",
-                message_effect_id=effect("heart"),
+                effect_id=effect("heart"),
                 reply_markup=InlineKeyboardMarkup([[Btn("📊 My Plan", callback_data="myplan_back_btn")]]),
             )
         except Exception:

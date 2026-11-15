@@ -8,7 +8,11 @@ import motor.motor_asyncio
 class Database:
 
     def __init__(self, uri, database_name):
-        self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
+        from filestore.database.mongo import CLIENT_TIMEOUT_KW, MONGO_URI, get_motor_client
+        if uri == MONGO_URI:
+            self._client = get_motor_client()
+        else:
+            self._client = motor.motor_asyncio.AsyncIOMotorClient(uri, **CLIENT_TIMEOUT_KW)
         self.db = self._client[database_name]
         self.col = self.db.users
         self.col2 = self.db.status
@@ -53,9 +57,12 @@ class Database:
         )
 
     async def add_user(self, id):
-        if not await self.is_user_exist(id):
-            user = self.new_user(id)
-            await self.col.insert_one(user)
+        uid = int(id)
+        await self.col.update_one(
+            {'id': uid},
+            {'$setOnInsert': self.new_user(uid)},
+            upsert=True,
+        )
 
     async def is_user_exist(self, id):
         user = await self.col.find_one({'id': int(id)})

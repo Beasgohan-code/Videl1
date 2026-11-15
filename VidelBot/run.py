@@ -33,13 +33,17 @@ PLUGIN_ROOTS = [
     "VideoEncoder/plugins",
     "filestore/main_bot/plugins",
     "renamer",
+    "plugins",
 ]
 SKIP = {"__init__", "ui", "db", "texts", "botapi"}
+boot_import_errors: dict[str, str] = {}
 
 
 def load_plugins(app) -> int:
-    """Import every module under PLUGIN_ROOTS and register its decorated handlers."""
+    """Import every module under PLUGIN_ROOTS and register its decorated handlers (idempotent per client)."""
+    from core.plugin_manager import plugin_manager, register_handler_once
     count = 0
+    boot_import_errors.clear()
     for root in PLUGIN_ROOTS:
         for path in sorted(Path(root).rglob("*.py")):
             if path.stem in SKIP or "__pycache__" in path.parts:
@@ -47,7 +51,11 @@ def load_plugins(app) -> int:
             mod_name = ".".join(path.with_suffix("").parts)
             try:
                 module = importlib.import_module(mod_name)
-            except Exception:
+            except Exception as exc:
+                err_txt = f"{type(exc).__name__}: {exc}"
+                boot_import_errors[mod_name] = err_txt
+                if root == "plugins" and len(path.parts) >= 2:
+                    plugin_manager.load_errors[path.parts[1]] = err_txt
                 log.exception(f"❌ failed to import {mod_name}")
                 continue
             for name in vars(module):
@@ -57,14 +65,19 @@ def load_plugins(app) -> int:
                 if not isinstance(handlers, list) or getattr(obj, "__module__", None) != mod_name:
                     continue
                 for handler, group in handlers:
-                    if isinstance(group, int):
-                        app.add_handler(handler, group)
+                    if isinstance(group, int) and register_handler_once(app, handler, group):
                         count += 1
     # last group-0 handler: the "what can I do with this file?" hint for files no plugin claimed
     try:
         from core import filehint
-        count += filehint.register(app)
-    except Exception:
+        if not getattr(app, "_videl_filehint_registered", False):
+            count += filehint.register(app)
+            try:
+                setattr(app, "_videl_filehint_registered", True)
+            except Exception:
+                pass
+    except Exception as exc:
+        boot_import_errors["core.filehint"] = f"{type(exc).__name__}: {exc}"
         log.exception("❌ file hint not registered")
     return count
 
@@ -137,7 +150,11 @@ async def main():
 
     # One live copy per bot token – a zero-downtime redeploy must not answer every update twice
     from core import instance
-    await instance.acquire()
+    try:
+        await instance.acquire()
+    except instance.InstanceLeaseError as e:
+        log.error(f"🔒 Single-instance lease acquisition failed (fail-closed): {e}")
+        sys.exit(1)
     instance.start_heartbeat()
     try:
         from VideoEncoder.utils import jobs
@@ -158,9 +175,13 @@ async def main():
     from core.admins import load_db_admins
     await load_db_admins()
 
-    from client import app
+    from client import app, runtime_stack
+    st = runtime_stack()
+    log.info(f"🛰 Runtime: {st['engine']} {st['version']} (layer {st['layer']}) · richgram={st.get('richgram')}")
     n = load_plugins(app)
-    log.info(f"🧩 registered {n} handlers")
+    from core.plugin_manager import plugin_manager
+    n_plg = await plugin_manager.initialize(app)
+    log.info(f"🧩 registered {n} handlers ({n_plg} modular plugins active)")
 
     from pyrogram import idle
 
@@ -210,13 +231,19 @@ async def main():
         f"<b>🤖 Bot:</b> @{me.username}\n<b>⏱ Was up since:</b> {started.strftime('%d %b %Y · %I:%M %p')}\n"
         f"<b>🤖 Clone bots stopped:</b> {worker_engine.active_count}</blockquote>"), client=app)
     await botlog.flush(10)
+    await plugin_manager.unload_all(app)
     await worker_engine.stop_all_workers()
+    await watchdog.stop()
+    from core import bg as bg_tasks
+    await bg_tasks.cancel_all()
     await keep_alive.stop_server()
     from core import botapi
     await botapi.close()
     await app.stop()
     instance.stop_heartbeat()
     await instance.release()                  # the next deploy can start right away
+    from filestore.database.mongo import close_motor_client
+    close_motor_client()
 
 
 if __name__ == "__main__":

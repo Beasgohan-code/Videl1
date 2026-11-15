@@ -11,5 +11,7 @@ VideoEncoder/utils/extras/encodes/
 VideoEncoder/utils/extras/*.txt
 .restart_msg.json
 token.pickle
+token.json
+credentials.json
 credentials.json
 .restart_reason

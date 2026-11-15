@@ -1,0 +1,14 @@
+(()=>{'use strict';
+const $=id=>document.getElementById(id);let index=0,page={};
+$('kicker').textContent=DATA.kicker;$('title').textContent=DATA.title;$('subtitle').textContent=DATA.subtitle;$('foot').textContent=DATA.foot;
+const tabs=$('tabs');DATA.sections.forEach((s,i)=>{const b=document.createElement('button');b.textContent=s.label;b.dataset.index=String(i);tabs.appendChild(b)});
+function render(){tabs.querySelectorAll('button').forEach((b,i)=>b.setAttribute('aria-pressed',String(i===index)));const container=$('rows');container.replaceChildren();
+ DATA.sections[index].rows.forEach((r,i)=>{const row=document.createElement('div'),head=document.createElement('div'),label=document.createElement('span'),value=document.createElement('span');row.className='row';head.className='row-head';label.className='label';value.className='value';label.textContent=r.label;value.textContent=r.pages?r.pages[page[i]||0]:r.value;head.appendChild(label);head.appendChild(value);
+  if(r.copy){const copy=document.createElement('button');copy.className='copy';copy.dataset.copy=String(i);copy.textContent='Copy ID';head.appendChild(copy)}row.appendChild(head);
+  if(typeof r.percent==='number'){const track=document.createElement('div'),fill=document.createElement('div');track.className='track';fill.className='fill';fill.style.width=r.percent+'%';track.appendChild(fill);row.appendChild(track)}
+  if(r.pages){const pager=document.createElement('div'),number=page[i]||0;pager.className='pager';[-1,1].forEach((dir,j)=>{if(j===1){const t=document.createElement('span');t.textContent=(number+1)+' / '+r.pages.length;pager.appendChild(t)}const b=document.createElement('button'),edge=dir<0?number===0:number===r.pages.length-1;b.dataset.page=String(dir);b.dataset.row=String(i);b.setAttribute('aria-disabled',String(edge));b.textContent=edge?(dir<0?'First':'Last'):(dir<0?'‹ Back':'More ›');pager.appendChild(b)});row.appendChild(pager)}
+  container.appendChild(row)})}
+tabs.addEventListener('click',e=>{const b=e.target.closest('button[data-index]');if(b){index=Number(b.dataset.index);page={};$('notice').textContent='';render()}});
+$('rows').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.page){if(b.getAttribute('aria-disabled')==='true')return;const i=Number(b.dataset.row);page[i]=(page[i]||0)+Number(b.dataset.page);$('notice').textContent='';render()}else if(b.dataset.copy){const r=DATA.sections[index].rows[Number(b.dataset.copy)];try{if(!window.TelegramWidget||typeof window.TelegramWidget.copyText!=='function')throw Error();window.TelegramWidget.copyText(r.value);$('notice').textContent='Copy requested in Telegram.'}catch(_){$('notice').textContent='Copy unavailable in this client.'}}});
+render();if(window.TelegramWidget){try{window.TelegramWidget.ready()}catch(_){}}
+})();

@@ -37,7 +37,11 @@ def test_all_plugins_import_and_register():
     run(__import__("asyncio").sleep(0.2))
     groups = app.dispatcher.groups
     assert sorted(k for k in groups if k < 0) == [-20, -10, -5, -4, -3, -2, -1]   # -20 replay guard · -5 senderless
-    assert any(h.callback.__module__ == "core.errors" for h in app.dispatcher.error_handlers)
+    from pyrogram.handlers import ErrorHandler
+    err_handlers = getattr(app.dispatcher, "error_handlers", None) or [
+        h for hs in groups.values() for h in hs if isinstance(h, ErrorHandler)
+    ]
+    assert any(h.callback.__module__ == "core.errors" for h in err_handlers)
 
 
 def test_no_credits_in_user_facing_texts():
@@ -116,7 +120,7 @@ def test_successful_payment_activates_and_extends():
     assert run(vdb.db["payments"].count_documents({})) == 4
     # receipt sent with an effect + LOG_CHANNEL notified
     sends = c.called("send_message")
-    assert any(k.get("message_effect_id") for _, _, k in sends)
+    assert any(k.get("effect_id") or k.get("message_effect_id") for _, _, k in sends)
     assert any(a and a[0] == -100123 for _, a, _ in sends)
 
 

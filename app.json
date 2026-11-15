@@ -122,6 +122,16 @@
       "description": "Fallback language: en hi ml ta es id ru ar",
       "value": "en",
       "required": false
+    },
+    "WZGRAM_NATIVE_RICH": {
+      "description": "Enable WzGram Layer 232 native InputRichMessage rendering (True/False)",
+      "value": "True",
+      "required": false
+    },
+    "PLUGINS_ENABLED": {
+      "description": "Enable modular YAML-manifest plugins under plugins/ (True/False)",
+      "value": "True",
+      "required": false
     }
   },
   "formation": {

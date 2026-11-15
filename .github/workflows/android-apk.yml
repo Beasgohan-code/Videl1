@@ -1,0 +1,48 @@
+name: Android debug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["arena/a69b9f62-videl1"]
+    paths: ["android/**", ".github/workflows/android-apk.yml"]
+  pull_request:
+    branches: ["main"]
+    paths: ["android/**", ".github/workflows/android-apk.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Test and build debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify hosted Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ANDROID_HOME:?The hosted runner did not provide ANDROID_HOME}"
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar" || { echo "Android platform 35 is missing from the runner"; exit 1; }
+          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt" || { echo "Android build-tools 35.0.0 are missing from the runner"; exit 1; }
+          echo "Using preinstalled Android platform 35 and build-tools 35.0.0"
+      - name: Test and assemble debug APK
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: videl-studio-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
