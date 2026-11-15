@@ -209,7 +209,7 @@ Manual UPI / QR payments (`UPI_ID`, `QR_CODE`, `/add_premium`) keep working alon
 * **Subscription** – `SUBSCRIPTION_STARS=90` adds *🔁 ⭐90 / month · auto-renew*. Telegram charges the user every 30 days and
   each renewal extends Premium by 30 days automatically. Users manage it with `/mysub` (cancel / resume auto-renew).
 * **Gifts** – `/gift` (or *🎁 Gift a friend*) opens Telegram's user picker; the buyer pays, the friend gets Premium and a notification.
-* **Free Premium** – `/trial` (`TRIAL_DAYS`), `/redeem CODE` (admins create codes with `/gencode 30 5`), referral rewards.
+* **Free Premium** – `/trial` (`TRIAL_DAYS`), `/redeem CODE` in a private chat, and referral rewards. Bot admins create/manage codes privately with `/gencode 30 5`, `/codes` and `/delcode CODE`; anyone who obtains a valid code can attempt to redeem it. See `docs/REDEEM_CODE_ACCESS.md`.
 
 ## ✏️ Auto-Rename
 

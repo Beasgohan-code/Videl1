@@ -279,7 +279,7 @@ ADMIN_HELP = """<b>👮 Admin</b>
 /set_dump &lt;chat_id&gt;
 /stars — Stars balance, payments, subscriptions · /refund &lt;user&gt; &lt;charge_id&gt;
 
-<b>Growth</b>
+<b>Growth (bot admins, private chat only)</b>
 /gencode &lt;days&gt; [count] [uses] — redeem codes (0 days = lifetime)
 /codes — active codes · /delcode &lt;code&gt;
 Support: users send /support → it lands in your DM → <b>reply</b> to answer.

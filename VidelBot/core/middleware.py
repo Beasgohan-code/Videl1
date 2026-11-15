@@ -152,7 +152,13 @@ async def track_users(client: Client, message: Message):
         source = ""
         if text.startswith("/start") and len(text.split()) > 1:
             source = f"\n<b>🔗 Came from:</b> <code>{botlog.esc(text.split(maxsplit=1)[1][:64])}</code>"
-        first = botlog.esc(text[:60]) if text and not text.startswith("/start") else "/start"
+        # First-message logs must not copy redeemable codes into a shared log channel.
+        # Include command names for troubleshooting, but never their arguments.
+        command = text.split(maxsplit=1)[0][1:].split("@", 1)[0].lower() if text.startswith("/") else ""
+        if command in {"redeem", "delcode"}:
+            first = f"/{command} [redacted]"
+        else:
+            first = botlog.esc(text[:60]) if text and not text.startswith("/start") else "/start"
         await botlog.event("NewUser", botlog.user_block(user, (
             f"<b>💬 First message:</b> <code>{first}</code>{source}\n"
             f"<b>📊 Total users:</b> <code>{total}</code>")), client=client)
