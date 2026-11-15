@@ -284,7 +284,7 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 - [ ] Do not introduce real payment/subscription handling without an approved billing architecture and secure implementation plan; do not artificially restrict existing features.
 
 ### Cross-cutting delivery and safety gates
-- [ ] Keep work on `arena/a69b9f62-videl1`; do not modify `main`, merge, deploy, delete branches or alter production services without explicit permission. Use focused commits and update this roadmap honestly.
+- [ ] Keep work on the current session branch; do not merge, deploy, delete branches or alter production services without explicit permission. Use focused commits and update this roadmap honestly.
 - [ ] Preserve WzGram/Pyrofork as the primary receiver for normal updates, aiogram outgoing Bot API, MongoDB and Richgram architecture. The opt-in 10.4 beta listener is limited to widget queries and refuses a configured webhook. Keep one canonical root `Dockerfile` and synchronized root and `VidelBot/` requirements.
 - [ ] Enforce backend workspace isolation, bot ownership and RBAC; prevent IDOR, CSRF and abuse; encrypt secrets at rest and prevent secret exposure in URLs, responses, logs, clones and exports. Never bypass DRM, paywalls, CAPTCHAs or platform restrictions.
 - [ ] Complete and test stages sequentially; verify full tests, production build, responsive screenshots, real MongoDB concurrency and live Telegram end-to-end flows when feasible. Report gaps and observed results without claiming unverified functionality, builds or CI.
@@ -292,3 +292,5 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 - [ ] Finish and safely roll out Telegram-first Studio sign-in: `/web` offers a Mini App button, signed SaaS login uses a Mongo-backed one-use proof, and both Studio interfaces handle SDK loading. Browser Login Widget/OIDC, real Telegram/Mongo/multi-worker testing, classic-admin replay protection, durable sessions, mixed-worker migration and production rollout remain open. See `docs/TELEGRAM_STUDIO_SIGNIN.md`.
 
 - [ ] Finish automatic first-visit signup and Studio polish rollout: validate real Telegram, Mongo index/uniqueness and multi-worker recovery, durable sessions, browser Telegram OIDC, demo API containment and the remaining Studio UI/accessibility work. See `docs/AUTOMATIC_SIGNUP.md`.
+
+- [ ] Follow up redeem-code recovery `f5fd533bd9e54d99292a454d971112cc10458da4`: test real Mongo and Telegram failures, index availability, concurrent grants and mixed workers; design durable, idempotent claim/grant reconciliation and reviewed operator recovery. `/codes [page]` is an active-only, bounded offset view, not a snapshot or deletion proof. Existing code values remain plaintext and globally scoped; no data migration or deployment was performed. See `docs/REDEEM_CODE_ACCESS.md`.

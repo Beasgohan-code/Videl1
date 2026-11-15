@@ -14,3 +14,9 @@ An isolated interactive demo Preview rendered in Chromium at 1440px desktop and 
 - [Mobile Overview screenshot](assets/videl1-studio-overview-mobile.png)
 
 This is a UI milestone only. It does not close the workspace-isolation, route-level authorization, runtime integration, durable scheduler, storage lifecycle, provider security, real-Mongo concurrency, or production deployment blockers in `TODO.md` and `docs/AUDIT.md`.
+
+## Redeem-code recovery and pagination
+
+Commit `f5fd533bd9e54d99292a454d971112cc10458da4` adds private admin `/codes [page]` listing and safe error guidance for uncertain code creation, deletion, message delivery and redemption. Acknowledged batch audits do not contain codes and no operation is automatically retried, rolled back or repaired. See `VidelBot/core/growth.py`, `VidelBot/tests/test_redeem_code_recovery.py` and `docs/REDEEM_CODE_ACCESS.md`.
+
+Verification: focused synthetic handler tests **54 passed**; complete offline backend suite **1106 passed**, with one Python version warning. Tests use fake Telegram and mock MongoDB; no live Telegram delivery, Mongo concurrency, production deployment or repair of existing records was performed. Offset pages can shift and only show active codes; redemption and premium grants remain nontransactional.
