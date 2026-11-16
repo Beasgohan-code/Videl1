@@ -24,3 +24,7 @@ Verification: focused synthetic handler tests **54 passed**; complete offline ba
 ## Redeem claim safeguards
 
 Commit `e2d90fe59e96c6475166db05ae2657ba93b2ec28` conditionally claims the exact code record and duration read and rejects invalid or impossible durations before claiming. See `VidelBot/core/growth.py`, `VidelBot/tests/test_redeem_code_recovery.py` and `docs/REDEEM_CODE_ACCESS.md` for the behavior and limitations. Focused synthetic tests **63 passed** and the complete offline backend suite **1115 passed**, with one Python-version warning. No live MongoDB concurrency or Telegram delivery testing was performed; claims and grants remain separate and extreme existing future expiries can still overflow after claiming.
+
+## Redeem expiry preflight
+
+Commit `504e9d6ca611ac1e3be0cb56deb0b5fdcefb1f6e` checks the user's existing Premium expiry using the shared grant calculation before claiming a redeem-code use. Known overflow or a failed preflight read stops that attempt before its claim; users receive a sanitized explanation. Tests in `VidelBot/tests/test_redeem_code_recovery.py` cover overflow, read failure, lifetime behavior, and an expiry change after the preflight. Focused backend tests **134 passed**; full offline backend suite **1121 passed**, with one Python-version warning. These tests use mock Mongo and fake Telegram. The preflight is not atomic: another grant or date change can still cause failure after a claim; no automatic refund or entitlement repair was added. See `docs/REDEEM_CODE_ACCESS.md`.
