@@ -7,14 +7,42 @@ other clone data. Stored links are not served while Group Management is active.
 Stop the clone, select the profile, and start it again. Music is displayed as
 unavailable: there is **no voice-chat playback runtime** in this implementation.
 
-Group Management currently provides `/ghelp`, `/groupid`, `/gban` and `/gunban`.
-A group admin with Telegram's restrict-members permission and a bot with the same
-permission are required for ban/unban. Commands accept a replied-to user or a
-numeric user ID. Anonymous/sender-chat actors, admins, owners, unknown target
-statuses and unverifiable permissions are rejected. Telegram can change rights
-between checks and the actual action; Telegram is the final authority. A failed
-API call may have taken effect, so check member status before retrying. There are
-no shared group settings, caches, warnings or automatic moderation in this profile.
+Group Management is an independent clone worker, not a registration of the
+main bot's group plugin. It currently implements a subset inspired by the public
+[Miss Rose restrictions guide](https://missrose.org/docs/moderation/restrictions/)
+and [pins guide](https://missrose.org/docs/moderation/pins/) and
+[delete guide](https://missrose.org/docs/moderation/purges/):
+
+- `/ban`, `/tban`, `/dban`, `/sban`, `/unban` (plus legacy `/gban`, `/gunban`);
+- `/mute`, `/tmute`, `/dmute`, `/smute`, `/unmute` and `/kick`, `/dkick`, `/skick`;
+- `/del`, `/pin`, `/pin loud`, `/unpin`, `/groupid` and `/help` (`/ghelp`).
+
+These commands also accept a dot prefix (for example `.ban`). Actions target a
+replied-to user, numeric user ID, or resolvable `@username`. Reply-based `d` and
+`s` commands delete the replied message *after* the moderation action is
+confirmed. Silent commands also attempt to delete the command and do not post a
+success message; if any deletion is uncertain a warning is sent separately when
+possible. Timed bans/mutes accept `m`, `h`, `d` and `w` units between **5 minutes
+and 365 days**. Very long API delays or an incorrect system clock can still affect
+Telegram's interpretation of a timed restriction; verify the result in Telegram.
+Reasons are shown in non-silent responses, but are not stored or sent to a log
+channel. This is not full Rose compatibility: warnings, welcome messages,
+filters, locks, antiflood, federations, logging, purges and other Rose features
+are not implemented here.
+
+Bans, mutes, kicks and their reversals require a **supergroup**, with the actor and
+bot both having Telegram restrict-members permission; delete variants also require
+delete-messages permission. `/del` requires delete-messages permission and
+pin/unpin require pin-messages permission for both actor and bot. Anonymous or
+sender-chat actors, admins, owners, unknown target statuses and unverifiable
+permissions are rejected. Username resolution can fail when Telegram cannot
+resolve a user. Bot privacy and permissions still affect which updates arrive.
+Rights can change between checks and the actual action: Telegram is the final
+authority. A failed API call may have taken effect, so check before retrying.
+Kicking is a two-step ban/unban; if the second step is uncertain, the user may
+remain banned. Muting overwrites any existing per-member restrictions; unmuting
+replaces them with verified current group defaults, not their previous custom
+permissions. No shared group settings, warnings or automatic moderation are used.
 Some previously installed per-chat Telegram command menus may remain visible even
 though File Store handlers are not active.
 

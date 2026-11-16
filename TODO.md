@@ -182,7 +182,7 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 
 - [ ] Build a real voice-chat music assistant, with secure session lifecycle, streaming, authorization and live Telegram testing; Music remains unavailable.
 - [ ] Coordinate all clone lifecycle/ownership writers using a distributed, fenced lease or equivalent design; validate real MongoDB concurrency, rolling upgrades and Telegram stop/start recovery before removing the single-instance restriction.
-- [ ] Expand Group Management beyond the current stateless ban/unban subset with isolated settings and real Telegram permission tests. See [clone profile limitations](docs/CLONE_PROFILES.md).
+- [ ] Expand the clone's Rose-inspired Group Management beyond the current stateless moderation, message delete and pin commands: isolated warnings, welcomes, filters, locks, antiflood, logs and other features need independent designs, safe concurrency and real Telegram permission tests. It is not full Rose compatibility. See [clone profile limitations](docs/CLONE_PROFILES.md).
 
 ### 7. Bot Clone Studio
 - [ ] For owned/explicitly manageable bots, complete the 11-step flow: source, inspection, section selection, destination or new registration, comparison, conflict detection, preview, validation, confirmation, execution and results.
