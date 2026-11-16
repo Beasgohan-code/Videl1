@@ -135,3 +135,17 @@ clicks with synthetic APIs at representative widths. Headless modified-click
 checks dispatch browser events and cancel their default action; they do not
 verify a real new-tab workflow. Browser history and other navigation paths
 remain outside this targeted check.
+
+## Astro static build
+
+`astro-public-build.test.cjs` checks the **built static site** (not production)
+at 320/390/1440px: 14 routes, page titles/landmarks, horizontal overflow, the
+hydrated theme switch and persistence, mobile navigation, and the standalone
+`/app/` fallback. It does not connect to the backend or prove that any
+production routing, authentication, Telegram or accessibility is correct.
+
+After `npm ci && npm run build` in `frontend-platform`, serve
+`frontend-platform/apps/site/dist` on port 4321, install this directory's
+locked test dependencies, set `CHROMIUM_PATH` and run `npm run test:astro-build`.
+The dedicated frontend workflow performs these checks against its own local
+static build; it does not deploy the site.

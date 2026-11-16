@@ -5,11 +5,16 @@ an in-progress Next App Router Studio (`apps/studio`). The existing Python
 backend and served Studio remain in place. These sources are not a production
 cutover or feature parity.
 
+Use Node.js **22.23.4 or newer** (the checked-in `.nvmrc` selects 22.23.4); the Astro 7 upgrade raises the previous Node minimum. The install and build do not deploy either application.
+
 ```sh
 npm ci
+npm audit
 npm run typecheck
 npm run build
 ```
+
+The locked Astro 7/Vite 8 migration is verified against the standalone static site and the synthetic Next fixture, not the production front door. Registry advisory scans change over time and a clean result is not a security certification. See `docs/OUTBOUND_DEPENDENCY_REVIEW.md`.
 
 The Next application is currently mounted at `/next-preview`; it includes an
 overview and partial Bot, Command, File Store, Hosting, Template, Notification, Team and Analytics workflows. Other features

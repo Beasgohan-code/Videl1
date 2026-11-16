@@ -38,3 +38,26 @@ a patched compatible dependency set, regression/build testing and a fresh
 scan. The audit's suggested major-version change is not proof that every listed
 advisory is fixed; do not use `npm audit fix --force` as an unreviewed fix. The
 scan does not cover Python, containers, all runtime routes or license risks.
+
+### Follow-up: tested Astro dependency update
+
+The preview lockfile now uses Astro **7.4.12**, `@astrojs/react` **7.1.9** and
+Vite **8.3.8**; the resolved sharp is **0.35.5**, and the compatible optional
+esbuild peer is **0.28.2**. A fresh `npm ci` and `npm audit --json` on that
+lockfile returned **zero known vulnerabilities** from the registry advisory
+data at the time of the scan, including no matches for the entries above. This
+is not a security certification or an independent vulnerability assessment.
+The audit is not a review of Python, native media libraries, runtime network
+exposure, deployment configuration or all licenses. Astro, `@astrojs/react`,
+Vite and esbuild report MIT licensing in registry metadata; the complete
+transitive license and provenance inventory remains open.
+
+Astro 7 requires Node **22.23.4 or newer**; the frontend workspace engine and
+`.nvmrc` now reflect that. Both frontend typechecks/builds and built-static-site
+Chromium checks passed locally. The Next Studio suite runs with a synthetic API,
+not a live service. The dedicated frontend CI job installs locked dependencies,
+runs an advisory gate for high/critical matches, builds both workspaces and
+tests the built public site; CI still depends on registry and browser downloads.
+Review major-version changes and real deployment routing before approving any
+cutover. This change does not upgrade, deploy or attest the legacy production
+front door or its dependencies.
