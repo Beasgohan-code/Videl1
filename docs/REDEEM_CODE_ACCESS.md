@@ -50,3 +50,23 @@ This is error guidance, not atomic recovery: no transaction, compensation,
 automatic refund or entitlement repair is implemented. Tests use mock Mongo
 and fake Telegram only; real concurrency, delivery and database behavior still
 require validation. No existing records or keys are migrated or removed.
+
+## Claim safeguards
+
+A redemption claim now matches the `_id`, code value and duration read before
+claiming, in addition to remaining uses and the user not having redeemed it.
+A deleted-and-recreated record with a different `_id`, or a duration changed
+before the claim, will not be consumed using the old duration. The caller gets
+a noncommittal message if the conditional claim fails. This is not an ABA
+protection: recreating a record with the same ID and values, later edits, other
+writers, or changes after the claim can still race. Duplicate code values are
+not prevented or repaired by this change.
+
+New durations must be integer days between zero (lifetime) and the number of
+days from today to Python's maximum date; invalid legacy durations are refused
+before consuming a use. No stored record is changed. This bound only rules out
+expiry dates impossible even from today. A user's existing future expiry can
+still cause overflow, and an elapsed day can make an extreme legacy duration
+invalid. As before, a claim and grant are separate operations; there is no
+transaction or automatic retry. Verify mixed workers and actual Mongo races
+before relying on these safeguards in production.

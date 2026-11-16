@@ -183,3 +183,74 @@ def test_audit_failure_does_not_prevent_delivering_saved_code(monkeypatch,caplog
         row=await vdb.db['codes'].find_one({})
         assert row and row['code'] in msg.replies[0] and 'internal audit failure' not in caplog.text
     run(go())
+
+
+@pytest.mark.parametrize('duration', [-1, True, '7', None, 999999999])
+def test_invalid_legacy_duration_does_not_consume_use(duration):
+    async def go():
+        code='VIDEL-BAD00-00000'
+        await vdb.db['codes'].insert_one({'code':code, 'days':duration, 'uses_left':1, 'used_by':[]})
+        msg=FakeMsg('/redeem '+code,uid=333)
+        await growth.redeem_cmd(FakeClient(),msg)
+        row=await vdb.db['codes'].find_one({'code':code})
+        assert row['uses_left']==1 and row['used_by']==[]
+        assert 'invalid duration' in msg.replies[0] and code not in msg.replies[0]
+        from database.db import db
+        assert not await db.col.find_one({'id':333})
+    run(go())
+
+
+def test_impossible_duration_is_rejected_before_creating_any_codes():
+    async def go():
+        msg=FakeMsg('/gencode 999999999 3',uid=222)
+        await growth.gencode_cmd(FakeClient(),msg)
+        assert 'days:' in msg.replies[0] and '0 (lifetime)' in msg.replies[0]
+        assert await vdb.db['codes'].count_documents({}) == 0
+        with pytest.raises(ValueError):
+            await growth.create_codes(999999999)
+        assert await vdb.db['codes'].count_documents({}) == 0
+        lifetime=FakeMsg('/gencode 0',uid=222)
+        await growth.gencode_cmd(FakeClient(),lifetime)
+        assert (await vdb.db['codes'].find_one({}))['days']==0
+    run(go())
+
+
+@pytest.mark.parametrize('change', ['replace', 'edit'])
+def test_code_replaced_or_duration_changed_during_claim_never_grants_stale_duration(monkeypatch,change):
+    async def go():
+        db=vdb.db;col=db['codes'];code=(await growth.create_codes(7,by=222))[0]
+        original=await col.find_one({'code':code})
+        class RacingCollection:
+            async def find_one(self, query): return await col.find_one(query)
+            async def update_one(self, query, update):
+                if change == 'replace':
+                    await col.delete_one({'_id':original['_id']})
+                    await col.insert_one({'code':code,'days':7,'uses_left':1,'used_by':[]})
+                else:
+                    await col.update_one({'_id':original['_id']},{'$set':{'days':30}})
+                return await col.update_one(query, update)
+        monkeypatch.setattr(vdb,'_db',DbProxy(db,RacingCollection()))
+        ok, result, _=await growth.redeem(333,code)
+        assert not ok and 'may have changed' in result and code not in result
+        row=await col.find_one({'code':code})
+        assert row['days']==(7 if change == 'replace' else 30) and row['uses_left']==1 and row['used_by']==[]
+        from database.db import db as saver_db
+        assert not await saver_db.col.find_one({'id':333})
+    run(go())
+
+
+def test_future_expiry_overflow_is_reported_as_uncertain_without_refund(caplog):
+    async def go():
+        from database.db import db
+        await db.add_user(333,'Tester')
+        await db.add_premium(333,'9999-12-31')
+        code=(await growth.create_codes(7,by=222))[0]
+        msg=FakeMsg('/redeem '+code,uid=333)
+        await growth.redeem_cmd(FakeClient(),msg)
+        row=await vdb.db['codes'].find_one({'code':code})
+        user=await db.col.find_one({'id':333})
+        assert row['uses_left']==0 and row['used_by']==[333]
+        assert user['premium_expiry']=='9999-12-31'
+        assert 'Could not confirm redemption' in msg.replies[0] and code not in msg.replies[0]
+        assert code not in caplog.text
+    run(go())

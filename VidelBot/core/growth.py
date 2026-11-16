@@ -17,7 +17,7 @@ import logging
 import re
 import secrets
 import string
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import quote
 
 from pyrogram import Client, enums, filters
@@ -192,7 +192,15 @@ def new_code(length: int = 10) -> str:
     return f"VIDEL-{raw[:5]}-{raw[5:]}"
 
 
+def _valid_code_days(days) -> bool:
+    # 0 means lifetime. A larger value cannot fit even from today's date;
+    # an existing future expiry can still overflow for smaller values.
+    return isinstance(days, int) and not isinstance(days, bool) and 0 <= days <= (date.max - date.today()).days
+
+
 async def create_codes(days: int, count: int = 1, uses: int = 1, by: int = 0) -> list:
+    if not _valid_code_days(days):
+        raise ValueError("Invalid premium duration")
     codes = []
     for _ in range(count):
         code = new_code()
@@ -212,11 +220,16 @@ async def redeem(user_id: int, code: str, name: str = ""):
         return False, "❌ Invalid code.", 0
     if user_id in doc.get("used_by", []):
         return False, "⚠️ You already redeemed this code.", 0
-    # atomic claim of one use
-    res = await col.update_one({"code": code, "uses_left": {"$gt": 0}, "used_by": {"$ne": user_id}},
+    if not _valid_code_days(doc.get("days")):
+        # Never consume a use for a duration that cannot produce an expiry.
+        return False, "⚠️ This code has an invalid duration. Contact a bot admin.", 0
+    # Claim the same record and duration that were read. A code may be deleted
+    # and recreated, or edited, between the lookup and this update.
+    res = await col.update_one({"_id": doc["_id"], "code": code, "days": doc["days"],
+                                "uses_left": {"$gt": 0}, "used_by": {"$ne": user_id}},
                                {"$inc": {"uses_left": -1}, "$push": {"used_by": user_id}})
     if not res.modified_count:
-        return False, "⌛ This code has been fully used.", 0
+        return False, "⌛ This code may have changed, been redeemed already, or been fully used. Contact a bot admin if unsure.", 0
     from core.payments import grant_premium
     expiry = await grant_premium(user_id, doc["days"], name)
     return True, expiry, doc["days"]
@@ -257,12 +270,13 @@ async def gencode_cmd(client: Client, message: Message):
         days = int(message.command[1])
         count = int(message.command[2]) if len(message.command) > 2 else 1
         uses = int(message.command[3]) if len(message.command) > 3 else 1
-        if days < 0 or not 1 <= count <= 50 or not 1 <= uses <= 100000:
+        if not _valid_code_days(days) or not 1 <= count <= 50 or not 1 <= uses <= 100000:
             raise ValueError
     except (IndexError, ValueError):
         return await message.reply_text(
             "<b>🎟 Generate redeem codes</b>\n\n<code>/gencode &lt;days&gt; [count] [uses]</code>\n"
-            "• days: premium days (0 = lifetime)\n• count: codes to create (1-50)\n• uses: redemptions per code\n\n"
+            f"• days: 0 (lifetime) or 1–{(date.max - date.today()).days} days\n"
+            "• count: codes to create (1-50)\n• uses: redemptions per code (1-100000)\n\n"
             "Example: <code>/gencode 30 5</code> → five 30-day codes")
     try:
         codes = await create_codes(days, count, uses, message.from_user.id)
