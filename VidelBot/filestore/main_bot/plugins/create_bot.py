@@ -437,7 +437,7 @@ async def handle_creation_input(client: Client, message: Message):
             from filestore.worker_bot.engine import worker_engine
             bot_doc = await main_db.get_bot(bot_id)
             await worker_engine.start_worker(bot_doc)
-            # start_worker can return without starting (e.g. a decryption failure).
+            # Verify the worker exists before reporting successful startup.
             worker_started = worker_engine.get_worker(bot_id) is not None
             
             # Log to the owner log channel (+ owner DM)

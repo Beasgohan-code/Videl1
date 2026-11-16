@@ -259,6 +259,8 @@ BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "")
 BACKEND_API_SECRET = os.environ.get("BACKEND_API_SECRET", "")
 FREEIMAGE_API_KEY = os.environ.get("FREEIMAGE_API_KEY", "")  # empty → catbox.moe fallback
 CLONE_ENABLED = _bool("CLONE_ENABLED", True)
+# Experimental profile selection requires exactly one up-to-date clone-worker process.
+CLONE_PROFILES_SINGLE_INSTANCE = _bool("CLONE_PROFILES_SINGLE_INSTANCE", False)
 TG_BOT_WORKERS = env_int("TG_BOT_WORKERS", 16)
 
 # ==============================

@@ -206,6 +206,7 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
             InlineKeyboardButton("📥 ʀᴇsᴛᴏʀᴇ", callback_data=f"restore_bot_{bot_id}"),
             InlineKeyboardButton("🛠 ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ", callback_data=f"toggle_maint_{bot_id}"),
         ],
+        [InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")],
         [
             InlineKeyboardButton("✨ ᴇxᴛʀᴀs", callback_data=f"xtr_{bot_id}"),
             InlineKeyboardButton("📈 ᴀɴᴀʟʏᴛɪᴄs", callback_data=f"xan_{bot_id}"),
@@ -255,7 +256,14 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
     if is_live:
         # Answer immediately before slow stop
         await query.answer("🔴 sᴛᴏᴘᴘɪɴɢ...", show_alert=False)
-        await worker_engine.stop_worker(bot_id)
+        stopped = await worker_engine.stop_worker(bot_id)
+        if stopped is False:
+            from core.ui import smart_edit
+            return await smart_edit(query.message,
+                                    "<b>⚠️ Stop could not be confirmed.</b>\n\n"
+                                    "The bot may still be running. Profile changes are blocked; "
+                                    "contact the operator before taking further action.",
+                                    InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")]]))
         await main_db.set_bot_active(bot_id, False)
         await _clone_log(client, "CloneStopped", query.from_user, bot)
     else:
@@ -266,10 +274,15 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
             await worker_engine.start_worker(bot_doc)
             await main_db.set_bot_active(bot_id, True)
             await _clone_log(client, "CloneStarted", query.from_user, bot)
-        except Exception as e:
-            import html
-            log.error(f"Failed to start bot {bot_id}: {e}")
-            await _clone_log(client, "CloneFailed", query.from_user, bot, f"<b>❌ Error:</b> <code>{html.escape(str(e))[:200]}</code>")
+        except Exception:
+            # Client/Telegram errors may contain credentials; do not echo them.
+            log.error("Failed to start clone %s.", bot_id)
+            await _clone_log(client, "CloneFailed", query.from_user, bot, "<b>❌ Start could not be confirmed.</b>")
+            from core.ui import smart_edit
+            return await smart_edit(query.message,
+                                    "<b>⚠️ Start could not be confirmed.</b>\n\n"
+                                    "Check the dashboard and contact the operator before retrying.",
+                                    InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")]]))
 
     # Refresh dashboard
     await dashboard_callback(client, query)

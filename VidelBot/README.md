@@ -19,6 +19,8 @@ Videl is **one** Telegram bot that combines:
 | 📝 **Owner log channel** (`core/botlog.py`) | Every event tagged in `LOG_CHANNEL` – who started the bot, who cloned which bot, logins, payments, bans, restarts… – boot/shutdown/clone reports also in the owners' DM, plus a daily activity report |
 | 🐕 **Keep-alive + Watchdog** | Health server + self-ping for free hosts; automatic temp-file cleanup, low-disk rescue, stuck-flow expiry, clone-bot self-healing, hang detection & auto-restart |
 
+**Experimental clone profiles:** owners can select File Store or a limited Group Management mode when the operator enables the single-instance-only feature flag. Voice-chat Music is not implemented. See [profile setup and safety limits](../docs/CLONE_PROFILES.md).
+
 Everything runs in a single process on a single bot token; clone bots are extra
 Pyrogram clients started by the worker engine.
 

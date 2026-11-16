@@ -178,6 +178,12 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 - [ ] Offer File Store, utility, group management, media/file management and custom templates; configure features, defaults, command presentation, owner permissions and notifications; include review, validation, confirmation, result and next steps.
 - [ ] Guide users through interactive BotFather registration; never imply it can be completed automatically. Distinguish verified credentials from a running bot process.
 
+### Clone profile follow-up (experimental, default off)
+
+- [ ] Build a real voice-chat music assistant, with secure session lifecycle, streaming, authorization and live Telegram testing; Music remains unavailable.
+- [ ] Coordinate all clone lifecycle/ownership writers using a distributed, fenced lease or equivalent design; validate real MongoDB concurrency, rolling upgrades and Telegram stop/start recovery before removing the single-instance restriction.
+- [ ] Expand Group Management beyond the current stateless ban/unban subset with isolated settings and real Telegram permission tests. See [clone profile limitations](docs/CLONE_PROFILES.md).
+
 ### 7. Bot Clone Studio
 - [ ] For owned/explicitly manageable bots, complete the 11-step flow: source, inspection, section selection, destination or new registration, comparison, conflict detection, preview, validation, confirmation, execution and results.
 - [ ] Safely support profile, command metadata, feature, File Store, welcome, UI, notification, permission-template, plugin, automation and custom-text settings where implemented, with independent destination configuration. Never clone tokens, credentials, sessions, payment secrets, private user data or private file ownership.
