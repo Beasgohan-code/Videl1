@@ -127,3 +127,22 @@ Telegram command menus, moderation, failure recovery and multi-process behavior
 have not been validated against live Telegram or a real MongoDB replica set.
 The automated tests use simulated Telegram and MongoDB and do not prove those
 operational assumptions.
+
+### Music feasibility (Videl0 reference)
+
+Videl0 revision `6430b1e5e60e0776a7ab519e05cb98c2ca1a2ebf` has a genuine
+PyTgCalls music player, but uses shared global assistant/player state and
+Kurigram. It is not a tenant-isolated clone worker. An offline constructor probe
+of `py-tgcalls==2.3.3` with installed WzGram 3.1.6 failed before any network
+access: its Pyrogram adapter imports `GroupcallForbidden`, which WzGram does
+not expose. This is not a complete compatibility audit or proof that an adapter
+cannot be built. PyTgCalls also brings native `ntgcalls` and LGPL obligations.
+
+Music remains unavailable and the picker does **not** request a session string.
+A session is an account credential, not a playback setup detail to collect for a
+placeholder. Before enabling it, build and test a per-clone assistant and voice
+runtime, compatible streaming/queue and group permissions, fail-closed encrypted
+credential lifecycle and deletion, ownership isolation and revocation, resource
+limits, restart/shutdown cleanup, and single-instance/distributed coordination.
+Real Telegram voice-chat and native-runtime tests are still required. Do not
+paste a session string into the current picker.

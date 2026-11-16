@@ -214,6 +214,9 @@ STREAM_REPLIES = _bool("STREAM_REPLIES", True)
 AIOGRAM_ENABLED = _bool("AIOGRAM_ENABLED", True)
 BOT_API_URL = os.environ.get("BOT_API_URL", "")          # optional self-hosted Bot API server
 COLORED_BUTTONS = _bool("COLORED_BUTTONS", True)         # 🟩 success / 🟥 danger / 🟦 primary buttons
+# Experimental premium button icons: allowlist only bots the operator has verified.
+PREMIUM_BUTTON_ICONS = _bool("PREMIUM_BUTTON_ICONS", False)
+PREMIUM_BUTTON_ICON_BOT_IDS = _ids("PREMIUM_BUTTON_ICON_BOT_IDS")
 EPHEMERAL_REPLIES = _bool("EPHEMERAL_REPLIES", True)     # /help /id /ping … in groups → visible only to the caller
 MANAGED_BOTS = _bool("MANAGED_BOTS", True)               # one-tap clone creation (needs Bot Management Mode)
 MANAGED_PAIR_TIMEOUT = env_int("MANAGED_PAIR_TIMEOUT", 300)  # seconds to wait for the new bot

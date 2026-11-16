@@ -180,7 +180,8 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 
 ### Clone profile follow-up (experimental, default off)
 
-- [ ] Build a real voice-chat music assistant, with secure session lifecycle, streaming, authorization and live Telegram testing; Music remains unavailable.
+- [ ] Build a real per-clone voice-chat music assistant, with secure session lifecycle, streaming, authorization and live Telegram testing; Music remains unavailable and session strings are not requested. PyTgCalls 2.3.3 fails its WzGram 3.1.6 constructor probe; resolve compatibility, licensing, isolation and lifecycle first (see [music feasibility](docs/CLONE_PROFILES.md#music-feasibility-videl0-reference)).
+- [ ] Verify optional premium button icons with eligible bots and real Telegram destinations; extend beyond primary Bot API text sends/edits only with tested fallbacks ([scope](docs/PREMIUM_BUTTON_ICONS.md)).
 - [ ] Coordinate all clone lifecycle/ownership writers using a distributed, fenced lease or equivalent design; validate real MongoDB concurrency, rolling upgrades and Telegram stop/start recovery before removing the single-instance restriction.
 - [ ] Expand the clone's Rose-inspired Group Management beyond its current moderation, rules and text welcomes: warnings, filters, locks, antiflood, logs and other features need isolated designs, safe concurrency and real Telegram permission tests. Add welcome media and formatting only after a safe design. It is not full Rose compatibility. See [clone profile limitations](docs/CLONE_PROFILES.md).
 

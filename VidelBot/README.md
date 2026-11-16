@@ -529,6 +529,10 @@ Inside clones: `-10` Stars payments (atomic `charge_id` idempotency) → `-3` an
   - Run `/vset export` (or tap **📤 Export JSON** on `/vset`) to export a portable, secret-free `videl-user-settings/1` JSON bundle covering Encoder, Auto-Rename, and Saver preferences.
   - Reply `/vset import` to restore validated preferences on any Videl instance (sessions, privileges, and quotas are strictly excluded and never overwritten), or use the two-step confirmed **♻️ Reset…** button on `/vset`.
 
+### Optional premium button icons
+
+A default-off, allowlisted experiment decorates matching buttons on primary-bot Bot API text sends and edits. See [configuration, fallback and limitations](../docs/PREMIUM_BUTTON_ICONS.md). Music clone playback and session onboarding are not yet available; see [clone profiles](../docs/CLONE_PROFILES.md).
+
 ### 6. Troubleshooting
 - **`ImportError` or `RICH_AVAILABLE == False` after installing packages:** `richgram` lists `kurigram` in its package metadata, which shares the `pyrogram` import namespace with `wzgram`. Run `pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6` (already automated in the root `Dockerfile` and `.github/workflows/ci.yml`).
 - **Second container waits on startup (`waiting for previous instance lease`):** Expected during rolling deploys (`SINGLE_INSTANCE=true`). The new container serves `/health` immediately and acquires the lease as soon as the old container stops or its 60s lease expires. If MongoDB is unreachable or `SINGLE_INSTANCE_TIMEOUT` (>0) elapses, `instance.acquire()` now **fails closed** (`InstanceLeaseError`) so two containers never consume updates concurrently.
