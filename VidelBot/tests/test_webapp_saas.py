@@ -1204,3 +1204,41 @@ def test_personal_settings_api_capability_and_account_isolation():
             assert (await other.json())['settings']['appearance']['theme'] == 'dark'
             assert (await cli.post('/api/v1/settings', headers=first, json={'appearance': {'theme': 'unknown'}})).status == 400
     run(go())
+
+
+def test_filestore_list_sample_contract_and_workspace_access(monkeypatch):
+    """Endpoint contract uses a bounded pre-search sample, not global totals."""
+    from webapp import services_clone_files as fs
+    monkeypatch.setattr(fs, 'FILESTORE_QUERY_LIMIT', 2)
+
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 18881, 'File owner')
+            outsider, other = await _login_link(cli, 18882, 'Other user')
+            coll = db_models.files_col()
+            for num, name, category in [(1, 'a.txt', 'document'), (2, 'b.txt', 'document')]:
+                await coll.insert_one({'file_uid': f'sample_{num}', 'workspace_id': ws, 'owner_id': 18881,
+                    'filename': name, 'category': category, 'deleted': False, 'size_bytes': num,
+                    'uploaded_ts': num, 'tags': []})
+            path = f'/api/v1/workspaces/{ws}/filestore'
+            response = await cli.get(path, headers=owner)
+            assert response.status == 200
+            exact = await response.json()
+            assert (exact['sample_limit'], exact['sample_truncated'], exact['total'], exact['total_bytes']) == (2, False, 2, 3)
+            assert {row['filename'] for row in exact['items']} == {'a.txt', 'b.txt'}
+            assert all('_id' not in row for row in exact['items'])
+            await coll.insert_one({'file_uid': 'sample_3', 'workspace_id': ws, 'owner_id': 18881,
+                'filename': 'needle.png', 'category': 'image', 'deleted': False, 'size_bytes': 3,
+                'uploaded_ts': 3, 'tags': ['needle']})
+            data = await (await cli.get(path, headers=owner)).json()
+            assert (data['sample_limit'], data['sample_truncated'], data['total'], data['total_bytes']) == (2, True, 2, 3)
+            # Search and tags apply after sampling; an excluded record is not found.
+            for query in ('search=needle', 'tag=needle'):
+                data = await (await cli.get(f'{path}?{query}', headers=owner)).json()
+                assert data['sample_truncated'] is True and data['total'] == 0
+            # Category is in the DB query and is applied before sampling.
+            data = await (await cli.get(f'{path}?category=image', headers=owner)).json()
+            assert data['sample_truncated'] is False and [x['filename'] for x in data['items']] == ['needle.png']
+            assert (await cli.get(path, headers=outsider)).status == 403
+            assert (await (await cli.get(f'/api/v1/workspaces/{other}/filestore', headers=outsider)).json())['total'] == 0
+    run(go())

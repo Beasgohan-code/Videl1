@@ -125,12 +125,34 @@ jobs:
       - name: Set up Node.js for Studio interaction tests
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.23.4'
 
       - name: Test Telegram sign-in interface (synthetic JSDOM)
         run: |
           npm ci --prefix VidelBot/tests/ui --ignore-scripts --no-audit --no-fund
           npm test --prefix VidelBot/tests/ui
+
+      - name: Test Next File Store with local backend and mock Mongo
+        timeout-minutes: 8
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+          DOWNLOAD_DIR: ${{ runner.temp }}/file-contract-storage
+          VIDEL_BACKEND_ORIGIN: http://127.0.0.1:8088
+        run: |
+          set -eu
+          npm ci --prefix frontend-platform --no-audit --no-fund
+          npm ci --prefix VidelBot/tests/browser --no-audit --no-fund
+          (cd VidelBot/tests/browser && npx playwright-core install --with-deps chromium)
+          python VidelBot/tests/browser/telegram_auth_fixture.py > "$RUNNER_TEMP/file-api.log" 2>&1 &
+          api_pid=$!
+          node frontend-platform/node_modules/next/dist/bin/next dev frontend-platform/apps/studio --hostname 127.0.0.1 --port 3001 > "$RUNNER_TEMP/file-next.log" 2>&1 &
+          next_pid=$!
+          trap 'kill "$api_pid" "$next_pid" 2>/dev/null || true' EXIT
+          curl --fail --silent --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:8088/app > /dev/null
+          curl --fail --silent --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:3001/next-preview > /dev/null
+          cd VidelBot/tests/browser
+          export CHROMIUM_PATH="$(node -p "require('playwright-core').chromium.executablePath()")"
+          node next-file-backend.test.cjs
 
   native-tools:
     name: Ubuntu native media & archive tools

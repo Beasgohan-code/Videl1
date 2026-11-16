@@ -571,7 +571,12 @@ async def query_filestore_files(
     if category and category != "all":
         q["category"] = category
 
-    rows = await db_models.files_col().find(q).to_list(length=FILESTORE_QUERY_LIMIT)
+    # Fetch one extra record to distinguish an exact-limit result from a
+    # truncated sample, without a separate count racing this read. Category,
+    # bot and trash filters apply before sampling; other filters apply after it.
+    rows = await db_models.files_col().find(q).limit(FILESTORE_QUERY_LIMIT + 1).to_list(length=FILESTORE_QUERY_LIMIT + 1)
+    sample_truncated = len(rows) > FILESTORE_QUERY_LIMIT
+    rows = rows[:FILESTORE_QUERY_LIMIT]
     needle = (search or "").strip().lower()
     mf = (mime_filter or "").strip().lower()
     tf = (tag or "").strip().lower()
@@ -607,6 +612,8 @@ async def query_filestore_files(
         "page": pg,
         "pages": pages,
         "page_size": ps,
+        "sample_limit": FILESTORE_QUERY_LIMIT,
+        "sample_truncated": sample_truncated,
         "total_bytes": sum(int(x.get("size_bytes") or 0) for x in filtered),
         "items": filtered[start : start + ps],
     }

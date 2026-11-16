@@ -52,3 +52,13 @@ The local test suite uses mock Mongo, not a real multi-worker deployment. The
 legacy generic bot endpoint remains unconditional for existing clients, and
 permission-revocation races, index readiness and mixed-version operation are
 not solved by this change.
+
+### File Store list sampling
+
+The Python API samples at most 2,000 records after its database-level workspace,
+bot, category and trash filters; search and sorting happen on that sample. The
+response reports the cap and whether one more record was observed. Results,
+counts and pages can therefore omit matches; ordering and sample membership can
+change between requests. Older/mixed backends without valid sampling metadata
+still display records but show completeness as unavailable. This is not
+indexed, consistent-snapshot or real-Mongo concurrency pagination.

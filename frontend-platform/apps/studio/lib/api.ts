@@ -69,10 +69,12 @@ export function commandList(value:unknown):CommandRecord[] {
 }
 
 export type FileRecord = {file_uid:string;filename:string;size_bytes:number;category:string;deleted:boolean};
-export type FileResults = {items:FileRecord[];total:number;total_bytes:number;page:number;pages:number;sample_limit:number;sample_truncated:boolean};
+export type FileResults = {items:FileRecord[];total:number;total_bytes:number;page:number;pages:number;sample_limit:number|null;sample_truncated:boolean|null};
 export function fileResults(value:unknown):FileResults {
-  if(!object(value)||!Array.isArray(value.items)||typeof value.total!=='number'||typeof value.total_bytes!=='number'||typeof value.page!=='number'||typeof value.pages!=='number'||typeof value.sample_limit!=='number'||typeof value.sample_truncated!=='boolean')throw new Error('The server returned an invalid file list.');
-  return {total:value.total,total_bytes:value.total_bytes,page:value.page,pages:value.pages,sample_limit:value.sample_limit,sample_truncated:value.sample_truncated,items:value.items.map(f=>{if(!object(f)||typeof f.file_uid!=='string'||typeof f.filename!=='string')throw new Error('The server returned an invalid file record.');return {file_uid:f.file_uid,filename:f.filename,size_bytes:typeof f.size_bytes==='number'?f.size_bytes:0,category:typeof f.category==='string'?f.category:'other',deleted:f.deleted===true}})};
+  if(!object(value)||!Array.isArray(value.items)||typeof value.total!=='number'||typeof value.total_bytes!=='number'||typeof value.page!=='number'||typeof value.pages!=='number')throw new Error('The server returned an invalid file list.');
+  // Older/mixed backends omitted sampling metadata. Do not infer completeness.
+  const hasSample=Number.isSafeInteger(value.sample_limit)&&Number(value.sample_limit)>0&&typeof value.sample_truncated==='boolean';
+  return {total:value.total,total_bytes:value.total_bytes,page:value.page,pages:value.pages,sample_limit:hasSample?value.sample_limit as number:null,sample_truncated:hasSample?value.sample_truncated as boolean:null,items:value.items.map(f=>{if(!object(f)||typeof f.file_uid!=='string'||typeof f.filename!=='string')throw new Error('The server returned an invalid file record.');return {file_uid:f.file_uid,filename:f.filename,size_bytes:typeof f.size_bytes==='number'?f.size_bytes:0,category:typeof f.category==='string'?f.category:'other',deleted:f.deleted===true}})};
 }
 
 export type TemplateRecord = {id:string;name:string;category:string;description:string;version:string;payload:Record<string,unknown>|null;origin:'official'|'workspace'|'shared'};
