@@ -48,6 +48,9 @@ GROUP_COMMANDS = [
     ("get", "Show a group note"),
     ("notes", "List group notes"),
     ("clear", "Clear a group note (group admin)"),
+    ("filter", "Set a text auto-reply (group admin)"),
+    ("filters", "List group auto-reply triggers"),
+    ("stopfilter", "Remove a text auto-reply (group admin)"),
 ]
 
 def _has_right(member, right):
@@ -279,10 +282,12 @@ def setup_group_profile(app):
     from filestore.worker_bot.group_notes import setup_group_notes
     from filestore.worker_bot.group_ui import setup_group_ui, show_guide
     from filestore.worker_bot.group_warns import setup_group_warns
+    from filestore.worker_bot.group_filters import setup_group_filters
     setup_group_info(app)
     setup_group_notes(app)
     setup_group_ui(app)
     setup_group_warns(app)
+    setup_group_filters(app)
 
     @app.on_message(filters.command("start") & filters.private)
     async def start(client, message):

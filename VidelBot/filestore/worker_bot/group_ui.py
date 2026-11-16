@@ -48,7 +48,10 @@ PAGES = {
         "Reply with <code>/pin</code> for a silent pin or <code>/pin loud</code> to notify members.\n"
         "Use <code>/unpin</code> on a reply or without one for the latest pin.\n\n"
         "Both the actor and bot need the appropriate delete or pin permission. "
-        "If Telegram cannot confirm an action, check the group before retrying."
+        "If Telegram cannot confirm an action, check the group before retrying.\n\n"
+        "<b>Text filters:</b> <code>/filter WORD TEXT</code>, <code>/filters</code>, <code>/stopfilter WORD</code>. "
+        "Admins with change-info rights manage them. Replies are public and rate-limited; "
+        "Telegram privacy mode can prevent the bot receiving ordinary messages."
     ),
     "welcome": (
         "<b>👋 Rules &amp; welcomes</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -75,7 +78,7 @@ PAGES = {
         "Telegram is the final authority: actor rights, target status, bot privacy, update delivery "
         "and permissions can change or prevent an action. A check cannot guarantee success.\n\n"
         "Commands also accept a dot prefix, for example <code>.ban</code>. "
-        "Music, automatic warning punishments, filters and antiflood are not available in this worker yet."
+        "Music, automatic warning punishments, advanced filters and antiflood are not available in this worker yet."
     ),
 }
 BUTTONS = (("home", "🏠 Home"), ("moderate", "🛡 Moderation"), ("messages", "📌 Messages"),

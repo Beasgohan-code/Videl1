@@ -13,6 +13,7 @@ main bot's group plugin. It currently implements a subset inspired by the public
 [pins guide](https://missrose.org/docs/moderation/pins/),
 [delete guide](https://missrose.org/docs/moderation/purges/),
 [warnings guide](https://missrose.org/docs/moderation/warnings/),
+[filters guide](https://missrose.org/docs/filters/),
 [rules guide](https://missrose.org/docs/basics/rules/) and
 [welcomes guide](https://missrose.org/docs/greetings/) and
 [notes guide](https://missrose.org/docs/notes/):
@@ -22,7 +23,8 @@ main bot's group plugin. It currently implements a subset inspired by the public
 - `/del`, `/pin`, `/pin loud`, `/unpin`, `/groupid` and `/help` (`/ghelp`);
 - `/rules`, `/setrules`, `/resetrules` and `/welcome`, `/setwelcome`, `/resetwelcome`;
 - `/save NAME TEXT`, `/get NAME`, `/notes` and `/clear NAME` for plain-text group notes;
-- `/warn`, `/warns`, `/rmwarn` and `/resetwarn` for manual warning counters.
+- `/warn`, `/warns`, `/rmwarn` and `/resetwarn` for manual warning counters;
+- `/filter WORD TEXT`, `/filters` and `/stopfilter WORD` for opt-in text replies.
 
 Notes are **public to group members**, not private storage; do not save secrets.
 Only directly identified group owners or administrators with change-info rights
@@ -53,8 +55,8 @@ possible. Timed bans/mutes accept `m`, `h`, `d` and `w` units between **5 minute
 and 365 days**. Very long API delays or an incorrect system clock can still affect
 Telegram's interpretation of a timed restriction; verify the result in Telegram.
 Reasons are shown in non-silent responses, but are not stored or sent to a log
-channel. This is not full Rose compatibility: automatic warning actions, filters,
-locks, antiflood, federations, logging, purges and other Rose features are not implemented here.
+channel. This is not full Rose compatibility: automatic warning actions, advanced
+filters, locks, antiflood, federations, logging, purges and other Rose features are not implemented here.
 
 Bans, mutes, kicks and their reversals require a **supergroup**, with the actor and
 bot both having Telegram restrict-members permission; delete variants also require
@@ -72,6 +74,47 @@ permissions. No main-bot group settings or warning records are used; warning cou
 in this worker never trigger automatic moderation.
 Some previously installed per-chat Telegram command menus may remain visible even
 though File Store handlers are not active.
+
+### Opt-in keyword replies
+
+A directly identified group owner or administrator with change-info rights can
+add a reply using `/filter WORD TEXT`, replace it with the same command, and
+remove it with `/stopfilter WORD`. Any group member can list triggers with
+`/filters`. Commands also accept a dot prefix. Each clone/group has an
+independent set of up to 25 triggers. Trigger names are case-insensitive ASCII
+letters, digits or underscores, 1–32 characters; the response is plain text up
+to 1,000 characters and is HTML-escaped when sent. Filters start empty and
+respond only after an admin explicitly saves one. Replies are visible in the
+group; do not save secrets.
+
+On ordinary group text from directly identified non-bot users, the worker
+looks for a whole-word match, using Unicode word boundaries and case-insensitive
+matching. Where multiple triggers match, the longest wins; ties are alphabetical.
+It skips slash/dot/exclamation/hash-prefixed messages, bot senders, sender-chat
+posts, outgoing messages and text over 4,096 characters. It uses a separate
+handler group so normal clone commands still run. This is **not** full Rose
+filters: phrases, media, formatting, buttons, per-user rules and `/stop` or
+`/stopall` are not implemented. Telegram bot privacy mode or missing group
+permissions can prevent ordinary messages from reaching the bot.
+
+Reply processing is best-effort, not a durable queue. The process allows one
+filter settings check per group per second and at most one attempted reply per
+10 seconds per group, with a shared 20-checks/second token bucket (burst 20),
+32 concurrent lookups/sends and at most 512 tracked groups. Busy, rate-limited,
+saturated, out-of-order or oversized messages are skipped. Read and send calls
+have timeouts; uncertain sends are not retried. These limits and replay guards
+are process-local, reset on restart, and can be bypassed by multiple workers or
+tracker eviction. No message content or sender ID is stored by the listener.
+The bot checks Mongo for eligible messages even in groups with no filters, so
+there is bounded additional database load. Disabling/removing a filter is not a
+fence for a reply already in flight.
+
+Settings use a bounded single-document compare-and-set, keyed by bot and group.
+Confirmed version conflicts/initial insert races are retried; uncertain writes
+are not. External writers or restores of an old version can break the CAS
+protocol; do not restore concurrently with updates. Configured responses survive
+profile switches and clone soft-deletion and can be included in administrator
+backups. Offline mocks do not prove real Telegram delivery or Mongo concurrency.
 
 ### Manual warning counters
 
