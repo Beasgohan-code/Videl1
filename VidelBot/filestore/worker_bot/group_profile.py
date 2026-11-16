@@ -1,7 +1,8 @@
 """Independent clone group moderation; no main-bot group settings or caches.
 
 The command family is inspired by the public Miss Rose documentation. Telegram
-remains the authority for every action; this module has no shared state.
+remains the authority for every action. Group information is separately scoped
+by clone and chat; no main-bot group state is reused.
 """
 import html
 import logging
@@ -32,6 +33,12 @@ GROUP_COMMANDS = [
     ("del", "Delete a replied message"),
     ("pin", "Pin a replied message"),
     ("unpin", "Unpin a message"),
+    ("rules", "Show group rules"),
+    ("setrules", "Set group rules (group admin)"),
+    ("resetrules", "Remove group rules (group admin)"),
+    ("welcome", "View or toggle welcomes (group admin)"),
+    ("setwelcome", "Set welcome text (group admin)"),
+    ("resetwelcome", "Reset welcome text (group admin)"),
 ]
 HELP = ("<b>🛡 Group Management</b>\n\n"
         "<b>Ban:</b> <code>/ban USER_ID [reason]</code> or reply with <code>/ban [reason]</code>. "
@@ -47,6 +54,9 @@ HELP = ("<b>🛡 Group Management</b>\n\n"
         "a failed second step can leave the member banned.\n\n"
         "<b>Messages:</b> reply with /del to delete, /pin to pin silently or /pin loud "
         "to notify; /unpin removes the replied or latest pin.\n\n"
+        "<b>Rules &amp; greetings:</b> /rules, /setrules TEXT, /resetrules; "
+        "/welcome, /welcome on or off, /setwelcome TEXT, /resetwelcome. "
+        "Welcome text supports <code>{first}</code>, <code>{id}</code> and <code>{chatname}</code>.\n\n"
         "All commands also accept a dot prefix, for example <code>.ban</code>. "
         "The actor and bot need restrict-members rights; delete variants also need delete-messages rights. "
         "Reasons are displayed with the result but are not stored or sent to a log channel.\n\n"
@@ -278,6 +288,9 @@ async def _message_action(client, message, action):
 
 
 def setup_group_profile(app):
+    from filestore.worker_bot.group_info import setup_group_info
+    setup_group_info(app)
+
     @app.on_message(filters.command("start") & filters.private)
     async def start(client, message):
         await message.reply_text(HELP)

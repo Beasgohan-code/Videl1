@@ -9,13 +9,16 @@ unavailable: there is **no voice-chat playback runtime** in this implementation.
 
 Group Management is an independent clone worker, not a registration of the
 main bot's group plugin. It currently implements a subset inspired by the public
-[Miss Rose restrictions guide](https://missrose.org/docs/moderation/restrictions/)
-and [pins guide](https://missrose.org/docs/moderation/pins/) and
-[delete guide](https://missrose.org/docs/moderation/purges/):
+[Miss Rose restrictions guide](https://missrose.org/docs/moderation/restrictions/),
+[pins guide](https://missrose.org/docs/moderation/pins/),
+[delete guide](https://missrose.org/docs/moderation/purges/),
+[rules guide](https://missrose.org/docs/basics/rules/) and
+[welcomes guide](https://missrose.org/docs/greetings/):
 
 - `/ban`, `/tban`, `/dban`, `/sban`, `/unban` (plus legacy `/gban`, `/gunban`);
 - `/mute`, `/tmute`, `/dmute`, `/smute`, `/unmute` and `/kick`, `/dkick`, `/skick`;
-- `/del`, `/pin`, `/pin loud`, `/unpin`, `/groupid` and `/help` (`/ghelp`).
+- `/del`, `/pin`, `/pin loud`, `/unpin`, `/groupid` and `/help` (`/ghelp`);
+- `/rules`, `/setrules`, `/resetrules` and `/welcome`, `/setwelcome`, `/resetwelcome`.
 
 These commands also accept a dot prefix (for example `.ban`). Actions target a
 replied-to user, numeric user ID, or resolvable `@username`. Reply-based `d` and
@@ -26,9 +29,8 @@ possible. Timed bans/mutes accept `m`, `h`, `d` and `w` units between **5 minute
 and 365 days**. Very long API delays or an incorrect system clock can still affect
 Telegram's interpretation of a timed restriction; verify the result in Telegram.
 Reasons are shown in non-silent responses, but are not stored or sent to a log
-channel. This is not full Rose compatibility: warnings, welcome messages,
-filters, locks, antiflood, federations, logging, purges and other Rose features
-are not implemented here.
+channel. This is not full Rose compatibility: warnings, filters, locks,
+antiflood, federations, logging, purges and other Rose features are not implemented here.
 
 Bans, mutes, kicks and their reversals require a **supergroup**, with the actor and
 bot both having Telegram restrict-members permission; delete variants also require
@@ -42,9 +44,35 @@ authority. A failed API call may have taken effect, so check before retrying.
 Kicking is a two-step ban/unban; if the second step is uncertain, the user may
 remain banned. Muting overwrites any existing per-member restrictions; unmuting
 replaces them with verified current group defaults, not their previous custom
-permissions. No shared group settings, warnings or automatic moderation are used.
+permissions. No main-bot group settings, warnings or automatic moderation are used.
 Some previously installed per-chat Telegram command menus may remain visible even
 though File Store handlers are not active.
+
+### Rules and welcomes
+
+Rules and text-only welcome settings are stored in the `clone_group_info`
+collection keyed by the **clone bot ID and group chat ID**; there is no shared
+chat-only settings cache. They are separate from File Store data and survive
+switching profiles. `/rules` shows saved plain-text rules **in the group**, not in
+a private chat. `/setrules TEXT` sets them and `/resetrules` explicitly removes
+them. Configuration requires a directly identified group admin with Telegram's
+change-info permission; members can read rules. Only slash and dot-prefixed
+commands addressed to this clone are handled. Simultaneous changes to the same
+field are last-write-wins; failed or unacknowledged writes are reported as
+uncertain, never retried automatically.
+
+Welcomes start **off**. `/setwelcome TEXT` saves plain text without enabling it;
+`/welcome on` or `off` changes the toggle without deleting the text. `/welcome`
+shows an admin a preview, and `/resetwelcome` explicitly clears the custom text
+but leaves the toggle unchanged. The default welcome is used after reset.
+Templates support only `{first}`, `{id}` and `{chatname}`; names and text are
+HTML-escaped, with no Rose formatting, buttons, mentions, media or Markdown.
+Text is limited to 1,000 characters, and templates with potentially excessive
+placeholder expansion are rejected. At most the first 10 entries in a join event
+are considered; bots are skipped and names/titles are limited to 128 characters.
+Welcome delivery depends on Telegram sending
+join updates and accepting messages. There is no durable event deduplication or
+automatic retry, and a lost response may mean a welcome was sent anyway.
 
 ## Deployment and limitations
 

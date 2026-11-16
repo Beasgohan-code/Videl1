@@ -38,7 +38,7 @@ async def profile_panel(client, query):
             "Choose one profile for this clone. Stop the bot before switching, "
             "then start it again from the dashboard. File Store data, links and settings are retained.\n\n"
             "<b>File Store</b> serves files and links.\n"
-            "<b>Group Management</b> offers /ban, /mute, /kick, /pin and more; "
+            "<b>Group Management</b> offers moderation, group rules and welcome messages; "
             "see /help in the group. Telegram admin rights are required.\n"
             "<b>Music</b> is planned; voice-chat playback is not implemented.\n\n"
             + ("<i>Experimental: single current worker instance only.</i>" if ready else
