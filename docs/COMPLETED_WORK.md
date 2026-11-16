@@ -20,3 +20,7 @@ This is a UI milestone only. It does not close the workspace-isolation, route-le
 Commit `f5fd533bd9e54d99292a454d971112cc10458da4` adds private admin `/codes [page]` listing and safe error guidance for uncertain code creation, deletion, message delivery and redemption. Acknowledged batch audits do not contain codes and no operation is automatically retried, rolled back or repaired. See `VidelBot/core/growth.py`, `VidelBot/tests/test_redeem_code_recovery.py` and `docs/REDEEM_CODE_ACCESS.md`.
 
 Verification: focused synthetic handler tests **54 passed**; complete offline backend suite **1106 passed**, with one Python version warning. Tests use fake Telegram and mock MongoDB; no live Telegram delivery, Mongo concurrency, production deployment or repair of existing records was performed. Offset pages can shift and only show active codes; redemption and premium grants remain nontransactional.
+
+## Redeem claim safeguards
+
+Commit `e2d90fe59e96c6475166db05ae2657ba93b2ec28` conditionally claims the exact code record and duration read and rejects invalid or impossible durations before claiming. See `VidelBot/core/growth.py`, `VidelBot/tests/test_redeem_code_recovery.py` and `docs/REDEEM_CODE_ACCESS.md` for the behavior and limitations. Focused synthetic tests **63 passed** and the complete offline backend suite **1115 passed**, with one Python-version warning. No live MongoDB concurrency or Telegram delivery testing was performed; claims and grants remain separate and extreme existing future expiries can still overflow after claiming.
