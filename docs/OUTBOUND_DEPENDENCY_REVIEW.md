@@ -19,3 +19,22 @@ This is a source-level inventory of selected paths, **not** a comprehensive depe
 The previous fetch followed redirects before validating the final URL, and DNS pre-checks were separate from actual connections. The new helper rejects private/reserved literals and ambiguous numeric forms, URL userinfo, and unsafe schemes; checks **each** redirect before following; uses a DNS resolver that rejects mixed/private answers and supplies the validated IPs to aiohttp; disables environment proxies and DNS caching; keeps the existing Range and byte cap; and hides exception text that can contain signed URLs. The public-only policy is independent of `LEECH_ALLOW_PRIVATE` for this command. URLs with signed query strings remain supported; fragments are not sent. `ffprobe` is restricted to `file,pipe` protocols, which can disable network-dependent playlists.
 
 **Limits:** This protects the application HTTP header fetch and blocks ffprobe's network protocols; it is not a general sandbox. ffprobe still parses untrusted data and may access local file references. Media parsing needs separate filesystem/process sandboxing, resource limits, egress controls and independent adversarial testing. Other download, plugin, preview, shortener, cloud-provider and webapp paths remain out of scope. The tests use fake DNS and a deliberately local HTTP fixture; they do not validate live Internet infrastructure, every DNS implementation or production network policy.
+
+## Frontend lockfile advisory scan (partial)
+
+`npm audit --json` against the checked-in `frontend-platform` lockfile and the
+registry advisory data returned **3 affected package entries**: 1 critical,
+1 high and 1 low. `npm ls` resolved Astro 6.4.8, Astro's sharp 0.34.5 and
+esbuild 0.27.7. This is an advisory match, not evidence that any particular
+application or deployed service is exploitable. The legacy production front
+door is separate; deployment versions and actual exposure were not verified.
+
+- Astro matches multiple advisories, including [AVIF image optimization RCE](https://github.com/advisories/GHSA-26w7-cxv4-gfx2), [spread-attribute XSS](https://github.com/advisories/GHSA-f48w-9m4c-m7f5), and [dynamic-tag XSS](https://github.com/advisories/GHSA-mh32-jxcr-mh9f).
+- The Astro sharp dependency matches [libvips](https://github.com/advisories/GHSA-f88m-g3jw-g9cj), [libheif](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c), and [librsvg](https://github.com/advisories/GHSA-wq5f-xc86-pv6w) advisories.
+- esbuild matches a [Windows development-server arbitrary file read advisory](https://github.com/advisories/GHSA-g7r4-m6w7-qqqr).
+
+Treat a public Astro preview or cutover as blocked pending applicability review,
+a patched compatible dependency set, regression/build testing and a fresh
+scan. The audit's suggested major-version change is not proof that every listed
+advisory is fixed; do not use `npm audit fix --force` as an unreviewed fix. The
+scan does not cover Python, containers, all runtime routes or license risks.
