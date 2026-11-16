@@ -36,7 +36,11 @@ PAGES = {
         "Supergroup required. Actor and bot need restrict-members rights; delete variants also need delete rights. "
         "Admins and owners are protected. A failed kick's unban may leave the user banned. "
         "Muting overwrites existing restrictions; unmute applies group defaults, not previous custom restrictions. "
-        "Reasons appear in non-silent results but are not stored or sent to a log channel."
+        "Reasons appear in non-silent results but are not stored or sent to a log channel.\n\n"
+        "<b>Warnings:</b> <code>/warn USER [reason]</code>, <code>/warns [USER]</code>, "
+        "<code>/rmwarn USER</code>, <code>/resetwarn USER</code> (or reply). "
+        "Members can view their own count; checking someone else and all changes require a group admin with restrict-members rights. "
+        "Warnings are counters only; no automatic punishment is applied."
     ),
     "messages": (
         "<b>📌 Messages &amp; pins</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -71,7 +75,7 @@ PAGES = {
         "Telegram is the final authority: actor rights, target status, bot privacy, update delivery "
         "and permissions can change or prevent an action. A check cannot guarantee success.\n\n"
         "Commands also accept a dot prefix, for example <code>.ban</code>. "
-        "Music, warnings, filters and antiflood are not available in this worker yet."
+        "Music, automatic warning punishments, filters and antiflood are not available in this worker yet."
     ),
 }
 BUTTONS = (("home", "🏠 Home"), ("moderate", "🛡 Moderation"), ("messages", "📌 Messages"),

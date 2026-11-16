@@ -12,6 +12,7 @@ main bot's group plugin. It currently implements a subset inspired by the public
 [Miss Rose restrictions guide](https://missrose.org/docs/moderation/restrictions/),
 [pins guide](https://missrose.org/docs/moderation/pins/),
 [delete guide](https://missrose.org/docs/moderation/purges/),
+[warnings guide](https://missrose.org/docs/moderation/warnings/),
 [rules guide](https://missrose.org/docs/basics/rules/) and
 [welcomes guide](https://missrose.org/docs/greetings/) and
 [notes guide](https://missrose.org/docs/notes/):
@@ -20,7 +21,8 @@ main bot's group plugin. It currently implements a subset inspired by the public
 - `/mute`, `/tmute`, `/dmute`, `/smute`, `/unmute` and `/kick`, `/dkick`, `/skick`;
 - `/del`, `/pin`, `/pin loud`, `/unpin`, `/groupid` and `/help` (`/ghelp`);
 - `/rules`, `/setrules`, `/resetrules` and `/welcome`, `/setwelcome`, `/resetwelcome`;
-- `/save NAME TEXT`, `/get NAME`, `/notes` and `/clear NAME` for plain-text group notes.
+- `/save NAME TEXT`, `/get NAME`, `/notes` and `/clear NAME` for plain-text group notes;
+- `/warn`, `/warns`, `/rmwarn` and `/resetwarn` for manual warning counters.
 
 Notes are **public to group members**, not private storage; do not save secrets.
 Only directly identified group owners or administrators with change-info rights
@@ -51,8 +53,8 @@ possible. Timed bans/mutes accept `m`, `h`, `d` and `w` units between **5 minute
 and 365 days**. Very long API delays or an incorrect system clock can still affect
 Telegram's interpretation of a timed restriction; verify the result in Telegram.
 Reasons are shown in non-silent responses, but are not stored or sent to a log
-channel. This is not full Rose compatibility: warnings, filters, locks,
-antiflood, federations, logging, purges and other Rose features are not implemented here.
+channel. This is not full Rose compatibility: automatic warning actions, filters,
+locks, antiflood, federations, logging, purges and other Rose features are not implemented here.
 
 Bans, mutes, kicks and their reversals require a **supergroup**, with the actor and
 bot both having Telegram restrict-members permission; delete variants also require
@@ -66,9 +68,42 @@ authority. A failed API call may have taken effect, so check before retrying.
 Kicking is a two-step ban/unban; if the second step is uncertain, the user may
 remain banned. Muting overwrites any existing per-member restrictions; unmuting
 replaces them with verified current group defaults, not their previous custom
-permissions. No main-bot group settings, warnings or automatic moderation are used.
+permissions. No main-bot group settings or warning records are used; warning counters
+in this worker never trigger automatic moderation.
 Some previously installed per-chat Telegram command menus may remain visible even
 though File Store handlers are not active.
+
+### Manual warning counters
+
+`/warn USER [reason]` (or reply with `/warn [reason]`) increments a manual
+counter. `/warns` shows the caller's own count; an admin can use `/warns USER`
+or reply to inspect another user's count. `/rmwarn USER` removes one warning,
+and `/resetwarn USER` resets the count. Both also support replying to the
+person. Slash and dot prefixes work. Checking others or changing counters
+requires a directly identified admin with restrict-members permission. New
+warnings require a currently verified member or restricted member; actors,
+this bot, administrators and owners cannot be warned. Reset/removal by an admin
+also works for users who have left or become admins, given an ID or resolvable
+username. Telegram permissions and membership can change between checks.
+
+This is **not** Rose's automatic punishment system: counts never trigger bans,
+mutes, kicks, expiry or deletion, and there are no warning histories or reasons
+stored in the database. The reason is escaped and shown once in the group; the
+original command and reply can still remain in Telegram. Counts are visible in
+the group, capped at 100 per user and scoped by clone, group and user. Entries
+survive profile switches and clone soft-deletion, may appear in administrator
+backups, and even a reset retains an ordering watermark. Total users with
+records per group are not capped. Do not put secrets in warnings.
+
+Each counter update uses a random-version compare-and-set and the incoming
+Telegram message ID as a per-user ordering watermark. Replayed commands and
+older out-of-order commands are rejected rather than applied twice. As a result,
+a legitimate delayed command can be skipped; check `/warns` and send a fresh
+command if needed. Uncertain writes are not automatically retried. External
+writers or restoring an older backup can break version/watermark assumptions and
+allow replay or lost updates; do not restore concurrently with warning updates.
+Offline mock tests do not establish real MongoDB concurrency, durable update
+delivery or live Telegram permission behavior.
 
 ### Group bot guide and setup check
 

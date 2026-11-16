@@ -18,6 +18,10 @@ GROUP_COMMANDS = [
     ("help", "Group moderation commands"),
     ("groupid", "Show this group ID"),
     ("gcheck", "Check this bot's group permissions"),
+    ("warn", "Record a warning (group admin)"),
+    ("warns", "Show a user's warning count"),
+    ("rmwarn", "Remove one warning (group admin)"),
+    ("resetwarn", "Reset warnings (group admin)"),
     ("ban", "Ban a member by reply, ID or username"),
     ("tban", "Temporarily ban a member"),
     ("dban", "Ban and delete the replied message"),
@@ -274,9 +278,11 @@ def setup_group_profile(app):
     from filestore.worker_bot.group_info import setup_group_info
     from filestore.worker_bot.group_notes import setup_group_notes
     from filestore.worker_bot.group_ui import setup_group_ui, show_guide
+    from filestore.worker_bot.group_warns import setup_group_warns
     setup_group_info(app)
     setup_group_notes(app)
     setup_group_ui(app)
+    setup_group_warns(app)
 
     @app.on_message(filters.command("start") & filters.private)
     async def start(client, message):
