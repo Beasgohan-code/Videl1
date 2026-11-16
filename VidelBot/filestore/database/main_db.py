@@ -17,6 +17,9 @@ class BotRegistrationConflict(Exception):
     """The ID is already claimed or the requested restoration is no longer valid."""
 
 
+_PROFILE_NOT_CHECKED = object()
+
+
 class MainDB:
     """Database operations for the main controller bot."""
 
@@ -88,12 +91,16 @@ class MainDB:
         managed: bool = False,
         restore_deleted: bool = False,
         expected_old_token: str | None = None,
+        initial_profile: str | None = None,
+        expected_old_profile=_PROFILE_NOT_CHECKED,
     ) -> dict:
         """Insert a clone, or explicitly restore an owner's soft-deleted record.
 
         MongoDB's unique _id prevents check-then-write races. Restoration uses
         a single conditional update and leaves other stored data unchanged.
         """
+        if initial_profile not in (None, "filestore", "group") or (restore_deleted and initial_profile is not None):
+            raise ValueError("Invalid initial clone profile")
         doc = {
             "_id": bot_id,
             "owner_id": owner_id,
@@ -119,12 +126,17 @@ class MainDB:
                 "domain": "",
             },
         }
+        if initial_profile is not None:
+            doc["clone_profile"] = initial_profile
         if restore_deleted:
             if not isinstance(expected_old_token, str):
                 raise BotRegistrationConflict
+            match = {"_id": bot_id, "owner_id": owner_id, "is_deleted": True,
+                     "bot_token_encrypted": expected_old_token}
+            if expected_old_profile is not _PROFILE_NOT_CHECKED:
+                match["clone_profile"] = ({"$exists": False} if expected_old_profile is None else expected_old_profile)
             restored = await self.bots.find_one_and_update(
-                {"_id": bot_id, "owner_id": owner_id, "is_deleted": True,
-                 "bot_token_encrypted": expected_old_token},
+                match,
                 {"$set": {"bot_token_encrypted": bot_token_encrypted,
                           "bot_username": bot_username, "log_channel_id": log_channel_id,
                           "is_active": True, "is_deleted": False, "managed": bool(managed)}},
@@ -135,7 +147,9 @@ class MainDB:
                 raise BotRegistrationConflict
             return restored
         try:
-            await self.bots.insert_one(dict(doc))
+            result = await self.bots.insert_one(dict(doc))
+            if not result.acknowledged:
+                raise RuntimeError("Clone registration was not acknowledged")
         except DuplicateKeyError:
             raise BotRegistrationConflict from None
         return doc

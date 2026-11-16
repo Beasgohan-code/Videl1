@@ -118,7 +118,7 @@ async def managed_new(client: Client, query: CallbackQuery):
                                   show_alert=True)
     me = client.me or await client.get_me()
     username = suggested_username(user.first_name)
-    name = f"{(user.first_name or 'My')[:40]}'s FileStore"
+    name = f"{(user.first_name or 'My')[:40]}'s Bot"
     st["data"]["managed_username"] = username
     st["data"]["managed_status_msg"] = query.message
     link = newbot_link(me.username, username, name)

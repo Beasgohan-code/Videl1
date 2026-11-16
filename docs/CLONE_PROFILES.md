@@ -74,6 +74,35 @@ Welcome delivery depends on Telegram sending
 join updates and accepting messages. There is no durable event deduplication or
 automatic retry, and a lost response may mean a welcome was sent anyway.
 
+## Choosing a mode during clone setup
+
+After token and channel verification, the private setup wizard asks for one mode
+before registering or starting a clone. File Store is available; Group Management
+is available only when the operator has enabled the single-instance flag. Music is
+shown as unavailable and cannot be selected. The verified channel is still required
+for every mode by the existing registration flow. The choice expires after five
+minutes; cancelling or expiring it does not register a bot. After registration,
+stop the clone and use the dashboard profile selector to change modes.
+
+Restoring a previously removed clone offers **Keep saved mode** rather than
+silently replacing its profile. Its token, owner, deletion state and saved mode
+are conditionally checked when restoring; old records without a mode retain File
+Store. To change a restored clone's mode, use the dashboard after stopping it.
+Unsupported saved profiles are not silently overwritten. A saved Group Management
+profile cannot be restored while the feature flag is off.
+
+The setup state, one-use buttons, verification-stop tracking and worker locks are
+process-local; they are not a distributed lease or a guarantee against old or
+multiple workers. A failed verification-client stop blocks setup for that bot in
+this process, and an operator must verify that old clients are stopped before
+retrying or restarting. A database write or startup interrupted by a lost response
+may have succeeded: check My Bots and the observed runtime before retrying. The
+5-minute choice timeout is in-memory, and restarts discard pending selections.
+Credentials are never included in the choice buttons or confirmation. The
+existing token helper still permits plaintext storage when `ENCRYPTION_KEY` is
+missing or invalid; operators must configure a valid key before relying on
+at-rest encryption, and must retain the original key for existing encrypted data.
+
 ## Deployment and limitations
 
 `CLONE_PROFILES_SINGLE_INSTANCE` defaults to `False`. Enable it **only** after

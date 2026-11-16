@@ -10,9 +10,11 @@ import filestore.worker_bot.engine as engine_module
 
 @pytest.fixture(autouse=True)
 def clean():
-    run(reset_db()); no_botapi(); create_bot._creation_state.clear()
+    run(reset_db()); no_botapi(); create_bot._creation_state.clear(); create_bot._verification_stops.clear()
     yield
-    create_bot._creation_state.clear()
+    for state in create_bot._creation_state.values():
+        if state.get('profile_timer'): state['profile_timer'].cancel()
+    create_bot._creation_state.clear(); create_bot._verification_stops.clear()
 
 
 def test_insert_only_collisions_and_ownership():
@@ -80,18 +82,25 @@ def wizard_state(uid=10, bot_id=42003):
     create_bot._creation_state[uid]={'step':'awaiting_channel','data':{'token':'synthetic:token-secret','bot_info':{'id':bot_id,'username':'sample_bot','first_name':'Sample'}}}
 
 
+def select_creation(msg, mode='filestore', uid=10):
+    state=create_bot._creation_state[uid]
+    query=FakeQuery(f"clone_mode_{state['profile_nonce']}_{mode}",uid=uid,message=msg.sent[-1])
+    run(create_bot.creation_profile_callback(FakeClient(),query))
+    return query
+
+
 def test_wizard_collision_and_worker_status_are_honest(monkeypatch):
     monkeypatch.setattr(create_bot,'Client',FakeChannelClient)
-    class Worker:
-        def __init__(self): self.started=[]
+    class Worker(engine_module.WorkerEngine):
+        def __init__(self): super().__init__(); self.started=[]
         async def start_worker(self,doc): self.started.append(doc['_id'])  # returns without running
         def get_worker(self,_): return None
     worker=Worker(); monkeypatch.setattr(engine_module,'worker_engine',worker)
     db=MainDB();run(db.add_bot(42003,20,'original','existing',-100))
-    wizard_state();m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m))
+    wizard_state();m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m));select_creation(m)
     assert 'already registered' in m.sent[-1].text and 10 not in create_bot._creation_state
     assert run(db.get_bot(42003))['owner_id']==20 and worker.started==[]
-    wizard_state(bot_id=42004);m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m))
+    wizard_state(bot_id=42004);m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m));select_creation(m)
     assert 'Not observed running in this process' in m.sent[-1].text
     assert 'does not guarantee a running worker' in m.sent[-1].text and 10 not in create_bot._creation_state
     assert worker.started==[42004]
@@ -101,10 +110,10 @@ def test_wizard_cooldown_failure_reports_saved_without_starting(monkeypatch):
     monkeypatch.setattr(create_bot,'Client',FakeChannelClient)
     async def fail(_): raise RuntimeError('private database secret')
     monkeypatch.setattr(create_bot.main_db,'set_cooldown',fail)
-    class Worker:
+    class Worker(engine_module.WorkerEngine):
         async def start_worker(self,_): raise AssertionError('must not start')
     monkeypatch.setattr(engine_module,'worker_engine',Worker())
-    wizard_state(bot_id=42005);m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m))
+    wizard_state(bot_id=42005);m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m));select_creation(m)
     assert 'Registration saved; this request did not attempt startup' in m.sent[-1].text
     assert 'private database secret' not in m.sent[-1].text and 10 not in create_bot._creation_state
     assert run(MainDB().get_bot(42005))['owner_id']==10
@@ -147,7 +156,7 @@ def test_ambiguous_registration_failure_clears_state_and_hides_exception(monkeyp
         await original(*args,**kwargs)
         raise RuntimeError('private synthetic:token-secret')
     monkeypatch.setattr(create_bot.main_db,'add_bot',wrote_then_failed)
-    wizard_state(bot_id=42009);m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m))
+    wizard_state(bot_id=42009);m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m));select_creation(m)
     assert 'result may be uncertain' in m.sent[-1].text and 'synthetic:token-secret' not in m.sent[-1].text
     assert 10 not in create_bot._creation_state and run(MainDB().get_bot(42009))['owner_id']==10
 
@@ -199,7 +208,7 @@ def test_wizard_stale_restore_does_not_replace_changed_credential(monkeypatch):
     assert run(create_bot.accept_token(FakeClient(),10,'synthetic:token-secret',FakeMsg('status')))
     run(db.bots.update_one({'_id':42013},{'$set':{'bot_token_encrypted':'changed-token'}}))
     before=run(db.get_bot(42013))
-    m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m))
+    m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m));select_creation(m,'keep')
     assert 'saved record changed' in m.sent[-1].text and run(db.get_bot(42013))==before
     assert 10 not in create_bot._creation_state and 'changed-token' not in m.sent[-1].text
 
@@ -210,13 +219,14 @@ def test_wizard_restores_saved_settings_and_reports_process_local_status(monkeyp
     async def verified(_): return {'id':42014,'username':'sample_bot','first_name':'Sample'}
     monkeypatch.setattr(create_bot,'validate_bot_token',verified)
     monkeypatch.setattr(create_bot,'Client',FakeChannelClient)
-    class Worker:
+    class Worker(engine_module.WorkerEngine):
+        def __init__(self): super().__init__(); self.doc=None
         async def start_worker(self,doc): self.doc=doc
-        def get_worker(self,bot_id): return object() if bot_id==42014 else None
+        def get_worker(self,bot_id): return object() if self.doc is not None and bot_id==42014 else None
     monkeypatch.setattr(engine_module,'worker_engine',Worker())
     status=FakeMsg('status');assert run(create_bot.accept_token(FakeClient(),10,'synthetic:token-secret',status))
     assert 'Restoring a removed clone' in status.text
-    m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m))
+    m=FakeMsg('-100001',uid=10);run(create_bot.handle_creation_input(FakeClient(),m));select_creation(m,'keep')
     row=run(db.get_bot(42014))
     assert row['is_deleted'] is False and row['settings']['custom_caption']=='retained'
     assert row['shortener']['api_key_encrypted']=='secret'

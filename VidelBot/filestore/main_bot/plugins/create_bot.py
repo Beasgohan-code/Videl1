@@ -1,9 +1,13 @@
 
 import html
 import asyncio
-from datetime import datetime, timedelta, timezone
+import re
+import secrets
+import time
+from datetime import datetime, timedelta
 
-from pyrogram import Client, filters
+import config
+from pyrogram import Client, enums, filters
 from pyrogram.types import (
     CallbackQuery,
     Message,
@@ -16,14 +20,16 @@ from pyrogram.types import (
 )
 from filestore.fs_config import BOT_CREATION_COOLDOWN, API_ID, API_HASH, LOGGER, CLONE_ENABLED, OWNERS
 from filestore.database.main_db import BotRegistrationConflict, MainDB
-from filestore.utils.helpers import validate_bot_token, send_main_log
-from filestore.utils.security import encrypt_token, mask_token
+from filestore.utils.helpers import validate_bot_token
+from filestore.utils.security import encrypt_token
 
 log = LOGGER(__name__)
 main_db = MainDB()
 
 # Track users currently in bot creation flow
 _creation_state = {}  # user_id -> {"step": str, "data": dict}
+_verification_stops = {}  # Clients whose stop could not be confirmed in this process.
+PROFILE_SELECTION_TIMEOUT = 300
 
 # Native channel picker (KeyboardButtonRequestPeer) used wherever a channel ID
 # is asked for. The shared channel arrives as a service message with
@@ -84,6 +90,8 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
     state.setdefault("data", {})
     state["data"].pop("restore_deleted", None)
     state["data"].pop("restore_expected_token", None)
+    state["data"].pop("restore_expected_profile", None)
+    state["data"].pop("restore_profile_present", None)
     state["data"]["managed"] = bool(managed)
     bot_info = await validate_bot_token(token)
     if not bot_info:
@@ -106,6 +114,8 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
             state["data"]["restore_deleted"] = True
             # Compare the saved credential at commit time; never display it.
             state["data"]["restore_expected_token"] = existing["bot_token_encrypted"]
+            state["data"]["restore_profile_present"] = "clone_profile" in existing
+            state["data"]["restore_expected_profile"] = existing.get("clone_profile")
         else:
             await status_msg.edit_text(
                 "<b>❌ This bot is already registered!</b>\n\n"
@@ -135,9 +145,9 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
         f"<b>✅ Token verified!</b>\n\n"
         f"<blockquote>Bot: <b>{html.escape(str(bot_name))}</b> (@{html.escape(str(bot_username))})\n\n"
         f"{restore_notice}"
-        f"<b>Step 2/2:</b> Send me the <b>Log Channel ID</b>.\n\n"
-        f"This is where your bot will store files.\n"
-        f"Make sure the bot (@{bot_username}) is an admin in the channel.\n\n"
+        f"<b>Step 2/3:</b> Send me the <b>Log Channel ID</b>.\n\n"
+        f"File Store uses it to store files; the other profiles still require this channel during setup.\n"
+        f"Make sure the bot (@{html.escape(str(bot_username))}) is an admin in the channel.\n\n"
         f"Example: <code>-1001234567890</code></blockquote>",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
@@ -145,6 +155,192 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
     )
     await offer_channel_picker(client, user_id, state)
     return True
+
+
+def _expire_profile_selection(user_id: int, nonce: str):
+    state = _creation_state.get(user_id)
+    if state and state.get("step") == "awaiting_profile" and state.get("profile_nonce") == nonce:
+        _creation_state.pop(user_id, None)
+        state.get("data", {}).pop("registration_token", None)
+        state.get("data", {}).pop("restore_expected_token", None)
+
+
+async def _show_creation_profiles(status_msg, user_id: int, state: dict):
+    nonce = secrets.token_urlsafe(8)
+    state["step"] = "awaiting_profile"
+    state["profile_nonce"] = nonce
+    state["profile_deadline"] = time.monotonic() + PROFILE_SELECTION_TIMEOUT
+    state["profile_timer"] = asyncio.get_running_loop().call_later(PROFILE_SELECTION_TIMEOUT, _expire_profile_selection, user_id, nonce)
+    restored = bool(state["data"].get("restore_deleted"))
+    saved = state["data"].get("restore_expected_profile")
+    present = state["data"].get("restore_profile_present", False)
+    if restored:
+        label = {"filestore": "File Store", "group": "Group Management"}.get(saved if present else "filestore", "Unsupported")
+        intro = (f"Restoring a clone with saved mode: <b>{label}</b>. "
+                 "Its mode and data will be kept. To change mode later, stop it in the dashboard.\n\n")
+        buttons = [[InlineKeyboardButton(f"♻️ Keep saved mode · {label}", callback_data=f"clone_mode_{nonce}_keep")]]
+    else:
+        intro = "Choose one mode for this clone. You can change it later from its dashboard after stopping it.\n\n"
+        buttons = [[InlineKeyboardButton("📁 File Store", callback_data=f"clone_mode_{nonce}_filestore")],
+                   [InlineKeyboardButton("🛡 Group Management" + ("" if config.CLONE_PROFILES_SINGLE_INSTANCE else " · disabled"), callback_data=f"clone_mode_{nonce}_group")]]
+    buttons += [[InlineKeyboardButton("🎵 Music · unavailable", callback_data=f"clone_mode_{nonce}_music")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")]]
+    await status_msg.edit_text(
+        "<b>🧩 Step 3/3: Choose a bot mode</b>\n\n" + intro
+        + "<b>File Store:</b> file links and delivery.\n"
+          "<b>Group Management:</b> moderation, rules and welcomes; add the bot as a group admin.\n"
+          "<b>Music:</b> voice-chat playback is not implemented.\n\n"
+        + ("<i>Group mode is experimental and assumes one current worker.</i>" if config.CLONE_PROFILES_SINGLE_INSTANCE else
+           "<i>Group mode is disabled until the operator verifies a single current worker.</i>")
+        + "\n<i>This selection expires in 5 minutes.</i>",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+@Client.on_callback_query(filters.regex(r"^clone_mode_([A-Za-z0-9_-]{1,32})_(filestore|group|music|keep)$"))
+async def creation_profile_callback(client: Client, query: CallbackQuery):
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    if (user is None or getattr(user, "is_bot", False) or chat is None
+            or getattr(chat, "type", None) != enums.ChatType.PRIVATE or getattr(chat, "id", None) != user.id):
+        return await query.answer("Setup is available only in your private chat.", show_alert=True)
+    match = re.fullmatch(r"clone_mode_([A-Za-z0-9_-]{11})_(filestore|group|music|keep)", query.data or "")
+    state = _creation_state.get(user.id)
+    if not match or not state or state.get("step") != "awaiting_profile" or state.get("profile_nonce") != match.group(1):
+        return await query.answer("This selection has expired. Start setup again.", show_alert=True)
+    if time.monotonic() >= state.get("profile_deadline", 0):
+        _expire_profile_selection(user.id, match.group(1))
+        return await query.answer("This selection has expired. Start setup again.", show_alert=True)
+    mode = match.group(2)
+    if mode == "music":
+        return await query.answer("Music voice-chat playback is not available yet.", show_alert=True)
+    restored = bool(state["data"].get("restore_deleted"))
+    if (mode == "keep") != restored:
+        return await query.answer("This choice is not available for this setup.", show_alert=True)
+    saved = state["data"].get("restore_expected_profile")
+    present = state["data"].get("restore_profile_present", False)
+    if restored:
+        if present and saved not in ("filestore", "group"):
+            return await query.answer("The saved mode is unsupported. Contact the operator.", show_alert=True)
+        mode = saved if present else "filestore"
+    if mode == "group" and not config.CLONE_PROFILES_SINGLE_INSTANCE:
+        return await query.answer("Group mode is disabled until the operator verifies a single current worker.", show_alert=True)
+    if not CLONE_ENABLED and user.id not in OWNERS:
+        return await query.answer("Clone creation is currently disabled.", show_alert=True)
+    # Claim the choice before awaiting: duplicate callbacks must not repeat a write.
+    state["step"] = "registering"
+    timer = state.pop("profile_timer", None)
+    if timer:
+        timer.cancel()
+    try:
+        try:
+            await query.answer("⏳ Registering clone…")
+        except Exception:
+            pass  # An expired callback must not strand the registration state.
+        await _finish_creation(client, query, state, mode)
+    except asyncio.CancelledError:
+        _clear_registration(user.id, state)
+        log.warning("Clone registration was interrupted; its result may be uncertain.")
+        raise
+
+
+def _clear_registration(user_id, state):
+    if _creation_state.get(user_id) is state:
+        _creation_state.pop(user_id, None)
+    state.get("data", {}).pop("registration_token", None)
+    state.get("data", {}).pop("restore_expected_token", None)
+
+
+async def _finish_creation(client, query, state, mode):
+    user_id = query.from_user.id
+    status_msg = query.message
+    data = state["data"]
+    bot_info = data["bot_info"]
+    bot_id = bot_info["id"]
+    bot_username = bot_info.get("username", "unknown")
+    channel_id = data["channel_id"]
+    channel_title = data["channel_title"]
+    from filestore.worker_bot.engine import worker_engine
+    try:
+        # Coordinating with this process's worker lifecycle is not a distributed lease.
+        async with worker_engine._operation_lock(bot_id):
+            if _creation_state.get(user_id) is not state:
+                _clear_registration(user_id, state)
+                return await status_msg.edit_text("<b>Setup was closed.</b> No registration was attempted.")
+            if mode == "group" and not config.CLONE_PROFILES_SINGLE_INSTANCE:
+                _clear_registration(user_id, state)
+                return await status_msg.edit_text("<b>Group mode is disabled.</b> No registration was attempted.")
+            if (worker_engine.get_worker(bot_id) is not None or bot_id in worker_engine._uncertain_stops
+                    or bot_id in _verification_stops):
+                _clear_registration(user_id, state)
+                return await status_msg.edit_text(
+                    "<b>⚠️ Clone registration was not attempted.</b>\n\n"
+                    "A running or uncertain worker was found in this process. Contact the operator before retrying.")
+            kwargs = dict(bot_id=bot_id, owner_id=user_id, bot_token_encrypted=data["registration_token"],
+                          bot_username=bot_username, log_channel_id=channel_id, managed=bool(data.get("managed")),
+                          restore_deleted=bool(data.get("restore_deleted")), expected_old_token=data.get("restore_expected_token"))
+            if data.get("restore_deleted"):
+                kwargs["expected_old_profile"] = data.get("restore_expected_profile") if data.get("restore_profile_present") else None
+            else:
+                kwargs["initial_profile"] = mode
+            await main_db.add_bot(**kwargs)
+    except BotRegistrationConflict:
+        _clear_registration(user_id, state)
+        return await status_msg.edit_text(
+            "<b>❌ Registration could not be completed.</b>\n\n"
+            "This bot is already registered or its saved record changed. "
+            "No existing record was replaced by this request. Check My Bots before trying again.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]))
+    except Exception:
+        _clear_registration(user_id, state)
+        log.error("Clone registration could not be confirmed.")
+        return await status_msg.edit_text(
+            "<b>⚠️ Registration could not be confirmed.</b>\n\n"
+            "The result may be uncertain. Check My Bots before retrying, or contact the operator.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]))
+    _clear_registration(user_id, state)
+    try:
+        await main_db.set_cooldown(user_id)
+    except Exception:
+        log.error("Clone creation cooldown could not be recorded.")
+        return await status_msg.edit_text(
+            "<b>⚠️ Registration saved; this request did not attempt startup.</b>\n\n"
+            "The cooldown could not be recorded. Check My Bots and contact the operator before retrying.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]))
+    try:
+        bot_doc = await main_db.get_bot(bot_id)
+        await worker_engine.start_worker(bot_doc)
+        worker_started = worker_engine.get_worker(bot_id) is not None
+        try:
+            from core import botlog
+            user_bots = await main_db.bots.count_documents({"owner_id": user_id, "is_deleted": {"$ne": True}})
+            total_bots = await main_db.bots.count_documents({"is_deleted": {"$ne": True}})
+            await botlog.event("CloneCreated", (
+                f"{botlog.user_block(query.from_user)}\n\n"
+                f"<b>🤖 Clone bot:</b> {botlog.esc(bot_info.get('first_name', ''))} (@{botlog.esc(bot_username)})\n"
+                f"<b>🆔 Bot ID:</b> <code>{bot_id}</code>\n"
+                f"<b>📦 DB channel:</b> {botlog.esc(channel_title)} (<code>{channel_id}</code>)\n"
+                f"<b>🧩 Mode:</b> {botlog.esc(mode)}\n"
+                f"<b>📊 Clones of this user:</b> {user_bots} · <b>Platform total:</b> {total_bots}"
+            ), client=client)
+        except Exception:
+            log.warning("Clone event logging failed.")
+    except Exception:
+        log.error("Clone worker start could not be confirmed.")
+        worker_started = False
+    icon = "🟢" if worker_started else "🟡"
+    status = "Observed running in this process" if worker_started else "Not observed running in this process"
+    title = "Clone restored" if data.get("restore_deleted") else "Clone registered"
+    label = {"filestore": "File Store", "group": "Group Management"}[mode]
+    await status_msg.edit_text(
+        f"<b>✅ {title}</b>\n\n<blockquote>"
+        f"<b>Bot:</b> @{html.escape(str(bot_username))}\n"
+        f"<b>Channel:</b> <code>{channel_id}</code>\n"
+        f"<b>Mode:</b> {label}\n<b>Status:</b> {icon} {status}\n\n"
+        "The registration is saved. Use the dashboard to configure it; "
+        "a saved record alone does not guarantee a running worker or confirm which token a running worker uses.</blockquote>",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Bot Dashboard", callback_data=f"dashboard_{bot_id}")],
+                                          [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]))
 
 
 # =============================================================================
@@ -155,6 +351,8 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
 async def create_bot_callback(client: Client, query: CallbackQuery):
     """Start the bot creation flow."""
     user_id = query.from_user.id
+    if (_creation_state.get(user_id) or {}).get("step") == "registering":
+        return await query.answer("Registration is already being processed. Check My Bots before starting again.", show_alert=True)
 
     if not CLONE_ENABLED and user_id not in OWNERS:
         await query.answer("🚧 Clone bot creation is currently disabled.", show_alert=True)
@@ -200,7 +398,7 @@ async def create_bot_callback(client: Client, query: CallbackQuery):
     await query.message.edit_text(
         text=(
             "<b>🤖 Create a New Bot</b>\n\n"
-            "<blockquote><b>Step 1/2:</b> Send me your bot token.\n\n"
+            "<blockquote><b>Step 1/3:</b> Send me your bot token.\n\n"
             "You can get a bot token from @BotFather.\n"
             "Example: <code>123456:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw</code></blockquote>"
             + extra
@@ -218,7 +416,14 @@ async def create_bot_callback(client: Client, query: CallbackQuery):
 async def cancel_creation_callback(client: Client, query: CallbackQuery):
     """Cancel the bot creation flow."""
     user_id = query.from_user.id
+    if (_creation_state.get(user_id) or {}).get("step") == "registering":
+        return await query.answer("Registration is already being processed. Check My Bots before retrying.", show_alert=True)
     old = _creation_state.pop(user_id, None)
+    if old and old.get("profile_timer"):
+        old["profile_timer"].cancel()
+    if old:
+        for key in ("token", "registration_token", "restore_expected_token"):
+            old.get("data", {}).pop(key, None)
     if old and old.get("picker"):
         await remove_channel_picker(client, user_id, old, "❌ Cancelled.")
 
@@ -254,6 +459,10 @@ async def handle_creation_input(client: Client, message: Message):
 
     state = _creation_state[user_id]
     step = state["step"]
+    if step in ("verifying_channel", "registering"):
+        return await message.reply("⏳ This setup step is already being processed. Please wait.")
+    if step == "awaiting_profile":
+        return await message.reply("Choose a profile using the buttons above, or cancel setup.")
 
     # 📢 Channel shared through the native picker → treat it as a typed ID
     if getattr(message, "chat_shared", None) or getattr(message, "chats_shared", None):
@@ -309,6 +518,10 @@ async def handle_creation_input(client: Client, message: Message):
     # STEP 2: Awaiting log channel ID
     # -------------------------------------------------------------------------
     elif step == "awaiting_channel":
+        # Picker removal may have awaited while another input or cancellation
+        # changed the state. Only the current still-pending flow can proceed.
+        if _creation_state.get(user_id) is not state or state.get("step") != "awaiting_channel":
+            return
         channel_input = message.text.strip()
 
         # Validate channel ID format
@@ -324,11 +537,30 @@ async def handle_creation_input(client: Client, message: Message):
             )
             return
 
-        status_msg = await message.reply("<b>⏳ Validating channel access...</b>")
+        bot_info = state["data"]["bot_info"]
+        if bot_info["id"] in _verification_stops:
+            return await message.reply("⚠️ A previous verification stop could not be confirmed. Contact the operator before retrying.")
+        # Claim the step before awaiting; duplicate channel messages cannot start
+        # competing verification clients in this process.
+        state["step"] = "verifying_channel"
+        try:
+            status_msg = await message.reply("<b>⏳ Validating channel access...</b>")
+        except asyncio.CancelledError:
+            if _creation_state.get(user_id) is state:
+                _creation_state.pop(user_id, None)
+            state.get("data", {}).pop("token", None)
+            state.get("data", {}).pop("restore_expected_token", None)
+            raise
+        except Exception:
+            if _creation_state.get(user_id) is state:
+                state["step"] = "awaiting_channel"
+            return
 
+        # The user may have cancelled while the status message was sent.
+        if _creation_state.get(user_id) is not state or state.get("step") != "verifying_channel":
+            return
         # Validate that the worker bot can access the channel
         token = state["data"]["token"]
-        bot_info = state["data"]["bot_info"]
         channel_title = str(channel_id)
 
         import html
@@ -348,10 +580,12 @@ async def handle_creation_input(client: Client, message: Message):
                 chat = await temp_client.get_chat(channel_id)
                 channel_title = chat.title or str(channel_id)
                 test_msg = await temp_client.send_message(
-                    chat_id=channel_id, text="✅ Channel verified for FileStore bot."
+                    chat_id=channel_id, text="✅ Channel verified for clone bot setup."
                 )
                 await test_msg.delete()
             except Exception:
+                if _creation_state.get(user_id) is state:
+                    state["step"] = "awaiting_channel"
                 await status_msg.edit_text(
                     f"<b>❌ Cannot access channel!</b>\n\n"
                     f"<blockquote>Make sure:\n"
@@ -364,9 +598,17 @@ async def handle_creation_input(client: Client, message: Message):
                     ]),
                 )
                 return
+        except asyncio.CancelledError:
+            if _creation_state.get(user_id) is state:
+                _creation_state.pop(user_id, None)
+            state.get("data", {}).pop("token", None)
+            state.get("data", {}).pop("restore_expected_token", None)
+            raise
         except Exception:
             # Telegram/network exceptions may contain credentials or URLs.
             log.error("Clone channel verification failed.")
+            if _creation_state.get(user_id) is state:
+                state["step"] = "awaiting_channel"
             await status_msg.edit_text(
                 "<b>❌ Verification failed!</b>\n\n"
                 "<blockquote>Could not connect to Telegram. Please try again later.</blockquote>",
@@ -376,109 +618,55 @@ async def handle_creation_input(client: Client, message: Message):
             )
             return
         finally:
-            if getattr(temp_client, "is_connected", False):
+            if (getattr(temp_client, "is_connected", False) is True
+                    or getattr(temp_client, "is_initialized", False) is True):
                 try:
-                    await temp_client.stop(block=False)
+                    await asyncio.wait_for(temp_client.stop(block=True), timeout=3.0)
+                except asyncio.CancelledError:
+                    _verification_stops[bot_info["id"]] = temp_client
+                    if _creation_state.get(user_id) is state:
+                        _creation_state.pop(user_id, None)
+                    state.get("data", {}).pop("token", None)
+                    state.get("data", {}).pop("restore_expected_token", None)
+                    raise
                 except Exception:
-                    pass
+                    _verification_stops[bot_info["id"]] = temp_client
+                if (getattr(temp_client, "is_connected", False) is True
+                        or getattr(temp_client, "is_initialized", False) is True):
+                    _verification_stops[bot_info["id"]] = temp_client
+            if bot_info["id"] in _verification_stops and _creation_state.get(user_id) is state:
+                _creation_state.pop(user_id, None)
+                state.get("data", {}).pop("token", None)
+                state.get("data", {}).pop("restore_expected_token", None)
+                try:
+                    await status_msg.edit_text(
+                        "<b>⚠️ Verification stop could not be confirmed.</b>\n\n"
+                        "No registration was attempted. Contact the operator before retrying.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]))
+                except Exception:
+                    log.warning("Could not display uncertain verification stop.")
 
-        # Everything valid — save to database
-        bot_id = bot_info["id"]
-        bot_username = bot_info.get("username", "unknown")
-
-        try:
-            encrypted_token = encrypt_token(token)
-            await main_db.add_bot(
-                bot_id=bot_id,
-                owner_id=user_id,
-                bot_token_encrypted=encrypted_token,
-                bot_username=bot_username,
-                log_channel_id=channel_id,
-                managed=bool(state["data"].get("managed")),
-                restore_deleted=bool(state["data"].get("restore_deleted")),
-                expected_old_token=state["data"].get("restore_expected_token"),
-            )
-        except BotRegistrationConflict:
+        if _creation_state.get(user_id) is not state or state.get("step") != "verifying_channel":
+            return  # cancelled or replaced while channel verification was in progress
+        if bot_info["id"] in _verification_stops:
             _creation_state.pop(user_id, None)
-            await status_msg.edit_text(
-                "<b>❌ Registration could not be completed.</b>\n\n"
-                "This bot is already registered or its saved record changed. "
-                "No existing record was replaced by this request. Check My Bots before trying again.",
+            return await status_msg.edit_text(
+                "<b>⚠️ Verification stop could not be confirmed.</b>\n\n"
+                "No registration was attempted. Contact the operator before retrying.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]),
             )
-            return
+        try:
+            # Existing credential storage supports legacy plaintext when no key
+            # is configured; do not display the value in either case.
+            state["data"]["registration_token"] = encrypt_token(token)
         except Exception:
-            # A write may have succeeded before an error was returned. Never
-            # repeat it automatically or leak database errors / credentials.
             _creation_state.pop(user_id, None)
-            log.error("Clone registration could not be confirmed.")
-            await status_msg.edit_text(
-                "<b>⚠️ Registration could not be confirmed.</b>\n\n"
-                "The result may be uncertain. Check My Bots before retrying, or contact the operator.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]),
-            )
-            return
-
-        # Clear the token before any subsequent action can fail or be retried.
-        _creation_state.pop(user_id, None)
-        try:
-            await main_db.set_cooldown(user_id)
-        except Exception:
-            log.error("Clone creation cooldown could not be recorded.")
-            await status_msg.edit_text(
-                "<b>⚠️ Registration saved; this request did not attempt startup.</b>\n\n"
-                "The cooldown could not be recorded. Check My Bots and contact the operator before retrying.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]),
-            )
-            return
-
-        # Start the worker bot
-        try:
-            from filestore.worker_bot.engine import worker_engine
-            bot_doc = await main_db.get_bot(bot_id)
-            await worker_engine.start_worker(bot_doc)
-            # Verify the worker exists before reporting successful startup.
-            worker_started = worker_engine.get_worker(bot_id) is not None
-            
-            # Log to the owner log channel (+ owner DM)
-            try:
-                from core import botlog
-                user_bots = await main_db.bots.count_documents({"owner_id": user_id, "is_deleted": {"$ne": True}})
-                total_bots = await main_db.bots.count_documents({"is_deleted": {"$ne": True}})
-                title = channel_title
-                await botlog.event("CloneCreated", (
-                    f"{botlog.user_block(message.from_user)}\n\n"
-                    f"<b>🤖 Clone bot:</b> {botlog.esc(bot_info.get('first_name', ''))} (@{bot_username})\n"
-                    f"<b>🆔 Bot ID:</b> <code>{bot_id}</code>\n"
-                    f"<b>📦 DB channel:</b> {botlog.esc(title)} (<code>{channel_id}</code>)\n"
-                    f"<b>🔑 Token:</b> <code>{mask_token(token)}</code>\n"
-                    f"<b>📊 Clones of this user:</b> {user_bots} · <b>Platform total:</b> {total_bots}"
-                ), client=client)
-            except Exception:
-                log.warning("Clone event logging failed.")
-            
-        except Exception:
-            log.error("Clone worker start could not be confirmed.")
-            worker_started = False
-
-        status_icon = "🟢" if worker_started else "🟡"
-        status_text = "Observed running in this process" if worker_started else "Not observed running in this process"
-        title = "Clone restored" if state["data"].get("restore_deleted") else "Clone registered"
-
-        await status_msg.edit_text(
-            f"<b>✅ {title}</b>\n\n"
-            f"<blockquote>"
-            f"<b>Bot:</b> @{html.escape(str(bot_username))}\n"
-            f"<b>Channel:</b> <code>{channel_id}</code>\n"
-            f"<b>Status:</b> {status_icon} {status_text}\n\n"
-            f"The registration is saved. Use the dashboard to configure it; "
-            f"a saved record alone does not guarantee a running worker or confirm which token a running worker uses."
-            f"</blockquote>",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⚙️ Bot Dashboard", callback_data=f"dashboard_{bot_id}")],
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
-            ]),
-        )
+            log.error("Clone credential preparation failed.")
+            return await status_msg.edit_text("<b>⚠️ Could not prepare the credential.</b> No registration was attempted.")
+        state["data"].pop("token", None)
+        state["data"]["channel_id"] = channel_id
+        state["data"]["channel_title"] = channel_title
+        await _show_creation_profiles(status_msg, user_id, state)
 
     # -------------------------------------------------------------------------
     # STEP: Awaiting shortener API key (from bot_settings.py)
