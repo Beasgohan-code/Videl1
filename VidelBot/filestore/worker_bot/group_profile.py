@@ -39,6 +39,10 @@ GROUP_COMMANDS = [
     ("welcome", "View or toggle welcomes (group admin)"),
     ("setwelcome", "Set welcome text (group admin)"),
     ("resetwelcome", "Reset welcome text (group admin)"),
+    ("save", "Save a public group note (group admin)"),
+    ("get", "Show a group note"),
+    ("notes", "List group notes"),
+    ("clear", "Clear a group note (group admin)"),
 ]
 HELP = ("<b>🛡 Group Management</b>\n\n"
         "<b>Ban:</b> <code>/ban USER_ID [reason]</code> or reply with <code>/ban [reason]</code>. "
@@ -57,6 +61,8 @@ HELP = ("<b>🛡 Group Management</b>\n\n"
         "<b>Rules &amp; greetings:</b> /rules, /setrules TEXT, /resetrules; "
         "/welcome, /welcome on or off, /setwelcome TEXT, /resetwelcome. "
         "Welcome text supports <code>{first}</code>, <code>{id}</code> and <code>{chatname}</code>.\n\n"
+        "<b>Public text notes:</b> /save NAME TEXT, /get NAME, /notes and /clear NAME. "
+        "Anyone in the group can read notes; never save secrets.\n\n"
         "All commands also accept a dot prefix, for example <code>.ban</code>. "
         "The actor and bot need restrict-members rights; delete variants also need delete-messages rights. "
         "Reasons are displayed with the result but are not stored or sent to a log channel.\n\n"
@@ -289,7 +295,9 @@ async def _message_action(client, message, action):
 
 def setup_group_profile(app):
     from filestore.worker_bot.group_info import setup_group_info
+    from filestore.worker_bot.group_notes import setup_group_notes
     setup_group_info(app)
+    setup_group_notes(app)
 
     @app.on_message(filters.command("start") & filters.private)
     async def start(client, message):

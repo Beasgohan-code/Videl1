@@ -13,12 +13,34 @@ main bot's group plugin. It currently implements a subset inspired by the public
 [pins guide](https://missrose.org/docs/moderation/pins/),
 [delete guide](https://missrose.org/docs/moderation/purges/),
 [rules guide](https://missrose.org/docs/basics/rules/) and
-[welcomes guide](https://missrose.org/docs/greetings/):
+[welcomes guide](https://missrose.org/docs/greetings/) and
+[notes guide](https://missrose.org/docs/notes/):
 
 - `/ban`, `/tban`, `/dban`, `/sban`, `/unban` (plus legacy `/gban`, `/gunban`);
 - `/mute`, `/tmute`, `/dmute`, `/smute`, `/unmute` and `/kick`, `/dkick`, `/skick`;
 - `/del`, `/pin`, `/pin loud`, `/unpin`, `/groupid` and `/help` (`/ghelp`);
-- `/rules`, `/setrules`, `/resetrules` and `/welcome`, `/setwelcome`, `/resetwelcome`.
+- `/rules`, `/setrules`, `/resetrules` and `/welcome`, `/setwelcome`, `/resetwelcome`;
+- `/save NAME TEXT`, `/get NAME`, `/notes` and `/clear NAME` for plain-text group notes.
+
+Notes are **public to group members**, not private storage; do not save secrets.
+Only directly identified group owners or administrators with change-info rights
+can save or clear notes; any group member can list and read them. Names are
+case-insensitive ASCII letters, digits or underscores (1–32 characters); text
+is plain and escaped, limited to 1,000 characters, and each clone/group pair
+holds at most 50 notes. Saving an existing name replaces it; clearing one note
+is explicit and leaves other notes and clone data intact. Notes do not support
+attachments, hashtags, private/admin-only delivery, rich formatting or scheduled
+repeats. They are not full Rose compatibility. Notes survive profile switches
+and clone soft-deletion; like other filestore collections they can be included
+in administrator backups. Clearing a note does not erase existing backups.
+
+Note updates use a bounded optimistic compare-and-set on one clone/group MongoDB
+document, with a new random version per write. Confirmed conflicts and initial
+duplicate-key races are retried; uncertain writes are not automatically retried.
+Other code or legacy/external writers must not modify this document without the
+same version protocol; restore operations that reintroduce an old version can
+cause ABA, so do not restore concurrently with note updates. Mock tests are not
+proof of real MongoDB concurrency or Telegram delivery.
 
 These commands also accept a dot prefix (for example `.ban`). Actions target a
 replied-to user, numeric user ID, or resolvable `@username`. Reply-based `d` and
