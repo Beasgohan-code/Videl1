@@ -128,3 +128,10 @@ responsive layout at 320/390/1440px. It does not exercise real Mongo or Telegram
 `next-bot-directory-availability.test.cjs` exercises isolated bot-list
 failures, clone-panel availability, focused retry, draft preservation,
 workspace/session races and unrelated tools using synthetic responses only.
+
+`node next-navigation-safety.test.cjs` covers overview links with unsaved
+workspace names, an empty bot directory, pending creation and modified-link
+clicks with synthetic APIs at representative widths. Headless modified-click
+checks dispatch browser events and cancel their default action; they do not
+verify a real new-tab workflow. Browser history and other navigation paths
+remain outside this targeted check.
