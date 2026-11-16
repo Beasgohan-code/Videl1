@@ -65,8 +65,15 @@ not prevented or repaired by this change.
 New durations must be integer days between zero (lifetime) and the number of
 days from today to Python's maximum date; invalid legacy durations are refused
 before consuming a use. No stored record is changed. This bound only rules out
-expiry dates impossible even from today. A user's existing future expiry can
-still cause overflow, and an elapsed day can make an extreme legacy duration
-invalid. As before, a claim and grant are separate operations; there is no
-transaction or automatic retry. Verify mixed workers and actual Mongo races
+expiry dates impossible even from today. Before claiming, the bot also reads
+the user's current Premium state and uses the grant's expiry calculation to
+check whether the extension would overflow. A detected overflow or failed
+preflight stops that attempt before its claim, without changing the code or
+user. A separate concurrent attempt may still affect either record.
+
+This check is not atomic with the claim or grant: expiry or the date can change
+after the read, and overflow or another failure can still happen after a use
+has been claimed. An elapsed day can also make an extreme legacy duration
+invalid. As before, claim and grant are separate operations; there is no
+transaction or automatic refund. Verify mixed workers and actual Mongo races
 before relying on these safeguards in production.

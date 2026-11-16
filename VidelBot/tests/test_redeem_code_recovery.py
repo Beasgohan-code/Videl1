@@ -239,7 +239,7 @@ def test_code_replaced_or_duration_changed_during_claim_never_grants_stale_durat
     run(go())
 
 
-def test_future_expiry_overflow_is_reported_as_uncertain_without_refund(caplog):
+def test_existing_future_expiry_overflow_does_not_consume_use(caplog):
     async def go():
         from database.db import db
         await db.add_user(333,'Tester')
@@ -249,8 +249,67 @@ def test_future_expiry_overflow_is_reported_as_uncertain_without_refund(caplog):
         await growth.redeem_cmd(FakeClient(),msg)
         row=await vdb.db['codes'].find_one({'code':code})
         user=await db.col.find_one({'id':333})
-        assert row['uses_left']==0 and row['used_by']==[333]
+        assert row['uses_left']==1 and row['used_by']==[]
         assert user['premium_expiry']=='9999-12-31'
+        assert 'did not claim a use' in msg.replies[0] and code not in msg.replies[0]
+        assert code not in caplog.text
+    run(go())
+
+
+def test_premium_read_failure_before_claim_is_sanitized_and_no_use_is_claimed(monkeypatch, caplog):
+    async def go():
+        from database.db import db
+        original_col=db.col
+        code=(await growth.create_codes(7,by=222))[0]
+        class Unavailable:
+            async def find_one(self,*args,**kwargs): raise RuntimeError('secret diagnostic '+code)
+        monkeypatch.setattr(db,'col',Unavailable())
+        msg=FakeMsg('/redeem '+code,uid=333)
+        await growth.redeem_cmd(FakeClient(),msg)
+        row=await vdb.db['codes'].find_one({'code':code})
+        assert row['uses_left']==1 and row['used_by']==[]
+        assert 'did not claim a use' in msg.replies[0] and '/myplan' in msg.replies[0]
+        assert code not in msg.replies[0] and code not in caplog.text
+        assert not await original_col.find_one({'id':333})
+    run(go())
+
+
+def test_expiry_change_after_preflight_can_still_fail_after_claim(monkeypatch,caplog):
+    async def go():
+        from database.db import db as saver_db
+        await saver_db.add_user(333,'Tester')
+        source_db=vdb.db;col=source_db['codes']
+        code=(await growth.create_codes(7,by=222))[0]
+        class RacingCollection:
+            async def find_one(self,query): return await col.find_one(query)
+            async def update_one(self,query,update):
+                await saver_db.add_premium(333,'9999-12-31')
+                return await col.update_one(query,update)
+        monkeypatch.setattr(vdb,'_db',DbProxy(source_db,RacingCollection()))
+        msg=FakeMsg('/redeem '+code,uid=333)
+        await growth.redeem_cmd(FakeClient(),msg)
+        row=await col.find_one({'code':code})
+        assert row['uses_left']==0 and row['used_by']==[333]
+        assert (await saver_db.col.find_one({'id':333}))['premium_expiry']=='9999-12-31'
         assert 'Could not confirm redemption' in msg.replies[0] and code not in msg.replies[0]
         assert code not in caplog.text
+    run(go())
+
+
+@pytest.mark.parametrize('user,days', [
+    ({},7),
+    ({'is_premium':True,'premium_expiry':None},7),
+    ({'is_premium':True,'premium_expiry':'9999-12-31'},0),
+    ({'is_premium':False,'premium_expiry':'9999-12-31'},7),
+])
+def test_preflight_uses_same_expiry_calculation_as_grant(user,days):
+    async def go():
+        from database.db import db
+        await db.col.insert_one({'id':333,**user})
+        expected=payments.expiry_for_user(user,days)
+        code=(await growth.create_codes(days,by=222))[0]
+        ok,expiry,_=await growth.redeem(333,code)
+        assert ok and expiry==expected
+        result=await db.col.find_one({'id':333})
+        assert result['is_premium'] and result['premium_expiry']==expected
     run(go())

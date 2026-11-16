@@ -223,6 +223,20 @@ async def redeem(user_id: int, code: str, name: str = ""):
     if not _valid_code_days(doc.get("days")):
         # Never consume a use for a duration that cannot produce an expiry.
         return False, "⚠️ This code has an invalid duration. Contact a bot admin.", 0
+    # Best-effort preflight only: the user's expiry can change after this read.
+    # A read or calculation failure here is known to precede this attempt's claim.
+    from core.payments import expiry_for_user
+    from database.db import db as saver_db
+    try:
+        user = await saver_db.col.find_one({"id": user_id}, {"is_premium": 1, "premium_expiry": 1}) or {}
+        expiry_for_user(user, doc["days"])
+    except OverflowError:
+        return False, ("⚠️ This code cannot extend your current Premium expiry. "
+                       "This attempt did not claim a use; contact a bot admin."), 0
+    except Exception:
+        log.warning("Premium expiry preflight could not be completed.")
+        return False, ("⚠️ Could not check your Premium plan. This attempt did not claim a use. "
+                       "Check /myplan and contact a bot admin before trying again."), 0
     # Claim the same record and duration that were read. A code may be deleted
     # and recreated, or edited, between the lookup and this update.
     res = await col.update_one({"_id": doc["_id"], "code": code, "days": doc["days"],
