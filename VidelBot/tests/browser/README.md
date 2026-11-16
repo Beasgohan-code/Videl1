@@ -79,6 +79,8 @@ live Telegram verification, real file safety, production RBAC or full parity.
 
 `node next-settings.test.cjs` exercises account preference saves, account-wide workspace behavior, empty-workspace access, older-backend safety gating, draft/pending guards and uncertain responses at synthetic browser widths. These are in-memory fixtures, not evidence of Mongo concurrency or production behavior.
 
+`node next-file-rename-safety.test.cjs` checks changed rename cancellation, switching, focus, sidebar navigation and delayed/error responses at synthetic Chromium widths. It does not exercise real storage, browser history, physical devices or assistive technology.
+
 `node next-file-filters.test.cjs` checks category and active-record filters with synthetic uploads, trash visibility and responsive layout. The fixture is not a storage or authorization integration test.
 
 `node next-theme.test.cjs` checks synthetic saved theme application, device color-scheme changes, navigation, sign-out/account switching, older backend reads, failures, and delayed reads at representative widths. It does not establish production or physical-device accessibility.

@@ -18,3 +18,15 @@ Some browsers or embedded Telegram clients may suppress confirmations, and a
 network operation can complete after leaving. Other navigation paths, focus,
 mobile devices and assistive technology require independent review. No change
 to legacy Studio, authorization, Telegram or production configuration is made.
+
+## File Store rename drafts
+
+In the Next preview, Cancel and choosing a different file now ask before
+throwing away a changed filename. Declining keeps the draft; canceling an
+unchanged draft needs no prompt and restores focus to its Rename button (or the
+file-records heading if that button disappeared). The input receives focus when
+opened. A pending rename disables its controls and uses the existing navigation
+warning; a failed response retains the draft and warns that file and record
+changes may be partial. These are best-effort browser interactions, not a
+transaction, a retry guarantee or protection against browser history, crashes,
+client-specific confirmation behavior or other sessions editing the same file.

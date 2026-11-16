@@ -625,13 +625,24 @@ async def operate_filestore_file(
     if not fdoc:
         raise KeyError("File not found in this workspace.")
 
+    # Pin all later reads and writes to the exact document that passed the
+    # workspace lookup, even if a legacy deployment lacks its unique UID index.
+    if "_id" not in fdoc:
+        raise RuntimeError("File record identity is unavailable.")
+    record_scope = {"_id": fdoc["_id"], "file_uid": str(file_uid), "workspace_id": workspace_id}
+
+    async def update_record(update):
+        result = await db_models.files_col().update_one(record_scope, update)
+        if not result.acknowledged or result.matched_count != 1:
+            raise RuntimeError("File update could not be confirmed; changes may be partial.")
+
     act = action.strip().lower()
     now = time.time()
 
     if act in ("rename", "purge") and fdoc.get("local_rel_path"):
         aliases = await db_models.files_col().count_documents({
             "owner_id": fdoc["owner_id"], "local_rel_path": fdoc["local_rel_path"],
-            "file_uid": {"$ne": fdoc["file_uid"]},
+            "_id": {"$ne": fdoc["_id"]},
         })
         if aliases:
             raise services_bots.SaaSValidationError("Shared physical paths require migration before rename or purge.")
@@ -646,12 +657,9 @@ async def operate_filestore_file(
             if os.path.exists(dst) and dst != src:
                 raise FileExistsError("A file with that name already exists.")
             os.replace(src, dst)
-            await db_models.files_col().update_one(
-                {"file_uid": file_uid, "workspace_id": workspace_id},
-                {"$set": {"filename": new_name, "local_rel_path": new_path, "updated_ts": now}},
-            )
+            await update_record({"$set": {"filename": new_name, "local_rel_path": new_path, "updated_ts": now}})
         else:
-            await db_models.files_col().update_one({"file_uid": file_uid}, {"$set": {"filename": new_name, "updated_ts": now}})
+            await update_record({"$set": {"filename": new_name, "updated_ts": now}})
 
     elif act == "update_metadata":
         upd: dict[str, Any] = {"updated_ts": now}
@@ -661,7 +669,7 @@ async def operate_filestore_file(
             upd["category"] = str(payload["category"])[:32]
         if "tags" in payload and isinstance(payload["tags"], list):
             upd["tags"] = [str(t).strip()[:24] for t in payload["tags"] if str(t).strip()][:12]
-        await db_models.files_col().update_one({"file_uid": file_uid}, {"$set": upd})
+        await update_record({"$set": upd})
 
     elif act == "share_link":
         raise services_bots.SaaSValidationError("Web File Store sharing is not implemented.")
@@ -673,23 +681,15 @@ async def operate_filestore_file(
         target_bot = str(payload.get("target_bot_id") or "default")
         if target_bot != "default":
             await services_bots.get_owned_workspace_bot(workspace_id, target_bot)
-        await db_models.files_col().update_one(
-            {"file_uid": file_uid}, {"$set": {"bot_id": target_bot, "updated_ts": now}}
-        )
+        await update_record({"$set": {"bot_id": target_bot, "updated_ts": now}})
 
     elif act == "soft_delete":
         if not payload.get("confirmed"):
             raise services_bots.SaaSValidationError("Deletion requires explicit confirmation (`confirmed: true`).")
-        await db_models.files_col().update_one(
-            {"file_uid": file_uid},
-            {"$set": {"deleted": True, "deleted_at": db_models.utcnow_iso(), "updated_ts": now}},
-        )
+        await update_record({"$set": {"deleted": True, "deleted_at": db_models.utcnow_iso(), "updated_ts": now}})
 
     elif act == "restore":
-        await db_models.files_col().update_one(
-            {"file_uid": file_uid},
-            {"$set": {"deleted": False, "updated_ts": now}, "$unset": {"deleted_at": ""}},
-        )
+        await update_record({"$set": {"deleted": False, "updated_ts": now}, "$unset": {"deleted_at": ""}})
 
     elif act == "purge":
         if not payload.get("confirmed"):
@@ -700,13 +700,17 @@ async def operate_filestore_file(
             target = resolve_workspace_file(workspace_id, int(fdoc["owner_id"]), fdoc["local_rel_path"])
             # Do not discard the record if deleting the physical file fails.
             os.remove(target)
-        await db_models.files_col().delete_one({"file_uid": file_uid})
+        result = await db_models.files_col().delete_one(record_scope)
+        if not result.acknowledged or result.deleted_count != 1:
+            raise RuntimeError("File deletion could not be confirmed; changes may be partial.")
         await models_db.log_audit(actor_id, "filestore_purge", target=f"{workspace_id}:{file_uid}")
         return {"action": "purge", "deleted": True, "file_uid": file_uid}
     else:
         raise services_bots.SaaSValidationError(f"Unsupported file action '{act}'.")
 
-    fresh = await db_models.files_col().find_one({"file_uid": file_uid})
+    fresh = await db_models.files_col().find_one(record_scope)
+    if fresh is None:
+        raise RuntimeError("File result could not be confirmed; changes may be partial.")
     fresh.pop("_id", None)
     return {"action": act, "file": fresh}
 
