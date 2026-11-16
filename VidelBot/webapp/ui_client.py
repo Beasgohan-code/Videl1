@@ -1602,10 +1602,10 @@ CLIENT_JS = r"""
         <div class="page-header">
           <div>
             <h1 class="page-title">Bot & File Store Owner Analytics</h1>
-            <p class="page-subtitle">Active indexed File Store records (${days}-day window); deleted files and legacy transfers are excluded. ${data.file_sample_truncated ? "Storage and period values use a sample of 5,000 records." : ""}</p>
+            <p class="page-subtitle">Active indexed File Store records (rolling ${days}-day window; UTC date buckets may be partial); deleted files and legacy transfers are excluded. ${data.file_sample_truncated ? "Storage and period values use a sample of 5,000 records." : ""}</p>
           </div>
           <div class="toolbar-group">
-            ${[1, 7, 30, 90].map((d) => `<button class="btn btn-sm ${d === days ? "btn-primary" : ""}" data-days="${d}">${d === 1 ? "Today" : d + "d"}</button>`).join("")}
+            ${[1, 7, 30, 90].map((d) => `<button class="btn btn-sm ${d === days ? "btn-primary" : ""}" data-days="${d}">${d === 1 ? "1d" : d + "d"}</button>`).join("")}
             <button id="btn-anl-csv" class="btn btn-sm">Export CSV</button>
           </div>
         </div>

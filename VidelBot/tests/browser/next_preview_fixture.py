@@ -415,7 +415,7 @@ async def analytics(request):
     bot=request.query.get('bot_id','all')
     if request.path.endswith('.csv'):
         return web.Response(text='date,uploads,downloads,storage_bytes_added\n2026-10-01,2,,1024\n',content_type='text/csv')
-    return web.json_response({'range_days':days,'bot_id':bot,'totals':{'stored_files':(42 if ws['workspace_id']=='slow' else 84) if bot=='all' else 5,'storage_bytes':2048,'period_uploads':2},'comparison_previous_period':{'files_delta':1},'series':{'days':['2026-10-01','2026-10-02'],'uploads':[2,0],'storage_bytes_added':[1024,0]},'file_sample_truncated':days==90})
+    return web.json_response({'range_days':days,'bot_id':bot,'totals':{'stored_files':(42 if ws['workspace_id']=='slow' else 84) if bot=='all' else 5,'storage_bytes':2048,'period_uploads':2},'comparison_previous_period':{'files_delta':1},'series':{'days':['2026-10-01','2026-10-02'],'uploads':[2,0],'storage_bytes_added':[1024,0]},'file_sample_truncated':days==90,'complete_utc_buckets':True})
 
 app.router.add_get('/api/v1/workspaces/{ws}/analytics', analytics)
 app.router.add_get('/api/v1/workspaces/{ws}/analytics.csv', analytics)

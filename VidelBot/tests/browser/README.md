@@ -73,7 +73,7 @@ create/copy/delete, notification read state, workspace isolation and permission
 presentation at 320/390/1440px. `node next-team.test.cjs` checks direct member grants, reviewed role changes,
 removal and role denial against the fixture. `npm run test:next` runs all eleven
 Next browser suites. `node next-analytics.test.cjs` checks time/bot filters,
-CSV download, workspace changes, sample disclosure, permissions and responsive
+CSV download, workspace changes, sample and older-backend bucket disclosure, permissions and responsive
 layout with fixture data. These assertions do not establish
 live Telegram verification, real file safety, production RBAC or full parity.
 
@@ -158,5 +158,5 @@ contract check, run `telegram_auth_fixture.py` on 8088 with `DOWNLOAD_DIR` set
 to a disposable temporary directory, start Next with
 `VIDEL_BACKEND_ORIGIN=http://127.0.0.1:8088`, then run
 `node next-file-backend.test.cjs`. This exercises a signed synthetic login,
-actual local aiohttp File Store routes, temporary disk and mock Mongo; it is not
+actual local aiohttp File Store and Analytics routes, CSV export, temporary disk and mock Mongo; it is not
 live Telegram, real Mongo, production storage, concurrency or device evidence.

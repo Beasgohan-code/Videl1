@@ -1242,3 +1242,18 @@ def test_filestore_list_sample_contract_and_workspace_access(monkeypatch):
             assert (await cli.get(path, headers=outsider)).status == 403
             assert (await (await cli.get(f'/api/v1/workspaces/{other}/filestore', headers=outsider)).json())['total'] == 0
     run(go())
+
+
+def test_analytics_custom_range_validation_applies_to_json_and_csv():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            hdr, ws = await _login_link(cli, 18883, 'Analytics owner')
+            for suffix in ('analytics', 'analytics.csv'):
+                path=f'/api/v1/workspaces/{ws}/{suffix}'
+                for query in ('start_date=bad&end_date=2026-01-01', 'start_date=2026-01-01',
+                              'start_date=2026-01-02&end_date=2026-01-01'):
+                    response=await cli.get(f'{path}?{query}', headers=hdr)
+                    assert response.status == 400
+                    assert 'valid start and end dates' in (await response.json())['error']
+                assert (await cli.get(f'{path}?start_date=2026-01-01&end_date=2026-01-02', headers=hdr)).status == 200
+    run(go())

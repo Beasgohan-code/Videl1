@@ -132,7 +132,7 @@ jobs:
           npm ci --prefix VidelBot/tests/ui --ignore-scripts --no-audit --no-fund
           npm test --prefix VidelBot/tests/ui
 
-      - name: Test Next File Store with local backend and mock Mongo
+      - name: Test Next File Store and analytics with local backend and mock Mongo
         timeout-minutes: 8
         env:
           NEXT_TELEMETRY_DISABLED: '1'

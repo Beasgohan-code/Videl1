@@ -12,7 +12,7 @@ import mimetypes
 import os
 import secrets
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from platform_core import models_db, providers
@@ -812,21 +812,25 @@ async def compute_owner_and_bot_analytics(
 ) -> dict[str, Any]:
     """Compute private Owner & Per-Bot Analytics with period comparison and honest availability flags."""
     now_dt = datetime.now(timezone.utc)
-    if start_date and end_date:
+    if start_date or end_date:
         try:
-            s_dt = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
-            e_dt = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1)
-            span_days = max(1, min(365, (e_dt - s_dt).days))
-        except ValueError:
-            span_days = max(1, min(180, int(days)))
-            e_dt = now_dt
-            s_dt = e_dt - timedelta(days=span_days)
+            start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+            if start.isoformat() != start_date or end.isoformat() != end_date:
+                raise ValueError("Dates must use YYYY-MM-DD")
+            span_days = (end - start).days + 1
+            if not 1 <= span_days <= 365:
+                raise ValueError("Date range must cover 1 to 365 days")
+            s_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+            e_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+            prev_s_dt = s_dt - timedelta(days=span_days)
+        except (ValueError, OverflowError) as exc:
+            raise services_bots.SaaSValidationError("Choose valid start and end dates (YYYY-MM-DD) covering 1 to 365 days.") from exc
     else:
+        # Rolling windows are exact durations, not calendar-day selections.
         span_days = max(1, min(180, int(days)))
         e_dt = now_dt
         s_dt = e_dt - timedelta(days=span_days)
-
-    prev_s_dt = s_dt - timedelta(days=span_days)
+        prev_s_dt = s_dt - timedelta(days=span_days)
     s_ts, e_ts, prev_s_ts = s_dt.timestamp(), e_dt.timestamp(), prev_s_dt.timestamp()
 
     file_q: dict[str, Any] = {"workspace_id": workspace_id, "deleted": False}
@@ -838,9 +842,13 @@ async def compute_owner_and_bot_analytics(
     file_count = await db_models.files_col().count_documents(file_q)
 
     # Build daily buckets
+    # Half-open intervals [start, end) can touch span_days + 1 UTC dates
+    # when a rolling window starts and ends partway through the day.
+    first_day = s_dt.date()
+    last_day = (e_dt - timedelta(microseconds=1)).date()
     day_labels = [
-        (s_dt + timedelta(days=i)).strftime("%Y-%m-%d")
-        for i in range(span_days)
+        (first_day + timedelta(days=i)).isoformat()
+        for i in range((last_day - first_day).days + 1)
     ]
     uploads_by_day = {d: 0 for d in day_labels}
     bytes_by_day = {d: 0 for d in day_labels}
@@ -848,9 +856,9 @@ async def compute_owner_and_bot_analytics(
     cur_files = prev_files = 0
     for f in files:
         ts = float(f.get("uploaded_ts") or 0)
-        if s_ts <= ts <= e_ts:
+        if s_ts <= ts < e_ts:
             cur_files += 1
-            dk = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            dk = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
             if dk in uploads_by_day:
                 uploads_by_day[dk] += 1
                 bytes_by_day[dk] += int(f.get("size_bytes") or 0)
@@ -885,6 +893,7 @@ async def compute_owner_and_bot_analytics(
         "command_usage": None,
         "unavailable_metrics": ["telegram_impressions", "downloads", "failed_uploads", "failed_downloads", "command_usage"],
         "file_sample_truncated": file_count > len(files),
+        "complete_utc_buckets": True,
         "data_availability": {
             "telegram_global_reach": "unavailable (Telegram Bot API does not expose passive channel impressions)",
             "workspace_operations": "transfer history unavailable: legacy records are not workspace-scoped",
