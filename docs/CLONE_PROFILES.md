@@ -70,6 +70,28 @@ permissions. No main-bot group settings, warnings or automatic moderation are us
 Some previously installed per-chat Telegram command menus may remain visible even
 though File Store handlers are not active.
 
+### Group bot guide and setup check
+
+The Group Management clone's private `/start` and group `/help` show an
+interactive, read-only guide with separate moderation, message, welcome, notes
+and setup sections. The buttons edit the bot's existing guide message; they do
+not perform moderation or change settings. Group guides are shared, so any group
+member can change the visible guide page. Private guides are restricted to the
+receiving private chat. The static guide callbacks check the bot-authored message
+and chat before editing. If a guide cannot be edited, run `/help` again.
+Ordinary Unicode labels are retained on these WzGram buttons; the separate
+experimental premium button feature currently covers primary-bot Bot API text
+paths, not this worker.
+
+`/gcheck` (or `.gcheck`) in a group makes a read-only Telegram lookup of this
+clone's own membership and reports its role plus restrict, delete, pin and
+change-info rights as granted, missing, or unknown. It distinguishes a basic
+group from a supergroup, but does not test the invoking admin's rights, target
+status, bot privacy, delivery of updates or actual action success. Telegram can
+change rights at any time. The result is a snapshot, not a guarantee, and no
+settings are changed. The guide and diagnostics depend on Telegram receiving and
+delivering messages; their behavior has only been tested offline.
+
 ### Rules and welcomes
 
 Rules and text-only welcome settings are stored in the `clone_group_info`

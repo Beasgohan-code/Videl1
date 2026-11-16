@@ -17,6 +17,7 @@ GROUP_COMMANDS = [
     ("start", "About this group bot"),
     ("help", "Group moderation commands"),
     ("groupid", "Show this group ID"),
+    ("gcheck", "Check this bot's group permissions"),
     ("ban", "Ban a member by reply, ID or username"),
     ("tban", "Temporarily ban a member"),
     ("dban", "Ban and delete the replied message"),
@@ -44,30 +45,6 @@ GROUP_COMMANDS = [
     ("notes", "List group notes"),
     ("clear", "Clear a group note (group admin)"),
 ]
-HELP = ("<b>🛡 Group Management</b>\n\n"
-        "<b>Ban:</b> <code>/ban USER_ID [reason]</code> or reply with <code>/ban [reason]</code>. "
-        "Usernames such as <code>@name</code> are also supported when Telegram can resolve them.\n"
-        "<b>Timed:</b> <code>/tban USER_ID 3d [reason]</code> or reply with <code>/tban 3d</code>. "
-        "Use minutes (m), hours (h), days (d) or weeks (w); range: 5 minutes–365 days.\n"
-        "<b>Delete + ban:</b> reply with <code>/dban [reason]</code>. "
-        "<b>Silent:</b> <code>/sban USER_ID [reason]</code> or reply; deletes the command "
-        "and replied message after a confirmed ban. <code>/unban USER_ID</code> reverses a ban.\n\n"
-        "<b>Mute:</b> /mute, /tmute, /dmute, /smute and /unmute use the same syntax. "
-        "Unmute replaces a member's restrictions with the group defaults. Moderation requires a supergroup.\n"
-        "<b>Kick:</b> /kick, /dkick and /skick remove a member but allow rejoining; "
-        "a failed second step can leave the member banned.\n\n"
-        "<b>Messages:</b> reply with /del to delete, /pin to pin silently or /pin loud "
-        "to notify; /unpin removes the replied or latest pin.\n\n"
-        "<b>Rules &amp; greetings:</b> /rules, /setrules TEXT, /resetrules; "
-        "/welcome, /welcome on or off, /setwelcome TEXT, /resetwelcome. "
-        "Welcome text supports <code>{first}</code>, <code>{id}</code> and <code>{chatname}</code>.\n\n"
-        "<b>Public text notes:</b> /save NAME TEXT, /get NAME, /notes and /clear NAME. "
-        "Anyone in the group can read notes; never save secrets.\n\n"
-        "All commands also accept a dot prefix, for example <code>.ban</code>. "
-        "The actor and bot need restrict-members rights; delete variants also need delete-messages rights. "
-        "Reasons are displayed with the result but are not stored or sent to a log channel.\n\n"
-        "File Store commands and links are not served in this mode. Voice-chat music is not available yet.")
-
 
 def _has_right(member, right):
     status = getattr(member, "status", None)
@@ -296,16 +273,18 @@ async def _message_action(client, message, action):
 def setup_group_profile(app):
     from filestore.worker_bot.group_info import setup_group_info
     from filestore.worker_bot.group_notes import setup_group_notes
+    from filestore.worker_bot.group_ui import setup_group_ui, show_guide
     setup_group_info(app)
     setup_group_notes(app)
+    setup_group_ui(app)
 
     @app.on_message(filters.command("start") & filters.private)
     async def start(client, message):
-        await message.reply_text(HELP)
+        await show_guide(message)
 
     @app.on_message(filters.command(["help", "ghelp"], prefixes=["/", "."]) & filters.group)
     async def help_group(client, message):
-        await message.reply_text(HELP)
+        await show_guide(message)
 
     @app.on_message(filters.command("groupid", prefixes=["/", "."]) & filters.group)
     async def group_id(client, message):

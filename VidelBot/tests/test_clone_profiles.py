@@ -240,6 +240,7 @@ def test_group_startup_failure_with_uncertain_stop_blocks_switch(monkeypatch, ca
         def __init__(self,**kwargs):pass
         def add_handler(self,*args,**kwargs):pass
         def on_message(self,*args,**kwargs):return lambda f:f
+        def on_callback_query(self,*args,**kwargs):return lambda f:f
         async def start(self):self.is_connected=True;self.is_initialized=True
         async def stop(self,block=False):raise RuntimeError('private token diagnostic')
         def set_parse_mode(self,mode):pass
