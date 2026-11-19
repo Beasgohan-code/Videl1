@@ -171,3 +171,9 @@ live Telegram, real Mongo, production storage, concurrency or device evidence.
 check server-clamped pages, button boundaries, malformed page metadata, retry and
 layout at 320/390/1440px. Sampling tests also check sample-specific aggregate and
 empty-state labels. These are not real database concurrency or device tests.
+
+`node next-notification-filters.test.cjs` uses intercepted synthetic inbox
+responses to check category retention across refresh, loading and failure,
+clearing filters, empty-list write failure and workspace changes. The notification
+filter and read-safety tests run in CI with the synthetic API; they do not prove
+real MongoDB concurrency, live Telegram, physical-device or production behavior.

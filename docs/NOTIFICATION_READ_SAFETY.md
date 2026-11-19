@@ -4,6 +4,10 @@ The Next preview's inbox is a shared workspace view, not a personal unread
 queue. Its GET response advertises `conditional_read_updates`; when absent, the
 preview shows notifications read-only. A missing/non-boolean read value is
 shown as unavailable, not as unread. Filtering covers only the 80 loaded rows.
+If a selected category is absent after refresh, it remains visibly selected and
+continues to filter the loaded records; Clear filters explicitly resets it, the
+search and read-status filters. A failed list read is not presented as an empty
+inbox, while an uncertain write preserves the last successfully loaded list.
 
 Single-record changes use the new `POST /notifications/read` endpoint, with
 an explicit expected boolean read state and the desired opposite state. The

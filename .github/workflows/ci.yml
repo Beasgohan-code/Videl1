@@ -178,6 +178,8 @@ jobs:
           node next-navigation-safety.test.cjs
           node next-file-pagination.test.cjs
           node next-file-sampling.test.cjs
+          node next-notification-filters.test.cjs
+          node next-notification-safety.test.cjs
 
   native-tools:
     name: Ubuntu native media & archive tools
