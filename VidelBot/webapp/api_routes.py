@@ -894,7 +894,8 @@ async def api_analytics(request: web.Request) -> web.Response:
         return web.Response(
             text=csv_text,
             content_type="text/csv",
-            headers={**_security_headers(content_type="text/csv"), "Content-Disposition": 'attachment; filename="videl_analytics.csv"'},
+            headers={**_security_headers(content_type="text/csv"), "Content-Disposition": 'attachment; filename="videl_analytics.csv"',
+                     "X-Videl-Analytics-Contract": "utc-range-v1"},
         )
     return _ok(data)
 

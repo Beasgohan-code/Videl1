@@ -4,7 +4,7 @@ export type Bot = {bot_id:string; display_name?:string; username?:string; telegr
 export type Identity = {user:{display_name:string; is_platform_admin:boolean; csrf_token?:string; user_id?:number}; workspaces:Workspace[]; catalogs:{workspace_roles:string[]; permission_scopes:string[]}};
 export type WorkspaceDetail = {workspace:{name:string}; my_role:string; my_permissions:Record<string,boolean>};
 export class ApiError extends Error { constructor(message:string,public status:number){super(message)} }
-export async function request(path:string, session:Session | null, options:{method?:string; body?:unknown; signal?:AbortSignal}={}):Promise<unknown> {
+export async function request(path:string, session:Session | null, options:{method?:string; body?:unknown; signal?:AbortSignal; requiredResponseHeader?:{name:string;value:string}}={}):Promise<unknown> {
   if (!path.startsWith('/api/v1/') || path.includes('\\')) throw new TypeError('Only same-origin API paths are supported.');
   const url = new URL(path,window.location.origin);
   if(url.origin!==window.location.origin || !url.pathname.startsWith('/api/v1/')) throw new TypeError('Only same-origin API paths are supported.');
@@ -16,6 +16,7 @@ export async function request(path:string, session:Session | null, options:{meth
   const response=await fetch(path,{method,headers,body:options.body===undefined?undefined:form?options.body as FormData:JSON.stringify(options.body),signal:options.signal,cache:'no-store'});
   const payload:unknown=(response.headers.get('Content-Type')||'').includes('application/json') ? await response.json() : await response.text();
   if(!response.ok){const message=typeof payload==='object'&&payload!==null&&'error' in payload&&typeof payload.error==='string'?payload.error:`HTTP ${response.status}`;throw new ApiError(message,response.status)}
+  if(options.requiredResponseHeader && response.headers.get(options.requiredResponseHeader.name)!==options.requiredResponseHeader.value) throw new Error('The server could not confirm the requested export format. Update all backend workers and try again.');
   return payload;
 }
 const object = (value:unknown): value is Record<string,unknown> => typeof value==='object' && value!==null && !Array.isArray(value);

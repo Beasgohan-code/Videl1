@@ -1255,5 +1255,9 @@ def test_analytics_custom_range_validation_applies_to_json_and_csv():
                     response=await cli.get(f'{path}?{query}', headers=hdr)
                     assert response.status == 400
                     assert 'valid start and end dates' in (await response.json())['error']
-                assert (await cli.get(f'{path}?start_date=2026-01-01&end_date=2026-01-02', headers=hdr)).status == 200
+                response = await cli.get(f'{path}?start_date=2026-01-01&end_date=2026-01-02', headers=hdr)
+                assert response.status == 200
+                if suffix.endswith('.csv'):
+                    assert response.headers['X-Videl-Analytics-Contract'] == 'utc-range-v1'
+                    assert '2026-01-01' in await response.text() and '2026-01-02' in await response.text()
     run(go())

@@ -21,5 +21,7 @@ function proof(){const fields={auth_date:String(Math.floor(Date.now()/1000)),que
  await p.getByText('View daily data').click();await p.getByRole('cell',{name:uploadedDate}).waitFor();
  const [download]=await Promise.all([p.waitForEvent('download'),p.getByRole('button',{name:'Export CSV'}).click()]);
  const csv=require('node:fs').readFileSync(await download.path(),'utf8');assert(csv.includes(`${uploadedDate},1,,`));
+ await p.getByLabel('Start date').fill(uploadedDate);await p.getByLabel('End date').fill(uploadedDate);await p.getByRole('button',{name:'Apply dates'}).click();await p.getByText(`${uploadedDate} to ${uploadedDate} UTC`,{exact:false}).waitFor();
+ const [custom]=await Promise.all([p.waitForEvent('download'),p.getByRole('button',{name:'Export CSV'}).click()]);assert.equal(custom.suggestedFilename(),`videl_analytics_${uploadedDate}_${uploadedDate}.csv`);assert(require('node:fs').readFileSync(await custom.path(),'utf8').includes(`${uploadedDate},1,,`));
  assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);await p.close();console.log('Next File Store and analytics use actual local backend routes (mock Mongo/temp storage)');
 }finally{await b.close()}})().catch(e=>{console.error(e);process.exitCode=1});

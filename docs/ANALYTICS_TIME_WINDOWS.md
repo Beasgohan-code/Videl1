@@ -27,3 +27,21 @@ a mixed-version rollout, a CSV request may reach an older worker even if the
 chart came from a newer one; upgrade all workers before relying on the fix.
 These changes do not repair historical records, validate real Mongo concurrency,
 or introduce new transfer tracking.
+
+## Next Studio custom dates
+
+The Next preview can apply an inclusive UTC range of 1–365 dates. The chart
+and daily table verify the server's bucket capability and every expected date;
+missing or mismatched responses are not shown as the selected range. A custom
+CSV download is only offered after a valid chart response, and is discarded if
+its separate response does not carry `X-Videl-Analytics-Contract: utc-range-v1`.
+The header was added with this feature, so even an earlier worker that reports
+complete buckets but lacks the CSV contract will block custom export. This is a
+compatibility check, not an integrity signature or a snapshot: a mixed rollout
+can still produce a retryable error, and the CSV can legitimately differ from
+the chart as records change. Rolling preset exports remain compatible with old
+servers and retain their older-backend warning.
+
+Dates are filter drafts, not saved settings. Changing workspaces or leaving
+through the supported navigation guards asks before discarding unapplied dates;
+browser history and clients that suppress confirmations can still lose drafts.
