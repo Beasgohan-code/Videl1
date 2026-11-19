@@ -30,6 +30,16 @@ validation result against the proposed bot ID before continuing through channel
 verification and the exclusive mode picker. If the update or confirmation is
 missing or uncertain, manual token setup remains available.
 
+The managed link, candidate, timeout and retrieval-failure screens use controls
+bound to the active in-process managed attempt. Their Cancel and manual-token
+buttons reject another attempt, an advanced wizard or a non-private chat; manual
+setup still repeats the normal eligibility checks. A current Cancel can stop a
+pending retrieval or validation from advancing the wizard, and retrieval checks
+again after the callback acknowledgement and when its task starts. It cannot
+retract a Telegram request already sent, and an edit already in flight may still
+arrive. This does not scope older pre-upgrade messages or every other wizard
+screen; those may still contain the older generic callbacks.
+
 A Telegram update is not cryptographically correlated to the creation link: a
 delayed update from another attempt could be offered during an active setup, so
 the user must verify the bot shown. State, expiration and duplicate-click claims

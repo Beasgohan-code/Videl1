@@ -18,7 +18,7 @@ def reset():
 
 def pending(uid=5):
     st = {'step': 'awaiting_token', 'data': {'managed_username': 'suggested_bot',
-          'managed_pair_deadline': time.monotonic() + 60}}
+          'managed_pair_deadline': time.monotonic() + 60, 'managed_controls_nonce': 'controls123'}}
     create_bot._creation_state[uid] = st
     return st
 
@@ -185,4 +185,117 @@ def test_manual_input_is_blocked_while_managed_fetch_in_flight(monkeypatch):
         assert 'already being processed' in msg.replies[0]
         release.set(); await task
         assert st['step'] == 'awaiting_token'
+    run(go())
+
+
+def action(st, choice='cancel', uid=5, message=None):
+    return FakeQuery(f"managed_action_{st['data']['managed_controls_nonce']}_{choice}", uid=uid, message=message)
+
+
+def test_old_controls_do_not_cancel_or_replace_new_attempt():
+    async def go():
+        old = pending(); cancel = action(old); manual = action(old, 'manual')
+        newer = pending(); newer['data']['managed_controls_nonce'] = 'new_controls'
+        for q in (cancel, manual):
+            await managed_bots.managed_setup_action(FakeClient(), q)
+            assert q.answers[-1][1] and 'changed' in q.answers[-1][0]
+            assert create_bot._creation_state[5] is newer and newer['step'] == 'awaiting_token'
+        # Old controls cannot cancel an already verified setup either.
+        newer['step'] = 'awaiting_channel'
+        q = action(newer); await managed_bots.managed_setup_action(FakeClient(), q)
+        assert q.answers[-1][1] and create_bot._creation_state[5] is newer
+    run(go())
+
+
+def test_managed_controls_reject_other_user_or_nonprivate_chat():
+    async def go():
+        st = pending()
+        for q in (action(st, uid=6), action(st, message=FakeMsg(uid=5, chat_type=enums.ChatType.SUPERGROUP, chat_id=-100)),
+                  action(st, message=FakeMsg(uid=5, chat_id=6))):
+            await managed_bots.managed_setup_action(FakeClient(), q)
+            assert q.answers[-1][1] and create_bot._creation_state[5] is st
+    run(go())
+
+
+def test_cancel_during_callback_ack_prevents_token_request(monkeypatch):
+    async def go():
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def token(*args, **kwargs): raise AssertionError('cancelled before token request')
+        monkeypatch.setattr(managed_bots, '_token_for', token)
+        st, client = pending(), FakeClient()
+        await managed_bots.on_managed_bot_updated(client, update())
+        q = confirm(st)
+        async def slow_answer(*args, **kwargs): entered.set(); await release.wait()
+        q.answer = slow_answer
+        task = asyncio.create_task(managed_bots.confirm_managed_bot(client, q)); await entered.wait()
+        assert st['step'] == 'verifying_managed'
+        await managed_bots.managed_setup_action(client, action(st))
+        assert 5 not in create_bot._creation_state
+        release.set(); await task
+        assert 5 not in create_bot._creation_state
+    run(go())
+
+
+def test_cancel_during_token_validation_prevents_wizard_advancement(monkeypatch):
+    async def go():
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def token(*args, **kwargs): return '424242:secret-long-enough'
+        async def validate(*args): entered.set(); await release.wait(); return {'id': 424242, 'username': 'test_bot', 'first_name': 'Test'}
+        monkeypatch.setattr(managed_bots, '_token_for', token)
+        monkeypatch.setattr(create_bot, 'validate_bot_token', validate)
+        st, c = pending(), FakeClient(); await managed_bots.on_managed_bot_updated(c, update())
+        task = asyncio.create_task(managed_bots.confirm_managed_bot(c, confirm(st)))
+        await entered.wait(); assert st['step'] == 'verifying_token'
+        await managed_bots.managed_setup_action(c, action(st)); release.set(); await task
+        assert 5 not in create_bot._creation_state and 'token' not in st['data']
+    run(go())
+
+
+def test_manual_action_preserves_eligibility_checks(monkeypatch):
+    st = pending()
+    monkeypatch.setattr(create_bot, 'CLONE_ENABLED', False)
+    q = action(st, 'manual')
+    run(managed_bots.managed_setup_action(FakeClient(), q))
+    assert 'disabled' in q.answers[-1][0] and create_bot._creation_state[5] is st
+
+
+def test_scoped_controls_present_on_candidate_timeout_and_failure(monkeypatch):
+    async def go():
+        st, c = pending(), FakeClient(); sent = []
+        async def capture(*args, **kwargs): sent.append(kwargs['reply_markup'])
+        c.send_message = capture
+        await managed_bots.on_managed_bot_updated(c, update())
+        buttons = [b.callback_data for row in sent[0].inline_keyboard for b in row]
+        assert action(st, 'manual').data in buttons and action(st).data in buttons
+        async def fail(*args, **kwargs): return None
+        monkeypatch.setattr(managed_bots, '_token_for', fail)
+        q = confirm(st); edits = []
+        async def edit(text, **kwargs): edits.append(kwargs.get('reply_markup'))
+        q.message.edit_text = edit
+        await managed_bots.confirm_managed_bot(c, q)
+        buttons = [b.callback_data for row in edits[-1].inline_keyboard for b in row]
+        assert action(st, 'manual').data in buttons and action(st).data in buttons
+        st = pending(); edits.clear()
+        status = FakeMsg(); status.edit_text = edit
+        await managed_bots.watch_username(c, 5, 'suggested_bot', status, timeout=0)
+        buttons = [b.callback_data for row in edits[-1].inline_keyboard for b in row]
+        assert action(st, 'manual').data in buttons and action(st).data in buttons
+    run(go())
+
+
+def test_cancel_before_scheduled_token_task_runs(monkeypatch):
+    async def go():
+        entered, release = asyncio.Event(), asyncio.Event()
+        original_wait = asyncio.wait_for
+        async def delayed_wait(coro, timeout):
+            entered.set(); await release.wait()
+            return await original_wait(coro, timeout)
+        async def token(*args, **kwargs): raise AssertionError('cancelled before scheduled request')
+        monkeypatch.setattr(asyncio, 'wait_for', delayed_wait)
+        monkeypatch.setattr(managed_bots, '_token_for', token)
+        st, c = pending(), FakeClient(); await managed_bots.on_managed_bot_updated(c, update())
+        task = asyncio.create_task(managed_bots.confirm_managed_bot(c, confirm(st)))
+        await entered.wait(); await managed_bots.managed_setup_action(c, action(st))
+        release.set(); await task
+        assert 5 not in create_bot._creation_state
     run(go())

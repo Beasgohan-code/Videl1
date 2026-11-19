@@ -74,11 +74,13 @@ def test_direct_telegram_flow_and_manual_choice(monkeypatch):
     assert 'further setup is required' in seen['text'].lower()
     url_button = seen['kb'].inline_keyboard[0][0]
     assert url_button.url.startswith('https://t.me/newbot/VidelBot/')
-    assert buttons(seen['kb'])['create_bot'] == '🔑 Paste a token instead'
+    choices = buttons(seen['kb'])
+    manual_data = next(key for key in choices if key.startswith('managed_action_') and key.endswith('_manual'))
+    assert choices[manual_data] == '🔑 Paste a token instead'
     assert create_bot._creation_state[5]['step'] == 'awaiting_token'
     assert session.names().count('GetMe') == 1
-    manual = FakeQuery('create_bot', uid=5)
-    run(create_bot.create_bot_callback(FakeClient(), manual))
+    manual = FakeQuery(manual_data, uid=5)
+    run(managed_bots.managed_setup_action(FakeClient(), manual))
     assert create_bot._creation_state[5]['step'] == 'awaiting_token'
     assert 'Send your bot token' in manual.message.text
 

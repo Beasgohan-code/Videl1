@@ -98,10 +98,11 @@ async def _token_for(bot_id: int, client=None):
     return None
 
 
-def _back_kb():
+def _back_kb(nonce):
+    """Controls are bound to one in-memory managed setup, never a bot token."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔑 Paste a token instead", callback_data="create_bot")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
+        [InlineKeyboardButton("🔑 Paste a token instead", callback_data=f"managed_action_{nonce}_manual")],
+        [InlineKeyboardButton("❌ Cancel", callback_data=f"managed_action_{nonce}_cancel")],
     ])
 
 
@@ -143,6 +144,8 @@ async def _open_managed_creation(client, query, user, st, capability_checked):
     username = suggested_username(user.first_name)
     name = f"{(user.first_name or 'My')[:40]}'s Bot"
     st["data"].pop("managed_candidate", None)
+    controls_nonce = secrets.token_urlsafe(8)
+    st["data"]["managed_controls_nonce"] = controls_nonce
     st["data"]["managed_username"] = username
     st["data"]["managed_pair_deadline"] = time.monotonic() + MANAGED_PAIR_TIMEOUT
     st["data"]["managed_status_msg"] = query.message
@@ -157,8 +160,7 @@ async def _open_managed_creation(client, query, user, st, capability_checked):
         f"<i>⌛ Waiting up to {MANAGED_PAIR_TIMEOUT // 60} min…</i>",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🤖 Create my bot", url=link)],
-            [InlineKeyboardButton("🔑 Paste a token instead", callback_data="create_bot")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
+            *_back_kb(controls_nonce).inline_keyboard,
         ]),
         disable_web_page_preview=True,
     )
@@ -178,14 +180,17 @@ async def watch_username(client, user_id: int, username: str, status_msg, timeou
     state = _creation_state.get(user_id)
     if state is None:
         return False
+    controls_nonce = state.get("data", {}).get("managed_controls_nonce")
     await asyncio.sleep(MANAGED_PAIR_TIMEOUT if timeout is None else max(0, timeout))
     if (_creation_state.get(user_id) is state and _pending(user_id, username)
+            and state["data"].get("managed_controls_nonce") == controls_nonce
             and not state["data"].get("managed_candidate")):
         state["data"].pop("managed_username", None)
         state["data"].pop("managed_pair_deadline", None)
         state["data"].pop("managed_status_msg", None)
         await _safe_edit(status_msg, "<b>⌛ Telegram's creation update was not confirmed.</b>\n\n"
-                                     "Try again or paste the token in this private chat.", _back_kb())
+                                     "Try again or paste the token in this private chat.",
+                         _back_kb(controls_nonce) if controls_nonce else None)
     return False
 
 
@@ -222,7 +227,8 @@ async def on_managed_bot_updated(client: Client, update):
             or st["data"].get("managed_pair_deadline", 0) <= time.monotonic()):
         return
     data = st["data"]
-    if data.get("managed_candidate") or data.get("managed_confirming"):
+    controls_nonce = data.get("managed_controls_nonce")
+    if not controls_nonce or data.get("managed_candidate") or data.get("managed_confirming"):
         return
     username = getattr(bot_user, "username", None)
     label = f"@{html.escape(username)}" if isinstance(username, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", username) else "a bot without a confirmed username"
@@ -237,13 +243,36 @@ async def on_managed_bot_updated(client: Client, update):
             "This does not start the worker; channel and mode setup still follow.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Yes, connect this bot", callback_data=f"managed_confirm_{nonce}")],
-                [InlineKeyboardButton("🔑 Use a token instead", callback_data="create_bot")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
+                *_back_kb(controls_nonce).inline_keyboard,
             ]))
     except Exception:
         if _creation_state.get(uid) is st and data.get("managed_candidate") is candidate:
             data.pop("managed_candidate", None)
         log.warning("Managed bot confirmation could not be delivered.")
+
+
+@Client.on_callback_query(filters.regex(r"^managed_action_[A-Za-z0-9_-]+_(?:manual|cancel)$"))
+async def managed_setup_action(client: Client, query: CallbackQuery):
+    """Do not let an old managed screen replace or cancel a newer wizard."""
+    from filestore.main_bot.plugins.create_bot import (
+        _creation_state, create_bot_callback, cancel_creation_callback,
+    )
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    if (not user or getattr(user, "is_bot", False) or not chat
+            or getattr(chat, "type", None) != enums.ChatType.PRIVATE or chat.id != user.id):
+        return await query.answer("Open bot creation in your private chat.", show_alert=True)
+    payload = str(getattr(query, "data", ""))[len("managed_action_"):]
+    nonce, sep, action = payload.rpartition("_")
+    st = _creation_state.get(user.id)
+    if (not sep or action not in ("manual", "cancel") or not st
+            or st.get("step") not in ("awaiting_token", "verifying_managed", "verifying_token")
+            or st.get("data", {}).get("managed_controls_nonce") != nonce):
+        return await query.answer("This setup has changed. Open /clone again.", show_alert=True)
+    # Delegates claim/change state synchronously before their first await.
+    if action == "cancel":
+        return await cancel_creation_callback(client, query)
+    return await create_bot_callback(client, query)
 
 
 @Client.on_callback_query(filters.regex(r"^managed_confirm_[A-Za-z0-9_-]+$"))
@@ -275,8 +304,16 @@ async def confirm_managed_bot(client: Client, query: CallbackQuery):
             await query.answer("Checking the bot…")
         except Exception:
             pass
+        if _creation_state.get(user.id) is not st or st.get("step") != "verifying_managed":
+            return
+        async def retrieve_if_current():
+            # wait_for schedules a task: recheck inside it before starting Telegram IO.
+            if _creation_state.get(user.id) is not st or st.get("step") != "verifying_managed":
+                return None
+            return await _token_for(candidate["bot_id"], client=client)
+
         try:
-            token = await asyncio.wait_for(_token_for(candidate["bot_id"], client=client), timeout=20)
+            token = await asyncio.wait_for(retrieve_if_current(), timeout=20)
         except Exception:
             log.warning("Managed bot token retrieval could not be confirmed.")
             token = None
@@ -284,7 +321,8 @@ async def confirm_managed_bot(client: Client, query: CallbackQuery):
             return
         st["step"] = "awaiting_token"
         if not isinstance(token, str) or not token.startswith(f"{candidate['bot_id']}:") or not token.split(":", 1)[1]:
-            return await _safe_edit(query.message, "<b>⚠️ The managed bot could not be confirmed.</b> Paste its token instead.", _back_kb())
+            return await _safe_edit(query.message, "<b>⚠️ The managed bot could not be confirmed.</b> Paste its token instead.",
+                                    _back_kb(data["managed_controls_nonce"]))
         return await accept_token(client, user.id, token, query.message, managed=True,
                                   expected_state=st, expected_bot_id=candidate["bot_id"])
     finally:
