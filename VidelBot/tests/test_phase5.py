@@ -218,6 +218,8 @@ def test_create_bot_offers_one_tap_only_with_bot_management(monkeypatch):
     use_botapi()  # GetMe → can_manage_bots=True
     run(create_bot.create_bot_callback(FakeClient(), q))
     assert any(d.startswith("clone_setup_") and d.endswith("_telegram") for d in _kb_datas(seen["kb"]))
+    from core.menus import cancel_cmd
+    run(cancel_cmd(FakeClient(), FakeMsg("/cancel", uid=5)))
     use_botapi(responses={"GetMe": at.User(id=1, is_bot=True, first_name="V", can_manage_bots=False)})
     run(create_bot.create_bot_callback(FakeClient(), q))
     assert not any(d.startswith("clone_setup_") and d.endswith("_telegram") for d in _kb_datas(seen["kb"]))

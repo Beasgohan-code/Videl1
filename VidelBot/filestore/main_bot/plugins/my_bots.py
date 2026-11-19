@@ -35,6 +35,21 @@ def _rotate_row(bot: dict):
     except Exception:
         return []
 
+def _navigation_blocked(user_id, *, allow_registration=False):
+    """Do not discard another active wizard; only the list permits registration."""
+    from filestore.main_bot.plugins.create_bot import _creation_state
+    state = _creation_state.get(user_id)
+    return state is not None and not (allow_registration and state.get("step") == "registering")
+
+
+async def _busy_notice(query):
+    from filestore.main_bot.plugins.create_bot import _creation_state
+    if (_creation_state.get(query.from_user.id) or {}).get("step") == "registering":
+        return await query.answer("Registration is in progress. Check My Bots and wait before opening its dashboard.", show_alert=True)
+    return await query.answer(
+        "A bot setup or setting is in progress. Continue it or use /cancel in private chat.", show_alert=True)
+
+
 # =============================================================================
 # CALLBACK: My Bots (list all bots)
 # =============================================================================
@@ -43,10 +58,11 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
     """List all bots owned by the user."""
     user_id = query.from_user.id
 
-    from filestore.main_bot.plugins.create_bot import _creation_state
-    _creation_state.pop(user_id, None)
-
+    if _navigation_blocked(user_id, allow_registration=True):
+        return await _busy_notice(query)
     bots = await main_db.get_user_bots(user_id)
+    if _navigation_blocked(user_id, allow_registration=True):
+        return await _busy_notice(query)
 
     if not bots:
         await query.message.edit_text(
@@ -76,6 +92,8 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
                                              callback_data=f"dashboard_{bot_id}")])
     from core.plans import clone_limit
     max_bots = await clone_limit(query.from_user.id)
+    if _navigation_blocked(user_id, allow_registration=True):
+        return await _busy_notice(query)
     if len(bots) < max_bots:
         buttons.append([InlineKeyboardButton("⚡ ᴄʀᴇᴀᴛᴇ ᴀɴᴏᴛʜᴇʀ", callback_data="create_bot")])
     else:   # Bot API 10.3 disabled button – a status chip, not an action
@@ -116,11 +134,13 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
     bot_id = int(match.group(1))
     user_id = query.from_user.id
 
-    from filestore.main_bot.plugins.create_bot import _creation_state
-    _creation_state.pop(user_id, None)
+    if _navigation_blocked(user_id):
+        return await _busy_notice(query)
 
     # Verify ownership
     bot = await main_db.get_bot(bot_id)
+    if _navigation_blocked(user_id):
+        return await _busy_notice(query)
     if not bot or bot["owner_id"] != user_id:
         await query.answer("❌ Bot not found or access denied!", show_alert=True)
         return

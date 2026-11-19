@@ -43,9 +43,12 @@ retract a Telegram request already sent, and an edit already in flight may still
 arrive. Newly rendered manual-token, channel and mode-selection Cancel controls
 are also scoped to their current stage. Older unscoped Cancel and Telegram-create
 buttons now direct users to `/cancel` or the current setup screen rather than
-operating on a potentially different attempt. Other generic navigation controls,
-including Back to Menu, remain a separate limitation and can clear a current flow.
-Old workers can still process old controls differently.
+operating on a potentially different attempt. Generic Home, Back to Menu,
+My Bots, dashboard and Create Bot callbacks now avoid discarding an active
+setup or setting. The My Bots list remains accessible during registration;
+other listed navigation is blocked until it completes. Other entry points and
+old workers can still change state differently; see the registration safety
+notes.
 
 A Telegram update is not cryptographically correlated to the creation link: a
 delayed update from another attempt could be offered during an active setup, so

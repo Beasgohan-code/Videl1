@@ -42,8 +42,19 @@ controls. A Cancel during token or channel verification prevents a stale result
 from advancing the setup; once registration is claimed, cancellation is refused.
 Old unscoped `cancel_creation` and `managed_new` buttons now fail closed with
 guidance; `/cancel` remains available in private chat. This intentionally changes
-behavior of old messages after an upgrade. Generic navigation such as Back to Menu
-can still clear a current flow, and old/mixed-version workers can still process
-legacy buttons. A sent request, picker-removal message or edit already in flight
+behavior of old messages after an upgrade.
+
+Generic Home, Back to Menu, My Bots and dashboard callbacks no longer silently
+clear a current setup or setting. When one is active they ask the user to
+continue or use `/cancel`; buttons in existing bot-settings prompts that formerly
+used the generic dashboard as Cancel therefore require `/cancel` instead. A new
+Create Bot callback also refuses to replace an active setup. During registration,
+My Bots can still show the list without clearing registration, while navigation
+to Home, Back to Menu, another creation or the dashboard waits. My Bots/dashboard
+also recheck for an active flow after their database reads. Ownership checks
+remain in force. These changes cover only these entry points: `/start` and
+`/clone` commands still clear eligible in-process flows, and other dashboard
+settings/actions, old/mixed-version workers and multi-process writers can still
+change state. A sent request, picker-removal message or edit already in flight
 cannot be retracted. Nonces and claims are process-local, not distributed fencing;
 all behavior requires live Telegram verification.

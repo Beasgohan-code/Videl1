@@ -483,7 +483,11 @@ async def menu_callbacks(client: Client, query: CallbackQuery):
         return await query.answer(channels_text()[:200], show_alert=True)
 
     if data == "start_btn":
-        _clear_flows(uid)
+        from filestore.main_bot.plugins.create_bot import _creation_state
+        if uid in _creation_state:
+            if _creation_state[uid].get("step") == "registering":
+                return await query.answer("Registration is in progress. Check My Bots and wait for it to finish.", show_alert=True)
+            return await query.answer("A bot setup or setting is in progress. Continue it or use /cancel in private chat.", show_alert=True)
         await render_home(client, query)
 
     elif data in ("help_btn", "help_saver"):
@@ -500,7 +504,11 @@ async def menu_callbacks(client: Client, query: CallbackQuery):
         await edit_with_preview(client, msg, premium_text(), premium_kb(await premium_until(uid)), pic=SUBSCRIPTION)
 
     elif data == "back_menu":
-        _clear_flows(uid)
+        from filestore.main_bot.plugins.create_bot import _creation_state
+        if uid in _creation_state:
+            if _creation_state[uid].get("step") == "registering":
+                return await query.answer("Registration is in progress. Check My Bots and wait for it to finish.", show_alert=True)
+            return await query.answer("A bot setup or setting is in progress. Continue it or use /cancel in private chat.", show_alert=True)
         await edit_with_preview(client, msg, texts.CLONE_START_MSG.format(mention=query.from_user.mention),
                                 await clone_hub_keyboard(uid), pic=await random_start_pic())
         if not CLONE_ENABLED and uid not in ADMINS:

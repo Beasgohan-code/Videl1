@@ -280,7 +280,7 @@ async def managed_setup_action(client: Client, query: CallbackQuery):
     # Delegates claim/change state synchronously before their first await.
     if action == "cancel":
         return await _cancel_current_creation(client, query, st)
-    return await _begin_creation(client, query, manual=True)
+    return await _begin_creation(client, query, manual=True, expected_state=st)
 
 
 @Client.on_callback_query(filters.regex(r"^managed_confirm_[A-Za-z0-9_-]+$"))

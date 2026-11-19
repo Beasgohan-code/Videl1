@@ -407,7 +407,7 @@ async def create_managed_callback(client: Client, query: CallbackQuery):
     return await _begin_creation(client, query)
 
 
-async def _begin_creation(client: Client, query: CallbackQuery, *, manual: bool = False):
+async def _begin_creation(client: Client, query: CallbackQuery, *, manual: bool = False, expected_state=None):
     user = getattr(query, "from_user", None)
     chat = getattr(getattr(query, "message", None), "chat", None)
     if (not user or getattr(user, "is_bot", False) or not chat
@@ -415,8 +415,12 @@ async def _begin_creation(client: Client, query: CallbackQuery, *, manual: bool 
         return await query.answer("Open bot creation in your private chat.", show_alert=True)
     user_id = user.id
     old = _creation_state.get(user_id)
+    if manual and (expected_state is None or old is not expected_state):
+        return await query.answer("This setup has changed. Open /clone again.", show_alert=True)
     if old and old.get("step") in ("starting", "registering", "verifying_token", "verifying_managed", "verifying_channel"):
         return await query.answer("Setup is already being processed. Check My Bots before starting again.", show_alert=True)
+    if old is not None and not manual:
+        return await query.answer("A bot setup or setting is in progress. Continue it or use /cancel in private chat.", show_alert=True)
     if not CLONE_ENABLED and user_id not in OWNERS:
         return await query.answer("🚧 Clone bot creation is currently disabled.", show_alert=True)
 
