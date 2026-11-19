@@ -177,21 +177,6 @@ def test_cancel_or_duplicate_while_capability_check_waits_does_not_open_link(mon
     run(go())
 
 
-def test_delayed_managed_update_does_not_override_changed_choice(monkeypatch):
-    async def go():
-        entered, release = asyncio.Event(), asyncio.Event()
-        async def token_for(*args, **kwargs): entered.set(); await release.wait(); return '424242:secret'
-        monkeypatch.setattr(managed_bots, '_token_for', token_for)
-        state = {'step': 'awaiting_token', 'data': {'managed_username': 'first_bot'}}
-        create_bot._creation_state[5] = state
-        update = SimpleNamespace(user=SimpleNamespace(id=5), bot=SimpleNamespace(id=424242, username='first_bot'))
-        task = asyncio.create_task(managed_bots.on_managed_bot_updated(FakeClient(), update)); await entered.wait()
-        state['data']['managed_username'] = 'second_bot'
-        release.set(); await task
-        assert create_bot._creation_state[5] is state
-        assert state['step'] == 'awaiting_token' and state['data']['managed_username'] == 'second_bot'
-        assert 'token' not in state['data']
-    run(go())
 
 
 def test_expired_callback_does_not_discard_displayed_manual_prompt():

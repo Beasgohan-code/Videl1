@@ -236,86 +236,12 @@ async def _noop():
     return None
 
 
-def test_watch_username_fetches_token_and_continues_wizard(monkeypatch):
-    from filestore.main_bot.plugins import create_bot, managed_bots
-    _patch_validate(monkeypatch)
-    monkeypatch.setattr(managed_bots, "POLL_START", 0)
-    s = use_botapi(responses={"GetManagedBotToken": "424242:AAmanagedtokenxxxxxxxxxxxxxxxx"})
-    c = FakeClient()
-    looked = []
-
-    async def get_users(username):
-        looked.append(username)
-        return SimpleNamespace(id=424242, is_bot=True) if len(looked) >= 2 else None
-    c.get_users = get_users
-    create_bot._creation_state[5] = {"step": "awaiting_token", "data": {"managed_username": "ann_abc123_bot"}}
-    status = FakeMsg(text="waiting", uid=0)
-    assert run(managed_bots.watch_username(c, 5, "ann_abc123_bot", status, timeout=5)) is True
-    assert _j(s.last("GetManagedBotToken")["user_id"]) == 424242
-    st = create_bot._creation_state[5]
-    assert st["step"] == "awaiting_channel" and st["data"]["managed"] and st["data"]["token"].startswith("424242:")
-    assert any("Token verified" in e for e in status.edits)
-    create_bot._creation_state.pop(5, None)
 
 
-def test_watch_username_stops_when_cancelled(monkeypatch):
-    from filestore.main_bot.plugins import managed_bots
-    monkeypatch.setattr(managed_bots, "POLL_START", 0)
-    use_botapi()
-    assert run(managed_bots.watch_username(FakeClient(), 77, "x_000000_bot", FakeMsg(uid=0), timeout=3)) is False
 
 
-def test_claim_foreign_bot_is_refused(monkeypatch):
-    from aiogram.exceptions import TelegramBadRequest
-    from filestore.main_bot.plugins import create_bot, managed_bots
-    use_botapi(fail={"GetManagedBotToken": TelegramBadRequest(method=None, message="BOT_NOT_MANAGED")})
-    c = FakeClient()
-
-    async def get_users(username):
-        return SimpleNamespace(id=111, is_bot=True)
-    c.get_users = get_users
-    create_bot._creation_state[5] = {"step": "awaiting_token", "data": {"managed_username": "ann_abc123_bot"}}
-    m = FakeMsg("@someone_elses_bot", uid=5)
-    assert run(managed_bots.claim_username(c, m, 5, "@someone_elses_bot")) is True
-    assert any("wasn't created through" in e for e in m.sent[0].edits)
-    assert create_bot._creation_state[5]["step"] == "awaiting_token"
-    create_bot._creation_state.pop(5, None)
 
 
-def test_claim_requires_start_proof_from_the_same_user(monkeypatch):
-    from aiogram import types as at
-    from filestore.main_bot.plugins import create_bot, managed_bots
-    _patch_validate(monkeypatch)
-    state = {"code": None}
-
-    def updates(method):
-        if method.timeout == 0:
-            return []
-        code = state["code"]
-        chat = at.Chat(id=9, type="private")
-        mk = lambda uid, txt, n: at.Update(update_id=n, message=at.Message(  # noqa: E731
-            message_id=n, date=0, chat=chat, from_user=at.User(id=uid, is_bot=False, first_name="u"), text=txt))
-        return [mk(666, f"/start vd{code}", 1), mk(5, "/start wrong", 2), mk(5, f"/start vd{code}", 3)]
-
-    s = use_botapi(responses={"GetManagedBotToken": "424242:AAmanagedtokenxxxxxxxxxxxxxxxx", "GetUpdates": updates})
-    c = FakeClient()
-
-    async def get_users(username):
-        return SimpleNamespace(id=424242, is_bot=True)
-    c.get_users = get_users
-    create_bot._creation_state[5] = {"step": "awaiting_token", "data": {"managed_username": "orig_000000_bot"}}
-    m = FakeMsg("@ann_renamed_bot", uid=5)
-    spawned = []
-    monkeypatch.setattr(managed_bots, "_spawn", lambda coro: spawned.append(coro))
-    run(managed_bots.claim_username(c, m, 5, "@ann_renamed_bot"))
-    status = m.sent[0]
-    assert "Prove @ann_renamed_bot is yours" in status.edits[-1]
-    # the secret code only lives in the button URL → read it from the pending coroutine's arguments
-    state["code"] = spawned[0].cr_frame.f_locals["code"]
-    assert run(spawned[0]) is True
-    assert create_bot._creation_state[5]["step"] == "awaiting_channel"
-    assert s.names().count("GetUpdates") >= 1
-    create_bot._creation_state.pop(5, None)
 
 
 def test_rotate_token_for_managed_clone(monkeypatch):

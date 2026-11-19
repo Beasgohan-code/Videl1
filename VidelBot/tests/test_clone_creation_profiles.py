@@ -421,26 +421,6 @@ def test_token_verification_error_is_sanitized_and_retryable(monkeypatch):
     assert 'could not be confirmed' in status.text and 'secret' not in status.text
 
 
-def test_managed_push_cancelled_while_fetching_token_cannot_reopen_setup(monkeypatch):
-    from filestore.main_bot.plugins import managed_bots
-    async def go():
-        entered, release = asyncio.Event(), asyncio.Event()
-        async def token_for(*args, **kwargs):
-            entered.set(); await release.wait(); return 'synthetic:secret'
-        async def validate(_): raise AssertionError('stale managed token must not be validated')
-        monkeypatch.setattr(managed_bots, '_token_for', token_for)
-        monkeypatch.setattr(create_bot, 'validate_bot_token', validate)
-        old = {'step': 'awaiting_token', 'data': {'managed_username': 'sample_bot'}}
-        create_bot._creation_state[10] = old
-        update = SimpleNamespace(user=SimpleNamespace(id=10), bot=SimpleNamespace(id=42043, username='sample_bot'))
-        task = asyncio.create_task(managed_bots.on_managed_bot_updated(FakeClient(), update))
-        await entered.wait()
-        await create_bot.cancel_creation_callback(FakeClient(), FakeQuery('cancel_creation', uid=10))
-        new = {'step': 'awaiting_token', 'data': {}}
-        create_bot._creation_state[10] = new
-        release.set(); await task
-        assert create_bot._creation_state[10] is new and not new['data']
-    run(go())
 
 
 def test_cancel_while_token_status_reply_is_pending_does_not_recreate_flow(monkeypatch):
@@ -459,27 +439,4 @@ def test_cancel_while_token_status_reply_is_pending_does_not_recreate_flow(monke
         await create_bot.cancel_creation_callback(FakeClient(), FakeQuery('cancel_creation', uid=10))
         release.set(); await task
         assert 10 not in create_bot._creation_state and not state['data']
-    run(go())
-
-
-def test_managed_watcher_does_not_connect_after_username_changes(monkeypatch):
-    from filestore.main_bot.plugins import managed_bots
-    async def go():
-        entered, release = asyncio.Event(), asyncio.Event()
-        async def resolve(*args): return SimpleNamespace(id=42044, is_bot=True)
-        async def token_for(*args, **kwargs):
-            entered.set(); await release.wait(); return 'synthetic:secret'
-        async def validate(_): raise AssertionError('old username must not validate')
-        monkeypatch.setattr(managed_bots, 'POLL_START', 0)
-        monkeypatch.setattr(managed_bots, '_resolve_bot', resolve)
-        monkeypatch.setattr(managed_bots, '_token_for', token_for)
-        monkeypatch.setattr(create_bot, 'validate_bot_token', validate)
-        state = {'step': 'awaiting_token', 'data': {'managed_username': 'old_bot'}}
-        create_bot._creation_state[10] = state
-        task = asyncio.create_task(managed_bots.watch_username(FakeClient(), 10, 'old_bot', FakeMsg('status'), timeout=5))
-        await entered.wait()
-        state['data']['managed_username'] = 'new_bot'
-        release.set()
-        assert not await task and state['step'] == 'awaiting_token'
-        assert state['data'] == {'managed_username': 'new_bot'}
     run(go())

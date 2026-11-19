@@ -4,15 +4,11 @@ One-tap clone creation with Telegram *managed bots* (Bot API 9.6+, via aiogram).
 When Videl's owner enables **Bot Management Mode** for Videl in @BotFather,
 users no longer need to visit BotFather and copy a token:
 
-  1. "⚡ One-tap create" → Videl builds a deep link
-     ``https://t.me/newbot/<Videl>/<suggested_username>?name=<name>``;
-     Telegram opens a pre-filled "create bot" sheet, the user confirms.
-  2. Videl watches for the new bot's (secret, random) username, then asks the
-     Bot API for its token (``getManagedBotToken``) and continues the normal
-     wizard (log channel step) – the bot is owned by the user, Videl only
-     manages it.
-  3. If the user changed the username, they send ``@their_bot`` and prove it is
-     theirs by pressing Start in it (checked through that bot's own getUpdates).
+  1. Videl builds a Telegram creation link and the user confirms in Telegram.
+  2. A manager-bot update identifies a creator and bot. The user reviews the
+     candidate in private before Videl retrieves its token.
+  3. The bot token is verified, then channel and profile setup continues. If an
+     update is missed, the user can paste a token instead.
 
 Managed clone token rotation requires a private, expiring confirmation, a valid
 original encryption key and an operator-verified single current worker. It does
@@ -28,7 +24,6 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 from pyrogram import Client, filters, enums
-from pyrogram.errors import FloodWait
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 import config
@@ -40,7 +35,7 @@ from filestore.fs_config import LOGGER
 log = LOGGER(__name__)
 main_db = MainDB()
 _tasks: set = set()          # keep watcher tasks referenced
-POLL_START, POLL_MAX = 4, 10  # seconds between username checks
+_CANDIDATE_TTL = 300  # seconds; confirmation and pairing state are process-local
 
 
 async def available() -> bool:
@@ -86,23 +81,14 @@ def _pending(user_id: int, username: str) -> bool:
                 and st.get("data", {}).get("managed_username") == username)
 
 
-async def _resolve_bot(client, username: str):
-    """pyrofork lookup of a bot by username (None when not found / not a bot)."""
-    try:
-        u = await client.get_users(username)
-    except FloodWait as e:
-        await asyncio.sleep(min(int(getattr(e, "value", 5) or 5), 30))
-        return None
-    except Exception:
-        return None
-    if isinstance(u, list):
-        u = u[0] if u else None
-    return u if (u and getattr(u, "is_bot", False)) else None
-
-
 async def _token_for(bot_id: int, client=None):
     if botapi.enabled():
-        return await botapi.try_call(lambda b: b.get_managed_bot_token(user_id=bot_id))
+        try:
+            bridge = botapi.bot()
+            return await bridge.get_managed_bot_token(user_id=bot_id) if bridge else None
+        except Exception:
+            log.warning("Managed bot token retrieval could not be confirmed.")
+            return None
     from core.ui import is_wzgram_client
     if is_wzgram_client(client) and hasattr(client, "get_managed_bot_token"):
         try:
@@ -156,16 +142,18 @@ async def _open_managed_creation(client, query, user, st, capability_checked):
         return await query.answer("The manager bot identity is unavailable. Paste a bot token instead.", show_alert=True)
     username = suggested_username(user.first_name)
     name = f"{(user.first_name or 'My')[:40]}'s Bot"
+    st["data"].pop("managed_candidate", None)
     st["data"]["managed_username"] = username
+    st["data"]["managed_pair_deadline"] = time.monotonic() + MANAGED_PAIR_TIMEOUT
     st["data"]["managed_status_msg"] = query.message
     link = newbot_link(me.username, username, name)
     await query.message.edit_text(
         "<b>🤖 Create a bot with Telegram</b>\n\n"
         "<blockquote>1️⃣ Tap <b>Create my bot</b> below.\n"
         "2️⃣ Telegram opens a ready-made form – just press <b>Create</b>.\n"
-        "3️⃣ Return here while Videl checks and connects it. Further setup is required.</blockquote>\n\n"
+        "3️⃣ Return here and review the bot Telegram reports. Further setup is required.</blockquote>\n\n"
         f"Suggested username: <code>@{username}</code>\n"
-        "<i>Changed the username? Send it here like <code>@my_new_bot</code>.</i>\n"
+        "<i>If Telegram's update does not arrive, you can paste a token instead.</i>\n"
         f"<i>⌛ Waiting up to {MANAGED_PAIR_TIMEOUT // 60} min…</i>",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🤖 Create my bot", url=link)],
@@ -185,35 +173,19 @@ async def _open_managed_creation(client, query, user, st, capability_checked):
 
 
 async def watch_username(client, user_id: int, username: str, status_msg, timeout: int = None):
-    """Poll until the suggested bot exists, then fetch its token and continue the wizard."""
-    from filestore.main_bot.plugins.create_bot import accept_token, _creation_state
+    """Only a timeout notice: a suggested username is never ownership proof."""
+    from filestore.main_bot.plugins.create_bot import _creation_state
     state = _creation_state.get(user_id)
     if state is None:
         return False
-    deadline = time.time() + (timeout or MANAGED_PAIR_TIMEOUT)
-    delay = POLL_START
-    while time.time() < deadline:
-        await asyncio.sleep(delay)
-        delay = min(delay + 1, POLL_MAX)
-        if _creation_state.get(user_id) is not state or not _pending(user_id, username):
-            return False  # cancelled / token pasted / new attempt
-        bot_user = await _resolve_bot(client, username)
-        if not bot_user:
-            continue
-        token = await _token_for(bot_user.id, client=client)
-        if _creation_state.get(user_id) is not state or not _pending(user_id, username):
-            return False
-        if not token:
-            await _safe_edit(status_msg, f"<b>⚠️ @{username} exists but Videl can't manage it.</b>\n\n"
-                                         "Paste its token from @BotFather instead.", _back_kb())
-            return False
-        await _safe_edit(status_msg, f"<b>⏳ Connecting @{username}…</b>")
-        if _creation_state.get(user_id) is not state or not _pending(user_id, username):
-            return False
-        return await accept_token(client, user_id, token, status_msg, managed=True, expected_state=state)
-    if _creation_state.get(user_id) is state and _pending(user_id, username):
-        await _safe_edit(status_msg, "<b>⌛ Timed out waiting for the new bot.</b>\n\n"
-                                     "Tap ⚡ Create Bot to try again, or paste a token.", _back_kb())
+    await asyncio.sleep(MANAGED_PAIR_TIMEOUT if timeout is None else max(0, timeout))
+    if (_creation_state.get(user_id) is state and _pending(user_id, username)
+            and not state["data"].get("managed_candidate")):
+        state["data"].pop("managed_username", None)
+        state["data"].pop("managed_pair_deadline", None)
+        state["data"].pop("managed_status_msg", None)
+        await _safe_edit(status_msg, "<b>⌛ Telegram's creation update was not confirmed.</b>\n\n"
+                                     "Try again or paste the token in this private chat.", _back_kb())
     return False
 
 
@@ -224,102 +196,101 @@ async def _safe_edit(msg, text, kb=None):
         pass
 
 
-# ─────────────────────────── renamed bot: claim with proof ───────────────────────────
 async def claim_username(client, message, user_id: int, text: str) -> bool:
-    """User sent ``@name`` while the one-tap flow was waiting. Returns True when handled."""
+    """A typed username is not ownership proof and never starts a child poller."""
     from filestore.main_bot.plugins.create_bot import _creation_state
-    st = _creation_state.get(user_id) or {}
-    if not st.get("data", {}).get("managed_username") or not await available():
+    st = _creation_state.get(user_id)
+    if not st or st.get("step") != "awaiting_token" or not st.get("data", {}).get("managed_username"):
         return False
-    username = text.strip().lstrip("@").split()[0]
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", username):
-        await message.reply("<b>❌ That doesn't look like a bot username.</b>")
-        return True
-    status = await message.reply(f"<b>🔎 Looking up @{username}…</b>")
-    bot_user = await _resolve_bot(client, username)
-    token = await _token_for(bot_user.id, client=client) if bot_user else None
-    if not token:
-        await _safe_edit(status, f"<b>❌ @{username} wasn't created through Videl.</b>\n\n"
-                                 "Use the one-tap button, or paste the bot token.", _back_kb())
-        return True
-    code = secrets.token_hex(4)
-    if _creation_state.get(user_id) is not st or st.get("step") != "awaiting_token":
-        return True
-    st["data"]["managed_username"] = username   # stop the old watcher
-    await _safe_edit(status, (
-        f"<b>🔐 Prove @{username} is yours</b>\n\n"
-        "<blockquote>Tap the button, press <b>Start</b> in your new bot, then come back.</blockquote>"),
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"▶️ Start @{username}", url=f"https://t.me/{username}?start=vd{code}")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-        ]))
-    _spawn(_await_proof(client, user_id, username, token, code, status, expected_state=st))
+    await message.reply(
+        "<b>ℹ️ A username alone cannot confirm ownership.</b> "
+        "Review Telegram's creation update when it arrives, or paste your bot token privately.")
     return True
 
 
-async def _await_proof(client, user_id, username, token, code, status, timeout: int = 180, *, expected_state=None):
-    """Read the new bot's own updates (it isn't running anywhere yet) for ``/start vd<code>``."""
-    from filestore.main_bot.plugins.create_bot import accept_token, _creation_state
-    if expected_state is None:
-        expected_state = _creation_state.get(user_id)
-    if expected_state is None:
-        return False
-    wb = botapi.worker(token)
-    offset, deadline = None, time.time() + timeout
-    try:
-        while time.time() < deadline and _creation_state.get(user_id) is expected_state and _pending(user_id, username):
-            updates = await wb.get_updates(offset=offset, timeout=10, allowed_updates=["message"],
-                                           request_timeout=25)
-            if _creation_state.get(user_id) is not expected_state or not _pending(user_id, username):
-                return False
-            for u in updates or []:
-                offset = u.update_id + 1
-                m = u.message
-                if m and m.from_user and m.from_user.id == user_id and (m.text or "").strip() == f"/start vd{code}":
-                    if offset is not None:  # acknowledge so the worker doesn't see it again
-                        await wb.get_updates(offset=offset, timeout=0, request_timeout=15)
-                    await _safe_edit(status, f"<b>⏳ Connecting @{username}…</b>")
-                    if _creation_state.get(user_id) is not expected_state or not _pending(user_id, username):
-                        return False
-                    return await accept_token(client, user_id, token, status, managed=True, expected_state=expected_state)
-            if not updates:
-                await asyncio.sleep(1)
-    except Exception:
-        log.warning("Managed bot ownership check failed.")
-    if _creation_state.get(user_id) is expected_state and _pending(user_id, username):
-        await _safe_edit(status, "<b>⌛ Verification timed out.</b>\n\nSend the @username again or paste the token.",
-                         _back_kb())
-    return False
-
-
-# ─────────────────────────── WzGram Layer 232 push hook ───────────────────────────
 @Client.on_managed_bot()
 async def on_managed_bot_updated(client: Client, update):
-    """Instant MTProto UpdateManagedBot hook — connects newly created managed bots with zero polling."""
+    """Offer a candidate from Telegram's creator-bearing update, not a token."""
+    from filestore.main_bot.plugins.create_bot import _creation_state
+    user, bot_user = getattr(update, "user", None), getattr(update, "bot", None)
+    uid, bot_id = getattr(user, "id", None), getattr(bot_user, "id", None)
+    if (type(uid) is not int or uid <= 0 or getattr(user, "is_bot", None) not in (False, None)
+            or type(bot_id) is not int or bot_id <= 0 or getattr(bot_user, "is_bot", None) is not True):
+        return
+    st = _creation_state.get(uid)
+    if (not st or st.get("step") != "awaiting_token" or not st.get("data", {}).get("managed_username")
+            or st["data"].get("managed_pair_deadline", 0) <= time.monotonic()):
+        return
+    data = st["data"]
+    if data.get("managed_candidate") or data.get("managed_confirming"):
+        return
+    username = getattr(bot_user, "username", None)
+    label = f"@{html.escape(username)}" if isinstance(username, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", username) else "a bot without a confirmed username"
+    nonce = secrets.token_urlsafe(8)
+    candidate = {"bot_id": bot_id, "nonce": nonce, "deadline": time.monotonic() + _CANDIDATE_TTL}
+    data["managed_candidate"] = candidate
+    try:
+        await client.send_message(uid,
+            f"<b>🤖 Telegram reported {label}</b> (<code>{bot_id}</code>).\n\n"
+            "Is this the bot you want to connect? Confirm only if you created or own it. "
+            "This confirmation expires in five minutes. "
+            "This does not start the worker; channel and mode setup still follow.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes, connect this bot", callback_data=f"managed_confirm_{nonce}")],
+                [InlineKeyboardButton("🔑 Use a token instead", callback_data="create_bot")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
+            ]))
+    except Exception:
+        if _creation_state.get(uid) is st and data.get("managed_candidate") is candidate:
+            data.pop("managed_candidate", None)
+        log.warning("Managed bot confirmation could not be delivered.")
+
+
+@Client.on_callback_query(filters.regex(r"^managed_confirm_[A-Za-z0-9_-]+$"))
+async def confirm_managed_bot(client: Client, query: CallbackQuery):
     from filestore.main_bot.plugins.create_bot import _creation_state, accept_token
-    user = getattr(update, "user", None)
-    bot_user = getattr(update, "bot", None)
-    if not (user and bot_user):
-        return
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    if (not user or getattr(user, "is_bot", False) or not chat
+            or getattr(chat, "type", None) != enums.ChatType.PRIVATE or chat.id != user.id):
+        return await query.answer("Open bot creation in your private chat.", show_alert=True)
     st = _creation_state.get(user.id)
-    if not st or st.get("step") != "awaiting_token" or not st.get("data", {}).get("managed_username"):
-        return
-    expected_username = st["data"]["managed_username"]
-    token = await _token_for(bot_user.id, client=client)
-    if (not token or _creation_state.get(user.id) is not st or st.get("step") != "awaiting_token"
-            or st.get("data", {}).get("managed_username") != expected_username):
-        return
-    # Clear managed_username so any background poll exits cleanly
-    st["data"].pop("managed_username", None)
-    status_msg = st["data"].pop("managed_status_msg", None)
-    if status_msg is None:
+    candidate = (st or {}).get("data", {}).get("managed_candidate")
+    nonce = str(getattr(query, "data", ""))[len("managed_confirm_"):]
+    if (not st or st.get("step") != "awaiting_token" or not candidate
+            or candidate.get("nonce") != nonce or candidate.get("deadline", 0) <= time.monotonic()):
+        return await query.answer("Confirmation expired. Open /clone again or paste a token.", show_alert=True)
+    data = st["data"]
+    if data.get("managed_confirming"):
+        return await query.answer("This confirmation is already being checked.", show_alert=True)
+    # Claim before awaiting; no second token request for double-clicks.
+    data["managed_confirming"] = True
+    st["step"] = "verifying_managed"
+    data.pop("managed_candidate", None)
+    data.pop("managed_username", None)
+    data.pop("managed_pair_deadline", None)
+    data.pop("managed_status_msg", None)
+    try:
         try:
-            status_msg = await client.send_message(user.id, f"<b>⏳ Connecting @{bot_user.username or 'bot'}…</b>")
+            await query.answer("Checking the bot…")
         except Exception:
+            pass
+        try:
+            token = await asyncio.wait_for(_token_for(candidate["bot_id"], client=client), timeout=20)
+        except Exception:
+            log.warning("Managed bot token retrieval could not be confirmed.")
+            token = None
+        if _creation_state.get(user.id) is not st or st.get("step") != "verifying_managed":
             return
-    else:
-        await _safe_edit(status_msg, f"<b>⏳ Connecting @{bot_user.username or 'bot'}…</b>")
-    await accept_token(client, user.id, token, status_msg, managed=True, expected_state=st)
+        st["step"] = "awaiting_token"
+        if not isinstance(token, str) or not token.startswith(f"{candidate['bot_id']}:") or not token.split(":", 1)[1]:
+            return await _safe_edit(query.message, "<b>⚠️ The managed bot could not be confirmed.</b> Paste its token instead.", _back_kb())
+        return await accept_token(client, user.id, token, query.message, managed=True,
+                                  expected_state=st, expected_bot_id=candidate["bot_id"])
+    finally:
+        if _creation_state.get(user.id) is st and st.get("step") == "verifying_managed":
+            st["step"] = "awaiting_token"
+        data.pop("managed_confirming", None)
 
 
 # ─────────────────────────── token rotation ───────────────────────────

@@ -84,7 +84,7 @@ shared_chat_filter = filters.create(_has_shared_chat)
 
 
 async def accept_token(client: Client, user_id: int, token: str, status_msg, managed: bool = False,
-                       *, expected_state=None) -> bool:
+                       *, expected_state=None, expected_bot_id=None) -> bool:
     """Validate one token for the current in-process setup, never revive a cancelled flow."""
     if expected_state is None:
         state = _creation_state.setdefault(user_id, {"step": "awaiting_token", "data": {}})
@@ -113,6 +113,12 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
             return False
 
         bot_id = bot_info["id"]
+        if expected_bot_id is not None and bot_id != expected_bot_id:
+            state["step"] = "awaiting_token"
+            await status_msg.edit_text(
+                "<b>⚠️ The verified bot did not match the Telegram update.</b> "
+                "No clone was registered. You can paste the correct token instead.")
+            return False
         existing = await main_db.get_bot(bot_id)
         if _creation_state.get(user_id) is not state or state.get("step") != "verifying_token":
             return False
@@ -391,7 +397,7 @@ async def _begin_creation(client: Client, query: CallbackQuery, *, telegram: boo
         return await query.answer("Open bot creation in your private chat.", show_alert=True)
     user_id = user.id
     old = _creation_state.get(user_id)
-    if old and old.get("step") in ("starting", "registering", "verifying_token", "verifying_channel"):
+    if old and old.get("step") in ("starting", "registering", "verifying_token", "verifying_managed", "verifying_channel"):
         return await query.answer("Setup is already being processed. Check My Bots before starting again.", show_alert=True)
     if not CLONE_ENABLED and user_id not in OWNERS:
         return await query.answer("🚧 Clone bot creation is currently disabled.", show_alert=True)
@@ -525,7 +531,7 @@ async def handle_creation_input(client: Client, message: Message):
 
     state = _creation_state[user_id]
     step = state["step"]
-    if step in ("verifying_token", "verifying_channel", "registering"):
+    if step in ("verifying_token", "verifying_managed", "verifying_channel", "registering"):
         return await message.reply("⏳ This setup step is already being processed. Please wait.")
     if step == "awaiting_profile":
         return await message.reply("Choose a profile using the buttons above, or cancel setup.")

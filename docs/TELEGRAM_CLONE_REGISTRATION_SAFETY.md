@@ -16,16 +16,18 @@ The token validation step now claims the current in-process wizard before the
 Telegram verification and registry lookup. Duplicate submissions cannot start a
 second verification for that same setup. Cancellation or a new wizard while a
 validation, registry read, or status reply is pending prevents the old attempt
-from advancing or saving its credential to the new wizard. Managed-bot watcher,
-proof and push paths also associate the result with the original wizard; the
-watcher rechecks the chosen username after network calls. Errors from validation
-and registry lookup are displayed generically. Cancellation does not retract a
-Telegram request already sent or erase a message already posted.
+from advancing or saving its credential to the new wizard. The managed-bot path
+now requires a creator-bearing update and explicit private confirmation before retrieving a token; the suggested-username and renamed-bot
+proof pollers were removed. Token results are tied to the original wizard and
+verified bot ID. Errors from validation and registry lookup are displayed
+generically. Cancellation does not retract a Telegram request already sent or
+erase a message already posted.
 
 These guards are process-local, not a distributed setup lock. A restarted or
-second controller, existing managed-bot proof polling, old workers, concurrent
+second controller, missed or delayed updates, old workers, concurrent
 registration/lifecycle writers, token plaintext fallback, and network or database
-ambiguity remain separate issues. A managed proof request already in flight may
-still reach Telegram after cancellation. Do not treat these safeguards as proof of
-real Telegram or MongoDB behavior, complete secret handling, or safe overlapping
-workers. Group mode remains default-off and Music remains unavailable.
+ambiguity remain separate issues. An update is not correlated to the specific
+creation link, so the user must check the bot displayed before confirming. Do
+not treat these safeguards as proof of real Telegram or MongoDB behavior,
+complete secret handling, or safe overlapping workers. Group mode remains
+default-off and Music remains unavailable.
