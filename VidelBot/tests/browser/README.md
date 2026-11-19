@@ -166,3 +166,8 @@ actual local aiohttp File Store, Analytics and inbox routes, CSV export, tempora
 live Telegram, real Mongo, production storage, concurrency or device evidence.
 
 `node next-navigation-safety.test.cjs` also stalls a synthetic route response to verify that an accepted click does not prematurely disable the dirty/unload guard. It does not prove browser-history, actual route-failure, real modified-click new-tab or embedded-client behavior. CI runs this and the settings test against the in-memory fixture.
+
+`node next-file-pagination.test.cjs` intercepts synthetic File Store responses to
+check server-clamped pages, button boundaries, malformed page metadata, retry and
+layout at 320/390/1440px. Sampling tests also check sample-specific aggregate and
+empty-state labels. These are not real database concurrency or device tests.

@@ -8,7 +8,7 @@ function proof(){const fields={auth_date:String(Math.floor(Date.now()/1000)),que
  await p.route('https://telegram.org/js/telegram-web-app.js',r=>r.fulfill({status:200,contentType:'text/javascript',body:`window.Telegram={WebApp:{initData:${JSON.stringify(signed)}}}`}));
  p.on('response',async r=>{if(/\/filestore\?/.test(r.url())&&r.request().method()==='GET'&&r.ok())responses.push(await r.json())});
  await p.goto(base+'#tgWebAppData=synthetic');await p.getByRole('link',{name:'File Store',exact:true}).click();
- await p.getByText('Sample limit of 2000 was not exceeded').waitFor();await p.getByText('No matching file records').waitFor();
+ await p.getByText('Sample limit of 2000 was not exceeded').waitFor();await p.getByText('No matching file records in sample').waitFor();
  await p.getByLabel('Choose files to upload').setInputFiles({name:'contract.txt',mimeType:'text/plain',buffer:Buffer.from('local fixture content')});
  await p.getByRole('heading',{name:'contract.txt'}).waitFor();await p.getByRole('button',{name:'Rename contract.txt'}).click();await p.getByLabel('New filename').fill('changed.txt');await p.getByRole('button',{name:'Save filename'}).click();await p.getByRole('heading',{name:'changed.txt'}).waitFor();
  await p.getByLabel('Search files').fill('changed');await p.getByRole('heading',{name:'changed.txt'}).waitFor();

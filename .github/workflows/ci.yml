@@ -176,6 +176,8 @@ jobs:
           export CHROMIUM_PATH="$(node -p "require('playwright-core').chromium.executablePath()")"
           node next-settings.test.cjs
           node next-navigation-safety.test.cjs
+          node next-file-pagination.test.cjs
+          node next-file-sampling.test.cjs
 
   native-tools:
     name: Ubuntu native media & archive tools
