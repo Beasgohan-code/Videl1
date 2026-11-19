@@ -1261,3 +1261,96 @@ def test_analytics_custom_range_validation_applies_to_json_and_csv():
                     assert response.headers['X-Videl-Analytics-Contract'] == 'utc-range-v1'
                     assert '2026-01-01' in await response.text() and '2026-01-02' in await response.text()
     run(go())
+
+
+def test_conditional_notification_read_is_scoped_reviewed_and_validated():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 18891, 'Inbox owner')
+            other, other_ws = await _login_link(cli, 18892, 'Other owner')
+            coll = db_models.notifications_col()
+            doc={'notification_id':'shared-id','workspace_id':ws,'read':False,'title':'A','created_ts':1}
+            foreign={'notification_id':'shared-id','workspace_id':other_ws,'read':False,'title':'B','created_ts':1}
+            await coll.insert_one(dict(doc));await coll.insert_one(dict(foreign))
+            path=f'/api/v1/workspaces/{ws}/notifications/read'
+            listed=await cli.get(f'/api/v1/workspaces/{ws}/notifications',headers=owner)
+            assert (await listed.json())['conditional_read_updates'] is True
+            valid={'action':'set_read','notification_id':'shared-id','expected_read':False,'read':True}
+            assert (await cli.post(path,headers=other,json=valid)).status == 403
+            await db_models.memberships_col().insert_one({'workspace_id':ws,'user_id':18892,'role':'viewer',
+                'permissions':dict(db_models.DEFAULT_ROLE_PERMISSIONS['viewer'])})
+            assert (await cli.post(path,headers=other,json=valid)).status == 403
+            for invalid in ({}, {'action':'mark_all_read','extra':True},
+                            {**valid,'read':'false'}, {**valid,'expected_read':0},
+                            {**valid,'expected_read':True}, {**valid,'notification_id':''},
+                            {**valid,'extra':'x'}):
+                assert (await cli.post(path,headers=owner,json=invalid)).status == 400
+            wrong={**valid,'expected_read':True,'read':False}
+            assert (await cli.post(path,headers=owner,json=wrong)).status == 409
+            response=await cli.post(path,headers=owner,json=valid)
+            assert response.status==200 and (await response.json())=={'updated':True,'conditional_read_updates':True}
+            assert (await coll.find_one({'workspace_id':ws,'notification_id':'shared-id'}))['read'] is True
+            assert (await coll.find_one({'workspace_id':other_ws,'notification_id':'shared-id'}))['read'] is False
+            assert (await cli.post(path,headers=owner,json=valid)).status == 409
+            assert (await cli.post(path,headers=owner,json={**valid,'notification_id':'missing'})).status == 409
+            await coll.insert_one({'workspace_id':ws,'notification_id':'unknown','created_ts':2})
+            assert (await cli.post(path,headers=owner,json={**valid,'notification_id':'unknown'})).status == 409
+            await coll.insert_one(dict(doc))
+            assert (await cli.post(path,headers=owner,json=wrong)).status == 409
+            assert await coll.count_documents({'workspace_id':ws,'read':False})==1
+            assert (await cli.post(path,headers=owner,json={'action':'mark_all_read'})).status==200
+            assert await coll.count_documents({'workspace_id':ws,'read':False})==0
+            assert (await coll.find_one({'workspace_id':other_ws,'notification_id':'shared-id'}))['read'] is False
+    run(go())
+
+
+def test_conditional_notification_write_outcomes_are_not_falsely_confirmed(monkeypatch):
+    from types import SimpleNamespace
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner,ws=await _login_link(cli,18893,'Owner')
+            coll=db_models.notifications_col()
+            await coll.insert_one({'workspace_id':ws,'notification_id':'n','read':False,'created_ts':1})
+            monkeypatch.setattr(db_models,'notifications_col',lambda:coll)
+            path=f'/api/v1/workspaces/{ws}/notifications/read'
+            body={'action':'set_read','notification_id':'n','expected_read':False,'read':True}
+            async def unmatched(*args,**kwargs):return SimpleNamespace(acknowledged=True,matched_count=0)
+            monkeypatch.setattr(coll,'update_one',unmatched)
+            assert (await cli.post(path,headers=owner,json=body)).status==409
+            async def uncertain(*args,**kwargs):return SimpleNamespace(acknowledged=False)
+            monkeypatch.setattr(coll,'update_one',uncertain)
+            assert (await cli.post(path,headers=owner,json=body)).status==500
+            monkeypatch.setattr(coll,'update_many',uncertain)
+            assert (await cli.post(path,headers=owner,json={'action':'mark_all_read'})).status==500
+            assert (await coll.find_one({'workspace_id':ws,'notification_id':'n'}))['read'] is False
+    run(go())
+
+
+def test_conditional_notification_route_supports_standalone_memory(monkeypatch):
+    from webapp import api_routes
+    assert hasattr(api_routes,'api_notification_conditional_read')
+    async def go():
+        coll=db_models._MemCollection()
+        await coll.insert_one({'workspace_id':'w','notification_id':'n','read':False})
+        update=await coll.update_one({'workspace_id':'w','notification_id':'n','read':False},{'$set':{'read':True}})
+        assert update.acknowledged and update.matched_count==1
+        bulk=await coll.update_many({'workspace_id':'w'},{'$set':{'read':True}})
+        assert bulk.acknowledged and bulk.matched_count==1
+    run(go())
+
+
+def test_conditional_notification_detects_change_between_read_and_write(monkeypatch):
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner,ws=await _login_link(cli,18894,'Owner')
+            coll=db_models.notifications_col()
+            await coll.insert_one({'workspace_id':ws,'notification_id':'n','read':False,'created_ts':1})
+            original=coll.update_one
+            async def racing(query,update,**kwargs):
+                await original({'workspace_id':ws,'notification_id':'n'},{'$set':{'read':True}})
+                return await original(query,update,**kwargs)
+            monkeypatch.setattr(coll,'update_one',racing);monkeypatch.setattr(db_models,'notifications_col',lambda:coll)
+            response=await cli.post(f'/api/v1/workspaces/{ws}/notifications/read',headers=owner,
+                json={'action':'set_read','notification_id':'n','expected_read':False,'read':True})
+            assert response.status==409 and (await coll.find_one({'workspace_id':ws,'notification_id':'n'}))['read'] is True
+    run(go())

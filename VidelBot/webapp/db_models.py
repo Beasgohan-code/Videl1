@@ -241,7 +241,7 @@ class _MemCollection:
             if self._match(d, q):
                 self._apply_update(d, upd)
                 cnt += 1
-        return type("Res", (), {"modified_count": cnt})()
+        return type("Res", (), {"acknowledged": True, "matched_count": cnt, "modified_count": cnt})()
 
     @staticmethod
     def _apply_update(target: dict[str, Any], upd: dict[str, Any], inserting: bool = False) -> None:

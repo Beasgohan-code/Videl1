@@ -87,13 +87,14 @@ export function templateList(value:unknown,workspace:string):TemplateRecord[] {
   };
   return [...value.official.map(v=>parse(v,true)),...value.workspace_templates.map(v=>parse(v,false))];
 }
-export type NotificationRecord = {id:string;title:string;message:string;category:string;severity:string;created_at:string;read:boolean};
-export function notificationList(value:unknown):NotificationRecord[] {
+export type NotificationRecord = {id:string;title:string;message:string;category:string;severity:string;created_at:string;read:boolean|null};
+export function notificationList(value:unknown):{items:NotificationRecord[];conditional:boolean} {
   if(!object(value)||!Array.isArray(value.notifications))throw new Error('The server returned an invalid notification list.');
-  return value.notifications.map(n=>{
+  const items=value.notifications.map(n=>{
     if(!object(n)||typeof n.notification_id!=='string'||!n.notification_id)throw new Error('The server returned an invalid notification record.');
-    return {id:n.notification_id,title:typeof n.title==='string'?n.title:'Notification',message:typeof n.message==='string'?n.message:'',category:typeof n.category==='string'?n.category:'other',severity:typeof n.severity==='string'?n.severity:'other',created_at:typeof n.created_at==='string'?n.created_at:'',read:n.read===true};
+    return {id:n.notification_id,title:typeof n.title==='string'?n.title:'Notification',message:typeof n.message==='string'?n.message:'',category:typeof n.category==='string'?n.category:'other',severity:typeof n.severity==='string'?n.severity:'other',created_at:typeof n.created_at==='string'?n.created_at:'',read:typeof n.read==='boolean'?n.read:null};
   });
+  return {items,conditional:value.conditional_read_updates===true};
 }
 export type FleetSummary={total:number|null;running:number|null;bots:Bot[]};
 export function fleetSummary(value:unknown):FleetSummary {

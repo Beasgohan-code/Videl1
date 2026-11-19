@@ -77,6 +77,8 @@ CSV download, workspace changes, sample and older-backend bucket disclosure, per
 layout with fixture data. These assertions do not establish
 live Telegram verification, real file safety, production RBAC or full parity.
 
+`node next-notification-safety.test.cjs` checks synthetic shared-read toggles, old/mixed backend gating, unknown read values and pending/conflict behavior at representative widths. The separate local-backend browser contract checks a real aiohttp notification read toggle with mock Mongo; neither validates real Mongo concurrency or production.
+
 `node next-analytics-custom.test.cjs` covers synthetic date validation, draft navigation, custom CSV and old/mixed backend responses at 320/390/1440px. The separate local-backend contract test also checks custom chart/CSV with mock Mongo; neither validates production, real Mongo concurrency or physical devices.
 
 `node next-settings.test.cjs` exercises account preference saves, account-wide workspace behavior, empty-workspace access, older-backend safety gating, draft/pending guards and uncertain responses at synthetic browser widths. These are in-memory fixtures, not evidence of Mongo concurrency or production behavior.
@@ -160,5 +162,5 @@ contract check, run `telegram_auth_fixture.py` on 8088 with `DOWNLOAD_DIR` set
 to a disposable temporary directory, start Next with
 `VIDEL_BACKEND_ORIGIN=http://127.0.0.1:8088`, then run
 `node next-file-backend.test.cjs`. This exercises a signed synthetic login,
-actual local aiohttp File Store and Analytics routes, CSV export, temporary disk and mock Mongo; it is not
+actual local aiohttp File Store, Analytics and inbox routes, CSV export, temporary disk and mock Mongo; it is not
 live Telegram, real Mongo, production storage, concurrency or device evidence.

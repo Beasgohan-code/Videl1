@@ -362,7 +362,7 @@ async def notification_collection(request):
         {'notification_id':'notice_1','title':ws['name']+' alert','message':'Synthetic alert','category':'bots','severity':'info','read':False,'created_at':'2026-01-01'},
         {'notification_id':'notice_2','title':'Second alert','message':'Synthetic message','category':'storage','severity':'warning','read':False,'created_at':'2026-01-02'},
     ])
-    if request.method == 'GET': return web.json_response({'notifications':rows, 'activity_logs':[], 'activity_logs_availability':'unavailable'})
+    if request.method == 'GET': return web.json_response({'notifications':rows, 'activity_logs':[], 'activity_logs_availability':'unavailable','conditional_read_updates':True})
     data = await request.json()
     if data.get('mark_all_read') is True:
         for row in rows: row['read'] = True
@@ -371,6 +371,23 @@ async def notification_collection(request):
     if not row or not isinstance(data.get('read'), bool): return web.json_response({'updated':False})
     row['read'] = data['read']
     return web.json_response({'updated':True})
+
+
+async def notification_read(request):
+    context, failure = authorized(request, write=True)
+    if failure is not None: return failure
+    token, ws = context
+    if not roles[token]: return error('Forbidden', 403)
+    rows = notifications[token].setdefault(ws['workspace_id'], [])
+    data = await request.json()
+    if data.get('action') == 'mark_all_read':
+        for row in rows: row['read'] = True
+        return web.json_response({'updated':True,'conditional_read_updates':True})
+    matches = [row for row in rows if row['notification_id'] == data.get('notification_id')]
+    if data.get('action') != 'set_read' or len(matches) != 1 or type(data.get('expected_read')) is not bool or type(data.get('read')) is not bool or matches[0].get('read') is not data['expected_read']:
+        return error('Notification state changed; refresh the inbox.',409)
+    matches[0]['read'] = data['read']
+    return web.json_response({'updated':True,'conditional_read_updates':True})
 
 
 
@@ -435,6 +452,7 @@ app.router.add_get('/api/v1/workspaces/{ws}/analytics.csv', analytics)
 app.router.add_get('/api/v1/workspaces/{ws}/fleet', fleet)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/templates', template_collection)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/notifications', notification_collection)
+app.router.add_post('/api/v1/workspaces/{ws}/notifications/read', notification_read)
 app.router.add_get('/app', old_app)
 if __name__ == '__main__':
     web.run_app(app, host='127.0.0.1', port=8084, access_log=None)
