@@ -5,7 +5,7 @@ The layouts are taken from the three original bots (Save-Restricted-Content,
 Video Encoder, Son-Goku FileStore) – rebranded to Videl, with the developer
 credits removed and the Videl modules added.
 """
-from config import BOT_NAME, FREE_LIMIT_DAILY, FREE_LIMIT_SIZE_GB, MAX_BOTS_PER_USER
+from config import BOT_NAME, FREE_LIMIT_DAILY, FREE_LIMIT_SIZE_GB
 from core.style import hdr, quote, rows, sc
 
 # ════════════════════════════════════════════════════════════════
@@ -80,15 +80,30 @@ CHANNELS_EMPTY = "📢 No channels configured yet."
 # ════════════════════════════════════════════════════════════════
 # Clone bots (Son-Goku FileStore layout)
 # ════════════════════════════════════════════════════════════════
-CLONE_START_MSG = """<b>🤖 Clone Bot Studio</b>
+CLONE_START_MSG = """<b>━━━━━━━━━━━━━━━━━━━━━
+⚡ 𝗩𝗜𝗗𝗘𝗟 𝗙𝗜𝗟𝗘𝗦𝗧𝗢𝗥𝗘 ⚡
+━━━━━━━━━━━━━━━━━━━━━</b>
 
-<blockquote>Welcome, {mention}!
+<blockquote>ᴡᴇʟᴄᴏᴍᴇ, {mention}!
 
-Choose how to connect a bot. You can provide an existing bot token privately, or, when Telegram confirms the capability, create a bot through Telegram. Telegram will ask you to confirm creation.
+ɪ ᴀᴍ ᴀ <b>ᴍᴜʟᴛɪ-ᴜsᴇʀ ꜰɪʟᴇsᴛᴏʀᴇ</b> ᴘʟᴀᴛꜰᴏʀᴍ.
+ᴄʀᴇᴀᴛᴇ ʏᴏᴜʀ ᴏᴡɴ ʙᴏᴛ ᴀɴᴅ ᴄʜᴏᴏsᴇ ᴀ sᴜᴘᴘᴏʀᴛᴇᴅ ᴍᴏᴅᴇ.
 
-Next, verify a channel and choose one mode: <b>File Store</b> or experimental <b>Group Management</b> where enabled. Music voice-chat playback is not available yet.</blockquote>
+╭─── ✦ ꜰᴇᴀᴛᴜʀᴇs ✦ ───╮
+│ ◈ ꜰɪʟᴇ sᴛᴏʀᴀɢᴇ ᴡɪᴛʜ sʜᴀʀᴇ ʟɪɴᴋs
+│ ◈ ꜰᴏʀᴄᴇ sᴜʙsᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟs
+│ ◈ ᴜʀʟ sʜᴏʀᴛᴇɴᴇʀ ɪɴᴛᴇɢʀᴀᴛɪᴏɴ
+│ ◈ ᴀᴅᴍɪɴ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ
+│ ◈ ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇ ᴛɪᴍᴇʀ
+│ ◈ ꜰᴏʀᴍᴀᴛᴛᴇᴅ ʟɪɴᴋ ɢᴇɴᴇʀᴀᴛᴏʀ
+│ ◈ sᴍᴀʀᴛ ʟɪɴᴋs · ᴇxᴘɪʀʏ · ᴘᴀssᴡᴏʀᴅ · ⭐
+│ ◈ sᴇᴀʀᴄʜ · ʀᴇǫᴜᴇsᴛs · ᴀɴᴀʟʏᴛɪᴄs
+│ ◈ ᴘʀᴇᴍɪᴜᴍ ᴜsᴇʀs · sᴄʜᴇᴅᴜʟᴇᴅ ʙʀᴏᴀᴅᴄᴀsᴛs
+╰──────────────────╯
 
-<i>A saved clone does not by itself guarantee a running worker. Keep bot tokens private.</i>"""
+ʟɪᴍɪᴛs ᴅᴇᴘᴇɴᴅ ᴏɴ ʏᴏᴜʀ ᴘʟᴀɴ · /plans</blockquote>
+
+<i>⬇️ ᴛᴀᴘ ᴀ ʙᴜᴛᴛᴏɴ ᴛᴏ ɢᴇᴛ sᴛᴀʀᴛᴇᴅ ⬇️</i>"""
 
 CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━━━
 📖 𝗛𝗘𝗟𝗣 &amp; 𝗚𝗨𝗜𝗗𝗘

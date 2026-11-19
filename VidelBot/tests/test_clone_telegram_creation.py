@@ -26,7 +26,7 @@ def user_result(value=True, uid=123456):
     return at.User(id=uid, is_bot=True, first_name='Videl', username='VidelBot', can_manage_bots=value)
 
 
-def test_hub_shows_fresh_confirmed_capability_and_always_manual(monkeypatch):
+def test_old_clone_card_has_small_caps_and_original_buttons_without_capability_check(monkeypatch):
     captured = []
     async def send(client, chat_id, text, markup, **kw): captured.append((text, markup))
     async def picture(): return None
@@ -35,14 +35,10 @@ def test_hub_shows_fresh_confirmed_capability_and_always_manual(monkeypatch):
     session = use_botapi(responses={'GetMe': user_result(True)})
     run(menus.clone_cmd(FakeClient(), FakeMsg('/clone', uid=5)))
     text, kb = captured[-1]; options = buttons(kb)
-    assert options['clone_managed_start'] == '🤖 Create a bot with Telegram'
-    assert options['create_bot'] == '🔑 Use an existing bot token'
-    assert 'confirm creation' in text and 'Music' in text
-    assert session.names().count('GetMe') == 1
-    session.responses['GetMe'] = user_result(False)
-    run(menus.clone_cmd(FakeClient(), FakeMsg('/clone', uid=5)))
-    assert 'clone_managed_start' not in buttons(captured[-1][1])
-    assert 'create_bot' in buttons(captured[-1][1])
+    assert options == {'create_bot': '⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ', 'my_bots': '📋 ᴍʏ ʙᴏᴛs',
+                       'clone_help': '📖 ʜᴇʟᴘ', 'clone_about': 'ℹ️ ᴀʙᴏᴜᴛ', 'start_btn': '⬅️ ʙᴀᴄᴋ ᴛᴏ ʜᴏᴍᴇ'}
+    assert '𝗩𝗜𝗗𝗘𝗟 𝗙𝗜𝗟𝗘𝗦𝗧𝗢𝗥𝗘' in text and 'ᴡᴇʟᴄᴏᴍᴇ' in text
+    assert session.names().count('GetMe') == 0
 
 
 @pytest.mark.parametrize('result', [user_result(False), user_result(None), user_result(True, uid=444)])
@@ -60,38 +56,41 @@ def test_getme_failure_cannot_reuse_cached_success(monkeypatch):
     assert not run(managed_bots.available())
 
 
-def test_direct_telegram_flow_and_manual_choice(monkeypatch):
-    def stop_poll(coro): coro.close()
-    monkeypatch.setattr(managed_bots, '_spawn', stop_poll)
+def test_create_button_offers_telegram_or_manual_and_opens_telegram(monkeypatch):
+    monkeypatch.setattr(managed_bots, '_spawn', lambda coro: coro.close())
     session = use_botapi(responses={'GetMe': user_result(True)})
-    q = FakeQuery('clone_managed_start', uid=5)
-    seen = {}
+    q = FakeQuery('create_bot', uid=5); seen = {}
     async def edit(text=None, reply_markup=None, **kwargs): seen.update(text=text, kb=reply_markup)
     q.message.edit_text = edit
-    run(create_bot.create_managed_callback(FakeClient(), q))
-    assert 'Create a bot with Telegram' in seen['text']
-    assert q.answers[-1] == (None, False)
-    assert 'further setup is required' in seen['text'].lower()
-    url_button = seen['kb'].inline_keyboard[0][0]
-    assert url_button.url.startswith('https://t.me/newbot/VidelBot/')
-    choices = buttons(seen['kb'])
-    manual_data = next(key for key in choices if key.startswith('managed_action_') and key.endswith('_manual'))
-    assert choices[manual_data] == '🔑 Paste a token instead'
-    assert create_bot._creation_state[5]['step'] == 'awaiting_token'
+    run(create_bot.create_bot_callback(FakeClient(), q))
+    options = buttons(seen['kb'])
+    telegram = next(key for key in options if key.endswith('_telegram'))
+    manual = next(key for key in options if key.endswith('_manual'))
+    assert options[telegram] == '🤖 Create a bot with Telegram' and options[manual] == '🔑 Paste a token'
     assert session.names().count('GetMe') == 1
-    manual = FakeQuery(manual_data, uid=5)
-    run(managed_bots.managed_setup_action(FakeClient(), manual))
+    run(create_bot.creation_control_callback(FakeClient(), FakeQuery(telegram, uid=5, message=q.message)))
+    assert 'Create a bot with Telegram' in seen['text'] and 'further setup is required' in seen['text'].lower()
+    assert seen['kb'].inline_keyboard[0][0].url.startswith('https://t.me/newbot/VidelBot/')
+    assert session.names().count('GetMe') == 2  # fresh recheck before opening
+    manual_data = next(key for key in buttons(seen['kb']) if key.startswith('managed_action_') and key.endswith('_manual'))
+    manual_query = FakeQuery(manual_data, uid=5)
+    run(managed_bots.managed_setup_action(FakeClient(), manual_query))
+    assert 'Send your bot token' in manual_query.message.text
     assert create_bot._creation_state[5]['step'] == 'awaiting_token'
-    assert 'Send your bot token' in manual.message.text
 
 
-def test_expired_shortcut_falls_back_to_manual_setup():
+def test_unavailable_capability_still_offers_manual_token():
     use_botapi(responses={'GetMe': user_result(False)})
-    q = FakeQuery('clone_managed_start', uid=5)
-    run(create_bot.create_managed_callback(FakeClient(), q))
-    assert 'Send your bot token' in q.message.text
-    assert 'could not be confirmed' in q.answers[-1][0]
-    assert create_bot._creation_state[5]['step'] == 'awaiting_token'
+    q = FakeQuery('create_bot', uid=5); seen = {}
+    async def edit(text=None, reply_markup=None, **kwargs): seen.update(text=text, kb=reply_markup)
+    q.message.edit_text = edit
+    run(create_bot.create_bot_callback(FakeClient(), q))
+    options = buttons(seen['kb'])
+    assert not any(key.endswith('_telegram') for key in options)
+    manual = next(key for key in options if key.endswith('_manual'))
+    assert 'unavailable' in seen['text']
+    run(create_bot.creation_control_callback(FakeClient(), FakeQuery(manual, uid=5, message=q.message)))
+    assert 'Send your bot token' in seen['text'] and create_bot._creation_state[5]['step'] == 'awaiting_token'
 
 
 @pytest.mark.parametrize('handler,data', [(create_bot.create_bot_callback, 'create_bot'),
@@ -182,13 +181,13 @@ def test_cancel_or_duplicate_while_capability_check_waits_does_not_open_link(mon
 
 
 
-def test_expired_callback_does_not_discard_displayed_manual_prompt():
+def test_expired_callback_does_not_discard_displayed_choice():
     use_botapi(responses={'GetMe': user_result(False)})
-    q = FakeQuery('clone_managed_start', uid=5)
+    q = FakeQuery('create_bot', uid=5)
     async def expired(*args, **kwargs): raise RuntimeError('expired callback')
     q.answer = expired
-    run(create_bot.create_managed_callback(FakeClient(), q))
-    assert 'Send your bot token' in q.message.text
+    run(create_bot.create_bot_callback(FakeClient(), q))
+    assert 'Choose how to connect' in q.message.text
     assert create_bot._creation_state[5]['step'] == 'awaiting_token'
 
 
@@ -202,4 +201,80 @@ def test_late_prompt_failure_does_not_destroy_advanced_setup(monkeypatch):
         state['step'] = 'verifying_token'
         release.set(); await task
         assert create_bot._creation_state[5] is state and state['step'] == 'verifying_token'
+    run(go())
+
+
+def test_manual_choice_wins_over_pending_telegram_capability_check(monkeypatch):
+    async def go():
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def slow(): entered.set(); await release.wait(); return True
+        monkeypatch.setattr(managed_bots, 'available', slow)
+        state = {'step': 'awaiting_token', 'data': {}}
+        create_bot._creation_state[5] = state
+        nonce = create_bot._stage_nonce(state, 'choice')
+        telegram = FakeQuery(f'clone_setup_{nonce}_telegram', uid=5)
+        task = asyncio.create_task(create_bot.creation_control_callback(FakeClient(), telegram)); await entered.wait()
+        manual = FakeQuery(f'clone_setup_{nonce}_manual', uid=5)
+        await create_bot.creation_control_callback(FakeClient(), manual)
+        assert 'Send your bot token' in manual.message.text and state['creation_control_stage'] == 'token'
+        release.set(); await task
+        assert 'Setup changed' in telegram.answers[-1][0]
+        assert 'managed_username' not in state['data'] and create_bot._creation_state[5] is state
+    run(go())
+
+
+def test_disabled_or_stale_telegram_option_retains_manual_path(monkeypatch):
+    async def go():
+        session = use_botapi(responses={'GetMe': user_result(True)})
+        q = FakeQuery('create_bot', uid=5); seen = {}
+        async def edit(text=None, reply_markup=None, **kwargs): seen.update(text=text, kb=reply_markup)
+        q.message.edit_text = edit
+        await create_bot.create_bot_callback(FakeClient(), q)
+        options = buttons(seen['kb']); telegram = next(k for k in options if k.endswith('_telegram'))
+        manual = next(k for k in options if k.endswith('_manual'))
+        session.responses['GetMe'] = user_result(False)
+        tg = FakeQuery(telegram, uid=5, message=q.message)
+        await create_bot.creation_control_callback(FakeClient(), tg)
+        assert 'unavailable' in tg.answers[-1][0]
+        await create_bot.creation_control_callback(FakeClient(), FakeQuery(manual, uid=5, message=q.message))
+        assert 'Send your bot token' in seen['text']
+    run(go())
+
+
+def test_manual_choice_invalidates_old_buttons_and_keeps_private_input(monkeypatch):
+    async def go():
+        use_botapi(responses={'GetMe': user_result(True)})
+        first = FakeQuery('create_bot', uid=5); seen = {}
+        async def edit(text=None, reply_markup=None, **kwargs): seen.update(text=text, kb=reply_markup)
+        first.message.edit_text = edit
+        await create_bot.create_bot_callback(FakeClient(), first)
+        options = buttons(seen['kb']); manual = next(k for k in options if k.endswith('_manual'))
+        old_telegram = next(k for k in options if k.endswith('_telegram'))
+        old_cancel = next(k for k in options if k.endswith('_cancel'))
+        await create_bot.creation_control_callback(FakeClient(), FakeQuery(manual, uid=5, message=first.message))
+        assert 'Send your bot token' in seen['text']
+        state = create_bot._creation_state[5]
+        for data in (old_telegram, old_cancel):
+            q = FakeQuery(data, uid=5)
+            await create_bot.creation_control_callback(FakeClient(), q)
+            assert q.answers[-1][1] and create_bot._creation_state[5] is state
+        current_cancel = next(k for k in buttons(seen['kb']) if k.endswith('_cancel'))
+        await create_bot.creation_control_callback(FakeClient(), FakeQuery(current_cancel, uid=5))
+        assert 5 not in create_bot._creation_state
+    run(go())
+
+
+def test_late_choice_edit_failure_does_not_discard_manual_choice(monkeypatch):
+    async def go():
+        entered, release = asyncio.Event(), asyncio.Event()
+        no_botapi()
+        async def blocked_edit(*args, **kwargs): entered.set(); await release.wait(); raise RuntimeError('failed')
+        first = FakeQuery('create_bot', uid=5); first.message.edit_text = blocked_edit
+        task = asyncio.create_task(create_bot.create_bot_callback(FakeClient(), first)); await entered.wait()
+        state = create_bot._creation_state[5]; nonce = state['creation_control_nonce']
+        manual = FakeQuery(f'clone_setup_{nonce}_manual', uid=5)
+        await create_bot.creation_control_callback(FakeClient(), manual)
+        release.set(); await task
+        assert create_bot._creation_state[5] is state and state['creation_control_stage'] == 'token'
+        assert 'Send your bot token' in manual.message.text
     run(go())

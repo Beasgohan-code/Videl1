@@ -9,15 +9,18 @@ online worker. An unsuccessful refresh can leave a cached older snapshot.
 
 ## Bot Management
 
-In `/clone`, the primary bot offers **Create a bot with Telegram** only when
-clone creation is allowed, `MANAGED_BOTS` and the outgoing bridge are enabled,
-and a fresh bounded `getMe` response identifies the configured bot and reports
-`can_manage_bots=True`. A timeout, unknown/false capability, wrong identity or
-bridge outage hides the option; a previously cached positive is not enough.
-The shortcut rechecks capability, clone limits and cooldown when tapped. If the
-capability can no longer be confirmed, it presents the private manual-token
-flow instead. The manual-token choice remains on the hub regardless of the
-capability, subject to the same clone-creation eligibility checks.
+The `/clone` card keeps the original small-caps FileStore layout and **Create
+Bot** button. After the user taps it and passes the existing clone eligibility,
+quota and cooldown checks, the method screen always offers **Paste a token**.
+It also offers **Create a bot with Telegram** only if `MANAGED_BOTS` and the
+outgoing bridge are enabled and a fresh bounded `getMe` identifies the configured
+bot and reports `can_manage_bots=True`. A timeout, unknown/false capability,
+wrong identity or bridge outage hides that option; a cached positive is not
+enough. Selecting Telegram creation checks capability again; if it is no longer
+confirmed, the manual button remains available. Older direct-entry shortcuts
+now open the same choice screen. Users may also paste a valid token directly in
+the private chat. The controls are process-local and a delayed message edit may
+still arrive after a different choice is made.
 
 Telegram opens its own creation form and the user must confirm; this is not
 autonomous BotFather account creation. A suggested or typed username alone no

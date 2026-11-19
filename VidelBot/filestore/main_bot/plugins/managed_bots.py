@@ -123,21 +123,24 @@ async def managed_new(client: Client, query: CallbackQuery, *, capability_checke
     if st.get("managed_checking"):
         return await query.answer("Telegram creation is already being checked.", show_alert=True)
     st["managed_checking"] = True
+    control = (st.get("creation_control_stage"), st.get("creation_control_nonce"))
     try:
-        return await _open_managed_creation(client, query, user, st, capability_checked)
+        return await _open_managed_creation(client, query, user, st, capability_checked, control)
     finally:
         st.pop("managed_checking", None)
 
 
-async def _open_managed_creation(client, query, user, st, capability_checked):
+async def _open_managed_creation(client, query, user, st, capability_checked, control):
     from filestore.main_bot.plugins.create_bot import _creation_state
     if not capability_checked and not await available():
         return await query.answer("Telegram creation is unavailable right now. Paste a bot token instead.",
                                   show_alert=True)
-    if _creation_state.get(user.id) is not st or st.get("step") != "awaiting_token":
+    if (_creation_state.get(user.id) is not st or st.get("step") != "awaiting_token"
+            or (st.get("creation_control_stage"), st.get("creation_control_nonce")) != control):
         return await query.answer("Setup changed. Open /clone again.", show_alert=True)
     me = client.me or await client.get_me()
-    if _creation_state.get(user.id) is not st or st.get("step") != "awaiting_token":
+    if (_creation_state.get(user.id) is not st or st.get("step") != "awaiting_token"
+            or (st.get("creation_control_stage"), st.get("creation_control_nonce")) != control):
         return await query.answer("Setup changed. Open /clone again.", show_alert=True)
     expected_id = str(config.BOT_TOKEN or "").split(":", 1)[0]
     if (not expected_id.isdigit() or getattr(me, "id", None) != int(expected_id)
@@ -260,7 +263,7 @@ async def on_managed_bot_updated(client: Client, update):
 async def managed_setup_action(client: Client, query: CallbackQuery):
     """Do not let an old managed screen replace or cancel a newer wizard."""
     from filestore.main_bot.plugins.create_bot import (
-        _creation_state, create_bot_callback, _cancel_current_creation,
+        _creation_state, _begin_creation, _cancel_current_creation,
     )
     user = getattr(query, "from_user", None)
     chat = getattr(getattr(query, "message", None), "chat", None)
@@ -277,7 +280,7 @@ async def managed_setup_action(client: Client, query: CallbackQuery):
     # Delegates claim/change state synchronously before their first await.
     if action == "cancel":
         return await _cancel_current_creation(client, query, st)
-    return await create_bot_callback(client, query)
+    return await _begin_creation(client, query, manual=True)
 
 
 @Client.on_callback_query(filters.regex(r"^managed_confirm_[A-Za-z0-9_-]+$"))

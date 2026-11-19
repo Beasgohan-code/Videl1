@@ -226,18 +226,17 @@ def back_home_kb(back: str = None, extra=None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows(extra or [], last))
 
 
-def clone_hub_kb(managed_available: bool = False) -> InlineKeyboardMarkup:
-    choices = [[Btn("🤖 Create a bot with Telegram", callback_data="clone_managed_start")]] if managed_available else []
-    return InlineKeyboardMarkup(choices + [
-        [Btn("🔑 Use an existing bot token", callback_data="create_bot")],
-        [Btn("📋 My Bots", callback_data="my_bots"), Btn("📖 Help", callback_data="clone_help")],
-        [Btn("ℹ️ About", callback_data="clone_about"), Btn("⬅️ Back to Home", callback_data="start_btn")],
+def clone_hub_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [Btn("⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ", callback_data="create_bot"), Btn("📋 ᴍʏ ʙᴏᴛs", callback_data="my_bots")],
+        [Btn("📖 ʜᴇʟᴘ", callback_data="clone_help"), Btn("ℹ️ ᴀʙᴏᴜᴛ", callback_data="clone_about")],
+        [Btn("⬅️ ʙᴀᴄᴋ ᴛᴏ ʜᴏᴍᴇ", callback_data="start_btn")],
     ])
 
 
 async def clone_hub_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    from filestore.main_bot.plugins.managed_bots import available
-    return clone_hub_kb((CLONE_ENABLED or user_id in OWNERS) and await available())
+    # Capability is checked after Create Bot, not while rendering the old card.
+    return clone_hub_kb()
 
 
 def premium_kb(until=None) -> InlineKeyboardMarkup:

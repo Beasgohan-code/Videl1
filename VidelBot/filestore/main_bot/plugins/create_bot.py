@@ -41,6 +41,7 @@ CHANNEL_STEPS = ("awaiting_channel", "awaiting_new_log_channel", "awaiting_fsub_
 # A nonce is scoped to both this in-process wizard and its displayed stage.
 # Delayed or older screens must not cancel a newer stage or an unrelated flow.
 _CREATION_STAGE_STEPS = {
+    "choice": ("awaiting_token", "verifying_token"),
     "token": ("awaiting_token", "verifying_token"),
     "channel": ("awaiting_channel", "verifying_channel"),
     "profile": ("awaiting_profile",),
@@ -397,16 +398,16 @@ async def _finish_creation(client, query, state, mode):
 @Client.on_callback_query(filters.regex(r"^create_bot$"))
 async def create_bot_callback(client: Client, query: CallbackQuery):
     """Offer manual token setup and, when confirmed, Telegram creation."""
-    return await _begin_creation(client, query, telegram=False)
+    return await _begin_creation(client, query)
 
 
 @Client.on_callback_query(filters.regex(r"^clone_managed_start$"))
 async def create_managed_callback(client: Client, query: CallbackQuery):
-    """A hub shortcut; the same limits, cooldown and capability checks apply."""
-    return await _begin_creation(client, query, telegram=True)
+    """Older hub shortcuts now open the same creation-method choice."""
+    return await _begin_creation(client, query)
 
 
-async def _begin_creation(client: Client, query: CallbackQuery, *, telegram: bool):
+async def _begin_creation(client: Client, query: CallbackQuery, *, manual: bool = False):
     user = getattr(query, "from_user", None)
     chat = getattr(getattr(query, "message", None), "chat", None)
     if (not user or getattr(user, "is_bot", False) or not chat
@@ -436,6 +437,7 @@ async def _begin_creation(client: Client, query: CallbackQuery, *, telegram: boo
         await query.answer("Setup changed or was cancelled. Open /clone again.", show_alert=True)
         return False
 
+    render_nonce = None
     try:
         if old and old.get("picker"):
             await remove_channel_picker(client, user_id, old, "⌨️ Previous setup closed.")
@@ -460,36 +462,40 @@ async def _begin_creation(client: Client, query: CallbackQuery, *, telegram: boo
                 _creation_state.pop(user_id, None)
                 return await query.answer(f"⏳ Please wait {int(BOT_CREATION_COOLDOWN - elapsed)}s before creating another bot.", show_alert=True)
 
+        if manual:
+            state["step"] = "awaiting_token"
+            render_nonce = _stage_nonce(state, "token")
+            return await _show_manual_token_prompt(query, state)
+
         from filestore.main_bot.plugins import managed_bots
         enabled = await managed_bots.available()
         if not await current(): return
         state["step"] = "awaiting_token"
-        if telegram and enabled:
-            return await managed_bots.managed_new(client, query, capability_checked=True)
-        nonce = _stage_nonce(state, "token")
+        nonce = _stage_nonce(state, "choice")
+        render_nonce = nonce
         kb = [[InlineKeyboardButton("🤖 Create a bot with Telegram", callback_data=f"clone_setup_{nonce}_telegram")]] if enabled else []
-        kb.extend(_creation_cancel_kb(state, "token").inline_keyboard)
-        extra = ("\n\nOr choose <b>Create a bot with Telegram</b>. Telegram asks you to confirm creation; "
-                 "you will still need to complete setup here.") if enabled else ""
+        kb.append([InlineKeyboardButton("🔑 Paste a token", callback_data=f"clone_setup_{nonce}_manual")])
+        kb.extend(_creation_cancel_kb(state, "choice").inline_keyboard)
+        extra = (" Telegram will ask you to confirm creation." if enabled else
+                 " Telegram creation is unavailable right now; you can still use a token.")
         await query.message.edit_text(
-            "<b>🤖 Connect a bot</b>\n\n"
-            "<blockquote><b>Step 1/3:</b> Send your bot token in this private chat.\n\n"
-            "Get a token from @BotFather. Keep it private and never share it with other users.</blockquote>" + extra,
+            "<b>🤖 Create your bot</b>\n\n"
+            "<blockquote>Choose how to connect your bot." + extra + "\n\n"
+            "Keep your token private and only send it in this chat.</blockquote>",
             reply_markup=InlineKeyboardMarkup(kb))
         try:
-            if telegram and not enabled:
-                await query.answer("Telegram creation could not be confirmed. You can paste a token instead.", show_alert=True)
-            else:
-                await query.answer()
+            await query.answer()
         except Exception:
-            pass  # an expired callback must not invalidate the displayed token prompt
+            pass  # an expired callback must not invalidate the displayed choice
         return
     except asyncio.CancelledError:
-        if _creation_state.get(user_id) is state and state.get("step") in ("starting", "awaiting_token"):
+        if (_creation_state.get(user_id) is state and state.get("step") in ("starting", "awaiting_token")
+                and (render_nonce is None or state.get("creation_control_nonce") == render_nonce)):
             _creation_state.pop(user_id, None)
         raise
     except Exception:
-        if _creation_state.get(user_id) is state and state.get("step") in ("starting", "awaiting_token"):
+        if (_creation_state.get(user_id) is state and state.get("step") in ("starting", "awaiting_token")
+                and (render_nonce is None or state.get("creation_control_nonce") == render_nonce)):
             _creation_state.pop(user_id, None)
         log.warning("Clone creation setup could not be confirmed.")
         try:
@@ -498,11 +504,32 @@ async def _begin_creation(client: Client, query: CallbackQuery, *, telegram: boo
             return
 
 
+async def _show_manual_token_prompt(query, state):
+    """Switch the same setup to private token input; invalidate choice controls."""
+    kb = _creation_cancel_kb(state, "token")
+    try:
+        await query.message.edit_text(
+            "<b>🤖 Connect a bot</b>\n\n"
+            "<blockquote><b>Step 1/3:</b> Send your bot token in this private chat.\n\n"
+            "Get a token from @BotFather. Keep it private and never share it with other users.</blockquote>",
+            reply_markup=kb)
+    except Exception:
+        try:
+            await query.answer("You can paste your token in this private chat, or use /cancel.", show_alert=True)
+        except Exception:
+            pass
+        return
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+
 # =============================================================================
 # CALLBACK: Cancel creation
 # =============================================================================
 
-@Client.on_callback_query(filters.regex(r"^clone_setup_[A-Za-z0-9_-]+_(?:cancel|telegram)$"))
+@Client.on_callback_query(filters.regex(r"^clone_setup_[A-Za-z0-9_-]+_(?:cancel|telegram|manual)$"))
 async def creation_control_callback(client: Client, query: CallbackQuery):
     user = getattr(query, "from_user", None)
     chat = getattr(getattr(query, "message", None), "chat", None)
@@ -513,12 +540,16 @@ async def creation_control_callback(client: Client, query: CallbackQuery):
     nonce, sep, action = payload.rpartition("_")
     state = _creation_state.get(user.id)
     stage = (state or {}).get("creation_control_stage")
-    if (not sep or not nonce or action not in ("cancel", "telegram") or not state
+    if (not sep or not nonce or action not in ("cancel", "telegram", "manual") or not state
             or state.get("creation_control_nonce") != nonce
             or state.get("step") not in _CREATION_STAGE_STEPS.get(stage, ())):
         return await query.answer("This setup screen has expired. Use the current screen or /clone.", show_alert=True)
+    if action == "manual":
+        if stage != "choice" or state.get("step") != "awaiting_token":
+            return await query.answer("This setup step is already being processed.", show_alert=True)
+        return await _show_manual_token_prompt(query, state)
     if action == "telegram":
-        if stage != "token" or state.get("step") != "awaiting_token":
+        if stage not in ("choice", "token") or state.get("step") != "awaiting_token":
             return await query.answer("This setup step is already being processed.", show_alert=True)
         from filestore.main_bot.plugins import managed_bots
         return await managed_bots.managed_new(client, query)
