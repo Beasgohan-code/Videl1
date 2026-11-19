@@ -9,13 +9,25 @@ online worker. An unsuccessful refresh can leave a cached older snapshot.
 
 ## Bot Management
 
-The existing setup offers Telegram's managed-bot creation link when its
-`MANAGED_BOTS` and outgoing bridge are enabled and `getMe` reports capability.
-The user must still confirm creation in Telegram; this is not autonomous
-BotFather account creation. Token/channel verification and the exclusive clone
-mode picker remain in the existing setup. The proof watcher for a renamed bot
-still uses that child bot's own temporary Bot API update polling; inherited
-receiver overlap and managed-bot ownership/concurrency require further audit.
+In `/clone`, the primary bot offers **Create a bot with Telegram** only when
+clone creation is allowed, `MANAGED_BOTS` and the outgoing bridge are enabled,
+and a fresh bounded `getMe` response identifies the configured bot and reports
+`can_manage_bots=True`. A timeout, unknown/false capability, wrong identity or
+bridge outage hides the option; a previously cached positive is not enough.
+The shortcut rechecks capability, clone limits and cooldown when tapped. If the
+capability can no longer be confirmed, it presents the private manual-token
+flow instead. The manual-token choice remains on the hub regardless of the
+capability, subject to the same clone-creation eligibility checks.
+
+Telegram opens its own creation form and the user must confirm; this is not
+autonomous BotFather account creation. Videl then attempts to detect and
+verify the new bot before continuing through channel verification and the
+exclusive clone-mode picker. Capability does not prove link opening, ownership,
+update delivery or a running worker. A process-local setup claim prevents
+repeated entry clicks or canceled checks from reviving the same wizard, but is
+not a cross-worker lease. The proof watcher for a renamed bot still uses that
+child bot's own temporary Bot API update polling; inherited receiver overlap,
+managed-bot ownership and concurrency require further audit.
 
 Managed clone token rotation requires a private owned-clone confirmation
 with a one-use five-minute nonce, a readable original Fernet key,

@@ -31,6 +31,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
+import config
 from config import MANAGED_BOTS, MANAGED_PAIR_TIMEOUT
 from core import botapi
 from filestore.database.main_db import MainDB
@@ -43,8 +44,20 @@ POLL_START, POLL_MAX = 4, 10  # seconds between username checks
 
 
 async def available() -> bool:
-    """True when Videl may create bots for users (Bot Management Mode on)."""
-    return MANAGED_BOTS and botapi.enabled() and await botapi.can_manage_bots()
+    """Require a fresh, matching getMe response; never reuse a stale positive."""
+    if not MANAGED_BOTS or not botapi.enabled():
+        return False
+    try:
+        bridge = botapi.bot()
+        if bridge is None:
+            return False
+        me = await asyncio.wait_for(bridge.get_me(), timeout=5)
+        bot_id = str(config.BOT_TOKEN or "").split(":", 1)[0]
+        return (botapi.enabled() and bot_id.isdigit() and getattr(me, "id", None) == int(bot_id)
+                and getattr(me, "is_bot", None) is True and getattr(me, "can_manage_bots", None) is True)
+    except Exception:
+        # A transient failure is not evidence that the capability is enabled.
+        return False
 
 
 def suggested_username(first_name: str) -> str:
@@ -108,26 +121,49 @@ def _back_kb():
 
 # ─────────────────────────── one-tap flow ───────────────────────────
 @Client.on_callback_query(filters.regex(r"^managed_new$"))
-async def managed_new(client: Client, query: CallbackQuery):
+async def managed_new(client: Client, query: CallbackQuery, *, capability_checked=False):
     from filestore.main_bot.plugins.create_bot import _creation_state
-    user = query.from_user
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    if (not user or getattr(user, "is_bot", False) or not chat
+            or getattr(chat, "type", None) != enums.ChatType.PRIVATE or chat.id != user.id):
+        return await query.answer("Open bot creation in your private chat.", show_alert=True)
     st = _creation_state.get(user.id)
     if not st or st.get("step") != "awaiting_token":
-        return await query.answer("Tap ⚡ Create Bot again.", show_alert=True)
-    if not await available():
-        return await query.answer("One-tap creation is not available right now – paste a token instead.",
+        return await query.answer("Open /clone and start setup again.", show_alert=True)
+    if st.get("managed_checking"):
+        return await query.answer("Telegram creation is already being checked.", show_alert=True)
+    st["managed_checking"] = True
+    try:
+        return await _open_managed_creation(client, query, user, st, capability_checked)
+    finally:
+        st.pop("managed_checking", None)
+
+
+async def _open_managed_creation(client, query, user, st, capability_checked):
+    from filestore.main_bot.plugins.create_bot import _creation_state
+    if not capability_checked and not await available():
+        return await query.answer("Telegram creation is unavailable right now. Paste a bot token instead.",
                                   show_alert=True)
+    if _creation_state.get(user.id) is not st or st.get("step") != "awaiting_token":
+        return await query.answer("Setup changed. Open /clone again.", show_alert=True)
     me = client.me or await client.get_me()
+    if _creation_state.get(user.id) is not st or st.get("step") != "awaiting_token":
+        return await query.answer("Setup changed. Open /clone again.", show_alert=True)
+    expected_id = str(config.BOT_TOKEN or "").split(":", 1)[0]
+    if (not expected_id.isdigit() or getattr(me, "id", None) != int(expected_id)
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", str(getattr(me, "username", "") or ""))):
+        return await query.answer("The manager bot identity is unavailable. Paste a bot token instead.", show_alert=True)
     username = suggested_username(user.first_name)
     name = f"{(user.first_name or 'My')[:40]}'s Bot"
     st["data"]["managed_username"] = username
     st["data"]["managed_status_msg"] = query.message
     link = newbot_link(me.username, username, name)
     await query.message.edit_text(
-        "<b>⚡ One-tap bot creation</b>\n\n"
+        "<b>🤖 Create a bot with Telegram</b>\n\n"
         "<blockquote>1️⃣ Tap <b>Create my bot</b> below.\n"
         "2️⃣ Telegram opens a ready-made form – just press <b>Create</b>.\n"
-        "3️⃣ Come back here – I'll connect it automatically.</blockquote>\n\n"
+        "3️⃣ Return here while Videl checks and connects it. Further setup is required.</blockquote>\n\n"
         f"Suggested username: <code>@{username}</code>\n"
         "<i>Changed the username? Send it here like <code>@my_new_bot</code>.</i>\n"
         f"<i>⌛ Waiting up to {MANAGED_PAIR_TIMEOUT // 60} min…</i>",
@@ -138,8 +174,14 @@ async def managed_new(client: Client, query: CallbackQuery):
         ]),
         disable_web_page_preview=True,
     )
-    await query.answer()
+    if (_creation_state.get(user.id) is not st or st.get("step") != "awaiting_token"
+            or st.get("data", {}).get("managed_username") != username):
+        return await query.answer("Setup changed. Open /clone again.", show_alert=True)
     _spawn(watch_username(client, user.id, username, query.message))
+    try:
+        await query.answer()
+    except Exception:
+        pass  # an expired callback must not prevent the watcher from starting
 
 
 async def watch_username(client, user_id: int, username: str, status_msg, timeout: int = None):
@@ -262,8 +304,10 @@ async def on_managed_bot_updated(client: Client, update):
     st = _creation_state.get(user.id)
     if not st or st.get("step") != "awaiting_token" or not st.get("data", {}).get("managed_username"):
         return
+    expected_username = st["data"]["managed_username"]
     token = await _token_for(bot_user.id, client=client)
-    if not token or _creation_state.get(user.id) is not st or st.get("step") != "awaiting_token":
+    if (not token or _creation_state.get(user.id) is not st or st.get("step") != "awaiting_token"
+            or st.get("data", {}).get("managed_username") != expected_username):
         return
     # Clear managed_username so any background poll exits cleanly
     st["data"].pop("managed_username", None)

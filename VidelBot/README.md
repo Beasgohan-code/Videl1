@@ -53,12 +53,7 @@ network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, ordinary bot behav
   visible **only to the caller** (no chat spam); falls back to a normal reply.
 * **Rich `/guide`** – `sendRichMessage` with headings, a plans table, collapsible sections and link buttons
   (classic HTML help as fallback). Also `t.me/<bot>?start=guide`.
-* **⚡ One-tap clone bots** (`MANAGED_BOTS`) – turn on **Bot Management Mode** for Videl in @BotFather's Mini App.
-  *Create Bot* then shows **⚡ One-tap create**: Telegram opens a pre-filled "new bot" sheet
-  (`t.me/newbot/<Videl>/<random_username>`), the user taps *Create*, and Videl fetches the token itself
-  (`getManagedBotToken`) – no BotFather chat, no copy-paste. The bot belongs to the user. Renamed the username?
-  Send `@name` and press *Start* in the new bot to prove it's yours. Managed clones offer **🔁 Rotate token**
-  with an expiring confirmation, configured original encryption key, operator opt-in and single-instance gate; workers need a manual stop/start. An uncertain rotation needs operator recovery, not blind retry. Without Bot Management Mode the classic token flow is shown. See [mode safety and limitations](../docs/TELEGRAM_BOT_MODES.md).
+* **🤖 Create a bot with Telegram** (`MANAGED_BOTS`) – enable **Bot Management Mode** in @BotFather. When a fresh Bot API check confirms support, `/clone` offers this option alongside manual token setup. Telegram opens a pre-filled creation form for the user to confirm; Videl then attempts to connect it and continues channel and mode setup. If the capability cannot be confirmed, manual setup remains available. Renamed the username? Send `@name` and press *Start* in the new bot to prove it's yours. Capability and saved registration do not prove live delivery or a running worker. Managed clones offer **🔁 Rotate token** with an expiring confirmation, configured original encryption key, operator opt-in and single-instance gate; workers need a manual stop/start. An uncertain rotation needs operator recovery, not blind retry. See [mode safety and limitations](../docs/TELEGRAM_BOT_MODES.md).
 * **Stars** – subscription links via `createInvoiceLink(subscription_period)`, cancel/resume via
   `editUserStarSubscription`, `/stars` shows the live balance (`getMyStarBalance`) and Telegram's own ledger
   (`getStarTransactions`).
@@ -82,7 +77,7 @@ network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, ordinary bot behav
 * **Outgoing Bot API HTML snapshots** – admin `/dashboard` statistics plus supported private `/info` and `/sys` detail snapshots. `WIDGET_API_BETA` controls the optional outgoing endpoint; there is no query listener or shared calculator. See [`plugins/widget/README.md`](plugins/widget/README.md); live delivery depends on Telegram's endpoint/client support.
 * **Streaming replies & stoppable rich drafts** (Bot API 9.5+ `sendMessageDraft` + WzGram `send_rich_message_draft` / `MessageGenerationStopped`) – `/start` shows a live draft while the home screen is built; slow commands and plugin lookups (`/imdb`, `/anime`, `/mdl`, `/mediainfo`, `/speedtest`) stream rich progress stages and honour Telegram's native **Stop** button (`STREAM_REPLIES`)
 * **Interactive checklists & upgraded NFT gifts** – `/checklist Title :: Task 1 | Task 2` (native Business checklist or interactive inline checklist) and `/nftgift <t.me/nft/slug>` (WzGram `get_upgraded_gift` collectible rarity & floor inspector)
-* **Instant managed clone onboarding** – `@Client.on_managed_bot()` (`ManagedBotUpdated`) auto-connects new BotFather managed clones on push without waiting for polling
+* **Managed clone push handling** – `@Client.on_managed_bot()` (`ManagedBotUpdated`) can continue an active managed setup; a watcher is also used and live delivery is not guaranteed
 * **Bot profile photo** (Bot API 9.4 `setMyProfilePhoto`) – owners: `/setbotpic` · `/delbotpic`; clone owners: dashboard → 📩 Start cfg → 🤖 Bot profile photo
 * **Stars subscriptions** (30-day auto-renew, cancel / resume) and **Premium gifts**
 * **Native pickers** (`request_chat` / `request_user` keyboard buttons) – 📢 *Select channel* when creating a clone / changing its log or force-sub channel, 👤 *Choose a friend* for gifts

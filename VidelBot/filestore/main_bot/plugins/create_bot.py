@@ -373,63 +373,105 @@ async def _finish_creation(client, query, state, mode):
 
 @Client.on_callback_query(filters.regex(r"^create_bot$"))
 async def create_bot_callback(client: Client, query: CallbackQuery):
-    """Start the bot creation flow."""
-    user_id = query.from_user.id
-    if (_creation_state.get(user_id) or {}).get("step") == "registering":
-        return await query.answer("Registration is already being processed. Check My Bots before starting again.", show_alert=True)
+    """Offer manual token setup and, when confirmed, Telegram creation."""
+    return await _begin_creation(client, query, telegram=False)
 
+
+@Client.on_callback_query(filters.regex(r"^clone_managed_start$"))
+async def create_managed_callback(client: Client, query: CallbackQuery):
+    """A hub shortcut; the same limits, cooldown and capability checks apply."""
+    return await _begin_creation(client, query, telegram=True)
+
+
+async def _begin_creation(client: Client, query: CallbackQuery, *, telegram: bool):
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    if (not user or getattr(user, "is_bot", False) or not chat
+            or getattr(chat, "type", None) != enums.ChatType.PRIVATE or chat.id != user.id):
+        return await query.answer("Open bot creation in your private chat.", show_alert=True)
+    user_id = user.id
+    old = _creation_state.get(user_id)
+    if old and old.get("step") in ("starting", "registering", "verifying_token", "verifying_channel"):
+        return await query.answer("Setup is already being processed. Check My Bots before starting again.", show_alert=True)
     if not CLONE_ENABLED and user_id not in OWNERS:
-        await query.answer("🚧 Clone bot creation is currently disabled.", show_alert=True)
-        return
+        return await query.answer("🚧 Clone bot creation is currently disabled.", show_alert=True)
 
-    # Check bot limit
-    bot_count = await main_db.count_user_bots(user_id)
-    from core.plans import clone_limit
-    limit = await clone_limit(user_id)
-    if bot_count >= limit:
-        await query.answer(
-            f"❌ You've reached the limit of {limit} bot{'s' if limit != 1 else ''}! "
-            "Upgrade with /plans (🤖 Clone Plus / 🚀 Clone Pro) for more.",
-            show_alert=True,
-        )
-        return
+    # Claim before database/network awaits; cancel or a new flow must not be
+    # overwritten by a late response from this setup attempt.
+    state = {"step": "starting", "data": {}}
+    _creation_state[user_id] = state
+    if old:
+        timer = old.pop("profile_timer", None)
+        if timer:
+            timer.cancel()
+        for key in ("token", "registration_token", "restore_expected_token"):
+            old.get("data", {}).pop(key, None)
 
-    # Check cooldown
-    last_created = await main_db.get_cooldown(user_id)
-    if last_created:
-        if last_created.tzinfo is not None:  # stored aware, Mongo may return naive UTC
-            last_created = last_created.replace(tzinfo=None) - (last_created.utcoffset() or timedelta(0))
-        elapsed = (datetime.utcnow() - last_created).total_seconds()
-        if elapsed < BOT_CREATION_COOLDOWN:
-            remaining = int(BOT_CREATION_COOLDOWN - elapsed)
-            await query.answer(
-                f"⏳ Please wait {remaining}s before creating another bot.",
-                show_alert=True,
-            )
+    async def current():
+        if _creation_state.get(user_id) is state:
+            return True
+        await query.answer("Setup changed or was cancelled. Open /clone again.", show_alert=True)
+        return False
+
+    try:
+        if old and old.get("picker"):
+            await remove_channel_picker(client, user_id, old, "⌨️ Previous setup closed.")
+            if not await current(): return
+        bot_count = await main_db.count_user_bots(user_id)
+        if not await current(): return
+        from core.plans import clone_limit
+        limit = await clone_limit(user_id)
+        if not await current(): return
+        if bot_count >= limit:
+            _creation_state.pop(user_id, None)
+            return await query.answer(
+                f"❌ You've reached the limit of {limit} bot{'s' if limit != 1 else ''}! "
+                "Upgrade with /plans (🤖 Clone Plus / 🚀 Clone Pro) for more.", show_alert=True)
+        last_created = await main_db.get_cooldown(user_id)
+        if not await current(): return
+        if last_created:
+            if last_created.tzinfo is not None:
+                last_created = last_created.replace(tzinfo=None) - (last_created.utcoffset() or timedelta(0))
+            elapsed = (datetime.utcnow() - last_created).total_seconds()
+            if elapsed < BOT_CREATION_COOLDOWN:
+                _creation_state.pop(user_id, None)
+                return await query.answer(f"⏳ Please wait {int(BOT_CREATION_COOLDOWN - elapsed)}s before creating another bot.", show_alert=True)
+
+        from filestore.main_bot.plugins import managed_bots
+        enabled = await managed_bots.available()
+        if not await current(): return
+        state["step"] = "awaiting_token"
+        if telegram and enabled:
+            return await managed_bots.managed_new(client, query, capability_checked=True)
+        kb = [[InlineKeyboardButton("🤖 Create a bot with Telegram", callback_data="managed_new")]] if enabled else []
+        kb.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")])
+        extra = ("\n\nOr choose <b>Create a bot with Telegram</b>. Telegram asks you to confirm creation; "
+                 "you will still need to complete setup here.") if enabled else ""
+        await query.message.edit_text(
+            "<b>🤖 Connect a bot</b>\n\n"
+            "<blockquote><b>Step 1/3:</b> Send your bot token in this private chat.\n\n"
+            "Get a token from @BotFather. Keep it private and never share it with other users.</blockquote>" + extra,
+            reply_markup=InlineKeyboardMarkup(kb))
+        try:
+            if telegram and not enabled:
+                await query.answer("Telegram creation could not be confirmed. You can paste a token instead.", show_alert=True)
+            else:
+                await query.answer()
+        except Exception:
+            pass  # an expired callback must not invalidate the displayed token prompt
+        return
+    except asyncio.CancelledError:
+        if _creation_state.get(user_id) is state and state.get("step") in ("starting", "awaiting_token"):
+            _creation_state.pop(user_id, None)
+        raise
+    except Exception:
+        if _creation_state.get(user_id) is state and state.get("step") in ("starting", "awaiting_token"):
+            _creation_state.pop(user_id, None)
+        log.warning("Clone creation setup could not be confirmed.")
+        try:
+            return await query.answer("Setup is temporarily unavailable. Open /clone and try again.", show_alert=True)
+        except Exception:
             return
-
-    # Set user state to "awaiting token"
-    _creation_state[user_id] = {"step": "awaiting_token", "data": {}}
-
-    # Bot Management Mode → offer one-tap creation (no BotFather / token copy)
-    from filestore.main_bot.plugins import managed_bots
-    one_tap = await managed_bots.available()
-    kb = [[InlineKeyboardButton("⚡ One-tap create (no token)", callback_data="managed_new")]] if one_tap else []
-    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")])
-    extra = ("\n\n<b>⚡ New:</b> tap <b>One-tap create</b> and Telegram makes the bot for you – "
-             "no BotFather, no token.") if one_tap else ""
-
-    await query.message.edit_text(
-        text=(
-            "<b>🤖 Create a New Bot</b>\n\n"
-            "<blockquote><b>Step 1/3:</b> Send me your bot token.\n\n"
-            "You can get a bot token from @BotFather.\n"
-            "Example: <code>123456:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw</code></blockquote>"
-            + extra
-        ),
-        reply_markup=InlineKeyboardMarkup(kb),
-    )
-    await query.answer()
 
 
 # =============================================================================

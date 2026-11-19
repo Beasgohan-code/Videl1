@@ -80,30 +80,15 @@ CHANNELS_EMPTY = "📢 No channels configured yet."
 # ════════════════════════════════════════════════════════════════
 # Clone bots (Son-Goku FileStore layout)
 # ════════════════════════════════════════════════════════════════
-CLONE_START_MSG = f"""<b>━━━━━━━━━━━━━━━━━━━━━
-⚡ 𝗩𝗜𝗗𝗘𝗟 𝗙𝗜𝗟𝗘𝗦𝗧𝗢𝗥𝗘 ⚡
-━━━━━━━━━━━━━━━━━━━━━</b>
+CLONE_START_MSG = """<b>🤖 Clone Bot Studio</b>
 
-<blockquote>ᴡᴇʟᴄᴏᴍᴇ, {{mention}}!
+<blockquote>Welcome, {mention}!
 
-ɪ ᴀᴍ ᴀ <b>ᴘʀᴇᴍɪᴜᴍ ᴍᴜʟᴛɪ-ᴜsᴇʀ ꜰɪʟᴇsᴛᴏʀᴇ</b> ᴘʟᴀᴛꜰᴏʀᴍ.
-ᴄʀᴇᴀᴛᴇ ʏᴏᴜʀ ᴏᴡɴ ꜰɪʟᴇsᴛᴏʀᴇ ʙᴏᴛ ɪɴ sᴇᴄᴏɴᴅs!
+Choose how to connect a bot. You can provide an existing bot token privately, or, when Telegram confirms the capability, create a bot through Telegram. Telegram will ask you to confirm creation.
 
-╭─── ✦ ꜰᴇᴀᴛᴜʀᴇs ✦ ───╮
-│ ◈ ꜰɪʟᴇ sᴛᴏʀᴀɢᴇ ᴡɪᴛʜ sʜᴀʀᴇ ʟɪɴᴋs
-│ ◈ ꜰᴏʀᴄᴇ sᴜʙsᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟs
-│ ◈ ᴜʀʟ sʜᴏʀᴛᴇɴᴇʀ ɪɴᴛᴇɢʀᴀᴛɪᴏɴ
-│ ◈ ᴀᴅᴍɪɴ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ
-│ ◈ ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇ ᴛɪᴍᴇʀ
-│ ◈ ꜰᴏʀᴍᴀᴛᴛᴇᴅ ʟɪɴᴋ ɢᴇɴᴇʀᴀᴛᴏʀ
-│ ◈ sᴍᴀʀᴛ ʟɪɴᴋs · ᴇxᴘɪʀʏ · ᴘᴀssᴡᴏʀᴅ · ⭐
-│ ◈ sᴇᴀʀᴄʜ · ʀᴇǫᴜᴇsᴛs · ᴀɴᴀʟʏᴛɪᴄs
-│ ◈ ᴘʀᴇᴍɪᴜᴍ ᴜsᴇʀs · sᴄʜᴇᴅᴜʟᴇᴅ ʙʀᴏᴀᴅᴄᴀsᴛs
-╰──────────────────╯
+Next, verify a channel and choose one mode: <b>File Store</b> or experimental <b>Group Management</b> where enabled. Music voice-chat playback is not available yet.</blockquote>
 
-ʟɪᴍɪᴛ: <b>{MAX_BOTS_PER_USER}</b> ʙᴏᴛ(s) ᴘᴇʀ ᴜsᴇʀ · ᴍᴏʀᴇ ᴡɪᴛʜ /plans</blockquote>
-
-<i>⬇️ ᴛᴀᴘ ᴀ ʙᴜᴛᴛᴏɴ ᴛᴏ ɢᴇᴛ sᴛᴀʀᴛᴇᴅ ⬇️</i>"""
+<i>A saved clone does not by itself guarantee a running worker. Keep bot tokens private.</i>"""
 
 CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━━━
 📖 𝗛𝗘𝗟𝗣 &amp; 𝗚𝗨𝗜𝗗𝗘
@@ -111,10 +96,10 @@ CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━
 
 <blockquote><b>⚙️ ʜᴏᴡ ᴛᴏ ᴄʀᴇᴀᴛᴇ ʏᴏᴜʀ ʙᴏᴛ:</b>
 
-<b>❶</b> ᴛᴀᴘ <b>⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ</b>
-<b>❷</b> sᴇɴᴅ ʏᴏᴜʀ ʙᴏᴛ ᴛᴏᴋᴇɴ (ꜰʀᴏᴍ @BotFather)
-<b>❸</b> ᴛᴀᴘ <b>📢 sᴇʟᴇᴄᴛ ᴄʜᴀɴɴᴇʟ</b> (ᴏʀ sᴇɴᴅ ɪᴛs ɪᴅ)
-<b>❹</b> ʏᴏᴜʀ ʙᴏᴛ sᴛᴀʀᴛs ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ!</blockquote>
+<b>❶</b> Choose an existing token or Telegram creation when offered.
+<b>❷</b> Confirm creation in Telegram or send your token privately.
+<b>❸</b> Verify a channel, then choose a supported mode.
+<b>❹</b> Check the dashboard for the observed worker status.</blockquote>
 
 <blockquote><b>💤 ɪᴅʟᴇ ʙᴏᴛs:</b> ᴀ ᴄʟᴏɴᴇ ɴᴏʙᴏᴅʏ ᴜsᴇs ꜰᴏʀ {idle_days} ᴅᴀʏs ɪs ᴅᴇᴀᴄᴛɪᴠᴀᴛᴇᴅ. ʏᴏᴜ ɢᴇᴛ ᴀ ᴡᴀʀɴɪɴɢ ᴀ ᴅᴀʏ ʙᴇꜰᴏʀᴇ
 ᴀɴᴅ ᴄᴀɴ ʀᴇᴀᴄᴛɪᴠᴀᴛᴇ ɪᴛ ᴡɪᴛʜ ᴏɴᴇ ᴛᴀᴘ — ᴜsᴇʀs, ꜰɪʟᴇs ᴀɴᴅ ʟɪɴᴋs ᴀʀᴇ ᴋᴇᴘᴛ.</blockquote>

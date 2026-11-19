@@ -226,12 +226,18 @@ def back_home_kb(back: str = None, extra=None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows(extra or [], last))
 
 
-def clone_hub_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [Btn("⚡ Create Bot", callback_data="create_bot"), Btn("📋 My Bots", callback_data="my_bots")],
-        [Btn("📖 Help", callback_data="clone_help"), Btn("ℹ️ About", callback_data="clone_about")],
-        [Btn("⬅️ Back to Home", callback_data="start_btn")],
+def clone_hub_kb(managed_available: bool = False) -> InlineKeyboardMarkup:
+    choices = [[Btn("🤖 Create a bot with Telegram", callback_data="clone_managed_start")]] if managed_available else []
+    return InlineKeyboardMarkup(choices + [
+        [Btn("🔑 Use an existing bot token", callback_data="create_bot")],
+        [Btn("📋 My Bots", callback_data="my_bots"), Btn("📖 Help", callback_data="clone_help")],
+        [Btn("ℹ️ About", callback_data="clone_about"), Btn("⬅️ Back to Home", callback_data="start_btn")],
     ])
+
+
+async def clone_hub_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    from filestore.main_bot.plugins.managed_bots import available
+    return clone_hub_kb((CLONE_ENABLED or user_id in OWNERS) and await available())
 
 
 def premium_kb(until=None) -> InlineKeyboardMarkup:
@@ -287,7 +293,17 @@ def _clear_flows(user_id: int):
     """Abort any clone-bot wizard. Returns the aborted state (or None)."""
     try:
         from filestore.main_bot.plugins.create_bot import _creation_state
-        return _creation_state.pop(user_id, None)
+        state = _creation_state.get(user_id)
+        if state and state.get("step") == "registering":
+            return None  # the database write may already be in flight
+        state = _creation_state.pop(user_id, None)
+        if state:
+            timer = state.pop("profile_timer", None)
+            if timer:
+                timer.cancel()
+            for key in ("token", "registration_token", "restore_expected_token"):
+                state.get("data", {}).pop(key, None)
+        return state
     except Exception:
         return None
 
@@ -321,7 +337,7 @@ async def start_cmd(client: Client, message: Message):
     if arg in ("clone", "mybots"):
         return await send_with_preview(client, message.chat.id,
                                        texts.CLONE_START_MSG.format(mention=message.from_user.mention),
-                                       clone_hub_kb(), pic=await random_start_pic())
+                                       await clone_hub_keyboard(uid), pic=await random_start_pic())
     if arg == "help":
         return await rich.reply(message, help_doc(), reply_markup=help_kb(uid, close=True))
     if arg == "settings":
@@ -397,10 +413,11 @@ async def about_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command(["clone", "mybots", "create"]) & filters.private)
 async def clone_cmd(client: Client, message: Message):
-    _clear_flows(message.from_user.id)
+    uid = message.from_user.id
+    _clear_flows(uid)
     await send_with_preview(client, message.chat.id,
                             texts.CLONE_START_MSG.format(mention=message.from_user.mention),
-                            clone_hub_kb(), pic=await random_start_pic())
+                            await clone_hub_keyboard(uid), pic=await random_start_pic())
 
 
 @Client.on_message(filters.command("settings"))
@@ -421,7 +438,9 @@ async def cancel_cmd(client: Client, message: Message):
         return
 
     from filestore.main_bot.plugins.create_bot import _creation_state
-    if _creation_state.pop(uid, None) is not None:
+    if (_creation_state.get(uid) or {}).get("step") == "registering":
+        return await message.reply_text("⏳ Registration is already being processed. Check My Bots before retrying.")
+    if _clear_flows(uid) is not None:
         done.append("clone-bot setup")
 
     from core import support
@@ -484,7 +503,7 @@ async def menu_callbacks(client: Client, query: CallbackQuery):
     elif data == "back_menu":
         _clear_flows(uid)
         await edit_with_preview(client, msg, texts.CLONE_START_MSG.format(mention=query.from_user.mention),
-                                clone_hub_kb(), pic=await random_start_pic())
+                                await clone_hub_keyboard(uid), pic=await random_start_pic())
         if not CLONE_ENABLED and uid not in ADMINS:
             await query.answer("🚧 New clone creation is temporarily disabled.", show_alert=True)
 
