@@ -64,6 +64,7 @@ def test_restore_notice_and_managed_flag_are_consistent(monkeypatch):
     assert 'Restoring a removed clone' in status.text and 'shortener' in status.text
     assert 'synthetic' not in status.text
     create_bot._creation_state[10]['data']['managed']=True
+    create_bot._creation_state[10]['step']='awaiting_token'
     assert run(create_bot.accept_token(FakeClient(),10,'synthetic',FakeMsg('status')))
     assert create_bot._creation_state[10]['data']['managed'] is False
     denied=FakeMsg('status'); assert not run(create_bot.accept_token(FakeClient(),20,'synthetic',denied))

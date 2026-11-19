@@ -143,25 +143,32 @@ async def managed_new(client: Client, query: CallbackQuery):
 
 async def watch_username(client, user_id: int, username: str, status_msg, timeout: int = None):
     """Poll until the suggested bot exists, then fetch its token and continue the wizard."""
-    from filestore.main_bot.plugins.create_bot import accept_token
+    from filestore.main_bot.plugins.create_bot import accept_token, _creation_state
+    state = _creation_state.get(user_id)
+    if state is None:
+        return False
     deadline = time.time() + (timeout or MANAGED_PAIR_TIMEOUT)
     delay = POLL_START
     while time.time() < deadline:
         await asyncio.sleep(delay)
         delay = min(delay + 1, POLL_MAX)
-        if not _pending(user_id, username):
+        if _creation_state.get(user_id) is not state or not _pending(user_id, username):
             return False  # cancelled / token pasted / new attempt
         bot_user = await _resolve_bot(client, username)
         if not bot_user:
             continue
         token = await _token_for(bot_user.id, client=client)
+        if _creation_state.get(user_id) is not state or not _pending(user_id, username):
+            return False
         if not token:
             await _safe_edit(status_msg, f"<b>⚠️ @{username} exists but Videl can't manage it.</b>\n\n"
                                          "Paste its token from @BotFather instead.", _back_kb())
             return False
         await _safe_edit(status_msg, f"<b>⏳ Connecting @{username}…</b>")
-        return await accept_token(client, user_id, token, status_msg, managed=True)
-    if _pending(user_id, username):
+        if _creation_state.get(user_id) is not state or not _pending(user_id, username):
+            return False
+        return await accept_token(client, user_id, token, status_msg, managed=True, expected_state=state)
+    if _creation_state.get(user_id) is state and _pending(user_id, username):
         await _safe_edit(status_msg, "<b>⌛ Timed out waiting for the new bot.</b>\n\n"
                                      "Tap ⚡ Create Bot to try again, or paste a token.", _back_kb())
     return False
@@ -193,6 +200,8 @@ async def claim_username(client, message, user_id: int, text: str) -> bool:
                                  "Use the one-tap button, or paste the bot token.", _back_kb())
         return True
     code = secrets.token_hex(4)
+    if _creation_state.get(user_id) is not st or st.get("step") != "awaiting_token":
+        return True
     st["data"]["managed_username"] = username   # stop the old watcher
     await _safe_edit(status, (
         f"<b>🔐 Prove @{username} is yours</b>\n\n"
@@ -201,19 +210,25 @@ async def claim_username(client, message, user_id: int, text: str) -> bool:
             [InlineKeyboardButton(f"▶️ Start @{username}", url=f"https://t.me/{username}?start=vd{code}")],
             [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
         ]))
-    _spawn(_await_proof(client, user_id, username, token, code, status))
+    _spawn(_await_proof(client, user_id, username, token, code, status, expected_state=st))
     return True
 
 
-async def _await_proof(client, user_id, username, token, code, status, timeout: int = 180):
+async def _await_proof(client, user_id, username, token, code, status, timeout: int = 180, *, expected_state=None):
     """Read the new bot's own updates (it isn't running anywhere yet) for ``/start vd<code>``."""
-    from filestore.main_bot.plugins.create_bot import accept_token
+    from filestore.main_bot.plugins.create_bot import accept_token, _creation_state
+    if expected_state is None:
+        expected_state = _creation_state.get(user_id)
+    if expected_state is None:
+        return False
     wb = botapi.worker(token)
     offset, deadline = None, time.time() + timeout
     try:
-        while time.time() < deadline and _pending(user_id, username):
+        while time.time() < deadline and _creation_state.get(user_id) is expected_state and _pending(user_id, username):
             updates = await wb.get_updates(offset=offset, timeout=10, allowed_updates=["message"],
                                            request_timeout=25)
+            if _creation_state.get(user_id) is not expected_state or not _pending(user_id, username):
+                return False
             for u in updates or []:
                 offset = u.update_id + 1
                 m = u.message
@@ -221,12 +236,14 @@ async def _await_proof(client, user_id, username, token, code, status, timeout: 
                     if offset is not None:  # acknowledge so the worker doesn't see it again
                         await wb.get_updates(offset=offset, timeout=0, request_timeout=15)
                     await _safe_edit(status, f"<b>⏳ Connecting @{username}…</b>")
-                    return await accept_token(client, user_id, token, status, managed=True)
+                    if _creation_state.get(user_id) is not expected_state or not _pending(user_id, username):
+                        return False
+                    return await accept_token(client, user_id, token, status, managed=True, expected_state=expected_state)
             if not updates:
                 await asyncio.sleep(1)
     except Exception as e:
         log.warning(f"ownership check for @{username} failed: {e}")
-    if _pending(user_id, username):
+    if _creation_state.get(user_id) is expected_state and _pending(user_id, username):
         await _safe_edit(status, "<b>⌛ Verification timed out.</b>\n\nSend the @username again or paste the token.",
                          _back_kb())
     return False
@@ -245,7 +262,7 @@ async def on_managed_bot_updated(client: Client, update):
     if not st or st.get("step") != "awaiting_token" or not st.get("data", {}).get("managed_username"):
         return
     token = await _token_for(bot_user.id, client=client)
-    if not token:
+    if not token or _creation_state.get(user.id) is not st or st.get("step") != "awaiting_token":
         return
     # Clear managed_username so any background poll exits cleanly
     st["data"].pop("managed_username", None)
@@ -257,7 +274,7 @@ async def on_managed_bot_updated(client: Client, update):
             return
     else:
         await _safe_edit(status_msg, f"<b>⏳ Connecting @{bot_user.username or 'bot'}…</b>")
-    await accept_token(client, user.id, token, status_msg, managed=True)
+    await accept_token(client, user.id, token, status_msg, managed=True, expected_state=st)
 
 
 # ─────────────────────────── token rotation ───────────────────────────

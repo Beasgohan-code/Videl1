@@ -268,3 +268,21 @@ credential lifecycle and deletion, ownership isolation and revocation, resource
 limits, restart/shutdown cleanup, and single-instance/distributed coordination.
 Real Telegram voice-chat and native-runtime tests are still required. Do not
 paste a session string into the current picker.
+
+### Requested Group Management folder separation
+
+The current single `WorkerEngine` is under `filestore/worker_bot/engine.py` and
+imports `filestore.worker_bot.group_profile` when starting Group Management.
+The six group modules are also currently inside that folder. The controller,
+watchdog and existing dashboards rely on that shared engine and registry. The
+requested independent folder is **not yet implemented**: moving only the group
+files would break the current imports, while introducing a second engine or
+Telegram receiver could cause duplicate consumers and split lifecycle locks.
+
+A safe migration needs one shared lifecycle/registry, a reviewed group package,
+updated imports and all call sites/tests, unchanged existing File Store behavior,
+and coordinated worker rollout. The request not to edit the working File Store
+worker has been respected; no file under `filestore/worker_bot/` was changed for
+this onboarding fix. A minimal bridge/import change in that protected folder (or
+an explicitly approved controller migration) needs authorization before wiring
+the separate folder. Group mode retains all existing restrictions above.

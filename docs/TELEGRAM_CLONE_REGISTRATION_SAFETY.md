@@ -9,3 +9,23 @@ Clone removal is a **soft delete**, not erasure: the stored token, settings and 
 The creation workflow sanitizes channel-verification and local worker-start error messages, but this is not a full audit of all logs or dependencies. If a database response is uncertain, check My Bots before retrying. If the cooldown write fails after registration, this request does not attempt startup and asks for operator help; the saved record may be observed by other workers.
 
 Remaining limitations: old/mixed-version workers can still execute the former replace operation. A credential comparison does not prevent ABA changes or all owner/deletion/worker lifecycle races. Cooldowns, quotas and worker startup are not transactional with registration, and MongoDB write/network ambiguity remains. Real Mongo, multi-process and Telegram behavior need validation before coordinated rollout. The legacy encryption helper can still store new clone tokens in plaintext when `ENCRYPTION_KEY` is unavailable; this change neither alters the key nor migrates stored credentials. Restoring a deleted clone replaces its stored token with the token voluntarily supplied by its owner; never rotate or replace the backend encryption key blindly.
+
+## Token verification and cancelled setups
+
+The token validation step now claims the current in-process wizard before the
+Telegram verification and registry lookup. Duplicate submissions cannot start a
+second verification for that same setup. Cancellation or a new wizard while a
+validation, registry read, or status reply is pending prevents the old attempt
+from advancing or saving its credential to the new wizard. Managed-bot watcher,
+proof and push paths also associate the result with the original wizard; the
+watcher rechecks the chosen username after network calls. Errors from validation
+and registry lookup are displayed generically. Cancellation does not retract a
+Telegram request already sent or erase a message already posted.
+
+These guards are process-local, not a distributed setup lock. A restarted or
+second controller, existing managed-bot proof polling, old workers, concurrent
+registration/lifecycle writers, token plaintext fallback, and network or database
+ambiguity remain separate issues. A managed proof request already in flight may
+still reach Telegram after cancellation. Do not treat these safeguards as proof of
+real Telegram or MongoDB behavior, complete secret handling, or safe overlapping
+workers. Group mode remains default-off and Music remains unavailable.

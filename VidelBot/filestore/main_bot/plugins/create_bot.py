@@ -83,40 +83,42 @@ shared_chat_filter = filters.create(_has_shared_chat)
 
 
 
-async def accept_token(client: Client, user_id: int, token: str, status_msg, managed: bool = False) -> bool:
-    """Validate a bot token and move the wizard to the channel step.
-    Shared by the classic "paste your token" flow and the one-tap managed-bot flow."""
-    state = _creation_state.setdefault(user_id, {"step": "awaiting_token", "data": {}})
-    state.setdefault("data", {})
-    state["data"].pop("restore_deleted", None)
-    state["data"].pop("restore_expected_token", None)
-    state["data"].pop("restore_expected_profile", None)
-    state["data"].pop("restore_profile_present", None)
-    state["data"]["managed"] = bool(managed)
-    bot_info = await validate_bot_token(token)
-    if not bot_info:
-        await status_msg.edit_text(
-            "<b>❌ Invalid bot token!</b>\n\n"
-            "The token could not be verified with Telegram.\n"
-            "Please check and send again.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-            ]),
-        )
+async def accept_token(client: Client, user_id: int, token: str, status_msg, managed: bool = False,
+                       *, expected_state=None) -> bool:
+    """Validate one token for the current in-process setup, never revive a cancelled flow."""
+    if expected_state is None:
+        state = _creation_state.setdefault(user_id, {"step": "awaiting_token", "data": {}})
+    else:
+        state = expected_state
+    if _creation_state.get(user_id) is not state or state.get("step") != "awaiting_token":
         return False
+    # Claim synchronously before network/database calls; duplicate submissions and
+    # managed-bot callbacks must not race to choose a different credential.
+    state["step"] = "verifying_token"
+    state.setdefault("data", {})
+    try:
+        bot_info = await validate_bot_token(token)
+        if _creation_state.get(user_id) is not state or state.get("step") != "verifying_token":
+            return False
+        if not bot_info:
+            state["step"] = "awaiting_token"
+            await status_msg.edit_text(
+                "<b>❌ Invalid bot token!</b>\n\n"
+                "The token could not be verified with Telegram.\n"
+                "Please check and send again.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
+                ]),
+            )
+            return False
 
-    # Check if bot is already registered
-    bot_id = bot_info["id"]
-    existing = await main_db.get_bot(bot_id)
-    if existing:
-        if (existing.get("is_deleted") is True and existing.get("owner_id") == user_id
-                and isinstance(existing.get("bot_token_encrypted"), str)):
-            state["data"]["restore_deleted"] = True
-            # Compare the saved credential at commit time; never display it.
-            state["data"]["restore_expected_token"] = existing["bot_token_encrypted"]
-            state["data"]["restore_profile_present"] = "clone_profile" in existing
-            state["data"]["restore_expected_profile"] = existing.get("clone_profile")
-        else:
+        bot_id = bot_info["id"]
+        existing = await main_db.get_bot(bot_id)
+        if _creation_state.get(user_id) is not state or state.get("step") != "verifying_token":
+            return False
+        if existing and not (existing.get("is_deleted") is True and existing.get("owner_id") == user_id
+                             and isinstance(existing.get("bot_token_encrypted"), str)):
+            _creation_state.pop(user_id, None)
             await status_msg.edit_text(
                 "<b>❌ This bot is already registered!</b>\n\n"
                 f"Bot @{html.escape(str(bot_info.get('username', 'unknown')))} is already in use.",
@@ -124,13 +126,33 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
                     [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
                 ]),
             )
-            _creation_state.pop(user_id, None)
             return False
 
-    # Save token and move to next step
-    state["data"]["token"] = token
-    state["data"]["bot_info"] = bot_info
-    state["step"] = "awaiting_channel"
+        data = state["data"]
+        for key in ("restore_deleted", "restore_expected_token", "restore_expected_profile", "restore_profile_present"):
+            data.pop(key, None)
+        data["managed"] = bool(managed)
+        if existing:
+            data["restore_deleted"] = True
+            data["restore_expected_token"] = existing["bot_token_encrypted"]
+            data["restore_profile_present"] = "clone_profile" in existing
+            data["restore_expected_profile"] = existing.get("clone_profile")
+        data["token"] = token
+        data["bot_info"] = bot_info
+        state["step"] = "awaiting_channel"
+    except asyncio.CancelledError:
+        if _creation_state.get(user_id) is state and state.get("step") == "verifying_token":
+            state["step"] = "awaiting_token"
+        raise
+    except Exception:
+        if _creation_state.get(user_id) is state and state.get("step") == "verifying_token":
+            state["step"] = "awaiting_token"
+            log.warning("Clone token verification could not be confirmed.")
+            try:
+                await status_msg.edit_text("<b>⚠️ Token verification could not be confirmed.</b> Please try again.")
+            except Exception:
+                pass
+        return False
 
     bot_name = bot_info.get("first_name", "Unknown")
     bot_username = bot_info.get("username", "unknown")
@@ -153,8 +175,10 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
             [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
         ]),
     )
-    await offer_channel_picker(client, user_id, state)
-    return True
+    if _creation_state.get(user_id) is state and state.get("step") == "awaiting_channel":
+        await offer_channel_picker(client, user_id, state)
+        return True
+    return False
 
 
 def _expire_profile_selection(user_id: int, nonce: str):
@@ -459,7 +483,7 @@ async def handle_creation_input(client: Client, message: Message):
 
     state = _creation_state[user_id]
     step = state["step"]
-    if step in ("verifying_channel", "registering"):
+    if step in ("verifying_token", "verifying_channel", "registering"):
         return await message.reply("⏳ This setup step is already being processed. Please wait.")
     if step == "awaiting_profile":
         return await message.reply("Choose a profile using the buttons above, or cancel setup.")
@@ -512,7 +536,7 @@ async def handle_creation_input(client: Client, message: Message):
         # Validate with Telegram API
         status_msg = await message.reply("<b>⏳ Validating bot token...</b>")
 
-        await accept_token(client, user_id, token, status_msg)
+        await accept_token(client, user_id, token, status_msg, expected_state=state)
 
     # -------------------------------------------------------------------------
     # STEP 2: Awaiting log channel ID
