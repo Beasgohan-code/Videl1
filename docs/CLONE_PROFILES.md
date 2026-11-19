@@ -279,10 +279,33 @@ requested independent folder is **not yet implemented**: moving only the group
 files would break the current imports, while introducing a second engine or
 Telegram receiver could cause duplicate consumers and split lifecycle locks.
 
-A safe migration needs one shared lifecycle/registry, a reviewed group package,
-updated imports and all call sites/tests, unchanged existing File Store behavior,
-and coordinated worker rollout. The request not to edit the working File Store
-worker has been respected; no file under `filestore/worker_bot/` was changed for
-this onboarding fix. A minimal bridge/import change in that protected folder (or
-an explicitly approved controller migration) needs authorization before wiring
-the separate folder. Group mode retains all existing restrictions above.
+The owner chose to keep every file in `filestore/worker_bot/` unchanged and
+investigate a broader shared-controller migration. The existing engine creates
+its own singleton and owns the per-bot locks, running clients, uncertain stops,
+profile changes and shutdown. A second independent engine, runtime monkey patch,
+or changing only some callers could split those safeguards and create competing
+receivers. The current engine still starts group clones from its legacy imports;
+no new folder is currently active.
+
+`python scripts/audit_clone_controller.py` provides a read-only JSON inventory
+of explicit application imports of the existing engine and group modules. It
+parses source without importing it, excludes test files, and returns an error for
+unreadable or unparseable files. Its current scan finds 33 engine references in
+16 files (including two File Store link-generator references to a constant) and
+11 group references in five files. It is an aid to review, not proof that all
+call sites are found: computed imports, indirect references, plugins and older
+running deployments still need manual inspection.
+
+A candidate migration would need one new authoritative controller with the same
+registry/locks/uncertain-stop tracking, delegation to the untouched File Store
+implementation, a separately packaged group runtime, and a deliberate migration
+of every caller including startup, shutdown, watchdog, dashboard, profile selection,
+creation and rotation. Simply instantiating a second `WorkerEngine` is unsafe.
+The protected legacy group code would remain as inactive historical code until a
+separate cleanup is authorized; copying it without a clear ownership and freeze
+plan risks behavior drift. Before any cutover, prove exclusive single-client
+routing, correct cancellation and stop recovery, preserved records and settings,
+File Store parity, old/new worker incompatibilities, and real Telegram/Mongo
+behavior in a disposable environment. Keep the default-off gate and require a
+coordinated non-overlapping rollout. No such controller migration, deployment or
+data migration has been performed. Music remains unavailable.

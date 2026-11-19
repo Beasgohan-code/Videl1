@@ -118,6 +118,9 @@ jobs:
           print(f"Static security scan passed across {len(sources)} modules")
           '
 
+      - name: Test clone controller migration inventory
+        run: python -m unittest scripts.tests.test_audit_clone_controller -v
+
       - name: Run full pytest suite
         working-directory: VidelBot
         run: python -m pytest tests -q

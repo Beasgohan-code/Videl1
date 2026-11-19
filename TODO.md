@@ -185,7 +185,7 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 
 ### Clone profile follow-up (experimental, default off)
 
-- [ ] Separate Group Management into its own worker folder without changing File Store behavior or introducing a competing receiver. Current shared engine imports group modules from the protected File Store folder; a minimal integration bridge or reviewed shared-controller migration needs explicit approval under the request not to edit that worker. See [separation boundary](docs/CLONE_PROFILES.md#requested-group-management-folder-separation).
+- [ ] Separate Group Management into its own worker folder without changing File Store behavior or introducing a competing receiver. Current shared engine imports group modules from the protected File Store folder; the user chose no edits there and a broader shared-controller investigation. A read-only import inventory aids that investigation; a safe controller cutover is not implemented. See [separation boundary](docs/CLONE_PROFILES.md#requested-group-management-folder-separation).
 
 - [ ] Build a real per-clone voice-chat music assistant, with secure session lifecycle, streaming, authorization and live Telegram testing; Music remains unavailable and session strings are not requested. PyTgCalls 2.3.3 fails its WzGram 3.1.6 constructor probe; resolve compatibility, licensing, isolation and lifecycle first (see [music feasibility](docs/CLONE_PROFILES.md#music-feasibility-videl0-reference)).
 - [ ] Verify optional premium button icons with eligible bots and real Telegram destinations; extend beyond primary Bot API text sends/edits only with tested fallbacks ([scope](docs/PREMIUM_BUTTON_ICONS.md)).
