@@ -30,3 +30,22 @@ warning; a failed response retains the draft and warns that file and record
 changes may be partial. These are best-effort browser interactions, not a
 transaction, a retry guarantee or protection against browser history, crashes,
 client-specific confirmation behavior or other sessions editing the same file.
+
+## Account preferences and workspace changes
+
+Personal preferences belong to the account, not a workspace. In the Next
+preview, switching workspaces while on Personal settings preserves its draft or
+in-flight save and leaves the navigation warning active; switching alone does
+not imply that a save was canceled or completed. If the separate workspace
+creation form has a draft or pending request, switching still warns before
+discarding the name or leaving that operation running. Workspace creation is
+blocked while a Studio reports a dirty draft or pending operation. While a
+workspace creation is in progress, the personal preference controls are
+temporarily disabled so its account refresh does not discard a newly edited
+draft. Other tabs, sessions, crashes and unreported operations are not covered.
+
+For guarded Next links and the page finder, accepting the warning no longer
+immediately removes the guard. It remains active until the destination renders,
+so a delayed navigation still warns on a second attempt or page unload. Tests
+cover a delayed synthetic Next server response, not every routing failure or
+client. Browser back/forward can still bypass the click guard.

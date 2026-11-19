@@ -81,7 +81,7 @@ live Telegram verification, real file safety, production RBAC or full parity.
 
 `node next-analytics-custom.test.cjs` covers synthetic date validation, draft navigation, custom CSV and old/mixed backend responses at 320/390/1440px. The separate local-backend contract test also checks custom chart/CSV with mock Mongo; neither validates production, real Mongo concurrency or physical devices.
 
-`node next-settings.test.cjs` exercises account preference saves, account-wide workspace behavior, empty-workspace access, older-backend safety gating, draft/pending guards and uncertain responses at synthetic browser widths. These are in-memory fixtures, not evidence of Mongo concurrency or production behavior.
+`node next-settings.test.cjs` exercises account preference saves, preserved drafts and pending saves during workspace switching, workspace-creation overlap, empty-workspace access, older-backend safety gating, draft/pending guards and uncertain responses at synthetic browser widths. These are in-memory fixtures, not evidence of Mongo concurrency or production behavior.
 
 `node next-file-rename-safety.test.cjs` checks changed rename cancellation, switching, focus, sidebar navigation and delayed/error responses at synthetic Chromium widths. It does not exercise real storage, browser history, physical devices or assistive technology.
 
@@ -164,3 +164,5 @@ to a disposable temporary directory, start Next with
 `node next-file-backend.test.cjs`. This exercises a signed synthetic login,
 actual local aiohttp File Store, Analytics and inbox routes, CSV export, temporary disk and mock Mongo; it is not
 live Telegram, real Mongo, production storage, concurrency or device evidence.
+
+`node next-navigation-safety.test.cjs` also stalls a synthetic route response to verify that an accepted click does not prematurely disable the dirty/unload guard. It does not prove browser-history, actual route-failure, real modified-click new-tab or embedded-client behavior. CI runs this and the settings test against the in-memory fixture.

@@ -38,6 +38,25 @@ async function signIn(page){await page.goto(base);await page.getByLabel('One-tim
   await modified.getByRole('link',{name:'Team',exact:true}).click();assert.equal(dialogs,1,'modified click must not disable dirty guard');
   assert.equal(await modified.getByLabel('Theme preference').inputValue(),'light');await modified.close();console.log('Modified navigation leaves the current dirty draft guarded');
 
+  // Keep a dirty guard active after approval while the destination is still loading.
+  // A delayed synthetic RSC response models a navigation that has not yet committed.
+  const delayed=await browser.newPage();let allowRoute,routeStarted;
+  const routeGate=new Promise(r=>allowRoute=r),routeSeen=new Promise(r=>routeStarted=r);
+  await delayed.route('**/next-preview/team*',async route=>{if(route.request().resourceType()==='fetch'){routeStarted();await routeGate}try{await route.continue()}catch{}});
+  await signIn(delayed);await delayed.getByRole('link',{name:'Personal settings',exact:true}).click();
+  await delayed.getByLabel('Theme preference').selectOption('light');
+  delayed.once('dialog',d=>d.accept());await delayed.getByRole('link',{name:'Team',exact:true}).click();
+  let routeTimeout;try{await Promise.race([routeSeen,new Promise((_,reject)=>{routeTimeout=setTimeout(()=>reject(Error('Team navigation request did not start')),15000)})])}finally{clearTimeout(routeTimeout)}
+  assert.equal(new URL(delayed.url()).pathname,'/next-preview/settings');
+  assert.equal(await delayed.getByLabel('Theme preference').inputValue(),'light');
+  assert.equal(await delayed.evaluate(()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented}),true);
+  let retryWarning='';delayed.once('dialog',async d=>{retryWarning=d.message();await d.dismiss()});
+  await delayed.getByRole('link',{name:'Bot management',exact:true}).click();assert.match(retryWarning,/Discard unsaved changes/);
+  assert.equal(await delayed.getByLabel('Theme preference').inputValue(),'light');
+  allowRoute();await delayed.getByRole('heading',{name:/team/i}).first().waitFor();
+  assert.equal(await delayed.evaluate(()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented}),false);
+  await delayed.close();console.log('Approved but delayed navigation retains protection until the destination renders');
+
   const pending=await browser.newPage();let release,start;const gate=new Promise(r=>release=r),seen=new Promise(r=>start=r);
   await pending.route('**/api/v1/workspaces',async route=>{if(route.request().method()!=='POST')return route.continue();start();await gate;try{await route.continue()}catch{}});
   await signIn(pending);await pending.getByRole('button',{name:'New workspace'}).first().click();await pending.getByLabel('Workspace name').fill('Pending workspace');

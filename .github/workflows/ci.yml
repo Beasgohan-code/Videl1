@@ -157,6 +157,26 @@ jobs:
           export CHROMIUM_PATH="$(node -p "require('playwright-core').chromium.executablePath()")"
           node next-file-backend.test.cjs
 
+      - name: Test Next workspace drafts with synthetic API
+        timeout-minutes: 6
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+          VIDEL_BACKEND_ORIGIN: http://127.0.0.1:8084
+          NEXT_PREVIEW_TEST_URL: http://localhost:3002/next-preview
+        run: |
+          set -eu
+          python VidelBot/tests/browser/next_preview_fixture.py > "$RUNNER_TEMP/studio-fixture.log" 2>&1 &
+          api_pid=$!
+          node frontend-platform/node_modules/next/dist/bin/next dev frontend-platform/apps/studio --hostname 127.0.0.1 --port 3002 > "$RUNNER_TEMP/studio-next.log" 2>&1 &
+          next_pid=$!
+          trap 'kill "$api_pid" "$next_pid" 2>/dev/null || true' EXIT
+          curl --fail --silent --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:8084/app > /dev/null
+          curl --fail --silent --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:3002/next-preview > /dev/null
+          cd VidelBot/tests/browser
+          export CHROMIUM_PATH="$(node -p "require('playwright-core').chromium.executablePath()")"
+          node next-settings.test.cjs
+          node next-navigation-safety.test.cjs
+
   native-tools:
     name: Ubuntu native media & archive tools
     runs-on: ubuntu-24.04
