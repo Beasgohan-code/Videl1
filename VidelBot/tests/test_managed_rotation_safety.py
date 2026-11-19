@@ -12,6 +12,8 @@ from filestore.utils import security
 from core import botapi
 import config
 
+_REAL_ROTATION_COLLECTION = managed_bots._rotation_collection
+
 
 @pytest.fixture(autouse=True)
 def setup(monkeypatch):
@@ -26,7 +28,8 @@ def setup(monkeypatch):
     async def mock_update(*args, **kwargs):
         assert kwargs.pop('collation').document == {'locale': 'simple'}
         return await real_update(*args, **kwargs)
-    monkeypatch.setattr(managed_bots.main_db.bots, 'update_one', mock_update)
+    store = SimpleNamespace(update_one=mock_update)
+    monkeypatch.setattr(managed_bots, '_rotation_collection', lambda: store)
     yield cipher
     no_botapi()
     managed_bots._rotation_pending.clear(); managed_bots._rotation_in_flight.clear(); managed_bots._rotation_uncertain.clear()
@@ -96,8 +99,11 @@ def test_api_failure_is_uncertain_no_retry_no_secret():
 def test_database_failure_after_rotation_is_uncertain(monkeypatch):
     session = use_botapi(responses={'ReplaceManagedBotToken': '424242:newtoken'})
     preview(); q = confirmation()
-    async def fail(*a, **kw): raise RuntimeError('synthetic-secret')
-    monkeypatch.setattr(managed_bots.main_db.bots, 'update_one', fail)
+    original = managed_bots._rotation_collection().update_one
+    async def fail_on_save(*a, **kw):
+        if '$unset' in a[1]: raise RuntimeError('synthetic-secret')
+        return await original(*a, **kw)
+    monkeypatch.setattr(managed_bots, '_rotation_collection', lambda: SimpleNamespace(update_one=fail_on_save))
     run(managed_bots.rotate_token(FakeClient(), q))
     assert 'uncertain' in q.message.text and 'synthetic-secret' not in q.message.text
     assert session.names().count('ReplaceManagedBotToken') == 1 and 424242 in managed_bots._rotation_uncertain
@@ -187,3 +193,136 @@ def test_legacy_plaintext_matching_credential_is_sealed_on_rotation(setup):
     saved = run(MainDB().get_bot(424242))['bot_token_encrypted']
     assert saved.startswith('enc:') and setup.decrypt(saved[4:].encode()) == b'424242:newtoken'
     assert session.names().count('ReplaceManagedBotToken') == 1
+
+
+def test_reservation_uses_majority_and_journalled_write_concern(monkeypatch):
+    from pymongo.write_concern import WriteConcern
+    captured = {}
+    class Collection:
+        def with_options(self, **kwargs):
+            captured.update(kwargs)
+            return self
+    real_factory = _REAL_ROTATION_COLLECTION
+    monkeypatch.setattr(managed_bots.main_db, 'bots', Collection())
+    assert real_factory() is managed_bots.main_db.bots
+    assert captured['write_concern'] == WriteConcern(w='majority', j=True, wtimeout=10000)
+
+
+def test_success_clears_reservation_only_with_encrypted_save(setup):
+    session = use_botapi(responses={'ReplaceManagedBotToken': '424242:newtoken'})
+    observed = []
+    original = managed_bots._rotation_collection().update_one
+    async def record(*a, **kw):
+        result = await original(*a, **kw)
+        observed.append((a[0], a[1], await MainDB().get_bot(424242)))
+        return result
+    from pytest import MonkeyPatch
+    with MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(managed_bots, '_rotation_collection', lambda: SimpleNamespace(update_one=record))
+        preview(); run(managed_bots.rotate_token(FakeClient(), confirmation()))
+    assert len(observed) == 2 and session.names().count('ReplaceManagedBotToken') == 1
+    marker = managed_bots._ROTATION_MARKER
+    first, last = observed
+    assert first[0][marker] == {'$exists': False}
+    assert marker in first[2] and first[2]['bot_token_encrypted'].startswith('enc:')
+    assert last[0][f'{marker}.operation_id'] == first[2][marker]['operation_id']
+    assert last[1]['$unset'] == {marker: ''} and marker not in last[2]
+    assert setup.decrypt(last[2]['bot_token_encrypted'][4:].encode()) == b'424242:newtoken'
+
+
+def test_ambiguous_claim_persists_and_blocks_after_process_reset(monkeypatch):
+    session = use_botapi(responses={'ReplaceManagedBotToken': '424242:newtoken'})
+    original = managed_bots._rotation_collection().update_one
+    async def claim_then_disconnect(*args, **kwargs):
+        await original(*args, **kwargs)
+        raise RuntimeError('secret details')
+    monkeypatch.setattr(managed_bots, '_rotation_collection', lambda: SimpleNamespace(update_one=claim_then_disconnect))
+    preview(); q = confirmation(); run(managed_bots.rotate_token(FakeClient(), q))
+    assert 'Telegram was not contacted' in q.message.text and 'secret details' not in q.message.text
+    assert not session.names().count('ReplaceManagedBotToken')
+    assert managed_bots._ROTATION_MARKER in run(MainDB().get_bot(424242))
+    managed_bots._rotation_uncertain.clear()  # simulate a process restart
+    assert 'do not retry' in preview().answers[-1][0].lower()
+
+
+def test_api_error_and_cancel_leave_reservation_across_restart(monkeypatch):
+    session = use_botapi(fail={'ReplaceManagedBotToken': RuntimeError('redacted')})
+    preview(); run(managed_bots.rotate_token(FakeClient(), confirmation()))
+    assert managed_bots._ROTATION_MARKER in run(MainDB().get_bot(424242))
+    managed_bots._rotation_uncertain.clear()
+    assert 'do not retry' in preview().answers[-1][0].lower()
+    assert session.names().count('ReplaceManagedBotToken') == 1
+
+
+def test_cancel_during_claim_keeps_potential_reservation_and_local_fence(monkeypatch):
+    async def go():
+        entered = asyncio.Event()
+        original = managed_bots._rotation_collection().update_one
+        async def claim_and_wait(*a, **kw):
+            await original(*a, **kw)
+            entered.set(); await asyncio.Event().wait()
+        monkeypatch.setattr(managed_bots, '_rotation_collection', lambda: SimpleNamespace(update_one=claim_and_wait))
+        session = use_botapi(responses={'ReplaceManagedBotToken': '424242:newtoken'})
+        await managed_bots.rotate_token(FakeClient(), FakeQuery('rotate_tok_424242', uid=5))
+        task = asyncio.create_task(managed_bots.rotate_token(FakeClient(), confirmation()))
+        await entered.wait(); task.cancel()
+        with pytest.raises(asyncio.CancelledError): await task
+        assert 424242 in managed_bots._rotation_uncertain
+        assert managed_bots._ROTATION_MARKER in await MainDB().get_bot(424242)
+        assert 'ReplaceManagedBotToken' not in session.names()
+    run(go())
+
+
+def test_competing_reservation_and_malformed_marker_fail_closed(monkeypatch):
+    session = use_botapi(responses={'ReplaceManagedBotToken': '424242:newtoken'})
+    preview(); q = confirmation()
+    original = managed_bots._rotation_collection().update_one
+    async def competing_claim(*args, **kwargs):
+        await MainDB().bots.update_one({'_id': 424242}, {'$set': {managed_bots._ROTATION_MARKER: None}})
+        return await original(*args, **kwargs)
+    monkeypatch.setattr(managed_bots, '_rotation_collection', lambda: SimpleNamespace(update_one=competing_claim))
+    run(managed_bots.rotate_token(FakeClient(), q))
+    assert 'not attempted' in q.message.text and not session.names().count('ReplaceManagedBotToken')
+    assert 'do not retry' in preview().answers[-1][0].lower()
+
+
+def test_changed_reservation_after_telegram_does_not_save_or_clear(monkeypatch):
+    session = use_botapi(responses={'ReplaceManagedBotToken': '424242:newtoken'})
+    original = managed_bots._rotation_collection().update_one
+    async def replace_marker_on_save(*args, **kwargs):
+        if '$unset' in args[1]:
+            await MainDB().bots.update_one({'_id': 424242}, {'$set': {managed_bots._ROTATION_MARKER: {'operation_id': 'other'}}})
+        return await original(*args, **kwargs)
+    monkeypatch.setattr(managed_bots, '_rotation_collection', lambda: SimpleNamespace(update_one=replace_marker_on_save))
+    preview(); q = confirmation(); run(managed_bots.rotate_token(FakeClient(), q))
+    row = run(MainDB().get_bot(424242))
+    assert 'uncertain' in q.message.text
+    assert row[managed_bots._ROTATION_MARKER]['operation_id'] == 'other'
+    assert session.names().count('ReplaceManagedBotToken') == 1
+
+
+def test_unacknowledged_reservation_never_calls_telegram(monkeypatch):
+    session = use_botapi(responses={'ReplaceManagedBotToken': '424242:newtoken'})
+    async def unack(*args, **kwargs):
+        return SimpleNamespace(acknowledged=False)
+    monkeypatch.setattr(managed_bots, '_rotation_collection', lambda: SimpleNamespace(update_one=unack))
+    preview(); q = confirmation(); run(managed_bots.rotate_token(FakeClient(), q))
+    assert 'Telegram was not contacted' in q.message.text
+    assert 424242 in managed_bots._rotation_uncertain
+    assert not session.names().count('ReplaceManagedBotToken')
+
+
+def test_lost_final_ack_is_uncertain_even_if_save_committed(monkeypatch, setup):
+    session = use_botapi(responses={'ReplaceManagedBotToken': '424242:newtoken'})
+    original = managed_bots._rotation_collection().update_one
+    async def save_then_disconnect(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if '$unset' in args[1]: raise RuntimeError('lost acknowledgement')
+        return result
+    monkeypatch.setattr(managed_bots, '_rotation_collection', lambda: SimpleNamespace(update_one=save_then_disconnect))
+    preview(); q = confirmation(); run(managed_bots.rotate_token(FakeClient(), q))
+    row = run(MainDB().get_bot(424242))
+    assert managed_bots._ROTATION_MARKER not in row
+    assert setup.decrypt(row['bot_token_encrypted'][4:].encode()) == b'424242:newtoken'
+    assert 'uncertain' in q.message.text and 'lost acknowledgement' not in q.message.text
+    assert 424242 in managed_bots._rotation_uncertain and session.names().count('ReplaceManagedBotToken') == 1

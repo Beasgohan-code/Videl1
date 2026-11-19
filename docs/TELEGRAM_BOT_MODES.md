@@ -17,34 +17,58 @@ mode picker remain in the existing setup. The proof watcher for a renamed bot
 still uses that child bot's own temporary Bot API update polling; inherited
 receiver overlap and managed-bot ownership/concurrency require further audit.
 
-Managed clone token rotation now requires a private owned-clone confirmation
-with a one-use five-minute nonce, a readable original Fernet key, and
+Managed clone token rotation requires a private owned-clone confirmation
+with a one-use five-minute nonce, a readable original Fernet key,
 `CLONE_PROFILES_SINGLE_INSTANCE=True` and the separate default-off
 `MANAGED_ROTATION_ENABLED=True` operator opt-in. The outgoing aiogram Bot API
 bridge must be available; there is no MTProto fallback for rotation because its
-transport retry behavior has not been established safe for this operation. Telegram may immediately revoke the old
-token, so the confirmation discloses the risk. The operation uses the existing
-per-bot lock in this process, rereads the owner/deletion/managed/token state,
-checks uncertain worker stops, makes **one** Telegram rotation call (not the
-bridge's automatic RetryAfter retry), and conditionally stores the new token
-encrypted using simple binary collation and an acknowledged Mongo write. A
-successful save does not restart the worker: stop and start it from the dashboard
-and verify its observed state. Previously issued confirmation buttons without a
-nonce are refused. See `docs/CLONE_PROFILES.md` before enabling the single-instance
-flag; it is an operator assertion, not a distributed lease.
+transport retry behavior has not been established safe for this operation.
+Telegram may immediately revoke the old token, so the confirmation discloses
+the risk. The operation uses the existing per-bot lock in this process and
+rereads the owner/deletion/managed/token state and uncertain worker stops.
 
-On an uncertain Telegram response, encryption/key change or database write,
-Telegram may already have revoked the old token. The process blocks further
-rotation for that bot and tells the owner to contact the operator rather than
-retry. A cancellation after the request begins has the same in-process fence;
-the Telegram message might not arrive. This fence and confirmations disappear
-on process exit. Old workers, other lifecycle/ownership writers, ABA, lost Mongo
-acknowledgement, cross-process races, key changes across processes and Telegram
-responses cannot be made transactional by this change. If uncertain, verify the
-actual Telegram and registry state and agree a recovery plan before retrying;
-never replace the original encryption key blindly or share tokens. Legacy
-plaintext tokens matching the bot ID can be rotated and are sealed on success;
-other creation paths may still store tokens in plaintext without a valid key.
+Before calling Telegram, this version conditionally records a non-secret
+`managed_rotation_reservation` on the clone registry document only if the
+expected state still matches and no such field exists (including null or
+malformed values). Both the reservation and the final save explicitly request
+MongoDB `w=majority`, `j=true`, and a 10-second write-concern timeout. A server
+that cannot confirm those writes blocks rotation; a timeout/error can still mean
+the write happened. This requires appropriate MongoDB server support and is
+**not verified against a real server**. The reservation contains an operation ID
+and timestamp, not a token; it has no automatic expiry. The handler makes one
+Telegram rotation call (not the bridge's automatic RetryAfter retry), then
+conditionally stores the new encrypted token **and removes the matching
+reservation in the same document update**. A successful save does not restart
+the worker: stop and start it from the dashboard and verify its observed state.
+Previously issued confirmation buttons without a nonce are refused.
+
+A leftover reservation blocks future rotations, including after process restart,
+for this version of the handler. It can remain even if Telegram was never
+contacted (e.g. cancellation or lost acknowledgement while reserving). After a
+Telegram call, a failed response, encryption/key change, or uncertain save may
+mean Telegram revoked the old token. Do not retry blindly or automatically
+remove a reservation based on its age. Contact the operator and establish the
+actual Telegram and registry state, current owner, old/new token validity and
+worker state first, without sharing credentials. Clearing or repairing the
+record requires an explicit, separately reviewed recovery plan; no automated
+recovery or reservation-clearing command is supplied. A restore of an older
+backup may remove a newer reservation, while restoring a backup that contains a
+reservation may conservatively block rotation. If a final save commits but its
+acknowledgement is lost, the saved token and cleared reservation may exist even
+though the current process still blocks retries; after restart that process-local
+uncertainty is gone. Do not interpret an absent reservation as proof that no
+rotation took place.
+
+The reservation coordinates only rotation attempts using this implementation
+and the same intact Mongo document; it is **not** a distributed lifecycle lease.
+Old/mixed workers and other ownership, deletion, profile, restore and token
+writers may ignore or overwrite it; ABA, key changes across processes and
+Telegram's irreversible call remain outside MongoDB transactions. Continue to
+require a coordinated single current worker and review
+`docs/CLONE_PROFILES.md` before enabling the operator assertion. No manual
+restart or recovery is validated automatically. Legacy plaintext tokens matching
+the bot ID can be rotated and are sealed on success; other creation paths may
+still store tokens in plaintext without a valid key.
 
 ## Guest Mode — primary bot only
 

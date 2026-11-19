@@ -186,7 +186,7 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 ### Telegram BotFather modes follow-up
 
 - [ ] Verify the primary bot's Guest Mode and Guardian manual-queue behavior with live Telegram and a disposable group; test raw update parsing, query deadlines, retries, privacy, permissions and non-overlapping workers. Guest replies are a fixed introduction, not general command handling; Guardian queues for administrator review, not a CAPTCHA or automatic decision. File Store clones are unchanged. See [mode boundaries](docs/TELEGRAM_BOT_MODES.md).
-- [ ] Complete managed-token rotation recovery with durable fencing shared by all lifecycle/ownership writers, real MongoDB and Telegram failure testing and a reviewed credential recovery plan. Current single-process confirmations and uncertainty fences cannot protect mixed/restarted workers; do not retry uncertain rotations blindly.
+- [ ] Complete managed-token rotation recovery and fencing shared by all lifecycle/ownership writers, real MongoDB and Telegram failure testing and a reviewed credential recovery plan. The majority-journalled registry reservation blocks repeat rotations in the updated handler across restarts when retained, but mixed/old workers, restores and other writers can bypass it. Confirmations and an additional uncertainty fence are process-local; do not retry uncertain rotations blindly.
 
 ### Clone profile follow-up (experimental, default off)
 

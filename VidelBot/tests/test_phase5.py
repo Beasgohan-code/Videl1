@@ -332,7 +332,8 @@ def test_rotate_token_for_managed_clone(monkeypatch):
     async def mock_update(*args, **kwargs):
         assert kwargs.pop("collation").document == {"locale": "simple"}
         return await real_update(*args, **kwargs)
-    monkeypatch.setattr(managed_bots.main_db.bots, "update_one", mock_update)
+    from types import SimpleNamespace
+    monkeypatch.setattr(managed_bots, "_rotation_collection", lambda: SimpleNamespace(update_one=mock_update))
     managed_bots._rotation_pending.clear(); managed_bots._rotation_uncertain.clear()
     db = MainDB()
     run(db.add_bot(bot_id=424242, owner_id=5, bot_token_encrypted="enc:" + cipher.encrypt(b"424242:old").decode(),
