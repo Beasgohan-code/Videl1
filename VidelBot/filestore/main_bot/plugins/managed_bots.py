@@ -14,10 +14,10 @@ users no longer need to visit BotFather and copy a token:
   3. If the user changed the username, they send ``@their_bot`` and prove it is
      theirs by pressing Start in it (checked through that bot's own getUpdates).
 
-The dashboard of managed clones gets "🔁 Rotate token" (``replaceManagedBotToken``)
-– the old token dies instantly, the new one is stored encrypted and the worker
-restarts.  Without Bot Management Mode, everything silently falls back to the
-classic "paste your token" flow.
+Managed clone token rotation requires a private, expiring confirmation, a valid
+original encryption key and an operator-verified single current worker. It does
+not automatically restart a worker. Without Bot Management Mode, the setup
+wizard falls back to the classic "paste your token" flow.
 """
 import html
 import asyncio
@@ -26,7 +26,7 @@ import secrets
 import time
 from urllib.parse import quote
 
-from pyrogram import Client, filters
+from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -93,8 +93,8 @@ async def _token_for(bot_id: int, client=None):
     if is_wzgram_client(client) and hasattr(client, "get_managed_bot_token"):
         try:
             return await client.get_managed_bot_token(bot_id)
-        except Exception as e:
-            log.debug(f"wzgram get_managed_bot_token({bot_id}) failed: {e}")
+        except Exception:
+            log.debug("Managed bot token retrieval failed.")
     return None
 
 
@@ -241,8 +241,8 @@ async def _await_proof(client, user_id, username, token, code, status, timeout: 
                     return await accept_token(client, user_id, token, status, managed=True, expected_state=expected_state)
             if not updates:
                 await asyncio.sleep(1)
-    except Exception as e:
-        log.warning(f"ownership check for @{username} failed: {e}")
+    except Exception:
+        log.warning("Managed bot ownership check failed.")
     if _creation_state.get(user_id) is expected_state and _pending(user_id, username):
         await _safe_edit(status, "<b>⌛ Verification timed out.</b>\n\nSend the @username again or paste the token.",
                          _back_kb())
@@ -285,63 +285,159 @@ def rotate_row(bot: dict):
     return []
 
 
-@Client.on_callback_query(filters.regex(r"^rotate_tok_(do_)?(\d+)$"))
+# Rotation is irreversible at Telegram. Confirmations and uncertainty fences are
+# process-local; they do not replace a distributed lease or coordinate old workers.
+_rotation_pending = {}
+_rotation_in_flight = set()
+_rotation_uncertain = set()
+_ROTATION_TTL = 300
+_ROTATION_PENDING_LIMIT = 512
+
+
+def _valid_saved_token(value, cipher, bot_id):
+    """Accept encrypted or legacy plaintext credentials only for the same bot."""
+    try:
+        token = cipher.decrypt(value[4:].encode()).decode() if value.startswith("enc:") else value
+        return token.startswith(f"{bot_id}:") and len(token) > len(str(bot_id)) + 1
+    except Exception:
+        return False
+
+
+@Client.on_callback_query(filters.regex(r"^rotate_tok_(?:do_)?\d+(?:_[A-Za-z0-9_-]{1,32})?$"))
 async def rotate_token(client: Client, query: CallbackQuery):
-    m = re.match(r"^rotate_tok_(do_)?(\d+)$", query.data)
-    confirmed, bot_id = bool(m.group(1)), int(m.group(2))
-    bot = await main_db.get_bot(bot_id)
-    if not bot or bot.get("owner_id") != query.from_user.id or not bot.get("managed"):
+    from filestore.utils import security
+    from filestore.worker_bot.engine import worker_engine
+    import config
+    from pymongo.collation import Collation
+
+    match = re.fullmatch(r"rotate_tok_(?:do_(\d+)(?:_([A-Za-z0-9_-]{11}))?|(\d+))", query.data or "")
+    if not match:
+        return await query.answer("This confirmation is invalid.", show_alert=True)
+    bot_id = int(match.group(1) or match.group(3))
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    if (user is None or getattr(user, "is_bot", False) or chat is None
+            or getattr(chat, "type", None) != enums.ChatType.PRIVATE or getattr(chat, "id", None) != user.id):
+        return await query.answer("❌ Access denied!", show_alert=True)
+    try:
+        bot = await main_db.get_bot(bot_id)
+    except Exception:
+        return await query.answer("Could not verify this clone. Try again later.", show_alert=True)
+    if (not bot or bot.get("owner_id") != user.id or bot.get("is_deleted")
+            or bot.get("managed") is not True):
         return await query.answer("❌ Access denied!", show_alert=True)
     back = [InlineKeyboardButton("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")]
-    if not confirmed:
+    if not config.MANAGED_ROTATION_ENABLED:
+        return await query.answer("Token rotation is disabled. Contact the operator.", show_alert=True)
+    if not config.CLONE_PROFILES_SINGLE_INSTANCE:
+        return await query.answer("Rotation requires an operator-verified single current worker. Contact the operator.", show_alert=True)
+    if bot_id in _rotation_uncertain:
+        return await query.answer("A previous rotation is uncertain. Contact the operator; do not retry.", show_alert=True)
+    if bot_id in _rotation_in_flight:
+        return await query.answer("Rotation is already being processed. Do not retry.", show_alert=True)
+    if match.group(3):
+        old = bot.get("bot_token_encrypted")
+        cipher = security._get_fernet()
+        if not cipher or not isinstance(old, str) or not old:
+            return await query.answer("A valid original encryption key and saved credential are required. Contact the operator.", show_alert=True)
+        if not _valid_saved_token(old, cipher, bot_id):
+            return await query.answer("The saved credential cannot be decrypted or does not match this bot. Contact the operator; do not replace the key.", show_alert=True)
+        now = time.monotonic()
+        for key, pending in list(_rotation_pending.items()):
+            if pending["deadline"] <= now:
+                _rotation_pending.pop(key, None)
+        if len(_rotation_pending) >= _ROTATION_PENDING_LIMIT and bot_id not in _rotation_pending:
+            return await query.answer("Too many pending confirmations. Try later.", show_alert=True)
+        nonce = secrets.token_urlsafe(8)
+        _rotation_pending[bot_id] = {"owner": user.id, "nonce": nonce, "old": old,
+                                     "deadline": now + _ROTATION_TTL}
+        name = html.escape(str(bot.get("bot_username") or "bot"))
         await query.message.edit_text(
-            f"<b>🔁 Rotate the token of @{bot.get('bot_username')}?</b>\n\n"
-            "<blockquote>The current token stops working immediately (use this if it leaked). "
-            "Videl stores the new one encrypted and restarts the bot.</blockquote>",
+            f"<b>🔁 Rotate @{name}?</b>\n\n"
+            "<blockquote>Telegram invalidates the old token immediately. If a response or save is uncertain, "
+            "contact the operator before retrying. The clone may need a manual stop and restart.</blockquote>\n"
+            "<i>This confirmation expires in five minutes.</i>",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Rotate now", callback_data=f"rotate_tok_do_{bot_id}")], back]))
+                [InlineKeyboardButton("✅ Rotate now", callback_data=f"rotate_tok_do_{bot_id}_{nonce}")], back]))
         return await query.answer()
-    await query.answer("🔁 Rotating…")
-    new_token = None
+
+    pending = _rotation_pending.get(bot_id)
+    if (not pending or not match.group(2) or pending["nonce"] != match.group(2)
+            or pending["owner"] != user.id or pending["deadline"] <= time.monotonic()):
+        return await query.answer("Confirmation expired. Open the dashboard and review again.", show_alert=True)
+    # Claim before the first await, so a double-click cannot rotate twice.
+    _rotation_pending.pop(bot_id, None)
+    _rotation_in_flight.add(bot_id)
+    attempted = False
     try:
-        if botapi.enabled():
-            new_token = await botapi.call(lambda b: b.replace_managed_bot_token(user_id=bot_id))
-        elif hasattr(client, "replace_managed_bot_token"):
-            new_token = await client.replace_managed_bot_token(bot_id)
-        else:
-            raise RuntimeError("managed bot token rotation unavailable")
-    except Exception as e:
-        return await query.message.edit_text(f"<b>❌ Rotation failed:</b> <code>{html.escape(str(e))}</code>",
-                                             reply_markup=InlineKeyboardMarkup([back]))
-    await apply_new_token(bot, new_token)
-    try:
-        from core import botlog
-        await botlog.event("CloneTokenRotated",
-                           f"{botlog.user_block(query.from_user)}\n\n<b>🤖 Clone bot:</b> "
-                           f"@{bot.get('bot_username')} (<code>{bot_id}</code>)", client=client)
+        try:
+            await query.answer("🔁 Checking rotation…")
+        except Exception:
+            pass
+        async with worker_engine._operation_lock(bot_id):
+            current = await main_db.get_bot(bot_id)
+            cipher = security._get_fernet()
+            if (not config.MANAGED_ROTATION_ENABLED or not config.CLONE_PROFILES_SINGLE_INSTANCE or not current
+                    or current.get("owner_id") != user.id or current.get("is_deleted")
+                    or current.get("managed") is not True or current.get("bot_token_encrypted") != pending["old"]
+                    or bot_id in worker_engine._uncertain_stops or not cipher):
+                return await query.message.edit_text(
+                    "<b>⚠️ Rotation was not attempted.</b> The clone, key or worker state changed. Review the dashboard or contact the operator.",
+                    reply_markup=InlineKeyboardMarkup([back]))
+            if not _valid_saved_token(pending["old"], cipher, bot_id):
+                return await query.message.edit_text(
+                    "<b>⚠️ Rotation was not attempted.</b> The saved credential cannot be decrypted or does not match this bot. Contact the operator.",
+                    reply_markup=InlineKeyboardMarkup([back]))
+            if botapi.enabled():
+                b = botapi.bot()
+                if b is None:
+                    return await query.message.edit_text("<b>⚠️ Rotation was not attempted.</b> Bot API is unavailable.", reply_markup=InlineKeyboardMarkup([back]))
+                attempted = True
+                # Do not use botapi.call: it retries some errors, unsafe for rotation.
+                new_token = await b.replace_managed_bot_token(user_id=bot_id)
+            else:
+                return await query.message.edit_text("<b>⚠️ Rotation was not attempted.</b> The managed-bot API is unavailable.", reply_markup=InlineKeyboardMarkup([back]))
+            if (not isinstance(new_token, str) or not new_token.startswith(f"{bot_id}:")
+                    or len(new_token) <= len(str(bot_id)) + 1 or security._get_fernet() is not cipher):
+                raise RuntimeError("rotation result unavailable")
+            sealed = "enc:" + cipher.encrypt(new_token.encode()).decode()
+            if security._get_fernet() is not cipher:
+                raise RuntimeError("encryption key changed")
+            result = await main_db.bots.update_one(
+                {"_id": bot_id, "owner_id": user.id, "is_deleted": {"$ne": True},
+                 "managed": True, "bot_token_encrypted": pending["old"]},
+                {"$set": {"bot_token_encrypted": sealed}}, collation=Collation("simple"))
+            if not result.acknowledged or result.matched_count != 1:
+                raise RuntimeError("rotation storage not confirmed")
+        attempted = False  # token storage acknowledged; no automatic restart or repeat
+        await query.message.edit_text(
+            "<b>✅ New token saved.</b> Telegram has rotated the credential. "
+            "If the clone was running, stop and start it from the dashboard to use the new token. "
+            "Check its status; saving a token does not confirm a running worker.",
+            reply_markup=InlineKeyboardMarkup([back]))
+    except asyncio.CancelledError:
+        if attempted:
+            _rotation_uncertain.add(bot_id)
+        raise
     except Exception:
-        pass
-    await query.message.edit_text(
-        f"<b>✅ Token rotated</b> for @{bot.get('bot_username')}.\n<i>The old token is dead; the bot restarted.</i>",
-        reply_markup=InlineKeyboardMarkup([back]))
-
-
-async def apply_new_token(bot: dict, new_token: str):
-    """Store an encrypted token and restart the worker with it."""
-    from filestore.utils.security import encrypt_token
-    from filestore.worker_bot.engine import worker_engine
-    enc = encrypt_token(new_token)
-    await main_db.bots.update_one({"_id": bot["_id"]}, {"$set": {"bot_token_encrypted": enc}})
-    bot = dict(bot, bot_token_encrypted=enc)
-    try:
-        if worker_engine.get_worker(bot["_id"]):
-            await worker_engine.stop_worker(bot["_id"])
-            await asyncio.sleep(1)
-        if bot.get("is_active", True):
-            await worker_engine.start_worker(bot)
-    except Exception as e:
-        log.warning(f"restart after token rotation failed: {e}")
-    return enc
+        if attempted:
+            _rotation_uncertain.add(bot_id)
+            log.warning("Managed clone token rotation could not be confirmed for bot %s.", bot_id)
+            try:
+                await query.message.edit_text(
+                    "<b>⚠️ Rotation result is uncertain.</b> Telegram may have invalidated the old token. "
+                    "Do not retry. Contact the operator and check the clone before taking further action.",
+                    reply_markup=InlineKeyboardMarkup([back]))
+            except Exception:
+                pass
+        else:
+            log.warning("Managed clone rotation could not be prepared or its result displayed.")
+            try:
+                await query.message.edit_text("<b>⚠️ Rotation was not attempted or the result could not be displayed.</b> Check the dashboard before trying again.", reply_markup=InlineKeyboardMarkup([back]))
+            except Exception:
+                pass
+    finally:
+        _rotation_in_flight.discard(bot_id)
 
 
 async def get_access_settings(bot_id: int, client=None):

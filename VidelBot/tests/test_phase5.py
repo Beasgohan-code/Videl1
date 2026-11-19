@@ -319,34 +319,38 @@ def test_claim_requires_start_proof_from_the_same_user(monkeypatch):
 
 
 def test_rotate_token_for_managed_clone(monkeypatch):
+    from cryptography.fernet import Fernet
     from filestore.database.main_db import MainDB
     from filestore.main_bot.plugins import managed_bots
-    from filestore.utils.security import decrypt_token, encrypt_token
+    from filestore.utils import security
+    import config
+    cipher = Fernet(Fernet.generate_key())
+    monkeypatch.setattr(security, "_get_fernet", lambda: cipher)
+    monkeypatch.setattr(config, "CLONE_PROFILES_SINGLE_INSTANCE", True)
+    monkeypatch.setattr(config, "MANAGED_ROTATION_ENABLED", True)
+    real_update = managed_bots.main_db.bots.update_one
+    async def mock_update(*args, **kwargs):
+        assert kwargs.pop("collation").document == {"locale": "simple"}
+        return await real_update(*args, **kwargs)
+    monkeypatch.setattr(managed_bots.main_db.bots, "update_one", mock_update)
+    managed_bots._rotation_pending.clear(); managed_bots._rotation_uncertain.clear()
     db = MainDB()
-    run(db.add_bot(bot_id=424242, owner_id=5, bot_token_encrypted=encrypt_token("424242:old"),
+    run(db.add_bot(bot_id=424242, owner_id=5, bot_token_encrypted="enc:" + cipher.encrypt(b"424242:old").decode(),
                    bot_username="ann_bot", log_channel_id=-100))
     use_botapi(responses={"ReplaceManagedBotToken": "424242:newtoken"})
-    q = FakeQuery("rotate_tok_do_424242", uid=5)
+    q = FakeQuery("rotate_tok_424242", uid=5)
     run(managed_bots.rotate_token(FakeClient(), q))
-    assert q.answers[0][0] == "❌ Access denied!"  # not flagged managed yet
+    assert q.answers[0][0] == "❌ Access denied!"
     run(db.bots.update_one({"_id": 424242}, {"$set": {"managed": True}}))
-    restarted = []
-
-    class Eng:
-        def get_worker(self, i):
-            return None
-
-        async def start_worker(self, doc):
-            restarted.append(doc["bot_token_encrypted"])
-    import filestore.worker_bot.engine as eng
-    monkeypatch.setattr(eng, "worker_engine", Eng())
-    q = FakeQuery("rotate_tok_do_424242", uid=5)
+    preview = FakeQuery("rotate_tok_424242", uid=5)
+    run(managed_bots.rotate_token(FakeClient(), preview))
+    nonce = managed_bots._rotation_pending[424242]["nonce"]
+    q = FakeQuery(f"rotate_tok_do_424242_{nonce}", uid=5)
     run(managed_bots.rotate_token(FakeClient(), q))
     doc = run(db.get_bot(424242))
-    assert decrypt_token(doc["bot_token_encrypted"]) == "424242:newtoken" and restarted
-    assert any("Token rotated" in e for e in q.message.edits)
-    # other users can't rotate
-    q2 = FakeQuery("rotate_tok_do_424242", uid=6)
+    assert cipher.decrypt(doc["bot_token_encrypted"][4:].encode()) == b"424242:newtoken"
+    assert "New token saved" in q.message.text and "stop and start" in q.message.text
+    q2 = FakeQuery("rotate_tok_424242", uid=6)
     run(managed_bots.rotate_token(FakeClient(), q2))
     assert q2.answers[0][0] == "❌ Access denied!"
     assert managed_bots.rotate_row(doc) and not managed_bots.rotate_row({"_id": 1})

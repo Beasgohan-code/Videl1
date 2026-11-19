@@ -183,6 +183,11 @@ This is an acceptance checklist, not a claim of completion. Some items have part
 - [ ] Offer File Store, utility, group management, media/file management and custom templates; configure features, defaults, command presentation, owner permissions and notifications; include review, validation, confirmation, result and next steps.
 - [ ] Guide users through interactive BotFather registration; never imply it can be completed automatically. Distinguish verified credentials from a running bot process.
 
+### Telegram BotFather modes follow-up
+
+- [ ] Verify the primary bot's Guest Mode and Guardian manual-queue behavior with live Telegram and a disposable group; test raw update parsing, query deadlines, retries, privacy, permissions and non-overlapping workers. Guest replies are a fixed introduction, not general command handling; Guardian queues for administrator review, not a CAPTCHA or automatic decision. File Store clones are unchanged. See [mode boundaries](docs/TELEGRAM_BOT_MODES.md).
+- [ ] Complete managed-token rotation recovery with durable fencing shared by all lifecycle/ownership writers, real MongoDB and Telegram failure testing and a reviewed credential recovery plan. Current single-process confirmations and uncertainty fences cannot protect mixed/restarted workers; do not retry uncertain rotations blindly.
+
 ### Clone profile follow-up (experimental, default off)
 
 - [ ] Separate Group Management into its own worker folder without changing File Store behavior or introducing a competing receiver. Current shared engine imports group modules from the protected File Store folder; the user chose no edits there and a broader shared-controller investigation. A read-only import inventory aids that investigation; a safe controller cutover is not implemented. See [separation boundary](docs/CLONE_PROFILES.md#requested-group-management-folder-separation).

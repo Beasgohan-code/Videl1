@@ -218,7 +218,10 @@ COLORED_BUTTONS = _bool("COLORED_BUTTONS", True)         # 🟩 success / 🟥 d
 PREMIUM_BUTTON_ICONS = _bool("PREMIUM_BUTTON_ICONS", False)
 PREMIUM_BUTTON_ICON_BOT_IDS = _ids("PREMIUM_BUTTON_ICON_BOT_IDS")
 EPHEMERAL_REPLIES = _bool("EPHEMERAL_REPLIES", True)     # /help /id /ping … in groups → visible only to the caller
+MANAGED_ROTATION_ENABLED = _bool("MANAGED_ROTATION_ENABLED", False)  # irreversible, operator-reviewed opt-in
 MANAGED_BOTS = _bool("MANAGED_BOTS", True)               # one-tap clone creation (needs Bot Management Mode)
+GUEST_REPLIES_ENABLED = _bool("GUEST_REPLIES_ENABLED", True)  # fixed public guest introduction only
+GUARD_QUEUE_ENABLED = _bool("GUARD_QUEUE_ENABLED", True)       # guardian queries go to manual review
 MANAGED_PAIR_TIMEOUT = env_int("MANAGED_PAIR_TIMEOUT", 300)  # seconds to wait for the new bot
 SUPPORT_ENABLED = _bool("SUPPORT_ENABLED", True)  # /support inbox → owners reply by replying
 

@@ -57,8 +57,8 @@ network errors → 60 s back-off) or `AIOGRAM_ENABLED=False`, ordinary bot behav
   *Create Bot* then shows **⚡ One-tap create**: Telegram opens a pre-filled "new bot" sheet
   (`t.me/newbot/<Videl>/<random_username>`), the user taps *Create*, and Videl fetches the token itself
   (`getManagedBotToken`) – no BotFather chat, no copy-paste. The bot belongs to the user. Renamed the username?
-  Send `@name` and press *Start* in the new bot to prove it's yours. Managed clones get **🔁 Rotate token**
-  (`replaceManagedBotToken`) on their dashboard. Without Bot Management Mode the classic token flow is shown.
+  Send `@name` and press *Start* in the new bot to prove it's yours. Managed clones offer **🔁 Rotate token**
+  with an expiring confirmation, configured original encryption key, operator opt-in and single-instance gate; workers need a manual stop/start. An uncertain rotation needs operator recovery, not blind retry. Without Bot Management Mode the classic token flow is shown. See [mode safety and limitations](../docs/TELEGRAM_BOT_MODES.md).
 * **Stars** – subscription links via `createInvoiceLink(subscription_period)`, cancel/resume via
   `editUserStarSubscription`, `/stars` shows the live balance (`getMyStarBalance`) and Telegram's own ledger
   (`getStarTransactions`).
