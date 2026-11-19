@@ -38,6 +38,27 @@ CHANNEL_PICKER_ID = 11
 CHANNEL_STEPS = ("awaiting_channel", "awaiting_new_log_channel", "awaiting_fsub_channel")
 
 
+# A nonce is scoped to both this in-process wizard and its displayed stage.
+# Delayed or older screens must not cancel a newer stage or an unrelated flow.
+_CREATION_STAGE_STEPS = {
+    "token": ("awaiting_token", "verifying_token"),
+    "channel": ("awaiting_channel", "verifying_channel"),
+    "profile": ("awaiting_profile",),
+}
+
+
+def _stage_nonce(state, stage):
+    if state.get("creation_control_stage") != stage:
+        state["creation_control_stage"] = stage
+        state["creation_control_nonce"] = secrets.token_urlsafe(8)
+    return state["creation_control_nonce"]
+
+
+def _creation_cancel_kb(state, stage):
+    nonce = _stage_nonce(state, stage)
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"clone_setup_{nonce}_cancel")]])
+
+
 def channel_picker_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [[KeyboardButton(
@@ -106,9 +127,7 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
                 "<b>❌ Invalid bot token!</b>\n\n"
                 "The token could not be verified with Telegram.\n"
                 "Please check and send again.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-                ]),
+                reply_markup=_creation_cancel_kb(state, "token"),
             )
             return False
 
@@ -177,9 +196,7 @@ async def accept_token(client: Client, user_id: int, token: str, status_msg, man
         f"File Store uses it to store files; the other profiles still require this channel during setup.\n"
         f"Make sure the bot (@{html.escape(str(bot_username))}) is an admin in the channel.\n\n"
         f"Example: <code>-1001234567890</code></blockquote>",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-        ]),
+        reply_markup=_creation_cancel_kb(state, "channel"),
     )
     if _creation_state.get(user_id) is state and state.get("step") == "awaiting_channel":
         await offer_channel_picker(client, user_id, state)
@@ -214,7 +231,7 @@ async def _show_creation_profiles(status_msg, user_id: int, state: dict):
         buttons = [[InlineKeyboardButton("📁 File Store", callback_data=f"clone_mode_{nonce}_filestore")],
                    [InlineKeyboardButton("🛡 Group Management" + ("" if config.CLONE_PROFILES_SINGLE_INSTANCE else " · disabled"), callback_data=f"clone_mode_{nonce}_group")]]
     buttons += [[InlineKeyboardButton("🎵 Music · unavailable", callback_data=f"clone_mode_{nonce}_music")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")]]
+                *_creation_cancel_kb(state, "profile").inline_keyboard]
     await status_msg.edit_text(
         "<b>🧩 Step 3/3: Choose a bot mode</b>\n\n" + intro
         + "<b>File Store:</b> file links and delivery.\n"
@@ -449,8 +466,9 @@ async def _begin_creation(client: Client, query: CallbackQuery, *, telegram: boo
         state["step"] = "awaiting_token"
         if telegram and enabled:
             return await managed_bots.managed_new(client, query, capability_checked=True)
-        kb = [[InlineKeyboardButton("🤖 Create a bot with Telegram", callback_data="managed_new")]] if enabled else []
-        kb.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")])
+        nonce = _stage_nonce(state, "token")
+        kb = [[InlineKeyboardButton("🤖 Create a bot with Telegram", callback_data=f"clone_setup_{nonce}_telegram")]] if enabled else []
+        kb.extend(_creation_cancel_kb(state, "token").inline_keyboard)
         extra = ("\n\nOr choose <b>Create a bot with Telegram</b>. Telegram asks you to confirm creation; "
                  "you will still need to complete setup here.") if enabled else ""
         await query.message.edit_text(
@@ -484,19 +502,48 @@ async def _begin_creation(client: Client, query: CallbackQuery, *, telegram: boo
 # CALLBACK: Cancel creation
 # =============================================================================
 
+@Client.on_callback_query(filters.regex(r"^clone_setup_[A-Za-z0-9_-]+_(?:cancel|telegram)$"))
+async def creation_control_callback(client: Client, query: CallbackQuery):
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    if (not user or getattr(user, "is_bot", False) or not chat
+            or getattr(chat, "type", None) != enums.ChatType.PRIVATE or chat.id != user.id):
+        return await query.answer("Open bot creation in your private chat.", show_alert=True)
+    payload = str(getattr(query, "data", ""))[len("clone_setup_"):]
+    nonce, sep, action = payload.rpartition("_")
+    state = _creation_state.get(user.id)
+    stage = (state or {}).get("creation_control_stage")
+    if (not sep or not nonce or action not in ("cancel", "telegram") or not state
+            or state.get("creation_control_nonce") != nonce
+            or state.get("step") not in _CREATION_STAGE_STEPS.get(stage, ())):
+        return await query.answer("This setup screen has expired. Use the current screen or /clone.", show_alert=True)
+    if action == "telegram":
+        if stage != "token" or state.get("step") != "awaiting_token":
+            return await query.answer("This setup step is already being processed.", show_alert=True)
+        from filestore.main_bot.plugins import managed_bots
+        return await managed_bots.managed_new(client, query)
+    return await _cancel_current_creation(client, query, state)
+
+
 @Client.on_callback_query(filters.regex(r"^cancel_creation$"))
 async def cancel_creation_callback(client: Client, query: CallbackQuery):
-    """Cancel the bot creation flow."""
+    """Legacy buttons have no attempt identity; never cancel an unrelated flow."""
+    return await query.answer("This old button has expired. Use /cancel in your private chat.", show_alert=True)
+
+
+async def _cancel_current_creation(client: Client, query: CallbackQuery, expected_state):
+    """Remove an already-authorized exact wizard before any network await."""
     user_id = query.from_user.id
-    if (_creation_state.get(user_id) or {}).get("step") == "registering":
+    if _creation_state.get(user_id) is not expected_state or expected_state is None:
+        return await query.answer("This setup has changed. Open /clone again.", show_alert=True)
+    if expected_state.get("step") == "registering":
         return await query.answer("Registration is already being processed. Check My Bots before retrying.", show_alert=True)
-    old = _creation_state.pop(user_id, None)
-    if old and old.get("profile_timer"):
+    old = _creation_state.pop(user_id)
+    if old.get("profile_timer"):
         old["profile_timer"].cancel()
-    if old:
-        for key in ("token", "registration_token", "restore_expected_token"):
-            old.get("data", {}).pop(key, None)
-    if old and old.get("picker"):
+    for key in ("token", "registration_token", "restore_expected_token"):
+        old.get("data", {}).pop(key, None)
+    if old.get("picker"):
         await remove_channel_picker(client, user_id, old, "❌ Cancelled.")
 
     await query.message.edit_text(
@@ -575,9 +622,7 @@ async def handle_creation_input(client: Client, message: Message):
                 "<b>❌ Invalid token format.</b>\n\n"
                 "A valid bot token looks like: <code>123456:AAH...</code>\n"
                 "Please send a valid token or click Cancel.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-                ]),
+                reply_markup=_creation_cancel_kb(state, "token"),
             )
             return
 
@@ -603,9 +648,7 @@ async def handle_creation_input(client: Client, message: Message):
             await message.reply(
                 "<b>❌ Invalid channel ID.</b>\n\n"
                 "Channel ID should be a number like <code>-1001234567890</code>",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-                ]),
+                reply_markup=_creation_cancel_kb(state, "channel"),
             )
             return
 
@@ -665,9 +708,7 @@ async def handle_creation_input(client: Client, message: Message):
                     f"2. The bot (@{html.escape(str(bot_info.get('username', '')))}) is an admin in the channel\n"
                     f"3. The bot has permission to send messages.\n\n"
                     f"Telegram may also be temporarily unavailable.</blockquote>",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-                    ]),
+                    reply_markup=_creation_cancel_kb(state, "channel"),
                 )
                 return
         except asyncio.CancelledError:
@@ -684,9 +725,7 @@ async def handle_creation_input(client: Client, message: Message):
             await status_msg.edit_text(
                 "<b>❌ Verification failed!</b>\n\n"
                 "<blockquote>Could not connect to Telegram. Please try again later.</blockquote>",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")],
-                ]),
+                reply_markup=_creation_cancel_kb(state, "channel"),
             )
             return
         finally:

@@ -127,7 +127,7 @@ def test_double_click_and_cancel_during_quota_check_do_not_revive(monkeypatch):
         duplicate = FakeQuery('create_bot', uid=5)
         await create_bot.create_bot_callback(FakeClient(), duplicate)
         assert 'already being processed' in duplicate.answers[-1][0]
-        await create_bot.cancel_creation_callback(FakeClient(), FakeQuery('cancel_creation', uid=5))
+        await create_bot._cancel_current_creation(FakeClient(), FakeQuery('cancel_creation', uid=5), create_bot._creation_state.get(5))
         release.set(); await first
         assert 5 not in create_bot._creation_state and 'cancelled' in q.answers[-1][0]
     run(go())
@@ -168,9 +168,10 @@ def test_cancel_or_duplicate_while_capability_check_waits_does_not_open_link(mon
         monkeypatch.setattr(managed_bots, 'available', slow_available)
         state = {'step': 'awaiting_token', 'data': {}}
         create_bot._creation_state[5] = state
-        first = FakeQuery('managed_new', uid=5)
+        nonce = create_bot._stage_nonce(state, 'token')
+        first = FakeQuery(f'clone_setup_{nonce}_telegram', uid=5)
         task = asyncio.create_task(managed_bots.managed_new(FakeClient(), first)); await entered.wait()
-        duplicate = FakeQuery('managed_new', uid=5)
+        duplicate = FakeQuery(f'clone_setup_{nonce}_telegram', uid=5)
         await managed_bots.managed_new(FakeClient(), duplicate)
         assert 'already being checked' in duplicate.answers[-1][0]
         create_bot._creation_state.pop(5)

@@ -17,8 +17,9 @@ Telegram verification and registry lookup. Duplicate submissions cannot start a
 second verification for that same setup. Cancellation or a new wizard while a
 validation, registry read, or status reply is pending prevents the old attempt
 from advancing or saving its credential to the new wizard. The managed-bot path
-now requires a creator-bearing update and explicit private confirmation before retrieving a token; the suggested-username and renamed-bot
-proof pollers were removed. Token results are tied to the original wizard and
+now requires a creator-bearing update and explicit private confirmation before
+retrieving a token; the suggested-username and renamed-bot proof pollers were
+removed. Token results are tied to the original wizard and
 verified bot ID. Errors from validation and registry lookup are displayed
 generically. Cancellation does not retract a Telegram request already sent or
 erase a message already posted.
@@ -31,3 +32,18 @@ creation link, so the user must check the bot displayed before confirming. Do
 not treat these safeguards as proof of real Telegram or MongoDB behavior,
 complete secret handling, or safe overlapping workers. Group mode remains
 default-off and Music remains unavailable.
+
+## Creation controls
+
+New manual-token, channel and mode-selection Cancel buttons are bound to the
+current in-process setup and stage. The manual prompt's Telegram-create button
+is likewise scoped; entering the managed link invalidates the prior manual
+controls. A Cancel during token or channel verification prevents a stale result
+from advancing the setup; once registration is claimed, cancellation is refused.
+Old unscoped `cancel_creation` and `managed_new` buttons now fail closed with
+guidance; `/cancel` remains available in private chat. This intentionally changes
+behavior of old messages after an upgrade. Generic navigation such as Back to Menu
+can still clear a current flow, and old/mixed-version workers can still process
+legacy buttons. A sent request, picker-removal message or edit already in flight
+cannot be retracted. Nonces and claims are process-local, not distributed fencing;
+all behavior requires live Telegram verification.

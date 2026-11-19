@@ -106,7 +106,7 @@ def test_cancel_and_double_click_during_token_fetch(monkeypatch):
         task = asyncio.create_task(managed_bots.confirm_managed_bot(c, q)); await entered.wait()
         await managed_bots.confirm_managed_bot(c, q)
         assert len(calls) == 1 and st['step'] == 'verifying_managed'
-        await create_bot.cancel_creation_callback(c, FakeQuery('cancel_creation'))
+        await managed_bots.managed_setup_action(c, action(st))
         newer = pending(); release.set(); await task
         assert create_bot._creation_state[5] is newer and newer['step'] == 'awaiting_token' and 'token' not in newer['data']
     run(go())

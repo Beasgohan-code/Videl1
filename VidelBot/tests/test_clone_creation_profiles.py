@@ -114,7 +114,7 @@ def test_cancel_clears_credential_and_stale_button_is_rejected(monkeypatch):
     worker=FakeEngine();monkeypatch.setattr(engine_module,'worker_engine',worker)
     msg,state=setup_mode();q=query_for(msg,state,'filestore')
     cancel=FakeQuery('cancel_creation',uid=10,message=msg.sent[-1])
-    run(create_bot.cancel_creation_callback(FakeClient(),cancel))
+    run(create_bot._cancel_current_creation(FakeClient(),cancel,create_bot._creation_state.get(10)))
     assert 10 not in create_bot._creation_state and 'registration_token' not in state['data']
     run(create_bot.creation_profile_callback(FakeClient(),q))
     assert 'expired' in q.answers[-1][0] and run(MainDB().get_bot(42020)) is None
@@ -221,7 +221,7 @@ def test_cancel_while_verifying_does_not_show_profile_or_register(monkeypatch):
         wizard_state(bot_id=42026);m=FakeMsg('-100001',uid=10)
         task=asyncio.create_task(create_bot.handle_creation_input(FakeClient(),m))
         await entered.wait()
-        q=FakeQuery('cancel_creation',uid=10);await create_bot.cancel_creation_callback(FakeClient(),q)
+        q=FakeQuery('cancel_creation',uid=10);await create_bot._cancel_current_creation(FakeClient(),q,create_bot._creation_state.get(10))
         release.set();await task
         assert 10 not in create_bot._creation_state and 'Choose a bot mode' not in m.sent[-1].text
         assert await MainDB().get_bot(42026) is None
@@ -344,7 +344,7 @@ def test_cancel_while_status_message_sends_does_not_start_client(monkeypatch):
         wizard_state(bot_id=42033);state=create_bot._creation_state[10];msg=SlowMessage('-100001',uid=10)
         task=asyncio.create_task(create_bot.handle_creation_input(FakeClient(),msg))
         await entered.wait();q=FakeQuery('cancel_creation',uid=10)
-        await create_bot.cancel_creation_callback(FakeClient(),q)
+        await create_bot._cancel_current_creation(FakeClient(),q,create_bot._creation_state.get(10))
         release.set();await task
         assert not clients and 10 not in create_bot._creation_state and 'token' not in state['data']
         assert await MainDB().get_bot(42033) is None
@@ -364,7 +364,7 @@ def test_cancel_during_token_validation_does_not_revive_flow(monkeypatch):
         task = asyncio.create_task(create_bot.accept_token(FakeClient(), 10, 'synthetic:secret', status, expected_state=state))
         await entered.wait()
         assert state['step'] == 'verifying_token'
-        await create_bot.cancel_creation_callback(FakeClient(), FakeQuery('cancel_creation', uid=10))
+        await create_bot._cancel_current_creation(FakeClient(), FakeQuery('cancel_creation', uid=10), create_bot._creation_state.get(10))
         release.set()
         assert not await task
         assert 10 not in create_bot._creation_state and 'token' not in state['data']
@@ -404,7 +404,7 @@ def test_cancel_during_registry_lookup_does_not_store_token(monkeypatch):
         create_bot._creation_state[10] = state
         task = asyncio.create_task(create_bot.accept_token(FakeClient(), 10, 'synthetic:secret', FakeMsg('status'), expected_state=state))
         await entered.wait()
-        await create_bot.cancel_creation_callback(FakeClient(), FakeQuery('cancel_creation', uid=10))
+        await create_bot._cancel_current_creation(FakeClient(), FakeQuery('cancel_creation', uid=10), create_bot._creation_state.get(10))
         release.set()
         assert not await task and 'token' not in state['data'] and 10 not in create_bot._creation_state
     run(go())
@@ -436,7 +436,7 @@ def test_cancel_while_token_status_reply_is_pending_does_not_recreate_flow(monke
         message.reply = reply
         task = asyncio.create_task(create_bot.handle_creation_input(FakeClient(), message))
         await entered.wait()
-        await create_bot.cancel_creation_callback(FakeClient(), FakeQuery('cancel_creation', uid=10))
+        await create_bot._cancel_current_creation(FakeClient(), FakeQuery('cancel_creation', uid=10), create_bot._creation_state.get(10))
         release.set(); await task
         assert 10 not in create_bot._creation_state and not state['data']
     run(go())

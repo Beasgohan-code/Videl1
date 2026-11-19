@@ -37,8 +37,12 @@ setup still repeats the normal eligibility checks. A current Cancel can stop a
 pending retrieval or validation from advancing the wizard, and retrieval checks
 again after the callback acknowledgement and when its task starts. It cannot
 retract a Telegram request already sent, and an edit already in flight may still
-arrive. This does not scope older pre-upgrade messages or every other wizard
-screen; those may still contain the older generic callbacks.
+arrive. Newly rendered manual-token, channel and mode-selection Cancel controls
+are also scoped to their current stage. Older unscoped Cancel and Telegram-create
+buttons now direct users to `/cancel` or the current setup screen rather than
+operating on a potentially different attempt. Other generic navigation controls,
+including Back to Menu, remain a separate limitation and can clear a current flow.
+Old workers can still process old controls differently.
 
 A Telegram update is not cryptographically correlated to the creation link: a
 delayed update from another attempt could be offered during an active setup, so

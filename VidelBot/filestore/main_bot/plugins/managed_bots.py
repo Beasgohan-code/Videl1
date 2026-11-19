@@ -115,6 +115,8 @@ async def managed_new(client: Client, query: CallbackQuery, *, capability_checke
     if (not user or getattr(user, "is_bot", False) or not chat
             or getattr(chat, "type", None) != enums.ChatType.PRIVATE or chat.id != user.id):
         return await query.answer("Open bot creation in your private chat.", show_alert=True)
+    if not capability_checked and getattr(query, "data", None) == "managed_new":
+        return await query.answer("This old button has expired. Use the current setup screen or /clone.", show_alert=True)
     st = _creation_state.get(user.id)
     if not st or st.get("step") != "awaiting_token":
         return await query.answer("Open /clone and start setup again.", show_alert=True)
@@ -143,6 +145,9 @@ async def _open_managed_creation(client, query, user, st, capability_checked):
         return await query.answer("The manager bot identity is unavailable. Paste a bot token instead.", show_alert=True)
     username = suggested_username(user.first_name)
     name = f"{(user.first_name or 'My')[:40]}'s Bot"
+    # The previous manual prompt must not control this managed attempt.
+    st.pop("creation_control_stage", None)
+    st.pop("creation_control_nonce", None)
     st["data"].pop("managed_candidate", None)
     controls_nonce = secrets.token_urlsafe(8)
     st["data"]["managed_controls_nonce"] = controls_nonce
@@ -255,7 +260,7 @@ async def on_managed_bot_updated(client: Client, update):
 async def managed_setup_action(client: Client, query: CallbackQuery):
     """Do not let an old managed screen replace or cancel a newer wizard."""
     from filestore.main_bot.plugins.create_bot import (
-        _creation_state, create_bot_callback, cancel_creation_callback,
+        _creation_state, create_bot_callback, _cancel_current_creation,
     )
     user = getattr(query, "from_user", None)
     chat = getattr(getattr(query, "message", None), "chat", None)
@@ -271,7 +276,7 @@ async def managed_setup_action(client: Client, query: CallbackQuery):
         return await query.answer("This setup has changed. Open /clone again.", show_alert=True)
     # Delegates claim/change state synchronously before their first await.
     if action == "cancel":
-        return await cancel_creation_callback(client, query)
+        return await _cancel_current_creation(client, query, st)
     return await create_bot_callback(client, query)
 
 
