@@ -276,3 +276,7 @@ Verification: focused Encoder tests **134 passed, 24 skipped**; complete offline
 ## Encoder probe speed (4133378)
 
 Cached successful `ffprobe` summaries by path/mtime/size with bounded TTL, parallel mux/merge probing, and one-probe upload metadata. Focused tests passed 166 with 26 skipped; full backend passed 1619 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Fake-probe/mock evidence only; no real FFmpeg benchmark, live Telegram, real MongoDB, or multi-process proof. Protected worker and Group Mode plugin untouched.
+
+## Encoder screenshot batching (93cf483)
+
+`/screens` now captures all requested frames in one ffmpeg process with one fast-seek input per timestamp, falling back per missing frame to the previous command and preserving order. The single process remains attached to the job registry for pause/cancel. Focused tests passed 102 with 11 skipped; full backend passed 1623 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Real static FFmpeg batch capture was verified locally; no live Telegram, real MongoDB, multi-process, or timing benchmark proof. Protected worker and Group Mode plugin untouched.
