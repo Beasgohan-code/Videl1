@@ -288,3 +288,7 @@ Cached successful `ffprobe` summaries by path/mtime/size with bounded TTL, paral
 ## Group Mode read-only setup check (71ffd38)
 
 Added admin-only `/gcheck` to the main `group_mod` plugin: automation state plus a live snapshot of this bot's restrict/delete/pin/change-info/invite rights as granted, missing, or unknown. It performs no moderation and changes no settings. Focused group/security tests passed 20; full backend passed 1629 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Fake-client/mock evidence only; no live Telegram, real MongoDB, or multi-process proof. Clone worker untouched and the Group Mode plugin was not copied into it.
+
+## Encoder overload admission guards (1c5bcd1)
+
+Added a global Encoder queue cap (`ENC_MAX_QUEUE_TOTAL`, default 50) and a memory-overload admission guard: when RAM is at/above `MEMORY_PAUSE_NEW_TASKS_PCT` and the queue is already non-empty, new tasks are rejected instead of piling up; an idle queue can still start one task. Focused overload/phase tests passed 83 with 15 skipped; full backend passed 1634 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Process-local/mock evidence only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
