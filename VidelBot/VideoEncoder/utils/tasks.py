@@ -212,13 +212,26 @@ async def tg_task(message, msg):
     await handle_encode(filepath, message, msg)
 
 
+def parse_sample_args(text):
+    """Sample length in seconds, clamped to the supported 5–120s range; None if invalid."""
+    from .ffcmd import parse_timestamp
+    parts = (text or "").split()[1:]
+    if not parts:
+        return 30
+    if len(parts) != 1:
+        return None
+    length = parse_timestamp(parts[0])
+    if length is None or length <= 0:
+        return None
+    return int(max(5, min(120, length)))
+
+
 async def sample_task(message, msg):
     """/sample [seconds] – encode a short clip from the middle with the current settings."""
-    from .ffcmd import parse_timestamp
-    parts = (message.text or message.caption or "").split()
-    length = 30
-    if len(parts) > 1:
-        length = int(parse_timestamp(parts[1]) or 30)
+    length = parse_sample_args(message.text or message.caption)
+    if length is None:
+        await msg.edit("Usage: <code>/sample [seconds]</code> (5–120 seconds)")
+        return
     filepath = await _download(message, msg)
     if not filepath:
         return
@@ -274,13 +287,26 @@ async def trim_task(message, msg):
     bump_later("tool")
 
 
+def parse_screens_args(text):
+    """Screenshot count, clamped to 1–10; None for malformed input."""
+    parts = (text or "").split()[1:]
+    if not parts:
+        return 6
+    if len(parts) != 1 or not parts[0].isascii() or not parts[0].isdigit():
+        return None
+    digits = parts[0].lstrip("0") or "0"
+    # Avoid converting an arbitrarily long integer supplied in a command.
+    return 10 if len(digits) > 2 else max(1, min(10, int(digits)))
+
+
 async def screens_task(message, msg):
     from pyrogram.types import InputMediaPhoto
     from . import ffcmd
     from .encoding import probe, screenshots
-    parts = (message.text or message.caption or "").split()
-    count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 6
-    count = max(1, min(10, count))
+    count = parse_screens_args(message.text or message.caption)
+    if count is None:
+        await msg.edit("Usage: <code>/screens [count]</code> (1–10 screenshots)")
+        return
     filepath = await _download(message, msg)
     if not filepath:
         return

@@ -8,7 +8,7 @@ import config
 from .. import video_mimetype
 from ..utils.database.add_user import AddUserToDatabase
 from ..utils.helper import check_chat
-from ..utils.tasks import handle_tasks, parse_trim_args
+from ..utils.tasks import handle_tasks, parse_sample_args, parse_screens_args, parse_trim_args
 
 
 async def _is_pro(uid: int) -> bool:
@@ -33,6 +33,9 @@ async def _enqueue(message, mode, extra=None, card=None) -> bool:
         return await message.reply(text)
     from ..utils import scheduler
     uid = message.from_user.id if message.from_user else 0
+    pro = await _is_pro(uid)
+    # No await between the duplicate/limit checks and add: concurrent handlers on
+    # this event loop cannot both admit the same job or exceed the user's cap.
     pos, same = scheduler.find_duplicate(message, mode, extra)
     if pos:                                   # already queued / running – never encode the same thing twice
         if not same:                          # (same message = Telegram re-delivered the update: stay quiet)
@@ -40,7 +43,6 @@ async def _enqueue(message, mode, extra=None, card=None) -> bool:
             await say(f"♻️ <b>Already in your queue</b> – {state}.\n"
                       "<i>Same file with the same settings, so it won't be encoded twice. See /queue.</i>")
         return False
-    pro = await _is_pro(uid)
     limit = config.ENC_MAX_TASKS_PRO if pro else config.ENC_MAX_TASKS_FREE
     have = scheduler.user_tasks(uid) if uid else 0
     if uid and uid not in config.ADMINS and have >= limit:
@@ -63,7 +65,6 @@ async def _enqueue(message, mode, extra=None, card=None) -> bool:
                                    + (" · ⚡ <b>priority</b>" if pro else "") + "\n<i>See it with /queue.</i>")
         if note is not None and scheduler.position(message):
             scheduler.NOTES[id(message)] = note   # becomes the live status card when the task starts
-    await asyncio.sleep(1)
     return True
 
 
@@ -137,9 +138,10 @@ async def sample_encode(app, message):
     if not c:
         return
     await AddUserToDatabase(app, message)
-    if not _has_media(message):
+    if not _has_media(message) or parse_sample_args(message.text or message.caption) is None:
         await message.reply("🧪 <b>Sample encode</b>\nReply to a video with <code>/sample</code> (30 s) or "
-                            "<code>/sample 60</code> to test your settings before encoding the whole file.")
+                            "<code>/sample 60</code> to test your settings before encoding the whole file. "
+                            "Lengths are limited to 5–120 seconds.")
         return
     await _enqueue(message, 'sample')
 
@@ -165,8 +167,8 @@ async def screens_video(app, message):
     if not c:
         return
     await AddUserToDatabase(app, message)
-    if not _has_media(message):
+    if not _has_media(message) or parse_screens_args(message.text or message.caption) is None:
         await message.reply("📸 <b>Screenshots</b>\nReply to a video with <code>/screens</code> (6 shots) or "
-                            "<code>/screens 10</code>.")
+                            "<code>/screens 10</code>. Counts must be between 1 and 10.")
         return
     await _enqueue(message, 'screens')

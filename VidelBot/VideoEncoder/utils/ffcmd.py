@@ -710,12 +710,12 @@ def parse_timestamp(text: str) -> float | None:
         parts = [float(p) for p in text.split(":")]
     except ValueError:
         return None
-    if len(parts) > 3 or any(p < 0 for p in parts):
+    if len(parts) > 3 or any(not math.isfinite(p) or p < 0 for p in parts):
         return None
     sec = 0.0
     for p in parts:
         sec = sec * 60 + p
-    return sec
+    return sec if math.isfinite(sec) else None
 
 
 def fmt_ts(sec: float) -> str:
