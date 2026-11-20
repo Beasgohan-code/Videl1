@@ -92,6 +92,7 @@ GROUP_ANON_COMMANDS = frozenset({
     "setflood", "setfloodtimer", "setfloodmode", "flood", "clearflood",
     "captcha", "captchamode", "setcaptchatext", "resetcaptchatext",
     "pin", "unpin", "purge",
+    "modlog", "modhistory",
     "antiraid",
 })
 
@@ -174,6 +175,33 @@ async def update_group_cfg(chat_id: int, updates: dict[str, Any]) -> dict[str, A
     await vdb.db["group_settings"].update_one({"_id": cid}, {"$set": updates}, upsert=True)
     _CFG_CACHE.pop(cid, None)
     return await get_group_cfg(cid)
+
+
+_MODLOG_MAX_PER_CHAT = 1000
+
+
+async def _log_mod_action(chat_id: int, action: str, target_id: int | None,
+                          target_label: str = "", actor_id: int | None = None,
+                          reason: str = "", silent: bool = False) -> None:
+    """Record a moderation action. Best-effort: never raises into the handler."""
+    try:
+        col = vdb.db["group_modlog"]
+        await col.insert_one({
+            "chat_id": int(chat_id),
+            "action": action,
+            "target_id": target_id,
+            "target_label": (target_label or "")[:100],
+            "actor_id": actor_id,
+            "reason": (reason or "")[:200],
+            "silent": bool(silent),
+            "ts": time.time(),
+        })
+        # Bound growth: keep only the newest entries per chat.
+        old_ids = await col.find({"chat_id": int(chat_id)}, {"_id": 1}).sort("ts", -1).skip(_MODLOG_MAX_PER_CHAT).to_list(length=_MODLOG_MAX_PER_CHAT)
+        if old_ids:
+            await col.delete_many({"_id": {"$in": [d["_id"] for d in old_ids]}})
+    except Exception:
+        pass
 
 
 def parse_duration(token: str) -> tuple[timedelta | None, str]:
@@ -832,6 +860,8 @@ async def _do_restriction(client: Client, message: Message, kind: str, *,
             pass
     mode = {"ban": "ban", "tban": "tban", "mute": "mute", "tmute": "tmute", "kick": "kick"}[kind]
     done = await _apply_restriction(client, message.chat.id, target_id, mode, delta)
+    if done:
+        await _log_mod_action(message.chat.id, kind, target_id, label, uid, reason, silent)
     if silent:
         try:
             await message.delete()
@@ -924,6 +954,7 @@ async def gban_cmd(client: Client, message: Message):
         await client.ban_chat_member(message.chat.id, target_id, **kw)
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Ban Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "gban", target_id, label, uid, reason)
 
     doc = Doc("🚫", "Member Banned", message.chat.title or "Group").kv_table([
         ("👤 User", f"{label} ({target_id})"),
@@ -949,6 +980,7 @@ async def gunban_cmd(client: Client, message: Message):
         await client.unban_chat_member(message.chat.id, target_id)
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Unban Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "gunban", target_id, label, uid)
     doc = Doc("✅", "Member Unbanned").status("success", f"{label} ({target_id})", "May rejoin the group.")
     return await message.reply_text(doc.classic(), parse_mode=enums.ParseMode.HTML)
 
@@ -971,6 +1003,7 @@ async def kick_cmd(client: Client, message: Message):
         await client.unban_chat_member(message.chat.id, target_id)
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Kick Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "kick", target_id, label, uid, reason)
     doc = Doc("👢", "Member Kicked").kv_table([
         ("👤 User", f"{label} ({target_id})"),
         ("📝 Reason", reason or "Removed by moderator"),
@@ -998,6 +1031,7 @@ async def mute_cmd(client: Client, message: Message):
         await client.restrict_chat_member(message.chat.id, target_id, ChatPermissions(), **kw)
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Mute Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "mute", target_id, label, uid, reason)
     doc = Doc("🔇", "Member Muted").kv_table([
         ("👤 User", f"{label} ({target_id})"),
         ("⏱ Duration", dur_lbl or "Until unmuted"),
@@ -1022,6 +1056,7 @@ async def unmute_cmd(client: Client, message: Message):
         await client.restrict_chat_member(message.chat.id, target_id, _full_send_permissions(message.chat))
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Unmute Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "unmute", target_id, label, uid)
     doc = Doc("🔊", "Member Unmuted").status("success", f"{label} ({target_id})", "Messaging permissions restored.")
     return await message.reply_text(doc.classic(), parse_mode=enums.ParseMode.HTML)
 
@@ -1048,6 +1083,7 @@ async def warn_cmd(client: Client, message: Message):
         reasons = await _change_warns(message.chat.id, target_id, reason)
     except (ValueError, RuntimeError) as exc:
         return await rich.reply(message, Doc("⚠️", "Warning Not Added").status("error", "Please review", str(exc)))
+    await _log_mod_action(message.chat.id, "warn", target_id, label, uid, reason)
     count = len(reasons)
 
     if count >= limit:
@@ -1159,6 +1195,51 @@ async def warns_cmd(client: Client, message: Message):
         doc.items(reasons, ordered=True)
     else:
         doc.status("success", "Clean record", "No active warnings in this group.")
+    return await rich.reply(message, doc)
+
+
+def _fmt_modlog_entry(entry: dict[str, Any]) -> tuple[str, str, str]:
+    ts = entry.get("ts") or 0
+    when = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if ts else "—"
+    action = str(entry.get("action") or "action")
+    target = entry.get("target_label") or str(entry.get("target_id") or "—")
+    reason = entry.get("reason") or ""
+    detail = f"{target}"
+    if reason:
+        detail += f" — {reason}"
+    return when, action, detail
+
+
+@Client.on_message(filters.group & filters.command(["modlog", "modhistory"]) & PLG_FILTER)
+async def modlog_cmd(client: Client, message: Message):
+    cmd = (message.command or ["modlog"])[0].lower()
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    col = vdb.db["group_modlog"]
+    if cmd == "modhistory":
+        target_id, label, _ = await extract_target_and_args(client, message)
+        if not target_id:
+            return await rich.reply(message, Doc("📋", "Mod History").status("info", "Usage", "Reply or send /modhistory <user>"))
+        cursor = col.find({"chat_id": message.chat.id, "target_id": target_id}).sort("ts", -1).limit(20)
+        entries = await cursor.to_list(length=20)
+        doc = Doc("📋", f"Mod History · {label}", message.chat.title or "Group")
+        if not entries:
+            doc.status("empty", "No recorded actions", "No moderation actions against this user in this group.")
+        else:
+            doc.table([_fmt_modlog_entry(e) for e in entries], header=("When (UTC)", "Action", "Target"))
+        return await rich.reply(message, doc)
+    cursor = col.find({"chat_id": message.chat.id}).sort("ts", -1).limit(20)
+    entries = await cursor.to_list(length=20)
+    doc = Doc("📋", "Moderation Log", message.chat.title or "Group")
+    if not entries:
+        doc.status("empty", "No recorded actions", "Moderation actions will appear here.")
+    else:
+        doc.table([_fmt_modlog_entry(e) for e in entries], header=("When (UTC)", "Action", "Target"))
     return await rich.reply(message, doc)
 
 

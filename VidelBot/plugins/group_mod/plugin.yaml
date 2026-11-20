@@ -239,6 +239,12 @@ commands:
   - name: setcaptchatext
     description: Set the CAPTCHA button text
     access: admin
+  - name: modlog
+    description: View recent moderation actions in this group
+    access: admin
+  - name: modhistory
+    description: View moderation actions against a specific user
+    access: admin
 callbacks:
   - pattern: "^plg_gmod:[\\w:_-]+$"
     description: Group settings, warn removal, join-request approval, CAPTCHA verify & modreport actions

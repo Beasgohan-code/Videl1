@@ -184,6 +184,8 @@ GROUP_COMMANDS = [
     ("flood", "🌊 View anti-flood settings (admin)"),
     ("captcha", "🤖 Toggle new-member CAPTCHA (admin)"),
     ("setcaptchatext", "🤖 Set CAPTCHA button text (admin)"),
+    ("modlog", "📋 Recent moderation actions (admin)"),
+    ("modhistory", "📋 Moderation history for a user (admin)"),
 ]
 
 ADMIN_COMMANDS = [
