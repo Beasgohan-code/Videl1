@@ -24,77 +24,134 @@ log = LOGGER(__name__)
 main_db = MainDB()
 
 
+_CLONE_PAGE_SIZE = 15
+_CLONE_MAX_PAGE = 1000
+
+
+def _registry_view(records):
+    """Separate valid non-deleted IDs from malformed records without echoing them."""
+    if not isinstance(records, list):
+        raise ValueError('Invalid registry result')
+    visible, invalid = [], 0
+    for bot in records:
+        if not isinstance(bot, dict):
+            invalid += 1
+            continue
+        deleted = bot.get('is_deleted', False)
+        if deleted is True:
+            continue
+        bot_id = bot.get('_id')
+        if type(deleted) is not bool or type(bot_id) is not int or not 0 < bot_id < 2**63:
+            invalid += 1
+            continue
+        visible.append(bot)
+    visible.sort(key=lambda bot: bot['_id'])
+    return visible, invalid
+
+
+def _profile(bot):
+    # Only the missing field implies the legacy File Store profile; malformed
+    # and unsupported values must not be relabelled as File Store or working Music.
+    mode = bot.get('clone_profile', 'filestore')
+    return mode if isinstance(mode, str) and mode in ('filestore', 'group', 'music') else 'unknown'
+
+
+def _profile_label(bot):
+    return {'filestore': 'File Store', 'group': 'Group Management',
+            'music': 'Music (unsupported)', 'unknown': 'Unknown / unsupported'}[_profile(bot)]
+
+
+def _local_client(worker_engine, bot_id):
+    try:
+        return 'Present here' if worker_engine.get_worker(bot_id) is not None else 'Not found here'
+    except Exception:
+        return 'Unavailable'
+
+
+def _username(bot):
+    username = bot.get('bot_username')
+    return f'@{username}' if isinstance(username, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}', username, flags=re.ASCII) else 'Username unavailable'
+
+
 @Client.on_message(filters.command(["fsstats", "clonestats"]) & filters.private & filters.user(OWNERS))
 async def platform_stats(client: Client, message: Message):
-    """Full platform statistics."""
+    """Owner registry totals and process-local observations, without mutation."""
     try:
-        total_users = await main_db.total_users()
-        all_bots = await main_db.get_all_bots() if hasattr(main_db, "get_all_bots") else []
-        if not all_bots:
-            try:
-                all_bots = await main_db.get_all_active_bots()
-            except Exception:
-                all_bots = []
-
-        active_count = 0
-        stopped_count = 0
+        bots, invalid = _registry_view(await main_db.get_clone_directory_records())
+    except Exception:
+        return await message.reply_text('⚠️ Clone registry is unavailable. No fleet totals are available.')
+    try:
+        users = await main_db.total_users()
+        users = f'{users:,}' if type(users) is int and users >= 0 else 'Unavailable'
+    except Exception:
+        users = 'Unavailable'
+    try:
         from filestore.worker_bot.engine import worker_engine
-
-        for bot in all_bots:
-            bid = bot.get("_id") or bot.get("bot_id")
-            if worker_engine.get_worker(bid):
-                active_count += 1
-            else:
-                stopped_count += 1
-
-        doc = Doc("📊", "Clone Platform Stats", "FileStore worker fleet").kv_table([
-            ("👥 Total Users", f"{total_users:,}"),
-            ("🤖 Total Bots", f"{len(all_bots):,}"),
-            ("🟢 Running", str(active_count)),
-            ("🔴 Stopped", str(stopped_count)),
-            ("🔢 Max Bots/User", str(MAX_BOTS_PER_USER)),
-            ("💤 Auto-Off", f"{HIBERNATION_HOURS // 24} days unused" if HIBERNATION_HOURS else "Off"),
-        ], key_header="Metric", val_header="Value")
-        await rich.reply(message, doc)
-    except Exception as e:
-        log.error(f"Stats error: {e}")
-        await message.reply(f"<b>❌ Error fetching stats:</b> <code>{html.escape(str(e))}</code>")
+        observations = [_local_client(worker_engine, bot['_id']) for bot in bots]
+        local_count = str(observations.count('Present here')) if 'Unavailable' not in observations else 'Unavailable'
+    except Exception:
+        local_count = 'Unavailable'
+    profiles = {key: 0 for key in ('filestore', 'group', 'music', 'unknown')}
+    for bot in bots:
+        profiles[_profile(bot)] += 1
+    doc = Doc('📊', 'Clone Platform Stats', 'Registry records · local process snapshot').kv_table([
+        ('👥 Registered users', users),
+        ('🤖 Non-deleted clone records', f'{len(bots):,}'),
+        ('📁 File Store records', f"{profiles['filestore']:,}"),
+        ('🛡 Group Management records', f"{profiles['group']:,}"),
+        ('🎵 Music records (unsupported)', f"{profiles['music']:,}"),
+        ('❔ Unknown profiles', f"{profiles['unknown']:,}"),
+        ('⚠️ Invalid records excluded', f'{invalid:,}'),
+        ('👷 Local clients found', local_count),
+        ('🔢 Max bots per user', str(MAX_BOTS_PER_USER)),
+        ('💤 Auto-off', f'{HIBERNATION_HOURS} hours' if HIBERNATION_HOURS else 'Off'),
+    ], key_header='Metric', val_header='Value')
+    doc.footer('Stored modes are not runtime health. Local clients do not prove availability or exclusive ownership. Music playback is unavailable.')
+    await rich.reply(message, doc)
 
 
 @Client.on_message(filters.command("bots") & filters.private & filters.user(OWNERS))
 async def list_all_bots(client: Client, message: Message):
-    """Quick list of all registered bots."""
+    """Paginated non-deleted registry records; state is process-local only."""
+    command = getattr(message, 'command', None)
+    if not isinstance(command, list) or len(command) > 2:
+        return await message.reply_text('Usage: <code>/bots [page]</code>')
+    page = 1
+    if len(command) == 2:
+        raw_page = command[1]
+        if not isinstance(raw_page, str) or not re.fullmatch(r'[1-9][0-9]{0,3}', raw_page, flags=re.ASCII) or int(raw_page) > _CLONE_MAX_PAGE:
+            return await message.reply_text('Use a page number from 1 to 1000: <code>/bots [page]</code>')
+        page = int(raw_page)
     try:
-        bots = []
-        try:
-            bots = await main_db.get_all_active_bots()
-        except Exception:
-            pass
-
-        if not bots:
-            return await rich.reply(
-                message,
-                Doc("🤖", "Registered Clone Bots").status("empty", "No bots found", "No clone bots registered in database."),
-            )
-
+        bots, invalid = _registry_view(await main_db.get_clone_directory_records())
+    except Exception:
+        return await message.reply_text('⚠️ Clone registry is unavailable. No bot list is available.')
+    if not bots:
+        doc = Doc('🤖', 'Clone bot records').status('empty', 'No valid non-deleted records',
+                 f'{invalid} invalid record(s) excluded. No records were removed.')
+        return await rich.reply(message, doc)
+    pages = max(1, (len(bots) + _CLONE_PAGE_SIZE - 1) // _CLONE_PAGE_SIZE)
+    requested = page
+    page = min(page, pages)
+    try:
         from filestore.worker_bot.engine import worker_engine
-        rows = []
-        for bot in bots[:30]:
-            username = bot.get("bot_username", "unknown")
-            owner = bot.get("owner_id", "?")
-            bid = bot.get("_id")
-            live = "🟢 Live" if worker_engine.get_worker(bid) else "🔴 Idle"
-            rows.append((f"@{username}", rich.code(owner), live))
-
-        doc = Doc("🤖", f"All Clone Bots · {len(bots)}").table(
-            rows, header=("Bot", "Owner ID", "Worker")
-        )
-        if len(bots) > 30:
-            doc.footer(f"Showing 30 of {len(bots)} bots")
-        await rich.reply(message, doc)
-    except Exception as e:
-        log.error(f"Bots list error: {e}")
-        await message.reply(f"<b>❌ Error:</b> <code>{html.escape(str(e))}</code>")
+    except Exception:
+        worker_engine = None
+    rows = []
+    for bot in bots[(page - 1) * _CLONE_PAGE_SIZE:page * _CLONE_PAGE_SIZE]:
+        bot_id = bot['_id']
+        owner = bot.get('owner_id')
+        owner = str(owner) if type(owner) is int and 0 < owner < 2**63 else 'unavailable'
+        active = bot.get('is_active')
+        saved_state = 'Marked active' if active is True else 'Marked inactive' if active is False else 'State unknown'
+        local = _local_client(worker_engine, bot_id) if worker_engine is not None else 'Unavailable'
+        rows.append((_username(bot), f'ID {bot_id} · Owner {owner} · {_profile_label(bot)} · {saved_state} · {local}'))
+    doc = Doc('🤖', 'Clone bot records', f'Page {page} of {pages}').table(rows, header=('Bot', 'Registry and local client'))
+    adjusted = f' Requested page {requested} was adjusted.' if requested != page else ''
+    page_limit = ' Pages after 1000 are not available here.' if pages > _CLONE_MAX_PAGE else ''
+    doc.footer(f'{len(bots)} valid non-deleted records; {invalid} invalid excluded.{adjusted}{page_limit} '
+               'Use /bots [page]. Pages can shift; local client presence is not health. Music playback is unavailable.')
+    await rich.reply(message, doc)
 
 
 @Client.on_message(filters.command(["sys", "system", "sysstats", "systats"]) & filters.private & filters.user(OWNERS))

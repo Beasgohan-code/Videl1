@@ -182,6 +182,13 @@ class MainDB:
         cursor = self.bots.find({})
         return await cursor.to_list(length=None)
 
+    async def get_clone_directory_records(self) -> list:
+        """Read only fields needed for owner directory views; never fetch credentials."""
+        projection = {"_id": 1, "owner_id": 1, "bot_username": 1,
+                      "clone_profile": 1, "is_active": 1, "is_deleted": 1}
+        cursor = self.bots.find({}, projection)
+        return await cursor.to_list(length=None)
+
     async def get_all_active_bots(self) -> list:
         """Get all active bots for worker engine startup."""
         cursor = self.bots.find({"is_active": True})

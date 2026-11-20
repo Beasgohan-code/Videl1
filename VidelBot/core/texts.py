@@ -291,7 +291,7 @@ Support: users send /support → it lands in your DM → <b>reply</b> to answer.
 /gifts — Telegram gifts · /sendgift &lt;user&gt; &lt;gift_id&gt; [text]
 
 <b>Clone bots</b>
-/clonestats — platform stats · /bots — list all clone bots · /sys — system snapshot
+/clonestats — registry and local client totals · /bots [page] — clone records · /sys — system snapshot
 /check — inspect local clone clients (<code>/check fix</code> can stop and restart clones; coordinate workers first)</blockquote>
 """
 
