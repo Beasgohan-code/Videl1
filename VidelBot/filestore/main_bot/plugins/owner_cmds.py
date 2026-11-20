@@ -19,6 +19,7 @@ from core import rich
 from core.rich import Doc
 from filestore.fs_config import OWNERS, LOGGER, HIBERNATION_HOURS, MAX_BOTS_PER_USER
 from filestore.database.main_db import MainDB
+from filestore.utils.registry_ids import valid_registry_id
 
 log = LOGGER(__name__)
 main_db = MainDB()
@@ -41,7 +42,7 @@ def _registry_view(records):
         if deleted is True:
             continue
         bot_id = bot.get('_id')
-        if type(deleted) is not bool or type(bot_id) is not int or not 0 < bot_id < 2**63:
+        if type(deleted) is not bool or not valid_registry_id(bot_id):
             invalid += 1
             continue
         visible.append(bot)
@@ -141,7 +142,7 @@ async def list_all_bots(client: Client, message: Message):
     for bot in bots[(page - 1) * _CLONE_PAGE_SIZE:page * _CLONE_PAGE_SIZE]:
         bot_id = bot['_id']
         owner = bot.get('owner_id')
-        owner = str(owner) if type(owner) is int and 0 < owner < 2**63 else 'unavailable'
+        owner = str(owner) if valid_registry_id(owner) else 'unavailable'
         active = bot.get('is_active')
         saved_state = 'Marked active' if active is True else 'Marked inactive' if active is False else 'State unknown'
         local = _local_client(worker_engine, bot_id) if worker_engine is not None else 'Unavailable'
@@ -226,7 +227,7 @@ async def _check_bots(client, message, status):
         if deleted is True:
             return
         bot_id = bot.get('_id')
-        if type(bot_id) is not int or not 0 < bot_id < 2**63 or type(deleted) is not bool:
+        if not valid_registry_id(bot_id) or type(deleted) is not bool:
             unknown.append('Invalid record')
             return
         name = label(bot_id, bot)

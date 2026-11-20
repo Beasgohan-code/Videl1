@@ -15,6 +15,7 @@ from pyrogram.types import CallbackQuery, InlineKeyboardButton as Btn, InlineKey
 import config
 from filestore.database.main_db import MainDB
 from filestore.fs_config import LOGGER
+from filestore.utils.registry_ids import valid_registry_id
 
 log = LOGGER(__name__)
 main_db = MainDB()
@@ -176,8 +177,8 @@ async def reactivate_cb(client: Client, query: CallbackQuery):
     from core.ui import smart_edit
     bot_id = bot.get("_id")
     # Old buttons must not start or reset an already-active or malformed record.
-    if (type(bot_id) is not int or bot_id != requested_id
-            or type(bot.get("owner_id")) is not int or bot["owner_id"] != uid
+    if (not valid_registry_id(bot_id) or bot_id != requested_id
+            or not valid_registry_id(bot.get("owner_id")) or bot["owner_id"] != uid
             or bot.get("is_active") is not False
             or bot.get("is_deleted", False) is not False
             or not isinstance(bot.get("bot_token_encrypted"), str)
