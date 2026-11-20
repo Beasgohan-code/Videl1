@@ -300,3 +300,7 @@ Queue restore after restart now stops at `ENC_MAX_QUEUE_TOTAL` and drops excess 
 ## Encoder low-disk admission guard (18443c2)
 
 New Encoder tasks are now rejected when free disk is below `MIN_FREE_DISK_GB`, instead of starting downloads/encodes that can fail mid-task. Focused overload/phase tests passed 74 with 15 skipped; full backend passed 1637 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Process-local/mock evidence only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
+
+## Waste-code cleanup: unused Encoder probe helpers (3588046)
+
+Deleted three now-unused Encoder helpers (`get_codec`, `get_media_streams`, `get_width_height`) after the cached-probe refactor, and removed stale test references to them. Focused tests passed 138 with 21 skipped; full backend passed 1637 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. No protected worker files, preserved data, or Group Mode plugin code were deleted.
