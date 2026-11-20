@@ -304,3 +304,7 @@ New Encoder tasks are now rejected when free disk is below `MIN_FREE_DISK_GB`, i
 ## Waste-code cleanup: unused Encoder probe helpers (3588046)
 
 Deleted three now-unused Encoder helpers (`get_codec`, `get_media_streams`, `get_width_height`) after the cached-probe refactor, and removed stale test references to them. Focused tests passed 138 with 21 skipped; full backend passed 1637 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. No protected worker files, preserved data, or Group Mode plugin code were deleted.
+
+## Waste-code cleanup: unused Encoder size/snapshot helpers (a29fad7)
+
+Deleted three more unused Encoder helpers (`ffcmd.estimate_size`, `ffcmd.ceil_div`, `scheduler.snapshot`) and the now-unused `time` import in scheduler. Focused tests passed 107 with 21 skipped; full backend passed 1637 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. No protected worker files, preserved data, or Group Mode plugin code were deleted.
