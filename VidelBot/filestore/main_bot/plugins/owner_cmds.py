@@ -202,7 +202,8 @@ async def _check_bots(client, message, status):
     """Report local observations without exposing raw worker/DB errors or credentials."""
     from filestore.worker_bot.engine import worker_engine
     try:
-        records = await main_db.get_all_bots()
+        # Projected directory read only: /check never needs tokens or other credentials.
+        records = await main_db.get_clone_directory_records()
     except Exception:
         return await status.finish('⚠️ Could not load clone records. No health result is available.')
 

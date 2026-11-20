@@ -28,7 +28,7 @@ class Engine:
 
 def execute(monkeypatch, records, worker_engine, command='/check'):
     async def get_all(): return records
-    monkeypatch.setattr(owner_cmds.main_db, 'get_all_bots', get_all)
+    monkeypatch.setattr(owner_cmds.main_db, 'get_clone_directory_records', get_all)
     monkeypatch.setattr(engine, 'worker_engine', worker_engine)
     status = Status(); run(owner_cmds._check_bots(FakeClient(), FakeMsg(command,uid=111), status))
     return status.text
@@ -74,7 +74,7 @@ def test_invalid_registry_response_is_not_an_empty_fleet(monkeypatch, value):
 
 def test_registry_exception_does_not_leak_message(monkeypatch):
     async def fail(): raise RuntimeError('secret:token')
-    monkeypatch.setattr(owner_cmds.main_db,'get_all_bots',fail)
+    monkeypatch.setattr(owner_cmds.main_db,'get_clone_directory_records',fail)
     s=Status();run(owner_cmds._check_bots(FakeClient(),FakeMsg('/check',uid=111),s))
     assert 'No health result is available' in s.text and 'secret:token' not in s.text
 
@@ -159,7 +159,7 @@ def test_probe_cancellation_propagates_without_repair(monkeypatch):
             async def get_me(self): entered.set();await asyncio.Event().wait()
         eng=Engine({2:Slow()});monkeypatch.setattr(engine,'worker_engine',eng)
         async def all_bots(): return [{'_id':2,'bot_username':'slow_bot','is_active':True}]
-        monkeypatch.setattr(owner_cmds.main_db,'get_all_bots',all_bots)
+        monkeypatch.setattr(owner_cmds.main_db,'get_clone_directory_records',all_bots)
         status=Status();task=asyncio.create_task(owner_cmds._check_bots(FakeClient(),FakeMsg('/check fix',uid=111),status))
         await entered.wait();task.cancel()
         with pytest.raises(asyncio.CancelledError): await task

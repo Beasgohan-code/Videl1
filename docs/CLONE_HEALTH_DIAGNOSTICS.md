@@ -1,6 +1,6 @@
 # Clone health diagnostics and repair limits
 
-The owner-only private `/check` (alias `/checkbots`) reads the clone registry and
+The owner-only private `/check` (alias `/checkbots`) reads only projected clone-directory fields (never tokens or other credentials) and
 checks worker clients known to **this process**. A matching `get_me` result is a
 point-in-time response, not proof of ongoing availability, correct operation in
 every group, or exclusive ownership. A missing local client may exist in another
