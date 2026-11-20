@@ -237,20 +237,6 @@ def target_video_kbps(target_mb: int, duration: float, a_kbps: int) -> int:
     return max(150, int(total_kbit / duration - a_kbps))
 
 
-def estimate_size(s: dict, info: dict) -> int:
-    """Very rough output size in bytes (shown before / during an encode)."""
-    d = info.get("duration") or 0
-    if not d:
-        return 0
-    if s.get("mode") == "size" and s.get("target_mb"):
-        return int(s["target_mb"] * 1024 * 1024)
-    h = RESOLUTIONS.get(str(s["resolution"])) or info.get("height") or 720
-    h = min(h, info.get("height") or h)
-    base = {480: 700, 576: 900, 720: 1400, 1080: 2800}.get(h, int(h * 2.2))     # kbps at crf 23 (x264)
-    kbps = base * {"av1": 0.5, "hevc": 0.6, "h264": 1.0}[video_codec(s)] * (0.89 ** (s["crf"] - 23))
-    return int((kbps + audio_kbps(s, info)) * 1000 / 8 * d)
-
-
 # ─────────────────────────── command ───────────────────────────
 def output_ext(s: dict) -> str:
     ext = {"MP4": ".mp4", "AVI": ".avi"}.get(str(s["extensions"]).upper(), ".mkv")
@@ -765,10 +751,6 @@ def describe(s: dict) -> dict:
                                                 ("Metadata", s["metadata"])) if on) or "Off",
         "rate": ("2-pass" if s["twopass"] and s["mode"] == "size" else "1-pass"),
     }
-
-
-def ceil_div(a, b):
-    return int(math.ceil(a / b)) if b else 0
 
 
 # ─────────────────────────── Phase 15 tools ───────────────────────────

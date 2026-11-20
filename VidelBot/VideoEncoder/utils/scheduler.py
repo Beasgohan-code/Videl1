@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import shutil
-import time
 import weakref
 from datetime import datetime, timedelta
 
@@ -371,9 +370,3 @@ async def restore_queue(app) -> int:
         from core.bg import spawn
         spawn(dispatch(spawn_all=True), name="encoder-restore-dispatch")
     return restored
-
-
-def snapshot() -> dict:
-    """Numbers for /status, the dashboard and the watchdog."""
-    return {"workers": config.ENCODER_WORKERS, "running": len(running()), "waiting": len(waiting()),
-            "priority_waiting": sum(1 for m in waiting() if id(m) in PRIO), "ts": int(time.time())}
