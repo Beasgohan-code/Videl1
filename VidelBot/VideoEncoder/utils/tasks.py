@@ -22,7 +22,7 @@ from .display_progress import humanbytes, progress_for_pyrogram
 from .helper import delete_downloads, get_zip_folder, handle_encode, handle_extract, handle_url
 from .uploads.drive import _get_file_id
 from .uploads.drive.download import Downloader
-from .encoding import get_media_streams
+from .encoding import probe
 from ..video_utils.audio_selector import AudioSelect
 
 _DEPTH = contextvars.ContextVar("videl_enc_depth", default=0)
@@ -330,8 +330,8 @@ async def af_task(message, msg):
     if not filepath:
         return
 
-    # Probe for streams
-    streams = await asyncio.to_thread(get_media_streams, filepath)
+    # Reuse the cached probe summary for audio streams (no extra ffprobe here).
+    streams = (await probe(filepath)).get("audio") or []
     if not streams:
          await msg.edit("Could not retrieve media streams.")
          return

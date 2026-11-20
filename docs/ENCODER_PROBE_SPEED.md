@@ -13,7 +13,9 @@ separate `ffprobe` calls for duration and dimensions. Merge probes run
 concurrently with `probe_many`, and mux probes its video and track concurrently.
 Screenshots are captured in one ffmpeg process with one input per timestamp;
 missing frames fall back to the previous per-frame command, and the single
-process remains attached to the job registry for pause/cancel. These changes do
+process remains attached to the job registry for pause/cancel. `/af` audio
+selection and subtitle extraction also reuse the cached probe summary instead
+of starting separate `ffprobe` calls for audio/subtitle streams. These changes do
 not alter encoder settings, output quality, worker counts, or hardware
 selection. They do not benchmark real FFmpeg timing and do not prove
 multi-process or real MongoDB behavior.

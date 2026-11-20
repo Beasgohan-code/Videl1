@@ -46,10 +46,13 @@ async def extract_subs(filepath, msg, user_id):
 
     path, extension = os.path.splitext(filepath)
     name = os.path.basename(path)
-    check = await asyncio.to_thread(get_codec, filepath, 's:0')
-    if not check:
+    info = await probe(filepath)
+    subs = info.get("subs") or []
+    if not subs:
         return None
-    if any(c in ffcmd.BITMAP_SUBS for c in check):
+    first = subs[0] or {}
+    codecs = {str(first.get("codec_name") or ""), str(first.get("codec_tag_string") or "")}
+    if codecs & ffcmd.BITMAP_SUBS:
         return None                      # picture subtitles (PGS / VobSub) can't become .ass
     else:
         output = os.path.join(encode_dir, str(msg.id) + '.ass')
