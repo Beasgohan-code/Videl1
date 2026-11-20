@@ -78,7 +78,8 @@ def _username(bot):
 async def platform_stats(client: Client, message: Message):
     """Owner registry totals and process-local observations, without mutation."""
     try:
-        bots, invalid = _registry_view(await main_db.get_clone_directory_records())
+        profiles = await main_db.clone_directory_profile_counts()
+        invalid = await main_db.count_invalid_clone_directory_records()
     except Exception:
         return await message.reply_text('⚠️ Clone registry is unavailable. No fleet totals are available.')
     try:
@@ -88,16 +89,20 @@ async def platform_stats(client: Client, message: Message):
         users = 'Unavailable'
     try:
         from filestore.worker_bot.engine import worker_engine
-        observations = [_local_client(worker_engine, bot['_id']) for bot in bots]
-        local_count = str(observations.count('Present here')) if 'Unavailable' not in observations else 'Unavailable'
+        local_found = 0
+        local_unavailable = False
+        async for bot_id in main_db.iter_clone_directory_ids():
+            observation = _local_client(worker_engine, bot_id)
+            if observation == 'Present here':
+                local_found += 1
+            elif observation == 'Unavailable':
+                local_unavailable = True
+        local_count = 'Unavailable' if local_unavailable else str(local_found)
     except Exception:
         local_count = 'Unavailable'
-    profiles = {key: 0 for key in ('filestore', 'group', 'music', 'unknown')}
-    for bot in bots:
-        profiles[_profile(bot)] += 1
     doc = Doc('📊', 'Clone Platform Stats', 'Registry records · local process snapshot').kv_table([
         ('👥 Registered users', users),
-        ('🤖 Non-deleted clone records', f'{len(bots):,}'),
+        ('🤖 Non-deleted clone records', f"{profiles['total']:,}"),
         ('📁 File Store records', f"{profiles['filestore']:,}"),
         ('🛡 Group Management records', f"{profiles['group']:,}"),
         ('🎵 Music records (unsupported)', f"{profiles['music']:,}"),
@@ -124,22 +129,28 @@ async def list_all_bots(client: Client, message: Message):
             return await message.reply_text('Use a page number from 1 to 1000: <code>/bots [page]</code>')
         page = int(raw_page)
     try:
-        bots, invalid = _registry_view(await main_db.get_clone_directory_records())
+        total = await main_db.count_clone_directory_records()
+        invalid = await main_db.count_invalid_clone_directory_records()
     except Exception:
         return await message.reply_text('⚠️ Clone registry is unavailable. No bot list is available.')
-    if not bots:
+    if not total:
         doc = Doc('🤖', 'Clone bot records').status('empty', 'No valid non-deleted records',
                  f'{invalid} invalid record(s) excluded. No records were removed.')
         return await rich.reply(message, doc)
-    pages = max(1, (len(bots) + _CLONE_PAGE_SIZE - 1) // _CLONE_PAGE_SIZE)
+    pages = max(1, (total + _CLONE_PAGE_SIZE - 1) // _CLONE_PAGE_SIZE)
     requested = page
     page = min(page, pages)
+    try:
+        page_records = await main_db.get_clone_directory_page(page, _CLONE_PAGE_SIZE)
+        bots, _page_invalid = _registry_view(page_records)
+    except Exception:
+        return await message.reply_text('⚠️ Clone registry is unavailable. No bot list is available.')
     try:
         from filestore.worker_bot.engine import worker_engine
     except Exception:
         worker_engine = None
     rows = []
-    for bot in bots[(page - 1) * _CLONE_PAGE_SIZE:page * _CLONE_PAGE_SIZE]:
+    for bot in bots:
         bot_id = bot['_id']
         owner = bot.get('owner_id')
         owner = str(owner) if valid_registry_id(owner) else 'unavailable'
@@ -150,7 +161,7 @@ async def list_all_bots(client: Client, message: Message):
     doc = Doc('🤖', 'Clone bot records', f'Page {page} of {pages}').table(rows, header=('Bot', 'Registry and local client'))
     adjusted = f' Requested page {requested} was adjusted.' if requested != page else ''
     page_limit = ' Pages after 1000 are not available here.' if pages > _CLONE_MAX_PAGE else ''
-    doc.footer(f'{len(bots)} valid non-deleted records; {invalid} invalid excluded.{adjusted}{page_limit} '
+    doc.footer(f'{total} valid non-deleted records; {invalid} invalid excluded.{adjusted}{page_limit} '
                'Use /bots [page]. Pages can shift; local client presence is not health. Music playback is unavailable.')
     await rich.reply(message, doc)
 

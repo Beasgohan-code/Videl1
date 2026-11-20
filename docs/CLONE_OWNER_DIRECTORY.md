@@ -17,11 +17,13 @@ projection that excludes tokens and other unrelated data. IDs and usernames are
 validated before display and arbitrary registry data and exception text are not
 shown.
 
-This is a bounded *response*, not a bounded database scan: the current code loads
-all projected records and sorts them by ID on each request. It is unsuitable as
-a large-fleet monitoring service. Pages are not a snapshot and may shift during
-writes; pages after 1000 are inaccessible. Scale work should add indexed,
-keyset-based pagination and bounded profile aggregation, explicitly handling
-concurrent changes and legacy/malformed records. Offline tests use mock MongoDB
-and fake Telegram clients; real Mongo behavior, multiple processes and live
-Telegram delivery have not been verified.
+`/bots` now fetches one bounded page at a time from MongoDB (sorted by `_id`,
+with a DB-side valid/non-deleted filter and field projection), and
+`/clonestats` uses bounded profile aggregation plus counts instead of loading
+every projected record. The local-client count streams valid `_id`s one at a
+time, so memory stays bounded even though that count still scans the fleet.
+Pages are not a snapshot and may shift during writes; pages after 1000 are
+inaccessible. Keyset pagination, indexed aggregation tuning, and explicit
+handling of concurrent changes remain future scale work. Offline tests use
+mock MongoDB and fake Telegram clients; real Mongo behavior, multiple
+processes and live Telegram delivery have not been verified.

@@ -62,7 +62,19 @@ def test_owner_directory_and_health_accept_decoded_bson_ids(monkeypatch):
     record=decoded();record['is_active']=True
     async def load(): return [record]
     async def users(): return 1
+    async def get_page(page, page_size): return [record]
+    async def count(): return 1
+    async def count_invalid(): return 0
+    async def profile_counts():
+        return {'filestore': 0, 'group': 1, 'music': 0, 'unknown': 0, 'total': 1}
+    async def iter_ids():
+        yield record['_id']
     monkeypatch.setattr(owner_cmds.main_db,'get_clone_directory_records',load)
+    monkeypatch.setattr(owner_cmds.main_db,'get_clone_directory_page',get_page)
+    monkeypatch.setattr(owner_cmds.main_db,'count_clone_directory_records',count)
+    monkeypatch.setattr(owner_cmds.main_db,'count_invalid_clone_directory_records',count_invalid)
+    monkeypatch.setattr(owner_cmds.main_db,'clone_directory_profile_counts',profile_counts)
+    monkeypatch.setattr(owner_cmds.main_db,'iter_clone_directory_ids',iter_ids)
     monkeypatch.setattr(owner_cmds.main_db,'get_all_bots',load)
     monkeypatch.setattr(owner_cmds.main_db,'total_users',users)
     class Worker:

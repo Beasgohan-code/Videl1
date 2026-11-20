@@ -189,6 +189,74 @@ class MainDB:
         cursor = self.bots.find({}, projection)
         return await cursor.to_list(length=None)
 
+    @staticmethod
+    def _clone_directory_projection() -> dict:
+        return {"_id": 1, "owner_id": 1, "bot_username": 1,
+                "clone_profile": 1, "is_active": 1, "is_deleted": 1}
+
+    @staticmethod
+    def _clone_directory_valid_filter() -> dict:
+        """DB-side filter for valid, non-deleted clone directory records.
+
+        Mirrors `valid_registry_id` + the owner directory's deletion rules:
+        numeric `_id` in Telegram range (doubles excluded; bools/strings fail
+        the range comparison), and `is_deleted` missing or exactly False.
+        Callers still re-validate in Python before display.
+        """
+        return {
+            "_id": {"$gt": 0, "$lt": 9223372036854775807, "$not": {"$type": "double"}},
+            "$or": [{"is_deleted": {"$exists": False}}, {"is_deleted": False}],
+        }
+
+    async def get_clone_directory_page(self, page: int, page_size: int) -> list:
+        """Return one bounded page of valid directory records, sorted by `_id`."""
+        page = max(1, int(page))
+        page_size = max(1, int(page_size))
+        cursor = (self.bots.find(self._clone_directory_valid_filter(),
+                                 self._clone_directory_projection())
+                  .sort("_id", 1).skip((page - 1) * page_size).limit(page_size))
+        return await cursor.to_list(length=page_size)
+
+    async def count_clone_directory_records(self) -> int:
+        """Count valid, non-deleted directory records without loading them."""
+        return await self.bots.count_documents(self._clone_directory_valid_filter())
+
+    async def count_invalid_clone_directory_records(self) -> int:
+        """Count non-deleted records excluded as invalid (never fetched)."""
+        non_deleted = await self.bots.count_documents({"is_deleted": {"$ne": True}})
+        valid = await self.bots.count_documents(self._clone_directory_valid_filter())
+        return max(0, non_deleted - valid)
+
+    async def clone_directory_profile_counts(self) -> dict:
+        """Bounded profile aggregation for `/clonestats` (no record loading).
+
+        Missing `clone_profile` means the legacy File Store profile; any
+        other present value outside filestore/group/music counts as unknown.
+        """
+        filt = self._clone_directory_valid_filter()
+        total = await self.bots.count_documents(filt)
+        missing = await self.bots.count_documents(
+            {**filt, "clone_profile": {"$exists": False}})
+        groups: dict = {}
+        async for row in self.bots.aggregate([
+                {"$match": filt},
+                {"$group": {"_id": "$clone_profile", "count": {"$sum": 1}}},
+        ]):
+            groups[row.get("_id")] = row.get("count", 0)
+        filestore = missing + int(groups.get("filestore", 0) or 0)
+        group = int(groups.get("group", 0) or 0)
+        music = int(groups.get("music", 0) or 0)
+        unknown = max(0, total - filestore - group - music)
+        return {"filestore": filestore, "group": group, "music": music,
+                "unknown": unknown, "total": total}
+
+    async def iter_clone_directory_ids(self):
+        """Stream valid directory `_id`s one at a time (bounded memory)."""
+        cursor = self.bots.find(self._clone_directory_valid_filter(),
+                                {"_id": 1}).sort("_id", 1)
+        async for doc in cursor:
+            yield doc["_id"]
+
     async def get_all_active_bots(self) -> list:
         """Get all active bots for worker engine startup."""
         cursor = self.bots.find({"is_active": True})

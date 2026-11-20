@@ -17,11 +17,29 @@ def capture(monkeypatch):
 
 
 def setup(monkeypatch, records, *, workers=None, users=3):
-    async def get_all(): return records
+    visible, invalid = commands._registry_view(records)
+    async def get_page(page, page_size):
+        return visible[(page - 1) * page_size:page * page_size]
+    async def count():
+        return len(visible)
+    async def count_invalid():
+        return invalid
+    async def profile_counts():
+        profiles = {key: 0 for key in ('filestore', 'group', 'music', 'unknown')}
+        for bot in visible:
+            profiles[commands._profile(bot)] += 1
+        return {**profiles, 'total': len(visible)}
+    async def iter_ids():
+        for bot in visible:
+            yield bot['_id']
     async def get_users():
         if isinstance(users, Exception): raise users
         return users
-    monkeypatch.setattr(commands.main_db, 'get_clone_directory_records', get_all)
+    monkeypatch.setattr(commands.main_db, 'get_clone_directory_page', get_page)
+    monkeypatch.setattr(commands.main_db, 'count_clone_directory_records', count)
+    monkeypatch.setattr(commands.main_db, 'count_invalid_clone_directory_records', count_invalid)
+    monkeypatch.setattr(commands.main_db, 'clone_directory_profile_counts', profile_counts)
+    monkeypatch.setattr(commands.main_db, 'iter_clone_directory_ids', iter_ids)
     monkeypatch.setattr(commands.main_db, 'total_users', get_users)
     class Engine:
         def get_worker(self, bid):
@@ -93,7 +111,7 @@ def test_directory_empty_does_not_claim_bad_records_absent(monkeypatch,capture):
 @pytest.mark.parametrize('arg', ['0','-1','1001','1.5','01','9'*5000,'<bad>'])
 def test_invalid_page_never_loads_registry(monkeypatch,arg):
     async def fail(): pytest.fail('Invalid pages must not read registry')
-    monkeypatch.setattr(commands.main_db,'get_clone_directory_records',fail)
+    monkeypatch.setattr(commands.main_db,'count_clone_directory_records',fail)
     msg=FakeMsg('/bots '+arg,uid=111);run(commands.list_all_bots(FakeClient(),msg))
     assert msg.replies[-1] == 'Use a page number from 1 to 1000: <code>/bots [page]</code>'
 
@@ -108,7 +126,8 @@ def test_page_cap_is_disclosed(monkeypatch,capture):
 
 def test_registry_failures_do_not_leak_or_look_empty(monkeypatch,capture,caplog):
     async def fail(): raise RuntimeError('sensitive-token')
-    monkeypatch.setattr(commands.main_db,'get_clone_directory_records',fail)
+    monkeypatch.setattr(commands.main_db,'clone_directory_profile_counts',fail)
+    monkeypatch.setattr(commands.main_db,'count_clone_directory_records',fail)
     for callback,text in ((commands.platform_stats,'/clonestats'),(commands.list_all_bots,'/bots')):
         msg=FakeMsg(text,uid=111);run(callback(FakeClient(),msg))
         assert 'unavailable' in msg.replies[-1] and 'sensitive-token' not in msg.replies[-1]
@@ -125,6 +144,45 @@ def test_directory_projection_omits_credentials_and_other_fields():
     run(db.bots.insert_one(record));result=run(db.get_clone_directory_records())
     assert result == [{key:record[key] for key in ('_id','owner_id','bot_username','is_active','clone_profile')}]
     assert run(db.bots.find_one({'_id':123}))['bot_token_encrypted']=='secret-token'
+
+
+def test_bounded_directory_page_count_and_profiles_use_db_filter():
+    from bson.int64 import Int64
+    from filestore.database.main_db import MainDB
+    from mongomock_motor import AsyncMongoMockClient
+    db=MainDB.__new__(MainDB);db.bots=AsyncMongoMockClient().diagnostics.bots
+    docs=[
+        {'_id': Int64(10), 'owner_id': 1, 'bot_username': 'a_bot', 'clone_profile': 'group',
+         'is_active': True, 'is_deleted': False, 'bot_token_encrypted': 'secret'},
+        {'_id': 11, 'owner_id': 1, 'bot_username': 'b_bot', 'clone_profile': 'filestore',
+         'is_active': False},
+        {'_id': 12, 'owner_id': 1, 'bot_username': 'c_bot', 'is_active': True},
+        {'_id': 13, 'owner_id': 1, 'bot_username': 'd_bot', 'clone_profile': None,
+         'is_active': True, 'is_deleted': False},
+        {'_id': 14, 'owner_id': 1, 'bot_username': 'e_bot', 'clone_profile': 'music',
+         'is_active': False, 'is_deleted': False},
+        {'_id': 15, 'owner_id': 1, 'bot_username': 'f_bot', 'clone_profile': 'bogus',
+         'is_active': True, 'is_deleted': False},
+        {'_id': 'bad', 'is_deleted': False},
+        {'_id': 16, 'is_deleted': True, 'clone_profile': 'group'},
+        {'_id': 17, 'is_deleted': None},
+        {'_id': 0, 'is_deleted': False},
+        {'_id': 18.5, 'is_deleted': False},
+    ]
+    for doc in docs:
+        run(db.bots.insert_one(doc))
+    assert run(db.count_clone_directory_records()) == 6
+    assert run(db.count_invalid_clone_directory_records()) == 4
+    counts = run(db.clone_directory_profile_counts())
+    assert counts == {'filestore': 2, 'group': 1, 'music': 1, 'unknown': 2, 'total': 6}
+    page1 = run(db.get_clone_directory_page(1, 4))
+    page2 = run(db.get_clone_directory_page(2, 4))
+    assert [d['_id'] for d in page1] == [10, 11, 12, 13]
+    assert [d['_id'] for d in page2] == [14, 15]
+    assert all('bot_token_encrypted' not in d for d in page1 + page2)
+    async def collect():
+        return [bid async for bid in db.iter_clone_directory_ids()]
+    assert run(collect()) == [10, 11, 12, 13, 14, 15]
 
 
 def test_worst_case_page_remains_bounded_and_complete(monkeypatch,capture):
