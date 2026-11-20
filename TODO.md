@@ -59,6 +59,7 @@ Do not bypass the single-controller or tenant-isolation safeguards to accelerate
   - Join-request workflows (`/joinmode off|notify|auto`),
   - Managed clone bot push onboarding (`@Client.on_managed_bot()`) + token rotation + `BotAccessSettings` helpers,
   - Interactive & Business checklists (`/checklist`) and upgraded collectible gift inspection (`/nftgift`).
+- [x] **Rose-style full group management (Stages 11–13):** Added restriction aliases (`/ban`, `/tban`, `/dban`, `/sban`, `/unban`, `/tmute`, `/dmute`, `/smute`, `/dkick`, `/skick`, `/swarn`, `/dwarn`, `/rmwarn`, `/resetwarn`), warning policy (`/warnings`, `/setwarnlimit`, `/setwarnmode`), 40+ granular locks with custom modes, blocklists, phrase/list filters, notes, configurable anti-flood, button CAPTCHA, `/pin`/`/unpin`/`/purge`, and a bounded moderation log (`/modlog`, `/modhistory`). No Rose credits added. Clone worker untouched. See `docs/GROUP_MANAGEMENT_ROADMAP.md` Stages 11–13.
 
 ### Phase 5 — Codebase Audit, Security Hardening, CI & Reliability (Stages A–E)
 - [x] **Atomic Stars Payment Idempotency & Validation:** Added atomic `charge_id` claiming (`_claim_payment` / `CloneExtras.claim_payment`), unique sparse `charge_id` indexes, and post-checkout currency/amount/payer verification across both main-bot (`core/payments.py`) and clone-worker (`filestore/worker_bot/extras.py`) Stars flows.
