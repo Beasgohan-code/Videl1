@@ -324,3 +324,7 @@ Admin stats now counts clones from projected clone-directory records instead of 
 ## Encoder status admission state (6ac705c)
 
 `/status` now shows an Admissions row mirroring the overload guards: `Open` with queued/cap count, or `Paused` with active reasons (queue full, memory pressure while busy, or low disk). Memory pressure alone does not pause an idle queue, matching `_enqueue()`. Focused overload/status tests passed 37; full backend passed 1640 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock evidence only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
+
+## Bounded owner clone directory reads (d574595)
+
+Owner `/bots` now fetches one DB-side page at a time (valid/non-deleted filter, `_id` sort, projection), and `/clonestats` uses bounded profile aggregation plus counts instead of loading every projected record. The local-client count streams valid `_id`s one at a time. Focused owner/BSON/health tests passed 37; full backend passed 1641 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock MongoDB only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
