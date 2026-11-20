@@ -102,6 +102,28 @@ def test_restore_queue_respects_global_cap(monkeypatch):
     assert len(queue) == 2
 
 
+def test_disk_low_uses_min_free_disk_threshold(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(config, "MIN_FREE_DISK_GB", 2)
+    monkeypatch.setattr(scheduler.shutil, "disk_usage", lambda _path: SimpleNamespace(free=int(1.5 * 1073741824)))
+    assert scheduler.disk_low() is True
+    monkeypatch.setattr(scheduler.shutil, "disk_usage", lambda _path: SimpleNamespace(free=int(3 * 1073741824)))
+    assert scheduler.disk_low() is False
+
+
+def test_enqueue_rejects_when_disk_is_low(monkeypatch):
+    async def fake_handle(message, mode):
+        raise AssertionError("low disk must not start a task")
+
+    monkeypatch.setattr(enc_plugin, "handle_tasks", fake_handle)
+    monkeypatch.setattr(scheduler, "disk_low", lambda: True)
+    m = _msg(5)
+    assert run(enc_plugin._enqueue(m, "tg")) is False
+    assert "Low disk space" in m.replies[-1]
+    assert scheduler.position(m) == 0
+
+
 def test_enqueue_still_starts_one_task_when_idle_under_memory_pressure(monkeypatch):
     started = []
 

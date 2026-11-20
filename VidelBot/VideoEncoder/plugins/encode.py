@@ -59,6 +59,10 @@ async def _enqueue(message, mode, extra=None, card=None) -> bool:
         await say("🔥 <b>Bot is overloaded</b> – memory is high right now. "
                   "<i>Please try again when a task finishes.</i>")
         return False
+    if scheduler.disk_low():
+        await say("💽 <b>Low disk space</b> – new encodes are paused until cleanup frees space. "
+                  "<i>Please try again in a bit.</i>")
+        return False
     pos = scheduler.add(message, mode, priority=pro, extra=extra)
     await scheduler.persist(message, mode, extra, pro)
     if scheduler.can_start(message):

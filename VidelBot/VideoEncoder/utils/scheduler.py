@@ -80,6 +80,21 @@ def queue_full() -> bool:
     return len(data) >= max(1, cap)
 
 
+def disk_low() -> bool:
+    """True when free disk is below the configured minimum for new Encoder work."""
+    try:
+        threshold = float(getattr(config, "MIN_FREE_DISK_GB", 2) or 0)
+    except (TypeError, ValueError):
+        return False
+    if threshold <= 0:
+        return False
+    try:
+        free_gb = shutil.disk_usage(".").free / 1073741824
+        return free_gb < threshold
+    except Exception:
+        return False
+
+
 def slots_free() -> int:
     active_count = len(running())
     free = config.ENCODER_WORKERS - active_count
