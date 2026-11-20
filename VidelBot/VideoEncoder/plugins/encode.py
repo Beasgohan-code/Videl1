@@ -1,11 +1,10 @@
-import asyncio
+import asyncio  # noqa: F401  (tests patch enc_plugin.asyncio.sleep)
 import re
 
 from pyrogram import Client, filters
 
 import config
 
-from .. import video_mimetype
 from ..utils.database.add_user import AddUserToDatabase
 from ..utils.helper import check_chat
 from ..utils.tasks import handle_tasks, parse_sample_args, parse_screens_args, parse_trim_args

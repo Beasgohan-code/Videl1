@@ -45,7 +45,7 @@ from core import botapi, rich
 from core.db import vdb
 from core.plugin_manager import PluginBase, plugin_enabled, plugin_filter
 from core.rich import Doc
-from core.ui import is_wzgram_client, styled_button
+from core.ui import styled_button
 
 log = logging.getLogger("videl.plugin.group_mod")
 

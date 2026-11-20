@@ -21,9 +21,6 @@ from core.style import hdr, hint, row
 
 
 async def extract_subs(filepath, msg, user_id):
-
-    path, extension = os.path.splitext(filepath)
-    name = os.path.basename(path)
     info = await probe(filepath)
     subs = info.get("subs") or []
     if not subs:

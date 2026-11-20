@@ -5,15 +5,10 @@ import contextvars
 import html
 import os
 import time
-from datetime import datetime
 from urllib.parse import unquote_plus
 
-from httpx import delete
 from pyrogram.errors.exceptions.bad_request_400 import (MessageIdInvalid,
                                                         MessageNotModified)
-from pyrogram.parser import html as pyrogram_html
-from pyrogram.types import Message
-from requests.utils import unquote
 
 from .. import LOGGER, data, download_dir, video_mimetype
 from .database.access_db import db
