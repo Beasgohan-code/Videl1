@@ -8,6 +8,8 @@ Clone lifecycle: a clone nobody uses for CLONE_INACTIVE_DAYS (default 7) is deac
 • reactivating (here or with 🟢 Start in the dashboard) restarts the inactivity clock
 """
 from datetime import datetime, timedelta, timezone
+import asyncio
+import re
 
 from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb
@@ -20,6 +22,63 @@ from filestore.utils.registry_ids import valid_registry_id
 log = LOGGER(__name__)
 main_db = MainDB()
 SWEEP_EVERY = 3600
+# A failed stop or conditional write may have succeeded. Hold those IDs locally
+# rather than repeating the same destructive operation on the next sweep.
+_SWEEP_HOLD_LIMIT = 1024
+_sweep_holds = set()
+_sweep_claims = set()
+_sweep_paused = False
+_SWEEP_FIELDS = ("owner_id", "is_active", "is_deleted", "bot_token_encrypted",
+                 "clone_profile", "last_active", "created_at")
+
+
+def _hold_sweep(bot_id):
+    global _sweep_paused
+    if bot_id in _sweep_holds:
+        return
+    if len(_sweep_holds) >= _SWEEP_HOLD_LIMIT:
+        _sweep_paused = True
+        log.warning("Idle sweep paused: uncertain-operation hold capacity reached.")
+        return
+    _sweep_holds.add(bot_id)
+    log.warning("Idle sweep held for clone %s; operation requires review.", bot_id)
+
+
+def _same_snapshot(old, current):
+    return (isinstance(current, dict) and current.get("_id") == old["_id"]
+            and all((key in old) == (key in current) and old.get(key) == current.get(key)
+                    for key in _SWEEP_FIELDS))
+
+
+async def _deactivate_if_idle_unchanged(bot, worker_engine):
+    """Attempt at most once locally; conflicts after stop remain uncertain."""
+    bot_id = bot["_id"]
+    if (_sweep_paused or bot_id in _sweep_holds or bot_id in _sweep_claims
+            or len(_sweep_claims) >= _SWEEP_HOLD_LIMIT):
+        return False
+    _sweep_claims.add(bot_id)
+    attempted, committed = False, False
+    try:
+        observed = worker_engine.get_worker(bot_id)
+        if observed is None:
+            return False  # a missing local client is not a confirmed fleet-wide stop
+        fresh = await main_db.get_bot(bot_id)
+        if (_sweep_paused or not _same_snapshot(bot, fresh)
+                or worker_engine.get_worker(bot_id) is not observed):
+            return False
+        attempted = True
+        if await asyncio.wait_for(worker_engine.stop_worker(bot_id), timeout=10) is not True:
+            return False
+        if worker_engine.get_worker(bot_id) is not None:
+            return False
+        if not await main_db.deactivate_inactive_if_unchanged(bot):
+            return False
+        committed = True
+        return True
+    finally:
+        if attempted and not committed:
+            _hold_sweep(bot_id)
+        _sweep_claims.discard(bot_id)
 
 
 def period() -> timedelta | None:
@@ -63,38 +122,48 @@ async def sweep(app, worker_engine, now: datetime = None) -> dict:
     now = now or datetime.now(timezone.utc)
     owner_days: dict = {}                    # owner → idle days allowed by their plan (0 = never)
     for bot in await main_db.get_all_active_bots():
-        if bot.get("is_deleted"):
+        if (not isinstance(bot, dict) or bot.get("is_deleted", False) is not False
+                or bot.get("is_active") is not True or not valid_registry_id(bot.get("_id"))
+                or not valid_registry_id(bot.get("owner_id"))):
             continue
-        bot_id, owner = bot["_id"], bot.get("owner_id")
+        bot_id, owner = bot["_id"], bot["owner_id"]
         if owner not in owner_days:
             try:
                 from core.plans import clone_idle_days
                 owner_days[owner] = await clone_idle_days(owner)
             except Exception:
-                owner_days[owner] = base.days
-        if not owner_days[owner]:
+                owner_days[owner] = None  # never replace an unknown plan with a shorter default
+        if type(owner_days[owner]) is not int or not 0 <= owner_days[owner] <= 999999999:
+            continue
+        if owner_days[owner] == 0:
             continue                         # 🚀 Clone Pro: never auto-off
         limit = base if owner_days[owner] == base.days else timedelta(days=owner_days[owner])
         days = limit.days or 1
-        name = bot.get("bot_username", "unknown")
-        idle = now - last_activity(bot, now)
+        name = bot.get("bot_username")
+        name = (name if isinstance(name, str)
+                and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", name, flags=re.ASCII)
+                else "unavailable")
         try:
+            idle = now - last_activity(bot, now)
             if idle >= limit:
-                await worker_engine.stop_worker(bot_id)
-                await main_db.deactivate_inactive(bot_id)
+                if not await _deactivate_if_idle_unchanged(bot, worker_engine):
+                    continue
                 done["deactivated"].append(bot_id)
-                log.info(f"💤 clone {bot_id} deactivated after {idle}")
-                from core import botlog
-                await botlog.event("CloneDeactivated", (
-                    f"<b>🤖 Clone bot:</b> @{name} (<code>{bot_id}</code>)\n"
-                    f"<b>👤 Owner:</b> <code>{owner}</code>\n"
-                    f"<b>💤 Unused for:</b> {ago(idle).replace(' ago', '')} (limit {days}d)"), client=app)
+                log.info("Clone %s marked inactive after confirmed local stop.", bot_id)
+                try:
+                    from core import botlog
+                    await botlog.event("CloneDeactivated", (
+                        f"<b>🤖 Clone bot:</b> @{name} (<code>{bot_id}</code>)\n"
+                        f"<b>👤 Owner:</b> <code>{owner}</code>\n"
+                        f"<b>💤 Recorded inactivity:</b> {ago(idle).replace(' ago', '')} (limit {days}d)"), client=app)
+                except Exception:
+                    log.warning("Could not send clone inactivity log.")
                 try:
                     await app.send_message(
                         owner,
-                        f"<b>💤 @{name} was deactivated</b>\n\n<blockquote>Nobody used it for {days} days, so it was "
-                        "switched off to free resources. Users, files, links and settings are all kept.</blockquote>\n"
-                        "<i>Turn it back on whenever you need it.</i>",
+                        f"<b>💤 @{name} was marked inactive</b>\n\n<blockquote>After {days} days of recorded inactivity, "
+                        "the local client stop was confirmed and the registry was updated. Users, files, links and settings are kept.</blockquote>\n"
+                        "<i>This is a local snapshot; other processes are not checked.</i>",
                         reply_markup=Kb([[Btn("🟢 ʀᴇᴀᴄᴛɪᴠᴀᴛᴇ", callback_data=f"cl_on_{bot_id}"),
                                           Btn("📋 ᴍʏ ʙᴏᴛs", callback_data="my_bots")]]))
                 except Exception:
@@ -106,14 +175,14 @@ async def sweep(app, worker_engine, now: datetime = None) -> dict:
                 try:
                     await app.send_message(
                         owner,
-                        f"<b>⏳ @{name} will be deactivated in ~{max(1, int(left.total_seconds() // 3600))}h</b>\n\n"
-                        f"<blockquote>It hasn't been used for {ago(idle).replace(' ago', '')}. Clones idle for "
-                        f"{days} days are switched off automatically.</blockquote>",
+                        f"<b>⏳ @{name} may be marked inactive in ~{max(1, int(left.total_seconds() // 3600))}h</b>\n\n"
+                        f"<blockquote>It has no recorded activity for {ago(idle).replace(' ago', '')}. "
+                        f"The idle threshold is {days} days; actual state can change.</blockquote>",
                         reply_markup=Kb([[Btn("✅ ᴋᴇᴇᴘ ɪᴛ ʀᴜɴɴɪɴɢ", callback_data=f"cl_keep_{bot_id}")]]))
                 except Exception:
                     pass
-        except Exception as e:
-            log.error(f"lifecycle sweep failed for clone {bot_id}: {e}")
+        except Exception:
+            log.warning("Idle lifecycle sweep could not be confirmed for clone %s.", bot_id)
     return done
 
 
@@ -123,8 +192,8 @@ async def lifecycle_task(app, worker_engine):
     while True:
         try:
             await sweep(app, worker_engine)
-        except Exception as e:
-            log.error(f"lifecycle sweep failed: {e}")
+        except Exception:
+            log.warning("Idle lifecycle sweep could not be completed.")
         await asyncio.sleep(SWEEP_EVERY)
 
 
