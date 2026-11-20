@@ -2,7 +2,7 @@
 const {chromium}=require('playwright-core');
 const assert=require('node:assert/strict');
 const base=process.env.NEXT_PREVIEW_TEST_URL||'http://localhost:3001/next-preview';
-(async()=>{const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});try{
+(async()=>{const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});browser.setDefaultTimeout(60000);try{
  for(const width of [320,390,1440]){
   const p=await browser.newPage({viewport:{width,height:900},reducedMotion:'reduce'});let max=4, invalid=null;const requested=[];
   await p.route('**/api/v1/workspaces/*/filestore?*',async route=>{

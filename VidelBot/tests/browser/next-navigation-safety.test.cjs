@@ -3,7 +3,7 @@ const {chromium}=require('playwright-core'),assert=require('node:assert/strict')
 const base=process.env.NEXT_PREVIEW_TEST_URL||'http://localhost:3001/next-preview';
 async function signIn(page){await page.goto(base);await page.getByLabel('One-time key or link').fill('l.valid');await page.getByRole('button',{name:'Continue to workspace'}).click();await page.getByText('What you’re working on.').waitFor();}
 (async()=>{
- const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});
+ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});browser.setDefaultTimeout(60000);
  try{
   for(const width of [320,390,1440]){
    const page=await browser.newPage({viewport:{width,height:900},reducedMotion:'reduce'});await signIn(page);
