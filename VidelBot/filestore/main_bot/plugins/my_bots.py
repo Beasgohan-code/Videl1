@@ -920,15 +920,11 @@ async def backup_bot_callback(client: Client, query: CallbackQuery):
     from filestore.database.worker_db import WorkerDB
     wdb = WorkerDB(bot_id)
     try:
-        admins = await wdb.get_all_admins()
-        channels = await wdb.show_channels()
-        users = await wdb.total_users()
-        banned = await wdb.get_ban_users()
         backup["counts"] = {
-            "admins": len(admins),
-            "fsub_channels": len(channels),
-            "users": users,
-            "banned": len(banned),
+            "admins": await wdb.total_admins(),
+            "fsub_channels": await wdb.total_channels(),
+            "users": await wdb.total_users(),
+            "banned": await wdb.total_banned(),
         }
     except Exception:
         backup["counts"] = {}

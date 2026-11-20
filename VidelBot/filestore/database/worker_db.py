@@ -73,6 +73,10 @@ class WorkerDB:
         docs = await self.admins.find().to_list(length=None)
         return [doc["_id"] for doc in docs]
 
+    async def total_admins(self) -> int:
+        """Count admins without loading every ID."""
+        return await self.admins.count_documents({})
+
     # =========================================================================
     # BAN MANAGEMENT
     # =========================================================================
@@ -94,6 +98,10 @@ class WorkerDB:
         """Return all banned user IDs."""
         docs = await self.banned.find().to_list(length=None)
         return [doc["_id"] for doc in docs]
+
+    async def total_banned(self) -> int:
+        """Count banned users without loading every ID."""
+        return await self.banned.count_documents({})
 
     # =========================================================================
     # AUTO-DELETE TIMER
@@ -135,6 +143,10 @@ class WorkerDB:
         """Return all force-sub channel IDs."""
         docs = await self.channels.find().to_list(length=None)
         return [doc["_id"] for doc in docs]
+
+    async def total_channels(self) -> int:
+        """Count force-sub channels without loading every ID."""
+        return await self.channels.count_documents({})
 
     async def get_channel_mode(self, channel_id: int) -> str:
         """Get a channel's force-sub mode ('on' = request-based, 'off' = force join)."""

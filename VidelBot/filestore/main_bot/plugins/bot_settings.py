@@ -748,9 +748,9 @@ async def stats_callback(client: Client, query: CallbackQuery):
 
     worker_db = WorkerDB(bot_id)
     total_users = await worker_db.total_users()
-    total_admins = len(await worker_db.get_all_admins())
-    total_channels = len(await worker_db.show_channels())
-    total_banned = len(await worker_db.get_ban_users())
+    total_admins = await worker_db.total_admins()
+    total_channels = await worker_db.total_channels()
+    total_banned = await worker_db.total_banned()
 
     created_at = bot.get("created_at", "Unknown")
     if hasattr(created_at, "strftime"):
