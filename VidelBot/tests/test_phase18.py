@@ -228,5 +228,5 @@ def test_vupload_missing_file_answers_instead_of_crashing(monkeypatch):
 def test_vupload_probes_run_off_the_event_loop():
     src = (ROOT / "VideoEncoder/plugins/upload.py").read_text()
     body = src.split("async def videoupload", 1)[1].split("\n@", 1)[0]
-    assert "asyncio.to_thread(get_duration" in body and "asyncio.to_thread(get_thumbnail" in body
+    assert "await media_metadata(file)" in body and "asyncio.to_thread(get_thumbnail" in body
     assert "os.path.isfile(file)" in body

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import html as _html
 import json
 import math
@@ -6,6 +7,7 @@ import os
 import re
 import subprocess
 import time
+from collections import OrderedDict
 
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
@@ -134,6 +136,42 @@ class Encoded(str):
     where: str = "CPU"
 
 
+_PROBE_CACHE_MAX = 128
+_PROBE_CACHE_TTL = 300.0
+_PROBE_CACHE: "OrderedDict[tuple, tuple[float, dict]]" = OrderedDict()
+
+
+def _probe_key(filepath):
+    try:
+        st = os.stat(filepath)
+    except OSError:
+        return None
+    return (os.path.abspath(str(filepath)), st.st_mtime_ns, st.st_size)
+
+
+def _probe_cached(key):
+    if key is None:
+        return None
+    hit = _PROBE_CACHE.get(key)
+    if hit is None:
+        return None
+    ts, info = hit
+    if time.monotonic() - ts > _PROBE_CACHE_TTL:
+        _PROBE_CACHE.pop(key, None)
+        return None
+    _PROBE_CACHE.move_to_end(key)
+    return copy.deepcopy(info)
+
+
+def _probe_store(key, info):
+    if key is None or not info.get("ok"):
+        return
+    _PROBE_CACHE[key] = (time.monotonic(), copy.deepcopy(info))
+    _PROBE_CACHE.move_to_end(key)
+    while len(_PROBE_CACHE) > _PROBE_CACHE_MAX:
+        _PROBE_CACHE.popitem(last=False)
+
+
 def _probe_sync(filepath):
     try:
         out = subprocess.check_output(['ffprobe', '-v', 'error', '-print_format', 'json', '-show_streams',
@@ -145,7 +183,15 @@ def _probe_sync(filepath):
 
 
 async def probe(filepath) -> dict:
-    """One ffprobe for everything (streams + format), off the event loop → ffcmd.summarize() dict."""
+    """One ffprobe for everything (streams + format), off the event loop → ffcmd.summarize() dict.
+
+    Successful probes are cached briefly by path + mtime + size so mux/merge/compress
+    do not re-probe the same unchanged file repeatedly in one process.
+    """
+    key = _probe_key(filepath)
+    cached = _probe_cached(key)
+    if cached is not None:
+        return cached
     info = ffcmd.summarize(await asyncio.to_thread(_probe_sync, filepath))
     if not info["size"]:
         try:
@@ -157,7 +203,22 @@ async def probe(filepath) -> dict:
             info["duration"] = float(await asyncio.to_thread(get_duration, filepath) or 0)
         except Exception:
             pass
+    _probe_store(key, info)
     return info
+
+
+async def probe_many(filepaths) -> list:
+    """Probe several files concurrently, preserving input order."""
+    return list(await asyncio.gather(*(probe(p) for p in filepaths)))
+
+
+async def media_metadata(filepath) -> tuple:
+    """(duration seconds, width, height) from one cached probe; upload-safe fallbacks."""
+    info = await probe(filepath)
+    duration = int(info.get("duration") or 0)
+    width = int(info.get("width") or 0) or 1280
+    height = int(info.get("height") or 0) or 720
+    return duration, width, height
 
 
 def _motion_ass(opacity: str) -> str:

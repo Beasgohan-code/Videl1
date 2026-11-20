@@ -577,7 +577,7 @@ async def mux_task(message, msg):
         return
     kind = extra.get("kind") or ffcmd.track_kind(track) or "sub"
     await msg.edit(f"<b>🧩 Adding the {'subtitle' if kind == 'sub' else 'audio'} track…</b>")
-    info, tinfo = await probe(video), await probe(track)
+    info, tinfo = await asyncio.gather(probe(video), probe(track))
     t_codec = ((tinfo.get("audio") or [{}])[0]).get("codec_name", "") if kind == "audio" else ""
     base = os.path.splitext(os.path.basename(video))[0]
     out = os.path.join(enc, base + ".muxed" + ffcmd.mux_ext(video))
@@ -596,7 +596,7 @@ async def mux_task(message, msg):
 async def merge_task(message, msg):
     """/merge – join 2-10 videos (lossless when they match, otherwise normalised to the first one)."""
     from . import ffcmd, scheduler
-    from .encoding import probe, run_ffmpeg
+    from .encoding import probe_many, run_ffmpeg
     parts = scheduler.extra_of(message).get("parts") or []
     dl, enc = _dirs(message)
     paths = []
@@ -611,7 +611,7 @@ async def merge_task(message, msg):
     if len(paths) < 2:
         await msg.edit("❌ <b>Need at least 2 videos to merge</b> – some files were deleted.")
         return
-    infos = [await probe(p) for p in paths]
+    infos = await probe_many(paths)
     base = os.path.splitext(os.path.basename(paths[0]))[0]
     lossless = ffcmd.can_concat_copy(infos)
     if lossless:
