@@ -534,19 +534,38 @@ async def trim(filepath, start, end, key=None, out_dir=None):
 
 
 async def screenshots(filepath, count, duration=None, key=None, out_dir=None):
-    """`count` evenly spread JPEG screenshots → list of paths."""
+    """`count` evenly spread JPEG screenshots → list of paths.
+
+    All frames are captured by one ffmpeg process when possible. If that batch
+    fails or leaves gaps (older FFmpeg builds, odd inputs), only the missing
+    frames fall back to the previous one-process-per-frame path, preserving order.
+    """
     if not duration:
         duration = (await probe(filepath))["duration"]
+    times = ffcmd.screenshot_times(duration, count)
+    if not times:
+        return []
+    if key is not None and jobs.is_cancelled(key):
+        return []
     base = os.path.join(out_dir or encode_dir, f"shot_{int(time.time() * 1000)}")
-    shots = []
-    for i, at in enumerate(ffcmd.screenshot_times(duration, count)):
+    outs = [f"{base}_{i + 1:02d}.jpg" for i in range(len(times))]
+    code, _ = await run_ffmpeg(ffcmd.screenshots_command(filepath, outs, times), key, timeout=120)
+    shots = [(out, at) for out, at in zip(outs, times) if os.path.isfile(out) and os.path.getsize(out)]
+    if len(shots) == len(outs):
+        return shots
+    if key is not None and jobs.is_cancelled(key):
+        return shots
+    have = {out for out, _ in shots}
+    for out, at in zip(outs, times):
+        if out in have:
+            continue
         if key is not None and jobs.is_cancelled(key):
             break
-        out = f"{base}_{i + 1:02d}.jpg"
         code, _ = await run_ffmpeg(ffcmd.screenshot_command(filepath, out, at), key, timeout=120)
         if code == 0 and os.path.isfile(out) and os.path.getsize(out):
             shots.append((out, at))
-    return shots
+    order = {out: i for i, out in enumerate(outs)}
+    return sorted(shots, key=lambda item: order.get(item[0], 0))
 
 
 def summary_text(result, new_size: int, link: str | None = None, title="Encode complete") -> str:

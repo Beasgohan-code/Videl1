@@ -652,6 +652,22 @@ def screenshot_command(src: str, out: str, at: float, width: int = 1280) -> list
             "-frames:v", "1", "-vf", f"scale='min({width},iw)':-2", "-q:v", "3", out]
 
 
+def screenshots_command(src: str, outs: list, times: list, width: int = 1280) -> list:
+    """One ffmpeg process for every screenshot (fast input seeking per timestamp).
+
+    Each output maps its own input's video stream, so the job registry still sees a
+    single cancellable/pausable subprocess instead of many sequential ones.
+    """
+    if len(outs) != len(times):
+        raise ValueError("outs and times must have the same length")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+    for at in times:
+        cmd += ["-ss", f"{float(at):.2f}", "-i", src]
+    for i, out in enumerate(outs):
+        cmd += ["-map", f"{i}:v", "-frames:v", "1", "-vf", f"scale='min({width},iw)':-2", "-q:v", "3", out]
+    return cmd
+
+
 def sample_window(duration: float, length: int = 30) -> tuple:
     """(start, length) – a clip from the middle of the video."""
     length = max(5, min(120, int(length)))
