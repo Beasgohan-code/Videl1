@@ -336,3 +336,7 @@ Admin stats now counts clones via `count_all_clone_records()` and active clones 
 ## Per-bot stats counts without loading IDs (89a7016)
 
 Per-bot `/stats` and backup counts now use `WorkerDB.total_admins()`, `total_channels()`, and `total_banned()` (`count_documents`) instead of loading every ID just to count. List methods remain for callers that need the IDs. Focused WorkerDB/settings tests passed 71; full backend passed 1642 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock MongoDB only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
+
+## Projected idle sweep records (bc104aa)
+
+The idle sweep now reads only the fields it needs (`get_active_clone_sweep_records`) instead of full active bot records, including `inactive_warned` so warnings are not repeated. Watchdog startup still uses full records because it needs tokens. Focused sweep tests passed 46; full backend passed 1643 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock MongoDB only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
