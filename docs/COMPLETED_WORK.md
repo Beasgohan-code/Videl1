@@ -308,3 +308,7 @@ Deleted three now-unused Encoder helpers (`get_codec`, `get_media_streams`, `get
 ## Waste-code cleanup: unused Encoder size/snapshot helpers (a29fad7)
 
 Deleted three more unused Encoder helpers (`ffcmd.estimate_size`, `ffcmd.ceil_div`, `scheduler.snapshot`) and the now-unused `time` import in scheduler. Focused tests passed 107 with 21 skipped; full backend passed 1637 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. No protected worker files, preserved data, or Group Mode plugin code were deleted.
+
+## Waste-code cleanup: unused imports and locals (7d1e13f)
+
+Removed pyflakes-flagged unused imports/locals in Encoder encoding/tasks/encode and Group Mode plugin, while keeping `encode.asyncio` because tests patch it. Focused tests passed 167 with 21 skipped; full backend passed 1637 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. No protected worker files or preserved data were deleted.
