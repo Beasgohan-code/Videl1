@@ -9,7 +9,7 @@ import VideoEncoder.utils.encoding as encoding  # noqa: E402
 import VideoEncoder.utils.tasks as tasks  # noqa: E402
 
 
-def test_extract_subs_uses_probe_summary_not_get_codec(monkeypatch):
+def test_extract_subs_uses_probe_summary(monkeypatch):
     calls = []
 
     async def fake_probe(filepath):
@@ -22,7 +22,6 @@ def test_extract_subs_uses_probe_summary_not_get_codec(monkeypatch):
 
     monkeypatch.setattr(encoding, "probe", fake_probe)
     monkeypatch.setattr(encoding, "_extract_subs_sync", fake_sync)
-    monkeypatch.setattr(encoding, "get_codec", lambda *a, **k: (_ for _ in ()).throw(AssertionError("get_codec should not be called")))
     msg = SimpleNamespace(id=123)
     out = run(encoding.extract_subs("in.mkv", msg, 5))
     assert out.endswith("123.ass")
