@@ -77,6 +77,31 @@ def test_enqueue_rejects_new_work_when_memory_overloaded_and_busy(monkeypatch):
     assert scheduler.position(m) == 0
 
 
+def test_restore_queue_respects_global_cap(monkeypatch):
+    from VideoEncoder.utils import tasks
+
+    msgs = [_msg(5), _msg(6), _msg(7)]
+    for m in msgs:
+        run(scheduler.persist(m, "tg", {}, False))
+    queue.clear()
+    monkeypatch.setattr(config, "ENC_MAX_QUEUE_TOTAL", 2)
+
+    class App:
+        async def get_messages(self, chat, mid):
+            return next(m for m in msgs if m.chat.id == chat and m.id == mid)
+
+    async def fake_dispatch(spawn_all=False):
+        return None
+
+    async def no_sleep(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(tasks, "dispatch", fake_dispatch)
+    monkeypatch.setattr(scheduler.asyncio, "sleep", no_sleep)
+    assert run(scheduler.restore_queue(App())) == 2
+    assert len(queue) == 2
+
+
 def test_enqueue_still_starts_one_task_when_idle_under_memory_pressure(monkeypatch):
     started = []
 

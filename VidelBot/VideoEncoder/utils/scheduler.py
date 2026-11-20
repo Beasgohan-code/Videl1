@@ -338,6 +338,9 @@ async def restore_queue(app) -> int:
             msg = None
         if not msg or getattr(msg, "empty", False):
             continue
+        if queue_full():
+            log.warning("queue restore: dropping task beyond ENC_MAX_QUEUE_TOTAL")
+            continue
         add(msg, d.get("mode") or parse_mode(msg) or "tg", priority=d.get("prio", False), extra=d.get("extra"))
         await persist(msg, d.get("mode"), d.get("extra"), d.get("prio", False))
         restored += 1
