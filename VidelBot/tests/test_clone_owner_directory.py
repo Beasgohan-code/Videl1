@@ -183,6 +183,8 @@ def test_bounded_directory_page_count_and_profiles_use_db_filter():
     async def collect():
         return [bid async for bid in db.iter_clone_directory_ids()]
     assert run(collect()) == [10, 11, 12, 13, 14, 15]
+    assert run(db.count_all_clone_records()) == 11
+    assert run(db.count_active_clone_records()) == 4
 
 
 def test_worst_case_page_remains_bounded_and_complete(monkeypatch,capture):

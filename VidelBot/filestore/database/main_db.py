@@ -262,6 +262,14 @@ class MainDB:
         cursor = self.bots.find({"is_active": True})
         return await cursor.to_list(length=None)
 
+    async def count_all_clone_records(self) -> int:
+        """Count every registry record (including deleted/invalid) without loading."""
+        return await self.bots.count_documents({})
+
+    async def count_active_clone_records(self) -> int:
+        """Count records marked active without loading full bot records."""
+        return await self.bots.count_documents({"is_active": True})
+
     async def delete_bot(self, bot_id: int) -> bool:
         """Soft-delete a bot (keeps data for transfer)."""
         result = await self.bots.update_one(
