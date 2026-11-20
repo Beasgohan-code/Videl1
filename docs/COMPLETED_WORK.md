@@ -284,3 +284,7 @@ Cached successful `ffprobe` summaries by path/mtime/size with bounded TTL, paral
 ## Encoder probe reuse for audio/subtitle checks (a18ee17)
 
 `/af` audio selection and subtitle extraction now reuse the cached probe summary instead of separate `ffprobe` calls for audio/subtitle streams. Bitmap first-subtitle rejection is preserved using codec name/tag. Focused tests passed 137 with 11 skipped; full backend passed 1627 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Fake-probe/mock evidence only; no live Telegram, real MongoDB, multi-process, or timing benchmark proof. Protected worker and Group Mode plugin untouched.
+
+## Group Mode read-only setup check (71ffd38)
+
+Added admin-only `/gcheck` to the main `group_mod` plugin: automation state plus a live snapshot of this bot's restrict/delete/pin/change-info/invite rights as granted, missing, or unknown. It performs no moderation and changes no settings. Focused group/security tests passed 20; full backend passed 1629 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Fake-client/mock evidence only; no live Telegram, real MongoDB, or multi-process proof. Clone worker untouched and the Group Mode plugin was not copied into it.
