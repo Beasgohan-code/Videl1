@@ -108,7 +108,7 @@ def test_changes_before_stop_skip_without_hold(monkeypatch):
         async def list_stale():
             await MainDB().bots.update_one({'_id':BOT},{'$set':{'last_active':NOW}})
             return [original]
-        monkeypatch.setattr(lifecycle.main_db,'get_all_active_bots',list_stale)
+        monkeypatch.setattr(lifecycle.main_db,'get_active_clone_sweep_records',list_stale)
         assert not (await lifecycle.sweep(app,eng,now=NOW))['deactivated']
         assert not eng.stops and not lifecycle._sweep_holds and not notices(app)
     run(go())
@@ -237,4 +237,25 @@ def test_real_bson_decoded_large_ids_and_field_presence_in_conditional_write():
         latest=await db.bots.find_one({'_id':BOT})
         assert await db.deactivate_inactive_if_unchanged(latest) is True
         assert (await db.bots.find_one({'_id':BOT}))['is_active'] is False
+    run(go())
+
+
+def test_sweep_records_projection_omits_unrelated_fields():
+    from mongomock_motor import AsyncMongoMockClient
+    async def go():
+        db = MainDB.__new__(MainDB)
+        db.bots = AsyncMongoMockClient().diagnostics.clones
+        await db.bots.insert_one({
+            '_id': BOT, 'owner_id': OWNER, 'is_active': True, 'is_deleted': False,
+            'last_active': NOW - timedelta(days=9), 'created_at': NOW - timedelta(days=30),
+            'bot_username': 'group_bot', 'bot_token_encrypted': 'private-secret',
+            'clone_profile': 'group', 'settings': {'important': 'kept'},
+            'session': 'secret-session',
+        })
+        await db.bots.insert_one({'_id': BOT + 1, 'owner_id': OWNER, 'is_active': False})
+        records = await db.get_active_clone_sweep_records()
+        assert len(records) == 1
+        assert records[0]['_id'] == BOT
+        assert 'settings' not in records[0] and 'session' not in records[0]
+        assert records[0]['bot_token_encrypted'] == 'private-secret'
     run(go())

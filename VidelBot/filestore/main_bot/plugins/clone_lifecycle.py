@@ -121,7 +121,7 @@ async def sweep(app, worker_engine, now: datetime = None) -> dict:
         return done
     now = now or datetime.now(timezone.utc)
     owner_days: dict = {}                    # owner → idle days allowed by their plan (0 = never)
-    for bot in await main_db.get_all_active_bots():
+    for bot in await main_db.get_active_clone_sweep_records():
         if (not isinstance(bot, dict) or bot.get("is_deleted", False) is not False
                 or bot.get("is_active") is not True or not valid_registry_id(bot.get("_id"))
                 or not valid_registry_id(bot.get("owner_id"))):

@@ -262,6 +262,15 @@ class MainDB:
         cursor = self.bots.find({"is_active": True})
         return await cursor.to_list(length=None)
 
+    async def get_active_clone_sweep_records(self) -> list:
+        """Projected active records for the idle sweep (no unrelated fields)."""
+        projection = {"_id": 1, "owner_id": 1, "is_active": 1, "is_deleted": 1,
+                      "bot_token_encrypted": 1, "clone_profile": 1,
+                      "last_active": 1, "created_at": 1, "bot_username": 1,
+                      "inactive_warned": 1}
+        cursor = self.bots.find({"is_active": True}, projection)
+        return await cursor.to_list(length=None)
+
     async def count_all_clone_records(self) -> int:
         """Count every registry record (including deleted/invalid) without loading."""
         return await self.bots.count_documents({})
