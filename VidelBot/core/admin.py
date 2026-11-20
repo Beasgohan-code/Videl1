@@ -160,7 +160,7 @@ async def _build_stats_doc(tab: str = "main"):
         from filestore.database.main_db import MainDB
         from filestore.worker_bot.engine import worker_engine
         mdb = MainDB()
-        clones = len(await mdb.get_all_bots())
+        clones = len(await mdb.get_clone_directory_records())
         active_clones = len(await mdb.get_all_active_bots())
         running = worker_engine.active_count
     except Exception as e:
