@@ -226,14 +226,14 @@ class _MemCollection:
         for d in self.docs:
             if self._match(d, q):
                 self._apply_update(d, upd)
-                return type("Res", (), {"modified_count": 1, "matched_count": 1})()
+                return type("Res", (), {"acknowledged": True, "modified_count": 1, "matched_count": 1})()
         if upsert:
             base = {k: v for k, v in q.items() if not k.startswith("$") and not isinstance(v, dict)}
             base.setdefault("_id", secrets.token_hex(8))
             self._apply_update(base, upd, inserting=True)
             self.docs.append(base)
-            return type("Res", (), {"modified_count": 1, "matched_count": 0, "upserted_id": base["_id"]})()
-        return type("Res", (), {"modified_count": 0, "matched_count": 0})()
+            return type("Res", (), {"acknowledged": True, "modified_count": 1, "matched_count": 0, "upserted_id": base["_id"]})()
+        return type("Res", (), {"acknowledged": True, "modified_count": 0, "matched_count": 0})()
 
     async def update_many(self, q: dict[str, Any], upd: dict[str, Any]):
         cnt = 0
@@ -241,7 +241,7 @@ class _MemCollection:
             if self._match(d, q):
                 self._apply_update(d, upd)
                 cnt += 1
-        return type("Res", (), {"modified_count": cnt})()
+        return type("Res", (), {"acknowledged": True, "matched_count": cnt, "modified_count": cnt})()
 
     @staticmethod
     def _apply_update(target: dict[str, Any], upd: dict[str, Any], inserting: bool = False) -> None:
@@ -261,8 +261,8 @@ class _MemCollection:
         for i, d in enumerate(self.docs):
             if self._match(d, q):
                 self.docs.pop(i)
-                return type("Res", (), {"deleted_count": 1})()
-        return type("Res", (), {"deleted_count": 0})()
+                return type("Res", (), {"acknowledged": True, "deleted_count": 1})()
+        return type("Res", (), {"acknowledged": True, "deleted_count": 0})()
 
     async def delete_many(self, q: dict[str, Any]):
         before = len(self.docs)

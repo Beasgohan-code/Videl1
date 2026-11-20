@@ -5,7 +5,7 @@ The layouts are taken from the three original bots (Save-Restricted-Content,
 Video Encoder, Son-Goku FileStore) – rebranded to Videl, with the developer
 credits removed and the Videl modules added.
 """
-from config import BOT_NAME, FREE_LIMIT_DAILY, FREE_LIMIT_SIZE_GB, MAX_BOTS_PER_USER
+from config import BOT_NAME, FREE_LIMIT_DAILY, FREE_LIMIT_SIZE_GB
 from core.style import hdr, quote, rows, sc
 
 # ════════════════════════════════════════════════════════════════
@@ -42,7 +42,8 @@ HELP_TXT = f"""<b>📚 Comprehensive Help &amp; User Guide</b>
 • Stop anytime with <code>/cancel</code>.
 <blockquote><b>4️⃣ More Modules</b></blockquote>
 • 🎬 Reply <code>/dl</code> to any video to encode it.
-• ⚡ <code>/clone</code> — create your own FileStore bot.
+• ⚡ <code>/clone</code> — create your own clone bot.
+• 🛡 <code>/clonegroupcheck BOT_ID GROUP_ID</code> — inspect an owned group clone privately (group admin required).
 • ✏️ <code>/autorename {{title}} S{{season}}E{{episode}} [{{quality}}]</code> — then just send files to rename them
    (<code>/setmedia</code> · <code>/metadata</code> · <code>/start_sequence</code> · <code>/leaderboard</code> · <code>/tutorial</code>)
 • 🧰 <code>/rename</code> · <code>/mediainfo</code> · <code>/upload</code> · <code>/qr</code> · <code>/short</code>
@@ -80,14 +81,14 @@ CHANNELS_EMPTY = "📢 No channels configured yet."
 # ════════════════════════════════════════════════════════════════
 # Clone bots (Son-Goku FileStore layout)
 # ════════════════════════════════════════════════════════════════
-CLONE_START_MSG = f"""<b>━━━━━━━━━━━━━━━━━━━━━
+CLONE_START_MSG = """<b>━━━━━━━━━━━━━━━━━━━━━
 ⚡ 𝗩𝗜𝗗𝗘𝗟 𝗙𝗜𝗟𝗘𝗦𝗧𝗢𝗥𝗘 ⚡
 ━━━━━━━━━━━━━━━━━━━━━</b>
 
-<blockquote>ᴡᴇʟᴄᴏᴍᴇ, {{mention}}!
+<blockquote>ᴡᴇʟᴄᴏᴍᴇ, {mention}!
 
-ɪ ᴀᴍ ᴀ <b>ᴘʀᴇᴍɪᴜᴍ ᴍᴜʟᴛɪ-ᴜsᴇʀ ꜰɪʟᴇsᴛᴏʀᴇ</b> ᴘʟᴀᴛꜰᴏʀᴍ.
-ᴄʀᴇᴀᴛᴇ ʏᴏᴜʀ ᴏᴡɴ ꜰɪʟᴇsᴛᴏʀᴇ ʙᴏᴛ ɪɴ sᴇᴄᴏɴᴅs!
+ɪ ᴀᴍ ᴀ <b>ᴍᴜʟᴛɪ-ᴜsᴇʀ ꜰɪʟᴇsᴛᴏʀᴇ</b> ᴘʟᴀᴛꜰᴏʀᴍ.
+ᴄʀᴇᴀᴛᴇ ʏᴏᴜʀ ᴏᴡɴ ʙᴏᴛ ᴀɴᴅ ᴄʜᴏᴏsᴇ ᴀ sᴜᴘᴘᴏʀᴛᴇᴅ ᴍᴏᴅᴇ.
 
 ╭─── ✦ ꜰᴇᴀᴛᴜʀᴇs ✦ ───╮
 │ ◈ ꜰɪʟᴇ sᴛᴏʀᴀɢᴇ ᴡɪᴛʜ sʜᴀʀᴇ ʟɪɴᴋs
@@ -101,7 +102,7 @@ CLONE_START_MSG = f"""<b>━━━━━━━━━━━━━━━━━━�
 │ ◈ ᴘʀᴇᴍɪᴜᴍ ᴜsᴇʀs · sᴄʜᴇᴅᴜʟᴇᴅ ʙʀᴏᴀᴅᴄᴀsᴛs
 ╰──────────────────╯
 
-ʟɪᴍɪᴛ: <b>{MAX_BOTS_PER_USER}</b> ʙᴏᴛ(s) ᴘᴇʀ ᴜsᴇʀ · ᴍᴏʀᴇ ᴡɪᴛʜ /plans</blockquote>
+ʟɪᴍɪᴛs ᴅᴇᴘᴇɴᴅ ᴏɴ ʏᴏᴜʀ ᴘʟᴀɴ · /plans</blockquote>
 
 <i>⬇️ ᴛᴀᴘ ᴀ ʙᴜᴛᴛᴏɴ ᴛᴏ ɢᴇᴛ sᴛᴀʀᴛᴇᴅ ⬇️</i>"""
 
@@ -111,10 +112,10 @@ CLONE_HELP_MSG = """<b>━━━━━━━━━━━━━━━━━━━
 
 <blockquote><b>⚙️ ʜᴏᴡ ᴛᴏ ᴄʀᴇᴀᴛᴇ ʏᴏᴜʀ ʙᴏᴛ:</b>
 
-<b>❶</b> ᴛᴀᴘ <b>⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ</b>
-<b>❷</b> sᴇɴᴅ ʏᴏᴜʀ ʙᴏᴛ ᴛᴏᴋᴇɴ (ꜰʀᴏᴍ @BotFather)
-<b>❸</b> ᴛᴀᴘ <b>📢 sᴇʟᴇᴄᴛ ᴄʜᴀɴɴᴇʟ</b> (ᴏʀ sᴇɴᴅ ɪᴛs ɪᴅ)
-<b>❹</b> ʏᴏᴜʀ ʙᴏᴛ sᴛᴀʀᴛs ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ!</blockquote>
+<b>❶</b> Choose an existing token or Telegram creation when offered.
+<b>❷</b> Confirm creation in Telegram or send your token privately.
+<b>❸</b> Verify a channel, then choose a supported mode.
+<b>❹</b> Check the dashboard for the observed worker status.</blockquote>
 
 <blockquote><b>💤 ɪᴅʟᴇ ʙᴏᴛs:</b> ᴀ ᴄʟᴏɴᴇ ɴᴏʙᴏᴅʏ ᴜsᴇs ꜰᴏʀ {idle_days} ᴅᴀʏs ɪs ᴅᴇᴀᴄᴛɪᴠᴀᴛᴇᴅ. ʏᴏᴜ ɢᴇᴛ ᴀ ᴡᴀʀɴɪɴɢ ᴀ ᴅᴀʏ ʙᴇꜰᴏʀᴇ
 ᴀɴᴅ ᴄᴀɴ ʀᴇᴀᴄᴛɪᴠᴀᴛᴇ ɪᴛ ᴡɪᴛʜ ᴏɴᴇ ᴛᴀᴘ — ᴜsᴇʀs, ꜰɪʟᴇs ᴀɴᴅ ʟɪɴᴋs ᴀʀᴇ ᴋᴇᴘᴛ.</blockquote>
@@ -281,7 +282,7 @@ ADMIN_HELP = """<b>👮 Admin</b>
 
 <b>Growth (bot admins, private chat only)</b>
 /gencode &lt;days&gt; [count] [uses] — redeem codes (0 days = lifetime)
-/codes — active codes · /delcode &lt;code&gt;
+/codes [page] — active codes · /delcode &lt;code&gt;
 Support: users send /support → it lands in your DM → <b>reply</b> to answer.
 
 <b>Owner</b>
@@ -291,8 +292,8 @@ Support: users send /support → it lands in your DM → <b>reply</b> to answer.
 /gifts — Telegram gifts · /sendgift &lt;user&gt; &lt;gift_id&gt; [text]
 
 <b>Clone bots</b>
-/clonestats — platform stats · /bots — list all clone bots · /sys — system snapshot
-/check — health-check every clone (<code>/check fix</code> restarts broken ones)</blockquote>
+/clonestats — registry and local client totals · /bots [page] — clone records · /sys — system snapshot
+/check — inspect local clone clients (<code>/check fix</code> can stop and restart clones; coordinate workers first)</blockquote>
 """
 
 SETTINGS_HUB = (

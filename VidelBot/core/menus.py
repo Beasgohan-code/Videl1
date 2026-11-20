@@ -228,10 +228,15 @@ def back_home_kb(back: str = None, extra=None) -> InlineKeyboardMarkup:
 
 def clone_hub_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [Btn("⚡ Create Bot", callback_data="create_bot"), Btn("📋 My Bots", callback_data="my_bots")],
-        [Btn("📖 Help", callback_data="clone_help"), Btn("ℹ️ About", callback_data="clone_about")],
-        [Btn("⬅️ Back to Home", callback_data="start_btn")],
+        [Btn("⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ", callback_data="create_bot"), Btn("📋 ᴍʏ ʙᴏᴛs", callback_data="my_bots")],
+        [Btn("📖 ʜᴇʟᴘ", callback_data="clone_help"), Btn("ℹ️ ᴀʙᴏᴜᴛ", callback_data="clone_about")],
+        [Btn("⬅️ ʙᴀᴄᴋ ᴛᴏ ʜᴏᴍᴇ", callback_data="start_btn")],
     ])
+
+
+async def clone_hub_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    # Capability is checked after Create Bot, not while rendering the old card.
+    return clone_hub_kb()
 
 
 def premium_kb(until=None) -> InlineKeyboardMarkup:
@@ -287,7 +292,17 @@ def _clear_flows(user_id: int):
     """Abort any clone-bot wizard. Returns the aborted state (or None)."""
     try:
         from filestore.main_bot.plugins.create_bot import _creation_state
-        return _creation_state.pop(user_id, None)
+        state = _creation_state.get(user_id)
+        if state and state.get("step") == "registering":
+            return None  # the database write may already be in flight
+        state = _creation_state.pop(user_id, None)
+        if state:
+            timer = state.pop("profile_timer", None)
+            if timer:
+                timer.cancel()
+            for key in ("token", "registration_token", "restore_expected_token"):
+                state.get("data", {}).pop(key, None)
+        return state
     except Exception:
         return None
 
@@ -321,7 +336,7 @@ async def start_cmd(client: Client, message: Message):
     if arg in ("clone", "mybots"):
         return await send_with_preview(client, message.chat.id,
                                        texts.CLONE_START_MSG.format(mention=message.from_user.mention),
-                                       clone_hub_kb(), pic=await random_start_pic())
+                                       await clone_hub_keyboard(uid), pic=await random_start_pic())
     if arg == "help":
         return await rich.reply(message, help_doc(), reply_markup=help_kb(uid, close=True))
     if arg == "settings":
@@ -397,10 +412,11 @@ async def about_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command(["clone", "mybots", "create"]) & filters.private)
 async def clone_cmd(client: Client, message: Message):
-    _clear_flows(message.from_user.id)
+    uid = message.from_user.id
+    _clear_flows(uid)
     await send_with_preview(client, message.chat.id,
                             texts.CLONE_START_MSG.format(mention=message.from_user.mention),
-                            clone_hub_kb(), pic=await random_start_pic())
+                            await clone_hub_keyboard(uid), pic=await random_start_pic())
 
 
 @Client.on_message(filters.command("settings"))
@@ -421,7 +437,9 @@ async def cancel_cmd(client: Client, message: Message):
         return
 
     from filestore.main_bot.plugins.create_bot import _creation_state
-    if _creation_state.pop(uid, None) is not None:
+    if (_creation_state.get(uid) or {}).get("step") == "registering":
+        return await message.reply_text("⏳ Registration is already being processed. Check My Bots before retrying.")
+    if _clear_flows(uid) is not None:
         done.append("clone-bot setup")
 
     from core import support
@@ -465,7 +483,11 @@ async def menu_callbacks(client: Client, query: CallbackQuery):
         return await query.answer(channels_text()[:200], show_alert=True)
 
     if data == "start_btn":
-        _clear_flows(uid)
+        from filestore.main_bot.plugins.create_bot import _creation_state
+        if uid in _creation_state:
+            if _creation_state[uid].get("step") == "registering":
+                return await query.answer("Registration is in progress. Check My Bots and wait for it to finish.", show_alert=True)
+            return await query.answer("A bot setup or setting is in progress. Continue it or use /cancel in private chat.", show_alert=True)
         await render_home(client, query)
 
     elif data in ("help_btn", "help_saver"):
@@ -482,9 +504,13 @@ async def menu_callbacks(client: Client, query: CallbackQuery):
         await edit_with_preview(client, msg, premium_text(), premium_kb(await premium_until(uid)), pic=SUBSCRIPTION)
 
     elif data == "back_menu":
-        _clear_flows(uid)
+        from filestore.main_bot.plugins.create_bot import _creation_state
+        if uid in _creation_state:
+            if _creation_state[uid].get("step") == "registering":
+                return await query.answer("Registration is in progress. Check My Bots and wait for it to finish.", show_alert=True)
+            return await query.answer("A bot setup or setting is in progress. Continue it or use /cancel in private chat.", show_alert=True)
         await edit_with_preview(client, msg, texts.CLONE_START_MSG.format(mention=query.from_user.mention),
-                                clone_hub_kb(), pic=await random_start_pic())
+                                await clone_hub_keyboard(uid), pic=await random_start_pic())
         if not CLONE_ENABLED and uid not in ADMINS:
             await query.answer("🚧 New clone creation is temporarily disabled.", show_alert=True)
 

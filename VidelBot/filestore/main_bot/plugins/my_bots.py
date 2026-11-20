@@ -1,7 +1,8 @@
 
 import html
 import asyncio
-from pyrogram import Client, filters
+import re
+from pyrogram import Client, enums, filters
 from pyrogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
@@ -10,6 +11,7 @@ from pyrogram.types import (
 from filestore.fs_config import LOGGER, BACKEND_API_SECRET, BACKEND_API_URL
 from filestore.database.main_db import MainDB
 from filestore.utils.security import mask_token, decrypt_token
+from filestore.utils.registry_ids import valid_registry_id
 
 log = LOGGER(__name__)
 
@@ -35,6 +37,21 @@ def _rotate_row(bot: dict):
     except Exception:
         return []
 
+def _navigation_blocked(user_id, *, allow_registration=False):
+    """Do not discard another active wizard; only the list permits registration."""
+    from filestore.main_bot.plugins.create_bot import _creation_state
+    state = _creation_state.get(user_id)
+    return state is not None and not (allow_registration and state.get("step") == "registering")
+
+
+async def _busy_notice(query):
+    from filestore.main_bot.plugins.create_bot import _creation_state
+    if (_creation_state.get(query.from_user.id) or {}).get("step") == "registering":
+        return await query.answer("Registration is in progress. Check My Bots and wait before opening its dashboard.", show_alert=True)
+    return await query.answer(
+        "A bot setup or setting is in progress. Continue it or use /cancel in private chat.", show_alert=True)
+
+
 # =============================================================================
 # CALLBACK: My Bots (list all bots)
 # =============================================================================
@@ -43,10 +60,11 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
     """List all bots owned by the user."""
     user_id = query.from_user.id
 
-    from filestore.main_bot.plugins.create_bot import _creation_state
-    _creation_state.pop(user_id, None)
-
+    if _navigation_blocked(user_id, allow_registration=True):
+        return await _busy_notice(query)
     bots = await main_db.get_user_bots(user_id)
+    if _navigation_blocked(user_id, allow_registration=True):
+        return await _busy_notice(query)
 
     if not bots:
         await query.message.edit_text(
@@ -76,6 +94,8 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
                                              callback_data=f"dashboard_{bot_id}")])
     from core.plans import clone_limit
     max_bots = await clone_limit(query.from_user.id)
+    if _navigation_blocked(user_id, allow_registration=True):
+        return await _busy_notice(query)
     if len(bots) < max_bots:
         buttons.append([InlineKeyboardButton("⚡ ᴄʀᴇᴀᴛᴇ ᴀɴᴏᴛʜᴇʀ", callback_data="create_bot")])
     else:   # Bot API 10.3 disabled button – a status chip, not an action
@@ -104,6 +124,83 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
 # CALLBACK: Bot Dashboard (main dashboard for a specific bot)
 # =============================================================================
 
+def _dashboard_identity(query):
+    """Only direct human owners in their own private conversation may view it."""
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    uid = getattr(user, "id", None)
+    return (type(uid) is int and 0 < uid < 2**63
+            and getattr(user, "is_bot", None) is False
+            and getattr(chat, "type", None) == enums.ChatType.PRIVATE
+            and getattr(chat, "id", None) == uid)
+
+
+async def _mode_dashboard(query, bot, mode):
+    """Read-only group/unsupported view; existing controls enforce their own rules."""
+    from core.ui import smart_edit
+    bot_id = bot["_id"]
+    name = bot.get("bot_username")
+    name = (name if isinstance(name, str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", name, flags=re.ASCII)
+            else None)
+    saved = bot.get("is_active")
+    state = "Active" if saved is True else "Inactive" if saved is False else "Unknown"
+    if mode == "group":
+        try:
+            from filestore.worker_bot.engine import worker_engine
+            local = "Present" if worker_engine.get_worker(bot_id) is not None else "Not found"
+        except Exception:
+            local = "Unavailable"
+        import config
+        gate = ("Single-instance group profiles are enabled on this process."
+                if config.CLONE_PROFILES_SINGLE_INSTANCE else
+                "Starting group profiles is disabled until the operator verifies a single current worker.")
+        text = ("<b>🛡 ɢʀᴏᴜᴘ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ</b>\n\n"
+                f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
+                f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
+                f"<b>Saved state:</b> {state} · <b>Local client:</b> {local}\n\n"
+                "<b>Get started</b>\n"
+                "① Verify the bot identity, add it to your group and grant the rights it needs.\n"
+                "② Use <code>/gcheck</code> in the group to inspect bot rights, "
+                "then <code>/help</code> for the group guide.\n"
+                "③ Moderation, rules, welcomes, notes and text filters depend on group permissions.\n"
+                f"④ In this private chat, use <code>/clonegroupcheck {bot_id} &lt;group_id&gt;</code> "
+                "for a read-only rights snapshot (you must be a group admin).\n\n"
+                "File Store commands are not served in this mode; existing File Store data is retained. "
+                "Music voice-chat playback is unavailable.\n\n"
+                f"<i>{gate} Local client presence is not a health check or proof of exclusive ownership. "
+                "This view is a snapshot; permissions and state can change.</i>")
+        buttons = []
+        if name:
+            buttons.append([InlineKeyboardButton("➕ Add to group", url=f"https://t.me/{name}?startgroup"),
+                            InlineKeyboardButton("🤖 Open bot", url=f"https://t.me/{name}")])
+        buttons.append([InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")])
+        buttons.append([InlineKeyboardButton("📦 ᴛʀᴀɴsꜰᴇʀ", callback_data=f"transfer_{bot_id}"),
+                        InlineKeyboardButton("🗑 ᴅᴇʟᴇᴛᴇ", callback_data=f"confirm_delete_{bot_id}")])
+        buttons.extend(row for row in [_rotate_row(bot)] if row)
+        if local == "Present" or (local == "Not found" and config.CLONE_PROFILES_SINGLE_INSTANCE is True
+                                  and type(saved) is bool):
+            buttons.append([InlineKeyboardButton("🔴 sᴛᴏᴘ" if local == "Present" else "🟢 sᴛᴀʀᴛ",
+                                                 callback_data=f"toggle_bot_{bot_id}")])
+    else:
+        label = "Music (unsupported)" if mode == "music" else "Unknown / unsupported"
+        text = ("<b>🧩 ᴄʟᴏɴᴇ ᴘʀᴏꜰɪʟᴇ</b>\n\n"
+                f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
+                f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
+                f"<b>Saved profile:</b> {label} · <b>Saved state:</b> {state}\n\n"
+                "This profile cannot be started here. Music voice-chat playback is unavailable. "
+                "Your existing File Store data has not been removed. "
+                "Contact the operator before attempting recovery; this view does not check other workers.")
+        buttons = [[InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")]]
+    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍʏ ʙᴏᴛs", callback_data="my_bots")])
+    await smart_edit(query.message, text, InlineKeyboardMarkup(buttons))
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+
+
 @Client.on_callback_query(filters.regex(r"^dashboard_(\d+)$"))
 async def dashboard_callback(client: Client, query: CallbackQuery):
     """Show the dashboard for a specific bot."""
@@ -114,16 +211,26 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
         return
 
     bot_id = int(match.group(1))
+    if not _dashboard_identity(query) or not 0 < bot_id < 2**63:
+        return await query.answer("❌ Bot not found or access denied!", show_alert=True)
     user_id = query.from_user.id
 
-    from filestore.main_bot.plugins.create_bot import _creation_state
-    _creation_state.pop(user_id, None)
+    if _navigation_blocked(user_id):
+        return await _busy_notice(query)
 
     # Verify ownership
     bot = await main_db.get_bot(bot_id)
-    if not bot or bot["owner_id"] != user_id:
+    if _navigation_blocked(user_id):
+        return await _busy_notice(query)
+    if (not bot or not valid_registry_id(bot.get("_id")) or bot["_id"] != bot_id
+            or not valid_registry_id(bot.get("owner_id")) or bot["owner_id"] != user_id
+            or bot.get("is_deleted", False) is not False):
         await query.answer("❌ Bot not found or access denied!", show_alert=True)
         return
+
+    mode = bot.get("clone_profile", "filestore")
+    if mode != "filestore":
+        return await _mode_dashboard(query, bot, mode)
 
     from filestore.worker_bot.engine import worker_engine
     is_live = worker_engine.get_worker(bot_id) is not None
@@ -206,6 +313,7 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
             InlineKeyboardButton("📥 ʀᴇsᴛᴏʀᴇ", callback_data=f"restore_bot_{bot_id}"),
             InlineKeyboardButton("🛠 ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ", callback_data=f"toggle_maint_{bot_id}"),
         ],
+        [InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")],
         [
             InlineKeyboardButton("✨ ᴇxᴛʀᴀs", callback_data=f"xtr_{bot_id}"),
             InlineKeyboardButton("📈 ᴀɴᴀʟʏᴛɪᴄs", callback_data=f"xan_{bot_id}"),
@@ -255,7 +363,14 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
     if is_live:
         # Answer immediately before slow stop
         await query.answer("🔴 sᴛᴏᴘᴘɪɴɢ...", show_alert=False)
-        await worker_engine.stop_worker(bot_id)
+        stopped = await worker_engine.stop_worker(bot_id)
+        if stopped is False:
+            from core.ui import smart_edit
+            return await smart_edit(query.message,
+                                    "<b>⚠️ Stop could not be confirmed.</b>\n\n"
+                                    "The bot may still be running. Profile changes are blocked; "
+                                    "contact the operator before taking further action.",
+                                    InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")]]))
         await main_db.set_bot_active(bot_id, False)
         await _clone_log(client, "CloneStopped", query.from_user, bot)
     else:
@@ -266,10 +381,15 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
             await worker_engine.start_worker(bot_doc)
             await main_db.set_bot_active(bot_id, True)
             await _clone_log(client, "CloneStarted", query.from_user, bot)
-        except Exception as e:
-            import html
-            log.error(f"Failed to start bot {bot_id}: {e}")
-            await _clone_log(client, "CloneFailed", query.from_user, bot, f"<b>❌ Error:</b> <code>{html.escape(str(e))[:200]}</code>")
+        except Exception:
+            # Client/Telegram errors may contain credentials; do not echo them.
+            log.error("Failed to start clone %s.", bot_id)
+            await _clone_log(client, "CloneFailed", query.from_user, bot, "<b>❌ Start could not be confirmed.</b>")
+            from core.ui import smart_edit
+            return await smart_edit(query.message,
+                                    "<b>⚠️ Start could not be confirmed.</b>\n\n"
+                                    "Check the dashboard and contact the operator before retrying.",
+                                    InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")]]))
 
     # Refresh dashboard
     await dashboard_callback(client, query)
@@ -800,15 +920,11 @@ async def backup_bot_callback(client: Client, query: CallbackQuery):
     from filestore.database.worker_db import WorkerDB
     wdb = WorkerDB(bot_id)
     try:
-        admins = await wdb.get_all_admins()
-        channels = await wdb.show_channels()
-        users = await wdb.total_users()
-        banned = await wdb.get_ban_users()
         backup["counts"] = {
-            "admins": len(admins),
-            "fsub_channels": len(channels),
-            "users": users,
-            "banned": len(banned),
+            "admins": await wdb.total_admins(),
+            "fsub_channels": await wdb.total_channels(),
+            "users": await wdb.total_users(),
+            "banned": await wdb.total_banned(),
         }
     except Exception:
         backup["counts"] = {}

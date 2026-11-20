@@ -692,3 +692,106 @@ def test_unrecognized_target_status_is_not_safe_to_moderate():
             return await super().get_chat_member(chat_id, user_id)
     c = UnknownStatus({10: (enums.ChatMemberStatus.OWNER, None), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())})
     assert not run(gmod.verify_mod_permissions(c, -100888, 10, target_id=77))[0]
+
+
+def test_gcheck_shows_readonly_bot_rights_snapshot_for_admin():
+    from plugins.group_mod import plugin as gmod
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs(can_pin_messages=False)),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+    })
+    m = _grp_msg("/gcheck", uid=10, client=c)
+    run(gmod.gcheck_cmd(c, m))
+    text = m.replies[-1]
+    lowered = text.lower()
+    assert "𝗚𝗥𝗢𝗨𝗣 𝗖𝗛𝗘𝗖𝗞" in text
+    assert "ʀᴇꜱᴛʀɪᴄᴛ ᴍᴇᴍʙᴇʀꜱ" in text and "granted" in lowered
+    assert "ᴘɪɴ ᴍᴇꜱꜱᴀɢᴇꜱ" in text and "missing" in lowered
+    assert "read-only snapshot" in lowered
+    assert not c.called("ban_chat_member") and not c.called("restrict_chat_member")
+
+
+def test_gcheck_refuses_non_admin_and_reports_unknown_bot_rights():
+    from plugins.group_mod import plugin as gmod
+
+    class FailingBotClient(GroupFakeClient):
+        async def get_chat_member(self, chat_id, user_id):
+            if int(user_id) == 999:
+                raise RuntimeError("telegram unavailable")
+            return await super().get_chat_member(chat_id, user_id)
+
+    c = FailingBotClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        20: (enums.ChatMemberStatus.MEMBER, None),
+    })
+    denied = _grp_msg("/gcheck", uid=20, client=c)
+    run(gmod.gcheck_cmd(c, denied))
+    assert "permission" in denied.replies[-1].lower()
+
+    m = _grp_msg("/gcheck", uid=10, client=c)
+    run(gmod.gcheck_cmd(c, m))
+    assert "unknown" in m.replies[-1]
+
+
+def test_modlog_records_and_lists_moderation_actions():
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        77: (enums.ChatMemberStatus.MEMBER, None),
+    })
+    # Perform a ban via /gban and a warn via /warn.
+    ban_msg = _grp_msg("/gban 77 spamming", uid=10, client=c)
+    run(gmod.gban_cmd(c, ban_msg))
+    warn_msg = _grp_msg("/warn 77 rule violation", uid=10, client=c)
+    run(gmod.warn_cmd(c, warn_msg))
+
+    # Both actions should be recorded.
+    entries = run(vdb.db["group_modlog"].find({"chat_id": -100888}).sort("ts", 1).to_list(length=10))
+    assert len(entries) == 2
+    actions = [e["action"] for e in entries]
+    assert "gban" in actions and "warn" in actions
+    assert all(e["target_id"] == 77 for e in entries)
+    assert all(e["actor_id"] == 10 for e in entries)
+
+    # /modlog lists recent actions for admins.
+    log_msg = _grp_msg("/modlog", uid=10, client=c)
+    run(gmod.modlog_cmd(c, log_msg))
+    assert "gban" in log_msg.replies[-1].lower() or "ban" in log_msg.replies[-1].lower()
+
+    # /modhistory filters by target user.
+    hist_msg = _grp_msg("/modhistory 77", uid=10, client=c)
+    run(gmod.modlog_cmd(c, hist_msg))
+    assert "77" in hist_msg.replies[-1]
+
+    # Non-admins are refused.
+    denied = _grp_msg("/modlog", uid=77, client=c)
+    run(gmod.modlog_cmd(c, denied))
+    assert "permission" in denied.replies[-1].lower()
+
+
+def test_modlog_is_bounded_per_chat():
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+
+    # Insert more than the per-chat cap and verify trimming keeps the newest.
+    async def _fill():
+        col = vdb.db["group_modlog"]
+        for i in range(gmod._MODLOG_MAX_PER_CHAT + 50):
+            await col.insert_one({
+                "chat_id": -100999, "action": "warn", "target_id": 1,
+                "target_label": "T", "actor_id": 2, "reason": "", "silent": False,
+                "ts": 1000.0 + i,
+            })
+        await gmod._log_mod_action(-100999, "ban", 1, "T", 2, "overflow")
+        count = await col.count_documents({"chat_id": -100999})
+        newest = await col.find_one({"chat_id": -100999}, sort=[("ts", -1)])
+        return count, newest
+
+    count, newest = run(_fill())
+    assert count <= gmod._MODLOG_MAX_PER_CHAT
+    assert newest["action"] == "ban"

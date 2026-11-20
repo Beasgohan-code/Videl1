@@ -7,7 +7,7 @@ import time
 from ... import LOGGER, app, download_dir, log
 from ..database.access_db import db
 from ..display_progress import progress_for_pyrogram
-from ..encoding import get_duration, get_thumbnail, get_width_height
+from ..encoding import get_thumbnail, media_metadata
 
 
 SPLIT_LIMIT = None      # bytes; None → config.SPLIT_SIZE_MB
@@ -71,10 +71,9 @@ async def _upload_one(new_file, message, msg, as_doc=None, caption=None):
 
     async def _pref():
         return as_doc if as_doc is not None else (await db.get_upload_as_doc(uid) is True)
-    # ffprobe / ffmpeg are blocking – off the event loop, and the independent lookups run side by side
-    duration, (width, height), custom_thumb, as_doc = await asyncio.gather(
-        asyncio.to_thread(get_duration, new_file), asyncio.to_thread(get_width_height, new_file),
-        db.get_thumbnail(uid), _pref())
+    # One cached ffprobe for duration + dimensions; thumbnail/ffmpeg stay off the loop.
+    (duration, width, height), custom_thumb, as_doc = await asyncio.gather(
+        media_metadata(new_file), db.get_thumbnail(uid), _pref())
     thumb = None
     if custom_thumb:
         try:

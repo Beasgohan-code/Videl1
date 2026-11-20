@@ -7,16 +7,24 @@ Highlights:
     (never trusts a stale admin cache), honours anonymous group admins, and
     prevents acting against group owners/administrators.
   • Core moderation: `/gban`, `/gunban`, `/kick` (`/punch`), `/mute`, `/unmute`,
-    `/warn`, `/unwarn`, `/warns`.
+    `/warn`, `/unwarn`, `/warns`, plus Rose-style aliases `/ban`, `/tban`,
+    `/dban`, `/sban`, `/unban`, `/tmute`, `/dmute`, `/smute`, `/dkick`, `/skick`,
+    `/swarn`, `/dwarn`, `/rmwarn`, `/resetwarn`, `/warnings`, `/setwarnlimit`,
+    `/setwarnmode`.
   • Bot API 10.3 / WzGram Layer 232 capabilities:
       - `/tag` & `/deltag` (`setChatMemberTag` / `client.set_chat_member_tag`)
       - `/clearreactions` (`/delreactions`) (`deleteMessageReaction` &
         `deleteAllMessageReactions`)
       - `/topic new|close|reopen` (forum topic lifecycle)
       - `/joinmode off|notify|auto` (join-request approval cards + raid guard)
-  • Community & protection: `/gsettings`, `/rules` (ephemeral), `/setrules`,
-    `/welcome`, `/goodbye`, `/lock`, `/unlock`, `/gfilter`, `/delfilter`,
-    `/gfilters`, `/antiraid`, `/modreport`.
+      - `/pin`, `/unpin`, `/purge` (pin lifecycle + bounded history purge)
+  • Community & protection: `/gsettings`, `/gcheck`, `/rules` (ephemeral), `/setrules`,
+    `/welcome`, `/goodbye`, `/setwelcome`, `/resetwelcome`, `/lock`, `/unlock`,
+    `/locks`, `/locktypes`, `/lockwarns`, `/gfilter`, `/delfilter`, `/gfilters`,
+    `/filter`, `/stop`, `/filters`, `/addblocklist`, `/rmblocklist`, `/blocklist`,
+    `/blocklistmode`, `/blocklistdelete`, `/save`, `/get`, `/notes`, `/clear`,
+    `/setflood`, `/setfloodtimer`, `/setfloodmode`, `/flood`, `/clearflood`,
+    `/captcha`, `/captchamode`, `/setcaptchatext`, `/antiraid`, `/modreport`.
 """
 from __future__ import annotations
 
@@ -45,20 +53,47 @@ from core import botapi, rich
 from core.db import vdb
 from core.plugin_manager import PluginBase, plugin_enabled, plugin_filter
 from core.rich import Doc
-from core.ui import is_wzgram_client, styled_button
+from core.ui import styled_button
 
 log = logging.getLogger("videl.plugin.group_mod")
 
 PLG_FILTER = plugin_filter("group_mod")
 DURATION_RE = re.compile(r"^(\d+)([mhdw])$", re.IGNORECASE)
 LINK_RE = re.compile(r"(https?://\S+|t\.me/\S+|telegram\.me/\S+)", re.IGNORECASE)
-VALID_LOCKS = ("links", "forwards", "bots", "media", "all")
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+PHONE_RE = re.compile(r"(?:\+?\d[\d\s\-()]{7,}\d)")
+EMOJI_RE = re.compile(
+    r"[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]",
+)
+# Legacy locks (links/forwards/bots/media/all) keep their original meanings for
+# backward compatibility; the remaining types are granular content locks.
+VALID_LOCKS = (
+    "links", "forwards", "bots", "media", "all",
+    "text", "photo", "video", "document", "audio", "voice", "videonote",
+    "sticker", "gif", "poll", "contact", "location", "game", "dice",
+    "checklist", "album", "command", "url", "invitelink", "botlink",
+    "email", "phone", "emoji", "forwarduser", "forwardbot", "forwardchannel",
+    "inline", "externalreply", "spoiler",
+)
+LOCK_MODES = ("nothing", "warn", "kick", "ban", "tban", "mute", "tmute")
+BLOCKLIST_MODES = ("nothing", "warn", "kick", "ban", "tban", "mute", "tmute")
 
 GROUP_ANON_COMMANDS = frozenset({
-    "gsettings", "gban", "gunban", "kick", "punch", "mute", "unmute",
-    "warn", "unwarn", "warns", "warnconfig", "warnrecover", "tag", "deltag", "clearreactions", "delreactions",
-    "topic", "joinmode", "rules", "setrules", "welcome", "goodbye",
-    "lock", "unlock", "gfilter", "delfilter", "gfilters", "antiraid",
+    "gsettings", "gcheck", "gban", "gunban", "ban", "tban", "dban", "sban", "unban",
+    "kick", "punch", "dkick", "skick", "mute", "tmute", "dmute", "smute", "unmute",
+    "warn", "swarn", "dwarn", "unwarn", "rmwarn", "resetwarn", "warns", "warnings",
+    "warnconfig", "warnrecover", "setwarnlimit", "setwarnmode",
+    "tag", "deltag", "clearreactions", "delreactions",
+    "topic", "joinmode", "rules", "setrules", "welcome", "goodbye", "setwelcome", "resetwelcome",
+    "lock", "unlock", "locks", "locktypes", "lockwarns",
+    "gfilter", "delfilter", "gfilters", "filter", "stop", "filters",
+    "addblocklist", "rmblocklist", "blocklist", "blocklistmode", "blocklistdelete",
+    "save", "get", "notes", "clear",
+    "setflood", "setfloodtimer", "setfloodmode", "flood", "clearflood",
+    "captcha", "captchamode", "setcaptchatext", "resetcaptchatext",
+    "pin", "unpin", "purge",
+    "modlog", "modhistory",
+    "antiraid",
 })
 
 # Bounded short-TTL settings cache for O(1) group message checks (invalidated on write)
@@ -93,14 +128,28 @@ def _default_cfg(chat_id: int) -> dict[str, Any]:
         "goodbye_text": "👋 Goodbye, {first}!",
         "rules": "",
         "antiflood": False,
+        "flood_limit": 7,
+        "flood_window": 8.0,
+        "flood_mode": "tmute 5m",
+        "clearflood": False,
         "antiraid_until": 0.0,
         "antiraid_confirmed": False,
         "joinmode": "off",  # off | notify | auto
         "joinmode_auto_confirmed": False,
         "warn_limit": 3,
-        "warn_action": "mute",  # mute | ban
+        "warn_action": "mute",  # mute | ban | kick | tban <time> | tmute <time>
         "locks": [],
+        "lockwarns": False,
+        "lock_modes": {},  # locktype -> {"mode": str, "reason": str}
         "filters": {},
+        "blocklist": {},  # trigger -> reason
+        "blocklist_mode": "nothing",
+        "blocklist_delete": True,
+        "notes": {},  # trigger -> text
+        "captcha_on": False,
+        "captcha_text": "Click here to prove you're human",
+        "cleanwelcome": False,
+        "last_welcome_id": 0,
     }
 
 
@@ -128,6 +177,33 @@ async def update_group_cfg(chat_id: int, updates: dict[str, Any]) -> dict[str, A
     return await get_group_cfg(cid)
 
 
+_MODLOG_MAX_PER_CHAT = 1000
+
+
+async def _log_mod_action(chat_id: int, action: str, target_id: int | None,
+                          target_label: str = "", actor_id: int | None = None,
+                          reason: str = "", silent: bool = False) -> None:
+    """Record a moderation action. Best-effort: never raises into the handler."""
+    try:
+        col = vdb.db["group_modlog"]
+        await col.insert_one({
+            "chat_id": int(chat_id),
+            "action": action,
+            "target_id": target_id,
+            "target_label": (target_label or "")[:100],
+            "actor_id": actor_id,
+            "reason": (reason or "")[:200],
+            "silent": bool(silent),
+            "ts": time.time(),
+        })
+        # Bound growth: keep only the newest entries per chat.
+        old_ids = await col.find({"chat_id": int(chat_id)}, {"_id": 1}).sort("ts", -1).skip(_MODLOG_MAX_PER_CHAT).to_list(length=_MODLOG_MAX_PER_CHAT)
+        if old_ids:
+            await col.delete_many({"_id": {"$in": [d["_id"] for d in old_ids]}})
+    except Exception:
+        pass
+
+
 def parse_duration(token: str) -> tuple[timedelta | None, str]:
     """Parse ``15m`` / ``2h`` / ``7d`` / ``1w`` into a ``timedelta`` and human label."""
     m = DURATION_RE.match((token or "").strip())
@@ -145,6 +221,73 @@ def _until_dt(delta: timedelta | None) -> datetime | None:
     if not delta:
         return None
     return datetime.now(timezone.utc) + delta
+
+
+def parse_mode(text: str) -> tuple[str, timedelta | None, str] | None:
+    """Parse ``kick`` / ``ban`` / ``tban 3d`` / ``tmute 10m`` style modes.
+
+    Returns (mode, delta_or_None, normalized_label) or None when invalid.
+    """
+    parts = (text or "").strip().split()
+    if not parts:
+        return None
+    mode = parts[0].lower()
+    if mode not in LOCK_MODES:
+        return None
+    if mode in ("tban", "tmute"):
+        if len(parts) != 2:
+            return None
+        delta, label = parse_duration(parts[1])
+        if delta is None:
+            return None
+        return mode, delta, f"{mode} {label}"
+    if len(parts) != 1:
+        return None
+    return mode, None, mode
+
+
+def _split_trigger_list(text: str) -> list[str]:
+    """Split ``(a, b, "c d")`` or a single ``"phrase"`` / word into triggers."""
+    s = (text or "").strip()
+    if not s:
+        return []
+    if s.startswith("(") and s.endswith(")"):
+        inner = s[1:-1].strip()
+        if not inner:
+            return []
+        # Split on commas that are outside quotes.
+        items, buf, in_q = [], [], False
+        for ch in inner:
+            if ch == '"':
+                in_q = not in_q
+                buf.append(ch)
+            elif ch == "," and not in_q:
+                items.append("".join(buf).strip())
+                buf = []
+            else:
+                buf.append(ch)
+        items.append("".join(buf).strip())
+        out = []
+        for it in items:
+            if len(it) >= 2 and it[0] == '"' and it[-1] == '"':
+                it = it[1:-1].strip()
+            if it:
+                out.append(it)
+        return out
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        return [s[1:-1].strip()] if s[1:-1].strip() else []
+    return [s.split()[0]] if s.split() else []
+
+
+def _trigger_matches(trigger: str, text: str) -> bool:
+    """Case-insensitive match: single words use word boundaries, phrases substring."""
+    if not trigger or not text:
+        return False
+    low_text = text.lower()
+    low_trig = trigger.lower()
+    if " " in low_trig:
+        return low_trig in low_text
+    return re.search(rf"(?<!\w){re.escape(low_trig)}(?!\w)", low_text) is not None
 
 
 def _is_anon_group_admin(message: Message) -> bool:
@@ -188,6 +331,35 @@ async def verify_bot_privilege(client: Client, chat_id: int, privilege: str) -> 
         pretty = privilege.replace("can_", "").replace("_", " ")
         return False, f"Promote me as admin with permission: {pretty}."
     return True, ""
+
+
+_GROUP_CHECK_PRIVILEGES = (
+    "can_restrict_members",
+    "can_delete_messages",
+    "can_pin_messages",
+    "can_change_info",
+    "can_invite_users",
+)
+
+
+async def _bot_rights_snapshot(client: Client, chat_id: int) -> dict[str, str]:
+    """Read-only snapshot of this bot's key rights: granted / missing / unknown."""
+    unknown = {p: "unknown" for p in _GROUP_CHECK_PRIVILEGES}
+    bot_uid = getattr(getattr(client, "me", None), "id", None)
+    if type(bot_uid) is not int or bot_uid <= 0:
+        return unknown
+    try:
+        bot_mem = await client.get_chat_member(chat_id, bot_uid)
+    except Exception:
+        return unknown
+    status = getattr(bot_mem, "status", None)
+    if status == enums.ChatMemberStatus.OWNER:
+        return {p: "granted" for p in _GROUP_CHECK_PRIVILEGES}
+    if status != enums.ChatMemberStatus.ADMINISTRATOR:
+        return {p: "missing" for p in _GROUP_CHECK_PRIVILEGES}
+    if getattr(bot_mem, "privileges", None) is None:
+        return unknown
+    return {p: ("granted" if _has_privilege(bot_mem, p) else "missing") for p in _GROUP_CHECK_PRIVILEGES}
 
 
 def _raid_active(cfg: dict[str, Any]) -> bool:
@@ -289,14 +461,79 @@ def match_locked_content(message: Message, locks: list[str]) -> str:
     text = message.text or message.caption or ""
     if "all" in locks:
         return "all"
-    if "links" in locks and LINK_RE.search(text):
+    lockset = set(locks)
+    # Legacy broad locks keep their original meanings.
+    if "links" in lockset and LINK_RE.search(text):
         return "links"
-    if "forwards" in locks and (getattr(message, "forward_date", None) or getattr(message, "forward_origin", None)):
+    if "forwards" in lockset and (getattr(message, "forward_date", None) or getattr(message, "forward_origin", None)):
         return "forwards"
-    if "media" in locks and any(getattr(message, k, None) for k in ("photo", "video", "document", "animation", "sticker")):
+    if "media" in lockset and any(getattr(message, k, None) for k in ("photo", "video", "document", "animation", "sticker")):
         return "media"
-    if "bots" in locks and getattr(message, "via_bot", None):
+    if "bots" in lockset and getattr(message, "via_bot", None):
         return "bots"
+    # Granular content locks.
+    if "text" in lockset and text:
+        return "text"
+    if "command" in lockset and text.startswith("/"):
+        return "command"
+    if "photo" in lockset and getattr(message, "photo", None):
+        return "photo"
+    if "video" in lockset and getattr(message, "video", None):
+        return "video"
+    if "document" in lockset and getattr(message, "document", None):
+        return "document"
+    if "audio" in lockset and getattr(message, "audio", None):
+        return "audio"
+    if "voice" in lockset and getattr(message, "voice", None):
+        return "voice"
+    if "videonote" in lockset and getattr(message, "video_note", None):
+        return "videonote"
+    if "sticker" in lockset and getattr(message, "sticker", None):
+        return "sticker"
+    if "gif" in lockset and getattr(message, "animation", None):
+        return "gif"
+    if "poll" in lockset and getattr(message, "poll", None):
+        return "poll"
+    if "contact" in lockset and getattr(message, "contact", None):
+        return "contact"
+    if "location" in lockset and (getattr(message, "location", None) or getattr(message, "venue", None)):
+        return "location"
+    if "game" in lockset and getattr(message, "game", None):
+        return "game"
+    if "dice" in lockset and getattr(message, "dice", None):
+        return "dice"
+    if "checklist" in lockset and getattr(message, "checklist", None):
+        return "checklist"
+    if "album" in lockset and getattr(message, "media_group_id", None):
+        return "album"
+    if "inline" in lockset and getattr(message, "via_bot", None):
+        return "inline"
+    if "externalreply" in lockset and getattr(message, "external_reply", None):
+        return "externalreply"
+    if "spoiler" in lockset and getattr(message, "has_media_spoiler", None):
+        return "spoiler"
+    # Forward sub-types.
+    if "forwarduser" in lockset and getattr(message, "forward_from", None):
+        return "forwarduser"
+    if "forwardbot" in lockset:
+        fwd = getattr(message, "forward_from", None)
+        if fwd is not None and getattr(fwd, "is_bot", None) is True:
+            return "forwardbot"
+    if "forwardchannel" in lockset and getattr(message, "forward_from_chat", None):
+        return "forwardchannel"
+    # Text-pattern locks.
+    if "url" in lockset and LINK_RE.search(text):
+        return "url"
+    if "invitelink" in lockset and re.search(r"t\.me/(?:joinchat/|\+)\S+|telegram\.me/(?:joinchat/|\+)\S+", text, re.IGNORECASE):
+        return "invitelink"
+    if "botlink" in lockset and re.search(r"t\.me/[A-Za-z][A-Za-z0-9_]{4,31}\b", text):
+        return "botlink"
+    if "email" in lockset and EMAIL_RE.search(text):
+        return "email"
+    if "phone" in lockset and PHONE_RE.search(text):
+        return "phone"
+    if "emoji" in lockset and EMOJI_RE.search(text):
+        return "emoji"
     return ""
 
 
@@ -305,8 +542,26 @@ def match_keyword_filter(text: str, fmap: dict[str, str]) -> tuple[str, str] | N
     if text and not text.startswith("/"):
         low = text.lower()
         for trigger, reply in fmap.items():
-            if re.search(rf"(?<!\w){re.escape(trigger)}(?!\w)", low):
+            trig = trigger.lower()
+            if trig.startswith("prefix:"):
+                needle = trig[len("prefix:"):]
+                if needle and low.startswith(needle):
+                    return trigger, reply
+            elif trig.startswith("exact:"):
+                needle = trig[len("exact:"):]
+                if needle and low.strip() == needle:
+                    return trigger, reply
+            elif _trigger_matches(trig, text):
                 return trigger, reply
+    return None
+
+
+def match_blocklist(text: str, bmap: dict[str, str]) -> tuple[str, str] | None:
+    """Return the first blocklist hit (locks take precedence in the guard)."""
+    if text and not text.startswith("/"):
+        for trigger, reason in bmap.items():
+            if _trigger_matches(trigger, text):
+                return trigger, reason
     return None
 
 
@@ -344,15 +599,22 @@ def build_gsettings_doc(chat_title: str, cfg: dict[str, Any]) -> tuple[Doc, Inli
     legacy_auto = cfg.get("joinmode") == "auto" and join_mode != "auto"
     locks = cfg.get("locks") or []
     doc = Doc("🛡", "Group Settings", chat_title or "Supergroup")
+    flood_state = (
+        f"🟢 {cfg.get('flood_limit', 7)}/{cfg.get('flood_window', 8.0)}s → {cfg.get('flood_mode', 'tmute 5m')}"
+        if cfg.get("antiflood") else "🔴 Off"
+    )
     doc.kv_table([
         ("👋 Welcome", "🟢 Enabled" if cfg.get("welcome_on") else "🔴 Off"),
         ("🚪 Goodbye", "🟢 Enabled" if cfg.get("goodbye_on") else "🔴 Off"),
-        ("🌊 Anti-Flood", "🟢 Enabled" if cfg.get("antiflood") else "🔴 Off"),
+        ("🌊 Anti-Flood", flood_state),
         ("🚨 Anti-Raid", "🛡 Active" if raid_active else "⚠️ Previous setting inactive; confirm again" if legacy_raid else "⚪ Standby"),
         ("🚪 Join Requests", "⚠️ AUTO inactive; confirm again" if legacy_auto else join_mode.upper()),
         ("⚠️ Warn Limit", f"{cfg.get('warn_limit', 3)} → {cfg.get('warn_action', 'mute')}"),
         ("🔒 Active Locks", ", ".join(locks) if locks else "None"),
         ("💬 Keyword Filters", str(len(cfg.get("filters") or {}))),
+        ("🚫 Blocklist", f"{len(cfg.get('blocklist') or {})} triggers → {cfg.get('blocklist_mode', 'nothing')}"),
+        ("📝 Notes", str(len(cfg.get("notes") or {}))),
+        ("🤖 CAPTCHA", "🟢 Button" if cfg.get("captcha_on") else "🔴 Off"),
         ("📜 Rules", "Configured" if cfg.get("rules") else "Not set"),
     ], key_header="Module", val_header="State")
 
@@ -411,6 +673,46 @@ async def gsettings_cmd(client: Client, message: Message):
     cfg = await get_group_cfg(message.chat.id)
     doc, kb = build_gsettings_doc(message.chat.title or "Group", cfg)
     return await message.reply_text(doc.classic(), reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.group & filters.command("gcheck") & PLG_FILTER)
+async def gcheck_cmd(client: Client, message: Message):
+    """Read-only setup diagnostic: automation state + this bot's live rights snapshot."""
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Access Denied").status("error", "Admin permission required", err))
+    cfg = await get_group_cfg(message.chat.id)
+    rights = await _bot_rights_snapshot(client, message.chat.id)
+    raid_active = _raid_active(cfg)
+    legacy_raid = cfg.get("antiraid_until", 0) > time.time() and not raid_active
+    legacy_auto = cfg.get("joinmode") == "auto" and _join_mode(cfg) != "auto"
+    doc = Doc("🔍", "Group Check", message.chat.title or "Supergroup")
+    flood_state = (
+        f"🟢 {cfg.get('flood_limit', 7)}/{cfg.get('flood_window', 8.0)}s → {cfg.get('flood_mode', 'tmute 5m')}"
+        if cfg.get("antiflood") else "🔴 Off"
+    )
+    doc.kv_table([
+        ("🚨 Anti-Raid", "🛡 Active" if raid_active else "⚠️ Previous setting inactive; confirm again" if legacy_raid else "⚪ Standby"),
+        ("🚪 Join Requests", "⚠️ AUTO inactive; confirm again" if legacy_auto else _join_mode(cfg).upper()),
+        ("🌊 Anti-Flood", flood_state),
+        ("⚠️ Warn Limit", f"{cfg.get('warn_limit', 3)} → {cfg.get('warn_action', 'mute')}"),
+        ("🔒 Locks", ", ".join(cfg.get("locks") or []) or "None"),
+        ("💬 Filters", str(len(cfg.get("filters") or {}))),
+        ("🚫 Blocklist", f"{len(cfg.get('blocklist') or {})} triggers → {cfg.get('blocklist_mode', 'nothing')}"),
+        ("📝 Notes", str(len(cfg.get("notes") or {}))),
+        ("🤖 CAPTCHA", "🟢 Button" if cfg.get("captcha_on") else "🔴 Off"),
+        ("🤖 Restrict members", rights.get("can_restrict_members", "unknown")),
+        ("🗑 Delete messages", rights.get("can_delete_messages", "unknown")),
+        ("📌 Pin messages", rights.get("can_pin_messages", "unknown")),
+        ("✏️ Change info", rights.get("can_change_info", "unknown")),
+        ("✉️ Invite users", rights.get("can_invite_users", "unknown")),
+    ], key_header="Check", val_header="State")
+    doc.status("info", "Read-only snapshot", "Rights are checked live; Telegram can change them at any time. No settings were changed.")
+    return await rich.reply(message, doc)
 
 
 @Client.on_message(filters.group & filters.command("rules") & PLG_FILTER)
@@ -492,6 +794,92 @@ async def _change_warns(chat_id: int, target_id: int, reason: str | None) -> lis
     raise RuntimeError("Warnings changed concurrently; reload and try again.")
 
 
+async def _apply_restriction(client: Client, chat_id: int, target_id: int, mode: str,
+                             delta: timedelta | None = None) -> bool:
+    """Apply a Rose-style restriction mode. Returns True when confirmed."""
+    try:
+        if mode == "kick":
+            await client.ban_chat_member(chat_id, target_id)
+            await client.unban_chat_member(chat_id, target_id)
+        elif mode == "ban":
+            await client.ban_chat_member(chat_id, target_id)
+        elif mode == "tban":
+            await client.ban_chat_member(chat_id, target_id, until_date=_until_dt(delta))
+        elif mode == "mute":
+            await client.restrict_chat_member(chat_id, target_id, ChatPermissions())
+        elif mode == "tmute":
+            await client.restrict_chat_member(chat_id, target_id, ChatPermissions(),
+                                               until_date=_until_dt(delta))
+        else:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+async def _do_restriction(client: Client, message: Message, kind: str, *,
+                          silent: bool = False, delete_reply: bool = False,
+                          require_duration: bool = False):
+    """Shared handler for ban/mute/kick aliases with silent/delete variants."""
+    cmd = (message.command or [kind])[0].lower()
+    target_id, label, rest = await extract_target_and_args(client, message)
+    if not target_id:
+        usage = {
+            "ban": "/ban <user> [reason]",
+            "tban": "/tban <user> <30m|2h|7d> [reason]",
+            "mute": "/mute <user> [reason]",
+            "tmute": "/tmute <user> <30m|2h|7d> [reason]",
+            "kick": "/kick <user> [reason]",
+        }.get(kind, f"/{cmd} <user> [reason]")
+        return await rich.reply(message, Doc("🔒", "Restriction").status("info", "Usage", f"Reply or send {usage}"))
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_restrict_members",
+        is_anon_admin=_is_anon_group_admin(message), target_id=target_id,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    delta, dur_lbl = (None, "")
+    reason_parts = list(rest)
+    if kind in ("tban", "tmute"):
+        if not rest:
+            return await rich.reply(message, Doc("🔒", "Restriction").status("info", "Usage", f"/{kind} <user> <30m|2h|7d> [reason]"))
+        delta, dur_lbl = parse_duration(rest[0])
+        if delta is None:
+            return await rich.reply(message, Doc("🔒", "Restriction").status("warning", "Invalid duration", "Use 30m, 2h, 7d or 1w."))
+        reason_parts = list(rest[1:])
+    elif require_duration and rest:
+        delta, dur_lbl = parse_duration(rest[0])
+        if delta is not None:
+            reason_parts = list(rest[1:])
+    reason = " ".join(reason_parts).strip()[:200]
+    if delete_reply and message.reply_to_message:
+        try:
+            await message.reply_to_message.delete()
+        except Exception:
+            pass
+    mode = {"ban": "ban", "tban": "tban", "mute": "mute", "tmute": "tmute", "kick": "kick"}[kind]
+    done = await _apply_restriction(client, message.chat.id, target_id, mode, delta)
+    if done:
+        await _log_mod_action(message.chat.id, kind, target_id, label, uid, reason, silent)
+    if silent:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return None
+    if not done:
+        return await rich.reply(message, Doc("❌", "Restriction Failed").status("error", "Telegram API error", "Action was not confirmed. Check Telegram before retrying."))
+    title = {"ban": "Member Banned", "tban": "Member Temporarily Banned", "mute": "Member Muted",
+             "tmute": "Member Temporarily Muted", "kick": "Member Kicked"}[kind]
+    doc = Doc("🔒", title, message.chat.title or "Group").kv_table([
+        ("👤 User", f"{label} ({target_id})"),
+        ("⏱ Duration", dur_lbl or ("Permanent" if kind in ("ban",) else "Until unmuted" if kind == "mute" else "—")),
+        ("📝 Reason", reason or "Not specified"),
+    ])
+    return await message.reply_text(doc.classic(), parse_mode=enums.ParseMode.HTML)
+
+
 @Client.on_message(filters.group & filters.command("warnconfig") & PLG_FILTER)
 async def warnconfig_cmd(client: Client, message: Message):
     """Review or set the threshold policy; it never changes existing warnings."""
@@ -508,14 +896,16 @@ async def warnconfig_cmd(client: Client, message: Message):
         return await rich.reply(message, Doc("⚠️", "Warning Policy").kv_table([
             ("Threshold", str(cfg.get("warn_limit", 3))),
             ("Action", str(cfg.get("warn_action", "mute"))),
-            ("Mute duration", "6 hours"),
-            ("Usage", "/warnconfig <1–20> <mute|ban>"),
+            ("Usage", "/warnconfig <1–20> <kick|ban|tban TIME|mute|tmute TIME>"),
         ]))
-    if len(args) != 2 or len(args[0]) > 2 or not args[0].isascii() or not args[0].isdigit() or not 1 <= int(args[0]) <= 20 or args[1].lower() not in ("mute", "ban"):
-        return await rich.reply(message, Doc("⚠️", "Warning Policy").status("warning", "Invalid policy", "Use /warnconfig <1–20> <mute|ban>. Existing warnings are unchanged."))
-    limit, action = int(args[0]), args[1].lower()
+    if len(args) < 2 or len(args[0]) > 2 or not args[0].isascii() or not args[0].isdigit() or not 1 <= int(args[0]) <= 20:
+        return await rich.reply(message, Doc("⚠️", "Warning Policy").status("warning", "Invalid policy", "Use /warnconfig <1–20> <kick|ban|tban TIME|mute|tmute TIME>. Existing warnings are unchanged."))
+    parsed = parse_mode(" ".join(args[1:]))
+    if parsed is None or parsed[0] == "nothing":
+        return await rich.reply(message, Doc("⚠️", "Warning Policy").status("warning", "Invalid action", "Use kick, ban, tban TIME, mute or tmute TIME."))
+    limit, action = int(args[0]), parsed[2]
     await update_group_cfg(message.chat.id, {"warn_limit": limit, "warn_action": action})
-    return await rich.reply(message, Doc("⚠️", "Warning Policy Updated").status("success", f"{limit} → {action}", "Existing warnings are unchanged. Enforcement happens on a new warning; mute lasts 6 hours."))
+    return await rich.reply(message, Doc("⚠️", "Warning Policy Updated").status("success", f"{limit} → {action}", "Existing warnings are unchanged. Enforcement happens on a new warning."))
 
 
 @Client.on_message(filters.group & filters.command("warnrecover") & PLG_FILTER)
@@ -564,6 +954,7 @@ async def gban_cmd(client: Client, message: Message):
         await client.ban_chat_member(message.chat.id, target_id, **kw)
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Ban Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "gban", target_id, label, uid, reason)
 
     doc = Doc("🚫", "Member Banned", message.chat.title or "Group").kv_table([
         ("👤 User", f"{label} ({target_id})"),
@@ -589,6 +980,7 @@ async def gunban_cmd(client: Client, message: Message):
         await client.unban_chat_member(message.chat.id, target_id)
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Unban Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "gunban", target_id, label, uid)
     doc = Doc("✅", "Member Unbanned").status("success", f"{label} ({target_id})", "May rejoin the group.")
     return await message.reply_text(doc.classic(), parse_mode=enums.ParseMode.HTML)
 
@@ -611,6 +1003,7 @@ async def kick_cmd(client: Client, message: Message):
         await client.unban_chat_member(message.chat.id, target_id)
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Kick Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "kick", target_id, label, uid, reason)
     doc = Doc("👢", "Member Kicked").kv_table([
         ("👤 User", f"{label} ({target_id})"),
         ("📝 Reason", reason or "Removed by moderator"),
@@ -638,6 +1031,7 @@ async def mute_cmd(client: Client, message: Message):
         await client.restrict_chat_member(message.chat.id, target_id, ChatPermissions(), **kw)
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Mute Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "mute", target_id, label, uid, reason)
     doc = Doc("🔇", "Member Muted").kv_table([
         ("👤 User", f"{label} ({target_id})"),
         ("⏱ Duration", dur_lbl or "Until unmuted"),
@@ -662,6 +1056,7 @@ async def unmute_cmd(client: Client, message: Message):
         await client.restrict_chat_member(message.chat.id, target_id, _full_send_permissions(message.chat))
     except Exception as e:
         return await rich.reply(message, Doc("❌", "Unmute Failed").status("error", "Telegram API error", str(e)))
+    await _log_mod_action(message.chat.id, "unmute", target_id, label, uid)
     doc = Doc("🔊", "Member Unmuted").status("success", f"{label} ({target_id})", "Messaging permissions restored.")
     return await message.reply_text(doc.classic(), parse_mode=enums.ParseMode.HTML)
 
@@ -688,6 +1083,7 @@ async def warn_cmd(client: Client, message: Message):
         reasons = await _change_warns(message.chat.id, target_id, reason)
     except (ValueError, RuntimeError) as exc:
         return await rich.reply(message, Doc("⚠️", "Warning Not Added").status("error", "Please review", str(exc)))
+    await _log_mod_action(message.chat.id, "warn", target_id, label, uid, reason)
     count = len(reasons)
 
     if count >= limit:
@@ -700,16 +1096,34 @@ async def warn_cmd(client: Client, message: Message):
         if not acquired.matched_count:
             return await rich.reply(message, Doc("⚠️", "Warning Recorded").status("warning", f"{count}/{limit}", "Warnings changed or another enforcement is pending; inspect the member before further action."))
         act = cfg.get("warn_action", "mute")
+        parsed = parse_mode(str(act))
         try:
-            if act == "ban":
-                await client.ban_chat_member(message.chat.id, target_id)
-                outcome = "Banned (warn threshold reached)"
-            else:
+            if parsed is None:
+                raise ValueError("invalid warn mode")
+            mode, delta, label = parsed
+            if mode == "mute":
+                # Preserve the legacy 6-hour mute for the plain "mute" action.
                 await client.restrict_chat_member(
                     message.chat.id, target_id, ChatPermissions(),
                     until_date=_until_dt(timedelta(hours=6)),
                 )
                 outcome = "Muted for 6h (warn threshold reached)"
+            elif mode == "ban":
+                await client.ban_chat_member(message.chat.id, target_id)
+                outcome = "Banned (warn threshold reached)"
+            elif mode == "kick":
+                await client.ban_chat_member(message.chat.id, target_id)
+                await client.unban_chat_member(message.chat.id, target_id)
+                outcome = "Kicked (warn threshold reached)"
+            elif mode == "tban":
+                await client.ban_chat_member(message.chat.id, target_id, until_date=_until_dt(delta))
+                outcome = f"Temporarily banned ({label}) (warn threshold reached)"
+            elif mode == "tmute":
+                await client.restrict_chat_member(message.chat.id, target_id, ChatPermissions(),
+                                                  until_date=_until_dt(delta))
+                outcome = f"Temporarily muted ({label}) (warn threshold reached)"
+            else:
+                raise ValueError("unsupported warn mode")
         except Exception:
             outcome = "Enforcement failed or was not confirmed; warnings and claim retained. Check Telegram, then use /warnrecover."
         else:
@@ -782,6 +1196,218 @@ async def warns_cmd(client: Client, message: Message):
     else:
         doc.status("success", "Clean record", "No active warnings in this group.")
     return await rich.reply(message, doc)
+
+
+def _fmt_modlog_entry(entry: dict[str, Any]) -> tuple[str, str, str]:
+    ts = entry.get("ts") or 0
+    when = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if ts else "—"
+    action = str(entry.get("action") or "action")
+    target = entry.get("target_label") or str(entry.get("target_id") or "—")
+    reason = entry.get("reason") or ""
+    detail = f"{target}"
+    if reason:
+        detail += f" — {reason}"
+    return when, action, detail
+
+
+@Client.on_message(filters.group & filters.command(["modlog", "modhistory"]) & PLG_FILTER)
+async def modlog_cmd(client: Client, message: Message):
+    cmd = (message.command or ["modlog"])[0].lower()
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    col = vdb.db["group_modlog"]
+    if cmd == "modhistory":
+        target_id, label, _ = await extract_target_and_args(client, message)
+        if not target_id:
+            return await rich.reply(message, Doc("📋", "Mod History").status("info", "Usage", "Reply or send /modhistory <user>"))
+        cursor = col.find({"chat_id": message.chat.id, "target_id": target_id}).sort("ts", -1).limit(20)
+        entries = await cursor.to_list(length=20)
+        doc = Doc("📋", f"Mod History · {label}", message.chat.title or "Group")
+        if not entries:
+            doc.status("empty", "No recorded actions", "No moderation actions against this user in this group.")
+        else:
+            doc.table([_fmt_modlog_entry(e) for e in entries], header=("When (UTC)", "Action", "Target"))
+        return await rich.reply(message, doc)
+    cursor = col.find({"chat_id": message.chat.id}).sort("ts", -1).limit(20)
+    entries = await cursor.to_list(length=20)
+    doc = Doc("📋", "Moderation Log", message.chat.title or "Group")
+    if not entries:
+        doc.status("empty", "No recorded actions", "Moderation actions will appear here.")
+    else:
+        doc.table([_fmt_modlog_entry(e) for e in entries], header=("When (UTC)", "Action", "Target"))
+    return await rich.reply(message, doc)
+
+
+@Client.on_message(filters.group & filters.command("ban") & PLG_FILTER)
+async def ban_cmd(client: Client, message: Message):
+    return await _do_restriction(client, message, "ban")
+
+
+@Client.on_message(filters.group & filters.command("tban") & PLG_FILTER)
+async def tban_cmd(client: Client, message: Message):
+    return await _do_restriction(client, message, "tban")
+
+
+@Client.on_message(filters.group & filters.command("dban") & PLG_FILTER)
+async def dban_cmd(client: Client, message: Message):
+    if not message.reply_to_message:
+        return await rich.reply(message, Doc("🔒", "Delete + Ban").status("info", "Usage", "Reply to a message with /dban [reason]."))
+    return await _do_restriction(client, message, "ban", delete_reply=True)
+
+
+@Client.on_message(filters.group & filters.command("sban") & PLG_FILTER)
+async def sban_cmd(client: Client, message: Message):
+    return await _do_restriction(client, message, "ban", silent=True, delete_reply=True)
+
+
+@Client.on_message(filters.group & filters.command("unban") & PLG_FILTER)
+async def unban_cmd(client: Client, message: Message):
+    target_id, label, _ = await extract_target_and_args(client, message)
+    if not target_id:
+        return await rich.reply(message, Doc("✅", "Unban").status("info", "Usage", "Reply or send /unban <user>"))
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(client, message.chat.id, uid, privilege="can_restrict_members",
+                                           is_anon_admin=_is_anon_group_admin(message))
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    try:
+        await client.unban_chat_member(message.chat.id, target_id)
+    except Exception as e:
+        return await rich.reply(message, Doc("❌", "Unban Failed").status("error", "Telegram API error", str(e)))
+    return await message.reply_text(Doc("✅", "Member Unbanned").status("success", f"{label} ({target_id})", "May rejoin the group.").classic(), parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.group & filters.command("tmute") & PLG_FILTER)
+async def tmute_cmd(client: Client, message: Message):
+    return await _do_restriction(client, message, "tmute")
+
+
+@Client.on_message(filters.group & filters.command("dmute") & PLG_FILTER)
+async def dmute_cmd(client: Client, message: Message):
+    if not message.reply_to_message:
+        return await rich.reply(message, Doc("🔇", "Delete + Mute").status("info", "Usage", "Reply to a message with /dmute [reason]."))
+    return await _do_restriction(client, message, "mute", delete_reply=True)
+
+
+@Client.on_message(filters.group & filters.command("smute") & PLG_FILTER)
+async def smute_cmd(client: Client, message: Message):
+    return await _do_restriction(client, message, "mute", silent=True, delete_reply=True)
+
+
+@Client.on_message(filters.group & filters.command("dkick") & PLG_FILTER)
+async def dkick_cmd(client: Client, message: Message):
+    if not message.reply_to_message:
+        return await rich.reply(message, Doc("👢", "Delete + Kick").status("info", "Usage", "Reply to a message with /dkick [reason]."))
+    return await _do_restriction(client, message, "kick", delete_reply=True)
+
+
+@Client.on_message(filters.group & filters.command("skick") & PLG_FILTER)
+async def skick_cmd(client: Client, message: Message):
+    return await _do_restriction(client, message, "kick", silent=True, delete_reply=True)
+
+
+@Client.on_message(filters.group & filters.command(["swarn", "dwarn"]) & PLG_FILTER)
+async def swarn_cmd(client: Client, message: Message):
+    cmd = (message.command or ["swarn"])[0].lower()
+    target_id, label, rest = await extract_target_and_args(client, message)
+    if not target_id:
+        return await rich.reply(message, Doc("⚠️", "Warn").status("info", "Usage", "Reply or send /swarn <user> [reason]"))
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(client, message.chat.id, uid, privilege="can_restrict_members",
+                                           is_anon_admin=_is_anon_group_admin(message), target_id=target_id)
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    reason = " ".join(rest).strip()[:200] or "Rule violation"
+    if cmd == "dwarn" and message.reply_to_message:
+        try:
+            await message.reply_to_message.delete()
+        except Exception:
+            pass
+    try:
+        reasons = await _change_warns(message.chat.id, target_id, reason)
+    except (ValueError, RuntimeError) as exc:
+        return await rich.reply(message, Doc("⚠️", "Warning Not Added").status("error", "Please review", str(exc)))
+    if cmd == "swarn":
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return None
+    cfg = await get_group_cfg(message.chat.id)
+    limit = max(1, int(cfg.get("warn_limit", 3)))
+    doc = Doc("⚠️", "Member Warned").kv_table([
+        ("👤 User", f"{label} ({target_id})"),
+        ("⚠️ Progress", f"{len(reasons)}/{limit}"),
+        ("📝 Reason", reason),
+    ])
+    return await message.reply_text(doc.classic(), parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.group & filters.command(["rmwarn", "resetwarn"]) & PLG_FILTER)
+async def rmwarn_cmd(client: Client, message: Message):
+    cmd = (message.command or ["rmwarn"])[0].lower()
+    target_id, label, _ = await extract_target_and_args(client, message)
+    if not target_id:
+        return await rich.reply(message, Doc("⚠️", "Remove Warnings").status("info", "Usage", f"Reply or send /{cmd} <user>"))
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(client, message.chat.id, uid, privilege="can_restrict_members",
+                                           is_anon_admin=_is_anon_group_admin(message), check_bot=False)
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    try:
+        if cmd == "resetwarn":
+            await vdb.db["group_warns"].delete_one({"_id": f"{message.chat.id}:{target_id}"})
+            remaining = []
+        else:
+            remaining = await _change_warns(message.chat.id, target_id, None)
+    except (ValueError, RuntimeError) as exc:
+        return await rich.reply(message, Doc("⚠️", "Warnings Not Changed").status("error", "Please review", str(exc)))
+    return await message.reply_text(Doc("✅", "Warnings Updated").status("success", f"{label} ({target_id})", f"Remaining warnings: {len(remaining)}").classic(), parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.group & filters.command("warnings") & PLG_FILTER)
+async def warnings_cmd(client: Client, message: Message):
+    cfg = await get_group_cfg(message.chat.id)
+    doc = Doc("⚠️", "Warning Settings", message.chat.title or "Group").kv_table([
+        ("Threshold", str(cfg.get("warn_limit", 3))),
+        ("Action", str(cfg.get("warn_action", "mute"))),
+        ("Usage", "/setwarnlimit <1–20> · /setwarnmode <kick|ban|tban TIME|mute|tmute TIME>"),
+    ])
+    return await rich.reply(message, doc)
+
+
+@Client.on_message(filters.group & filters.command("setwarnlimit") & PLG_FILTER)
+async def setwarnlimit_cmd(client: Client, message: Message):
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(client, message.chat.id, uid, privilege="can_restrict_members",
+                                           is_anon_admin=_is_anon_group_admin(message), check_bot=False)
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    args = (message.command or [])[1:]
+    if len(args) != 1 or not args[0].isascii() or not args[0].isdigit() or not 1 <= int(args[0]) <= 20:
+        return await rich.reply(message, Doc("⚠️", "Warn Limit").status("warning", "Invalid limit", "Use /setwarnlimit <1–20>."))
+    await update_group_cfg(message.chat.id, {"warn_limit": int(args[0])})
+    return await message.reply_text(Doc("⚠️", "Warn Limit Updated").status("success", args[0], "Existing warnings are unchanged.").classic(), parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.group & filters.command("setwarnmode") & PLG_FILTER)
+async def setwarnmode_cmd(client: Client, message: Message):
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(client, message.chat.id, uid, privilege="can_restrict_members",
+                                           is_anon_admin=_is_anon_group_admin(message), check_bot=False)
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    raw = " ".join((message.command or [])[1:]).strip()
+    parsed = parse_mode(raw)
+    if parsed is None or parsed[0] == "nothing":
+        return await rich.reply(message, Doc("⚠️", "Warn Mode").status("warning", "Invalid mode", "Use /setwarnmode <kick|ban|tban TIME|mute|tmute TIME>."))
+    await update_group_cfg(message.chat.id, {"warn_action": parsed[2]})
+    return await message.reply_text(Doc("⚠️", "Warn Mode Updated").status("success", parsed[2], "Enforcement happens on a new warning.").classic(), parse_mode=enums.ParseMode.HTML)
 
 
 # ───────────────────────── Bot API 10.3: Member Tags, Reactions, Topics & Join-Mode ─────────────────────────
@@ -985,9 +1611,45 @@ async def greeting_cmd(client: Client, message: Message):
     return await rich.reply(message, Doc("👋", f"{cmd.title()} Updated").status("success", "Template saved & enabled", arg[:120]))
 
 
-@Client.on_message(filters.group & filters.command(["lock", "unlock"]) & PLG_FILTER)
+@Client.on_message(filters.group & filters.command(["setwelcome", "resetwelcome"]) & PLG_FILTER)
+async def setwelcome_cmd(client: Client, message: Message):
+    cmd = (message.command or ["setwelcome"])[0].lower()
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    if cmd == "resetwelcome":
+        await update_group_cfg(message.chat.id, {"welcome_text": "👋 Welcome {mention} to <b>{chat}</b>!"})
+        return await rich.reply(message, Doc("👋", "Welcome Reset").status("success", "Default template restored", "Placeholders: {mention} · {first} · {chat} · {id}"))
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    if not arg:
+        return await rich.reply(message, Doc("👋", "Set Welcome").status("info", "Usage", "/setwelcome <message> — placeholders {mention} {first} {chat} {id}"))
+    await update_group_cfg(message.chat.id, {"welcome_on": True, "welcome_text": arg[:1000]})
+    return await rich.reply(message, Doc("👋", "Welcome Updated").status("success", "Template saved & enabled", arg[:120]))
+
+
+@Client.on_message(filters.group & filters.command(["lock", "unlock", "locks", "locktypes", "lockwarns"]) & PLG_FILTER)
 async def lock_cmd(client: Client, message: Message):
     cmd = (message.command or ["lock"])[0].lower()
+    cfg = await get_group_cfg(message.chat.id)
+    if cmd == "locks":
+        args = [a.lower() for a in (message.command or [])[1:]]
+        cur = cfg.get("locks") or []
+        if args == ["list"]:
+            doc = Doc("🔒", "All Lock Types", message.chat.title or "Group")
+            doc.table([(t, "🟢 Locked" if t in cur else "🔴 Open") for t in VALID_LOCKS], header=("Type", "State"))
+            return await rich.reply(message, doc)
+        doc = Doc("🔒", "Active Locks", message.chat.title or "Group")
+        doc.status("info", ", ".join(cur) if cur else "None", "Use /locks list for all types. /locktypes lists available types.")
+        return await rich.reply(message, doc)
+    if cmd == "locktypes":
+        doc = Doc("🔒", "Lock Types", message.chat.title or "Group")
+        doc.table([(t,) for t in VALID_LOCKS], header=("Type",))
+        return await rich.reply(message, doc)
     uid = message.from_user.id if message.from_user else None
     ok, err = await verify_mod_permissions(
         client, message.chat.id, uid, privilege="can_delete_messages",
@@ -995,39 +1657,67 @@ async def lock_cmd(client: Client, message: Message):
     )
     if not ok:
         return await rich.reply(message, Doc("🔒", "Locks Refused").status("error", "Permission check failed", err))
+    if cmd == "lockwarns":
+        args = [a.lower() for a in (message.command or [])[1:]]
+        if len(args) != 1 or args[0] not in ("on", "off", "yes", "no", "true", "false"):
+            return await rich.reply(message, Doc("🔒", "Lock Warnings").status("info", "Usage", "/lockwarns on|off"))
+        enabled = args[0] in ("on", "yes", "true")
+        await update_group_cfg(message.chat.id, {"lockwarns": enabled})
+        return await message.reply_text(Doc("🔒", "Lock Warnings").status("success", "On" if enabled else "Off", "Locked content will now warn users." if enabled else "Locked content will be deleted silently.").classic(), parse_mode=enums.ParseMode.HTML)
 
-    args = [a.lower() for a in (message.command or [])[1:]]
+    raw = " ".join((message.command or [])[1:]).strip()
+    # Custom lock mode: /lock <types> ### <reason> {mode [time]}
+    custom_mode = None
+    custom_reason = ""
+    if cmd == "lock" and "###" in raw:
+        before, _, after = raw.partition("###")
+        m = re.search(r"\{([^}]+)\}\s*$", after.strip())
+        if not m:
+            return await rich.reply(message, Doc("🔒", "Custom Lock Mode").status("warning", "Invalid mode", "Use /lock <types> ### <reason> {kick|ban|tban TIME|mute|tmute TIME}."))
+        parsed = parse_mode(m.group(1).strip())
+        if parsed is None or parsed[0] == "nothing":
+            return await rich.reply(message, Doc("🔒", "Custom Lock Mode").status("warning", "Invalid mode", "Use kick, ban, tban TIME, mute or tmute TIME."))
+        custom_mode = parsed[2]
+        custom_reason = after[:m.start()].strip()[:200]
+        raw = before.strip()
+    args = [a.lower() for a in raw.split() if a]
     if not args or any(a not in VALID_LOCKS for a in args):
-        cfg = await get_group_cfg(message.chat.id)
         cur = ", ".join(cfg.get("locks") or []) or "None"
         return await rich.reply(
             message,
             Doc("🔒", "Content Locks").status("info", f"Active: {cur}", f"Options: {', '.join(VALID_LOCKS)}"),
         )
-    cfg = await get_group_cfg(message.chat.id)
     locks = set(cfg.get("locks") or [])
+    lock_modes = dict(cfg.get("lock_modes") or {})
     if cmd == "lock":
         locks.update(args)
+        if custom_mode:
+            for t in args:
+                lock_modes[t] = {"mode": custom_mode, "reason": custom_reason}
     else:
         locks.difference_update(args)
+        for t in args:
+            lock_modes.pop(t, None)
     updated = sorted(locks)
-    await update_group_cfg(message.chat.id, {"locks": updated})
+    await update_group_cfg(message.chat.id, {"locks": updated, "lock_modes": lock_modes})
+    detail = f"Active locks: {', '.join(updated) or 'None'}"
+    if custom_mode:
+        detail += f" · mode {custom_mode} for {', '.join(args)}"
     return await message.reply_text(
-        Doc("🔒", f"Content {cmd.title()}ed").status("success", ", ".join(args), f"Active locks: {', '.join(updated) or 'None'}").classic(),
+        Doc("🔒", f"Content {cmd.title()}ed").status("success", ", ".join(args), detail).classic(),
         parse_mode=enums.ParseMode.HTML,
     )
 
 
-@Client.on_message(filters.group & filters.command(["gfilter", "delfilter", "gfilters"]) & PLG_FILTER)
+@Client.on_message(filters.group & filters.command(["gfilter", "delfilter", "gfilters", "filter", "stop", "filters"]) & PLG_FILTER)
 async def gfilter_cmd(client: Client, message: Message):
     cmd = (message.command or ["gfilters"])[0].lower()
-    cfg = await get_group_cfg(message.chat.id)
-    fmap: dict[str, str] = dict(cfg.get("filters") or {})
-
-    if cmd == "gfilters":
+    if cmd in ("gfilters", "filters"):
+        cfg = await get_group_cfg(message.chat.id)
+        fmap: dict[str, str] = dict(cfg.get("filters") or {})
         doc = Doc("💬", f"Group Filters · {len(fmap)}")
         if not fmap:
-            doc.status("empty", "No keyword filters", "Admins can add one with /gfilter <word> <reply>.")
+            doc.status("empty", "No keyword filters", "Admins can add one with /filter <word|\"phrase\"> <reply>.")
         else:
             doc.table([(rich.code(k), v[:60]) for k, v in sorted(fmap.items())], header=("Keyword", "Reply"))
         return await rich.reply(message, doc)
@@ -1040,26 +1730,351 @@ async def gfilter_cmd(client: Client, message: Message):
     if not ok:
         return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
 
-    if cmd == "delfilter":
+    cfg = await get_group_cfg(message.chat.id)
+    fmap: dict[str, str] = dict(cfg.get("filters") or {})
+    if cmd in ("delfilter", "stop"):
+        raw = " ".join((message.command or [])[1:]).strip()
+        triggers = _split_trigger_list(raw)
+        if not triggers:
+            return await rich.reply(message, Doc("💬", "Delete Filter").status("info", "Usage", "/stop <word|\"phrase\">"))
+        removed = []
+        for t in triggers:
+            trig = t.lower()
+            if trig in fmap:
+                fmap.pop(trig, None)
+                removed.append(trig)
+        if not removed:
+            return await rich.reply(message, Doc("💬", "Not Found").status("warning", triggers[0], "No such filter in this group."))
+        await update_group_cfg(message.chat.id, {"filters": fmap})
+        return await rich.reply(message, Doc("🗑", "Filter Removed").status("success", ", ".join(removed), "Keyword filter deleted."))
+
+    # /filter <trigger> <reply> — trigger may be a word, "phrase", (a, b, "c d"),
+    # prefix:<text> or exact:<text>.
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await rich.reply(message, Doc("💬", "Add Filter").status("info", "Usage", "/filter <word|\"phrase\"> <reply text>"))
+    rest = parts[1].strip()
+    # Find the end of the trigger (quoted phrase, parenthesized list, or first word).
+    if rest.startswith("("):
+        depth = 0
+        end = -1
+        in_q = False
+        for i, ch in enumerate(rest):
+            if ch == '"':
+                in_q = not in_q
+            elif not in_q and ch == "(":
+                depth += 1
+            elif not in_q and ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end < 0:
+            return await rich.reply(message, Doc("💬", "Add Filter").status("warning", "Invalid trigger list", "Use /filter (a, b, \"c d\") <reply>."))
+        trig_raw, reply_val = rest[:end + 1], rest[end + 1:].strip()
+    elif rest.startswith('"'):
+        end = rest.find('"', 1)
+        if end < 0:
+            return await rich.reply(message, Doc("💬", "Add Filter").status("warning", "Unclosed quote", "Use /filter \"phrase\" <reply>."))
+        trig_raw, reply_val = rest[:end + 1], rest[end + 1:].strip()
+    else:
+        bits = rest.split(maxsplit=1)
+        trig_raw = bits[0]
+        reply_val = bits[1].strip() if len(bits) > 1 else ""
+    if not reply_val:
+        return await rich.reply(message, Doc("💬", "Add Filter").status("info", "Usage", "/filter <word|\"phrase\"> <reply text>"))
+    triggers = _split_trigger_list(trig_raw)
+    if not triggers:
+        return await rich.reply(message, Doc("💬", "Add Filter").status("warning", "Invalid trigger", "Provide a word, \"phrase\", or (a, b) list."))
+    new_trigs = [t.lower()[:64] for t in triggers if t.strip()]
+    if len(fmap) + len([t for t in new_trigs if t not in fmap]) > 60:
+        return await rich.reply(message, Doc("⚠️", "Limit Reached").status("warning", "60 filters max", "Delete unused filters first."))
+    for trig in new_trigs:
+        fmap[trig] = reply_val[:1000]
+    await update_group_cfg(message.chat.id, {"filters": fmap})
+    return await rich.reply(message, Doc("✅", "Filter Saved").status("success", ", ".join(new_trigs), reply_val[:80]))
+
+
+@Client.on_message(filters.group & filters.command(["addblocklist", "rmblocklist", "blocklist", "blocklistmode", "blocklistdelete"]) & PLG_FILTER)
+async def blocklist_cmd(client: Client, message: Message):
+    cmd = (message.command or ["blocklist"])[0].lower()
+    cfg = await get_group_cfg(message.chat.id)
+    bmap: dict[str, str] = dict(cfg.get("blocklist") or {})
+    if cmd == "blocklist":
+        doc = Doc("🚫", f"Blocklist · {len(bmap)}", message.chat.title or "Group")
+        if not bmap:
+            doc.status("empty", "No blocklist triggers", "Admins can add one with /addblocklist <word|\"phrase\"> <reason>.")
+        else:
+            doc.table([(rich.code(k), v[:60]) for k, v in sorted(bmap.items())], header=("Trigger", "Reason"))
+        return await rich.reply(message, doc)
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    if cmd == "blocklistmode":
+        raw = " ".join((message.command or [])[1:]).strip()
+        parsed = parse_mode(raw)
+        if parsed is None:
+            return await rich.reply(message, Doc("🚫", "Blocklist Mode").status("warning", "Invalid mode", "Use /blocklistmode <nothing|warn|kick|ban|tban TIME|mute|tmute TIME>."))
+        await update_group_cfg(message.chat.id, {"blocklist_mode": parsed[2]})
+        return await message.reply_text(Doc("🚫", "Blocklist Mode Updated").status("success", parsed[2], "Applies when a blocklist trigger matches.").classic(), parse_mode=enums.ParseMode.HTML)
+    if cmd == "blocklistdelete":
+        args = [a.lower() for a in (message.command or [])[1:]]
+        if len(args) != 1 or args[0] not in ("on", "off", "yes", "no", "true", "false"):
+            return await rich.reply(message, Doc("🚫", "Blocklist Delete").status("info", "Usage", "/blocklistdelete on|off"))
+        enabled = args[0] in ("on", "yes", "true")
+        await update_group_cfg(message.chat.id, {"blocklist_delete": enabled})
+        return await message.reply_text(Doc("🚫", "Blocklist Delete").status("success", "On" if enabled else "Off", "Blocklisted messages will be deleted." if enabled else "Blocklisted messages will be kept.").classic(), parse_mode=enums.ParseMode.HTML)
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await rich.reply(message, Doc("🚫", "Blocklist").status("info", "Usage", "/addblocklist <word|\"phrase\"> <reason>"))
+    rest = parts[1].strip()
+    if cmd == "rmblocklist":
+        triggers = _split_trigger_list(rest)
+        if not triggers:
+            return await rich.reply(message, Doc("🚫", "Remove Blocklist").status("info", "Usage", "/rmblocklist <word|\"phrase\">"))
+        removed = []
+        for t in triggers:
+            trig = t.lower()
+            if trig in bmap:
+                bmap.pop(trig, None)
+                removed.append(trig)
+        if not removed:
+            return await rich.reply(message, Doc("🚫", "Not Found").status("warning", triggers[0], "No such blocklist trigger."))
+        await update_group_cfg(message.chat.id, {"blocklist": bmap})
+        return await rich.reply(message, Doc("🗑", "Blocklist Removed").status("success", ", ".join(removed), "Trigger deleted."))
+    # /addblocklist <trigger> <reason>
+    if rest.startswith("("):
+        depth, end, in_q = 0, -1, False
+        for i, ch in enumerate(rest):
+            if ch == '"':
+                in_q = not in_q
+            elif not in_q and ch == "(":
+                depth += 1
+            elif not in_q and ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end < 0:
+            return await rich.reply(message, Doc("🚫", "Add Blocklist").status("warning", "Invalid trigger list", "Use /addblocklist (a, b, \"c d\") <reason>."))
+        trig_raw, reason = rest[:end + 1], rest[end + 1:].strip()
+    elif rest.startswith('"'):
+        end = rest.find('"', 1)
+        if end < 0:
+            return await rich.reply(message, Doc("🚫", "Add Blocklist").status("warning", "Unclosed quote", "Use /addblocklist \"phrase\" <reason>."))
+        trig_raw, reason = rest[:end + 1], rest[end + 1:].strip()
+    else:
+        bits = rest.split(maxsplit=1)
+        trig_raw = bits[0]
+        reason = bits[1].strip() if len(bits) > 1 else ""
+    if not reason:
+        reason = "Blocklist match"
+    triggers = _split_trigger_list(trig_raw)
+    if not triggers:
+        return await rich.reply(message, Doc("🚫", "Add Blocklist").status("warning", "Invalid trigger", "Provide a word, \"phrase\", or (a, b) list."))
+    new_trigs = [t.lower()[:64] for t in triggers if t.strip()]
+    if len(bmap) + len([t for t in new_trigs if t not in bmap]) > 100:
+        return await rich.reply(message, Doc("⚠️", "Limit Reached").status("warning", "100 blocklist triggers max", "Remove unused triggers first."))
+    for trig in new_trigs:
+        bmap[trig] = reason[:500]
+    await update_group_cfg(message.chat.id, {"blocklist": bmap})
+    return await rich.reply(message, Doc("✅", "Blocklist Saved").status("success", ", ".join(new_trigs), reason[:80]))
+
+
+@Client.on_message(filters.group & filters.command(["save", "get", "notes", "clear"]) & PLG_FILTER)
+async def notes_cmd(client: Client, message: Message):
+    cmd = (message.command or ["notes"])[0].lower()
+    cfg = await get_group_cfg(message.chat.id)
+    nmap: dict[str, str] = dict(cfg.get("notes") or {})
+    if cmd == "notes":
+        doc = Doc("📝", f"Notes · {len(nmap)}", message.chat.title or "Group")
+        if not nmap:
+            doc.status("empty", "No notes", "Admins can save one with /save <trigger> <text>. Open with /get <trigger> or #<trigger>.")
+        else:
+            doc.table([(rich.code(k), v[:60]) for k, v in sorted(nmap.items())], header=("Trigger", "Note"))
+        return await rich.reply(message, doc)
+    if cmd == "get":
         args = (message.command or [])[1:]
         if not args:
-            return await rich.reply(message, Doc("💬", "Delete Filter").status("info", "Usage", "/delfilter <keyword>"))
-        trig = args[0].lower()
-        if trig not in fmap:
-            return await rich.reply(message, Doc("💬", "Not Found").status("warning", trig, "No such filter in this group."))
-        fmap.pop(trig, None)
-        await update_group_cfg(message.chat.id, {"filters": fmap})
-        return await rich.reply(message, Doc("🗑", "Filter Removed").status("success", trig, "Keyword filter deleted."))
-
+            return await rich.reply(message, Doc("📝", "Open Note").status("info", "Usage", "/get <trigger>"))
+        trig = args[0].lower().lstrip("#")
+        if trig not in nmap:
+            return await rich.reply(message, Doc("📝", "Not Found").status("warning", trig, "No such note in this group."))
+        formatted = _format_greeting(nmap[trig], message.from_user, message.chat.title or "")
+        return await message.reply_text(formatted, parse_mode=enums.ParseMode.HTML)
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    if cmd == "clear":
+        args = (message.command or [])[1:]
+        if not args:
+            return await rich.reply(message, Doc("📝", "Delete Note").status("info", "Usage", "/clear <trigger>"))
+        trig = args[0].lower().lstrip("#")
+        if trig not in nmap:
+            return await rich.reply(message, Doc("📝", "Not Found").status("warning", trig, "No such note in this group."))
+        nmap.pop(trig, None)
+        await update_group_cfg(message.chat.id, {"notes": nmap})
+        return await rich.reply(message, Doc("🗑", "Note Deleted").status("success", trig, "Note removed."))
+    # /save <trigger> <text> (text notes; attachment notes are not stored)
     parts = (message.text or "").split(maxsplit=2)
     if len(parts) < 3:
-        return await rich.reply(message, Doc("💬", "Add Filter").status("info", "Usage", "/gfilter <keyword> <reply text>"))
-    if len(fmap) >= 60 and parts[1].lower() not in fmap:
-        return await rich.reply(message, Doc("⚠️", "Limit Reached").status("warning", "60 filters max", "Delete unused filters first."))
-    trig, reply_val = parts[1].lower()[:64], parts[2].strip()[:1000]
-    fmap[trig] = reply_val
-    await update_group_cfg(message.chat.id, {"filters": fmap})
-    return await rich.reply(message, Doc("✅", "Filter Saved").status("success", trig, reply_val[:80]))
+        return await rich.reply(message, Doc("📝", "Save Note").status("info", "Usage", "/save <trigger> <text>"))
+    trig = parts[1].lower().lstrip("#")[:32]
+    if not re.fullmatch(r"[a-z0-9_]+", trig):
+        return await rich.reply(message, Doc("📝", "Save Note").status("warning", "Invalid trigger", "Use a single word with letters, digits or underscore."))
+    if len(nmap) >= 100 and trig not in nmap:
+        return await rich.reply(message, Doc("⚠️", "Limit Reached").status("warning", "100 notes max", "Delete unused notes first."))
+    nmap[trig] = parts[2].strip()[:1000]
+    await update_group_cfg(message.chat.id, {"notes": nmap})
+    return await rich.reply(message, Doc("✅", "Note Saved").status("success", trig, parts[2].strip()[:80]))
+
+
+@Client.on_message(filters.group & filters.command(["setflood", "setfloodtimer", "setfloodmode", "flood", "clearflood"]) & PLG_FILTER)
+async def flood_cmd(client: Client, message: Message):
+    cmd = (message.command or ["flood"])[0].lower()
+    cfg = await get_group_cfg(message.chat.id)
+    if cmd == "flood":
+        doc = Doc("🌊", "Anti-Flood", message.chat.title or "Group").kv_table([
+            ("State", "🟢 Enabled" if cfg.get("antiflood") else "🔴 Off"),
+            ("Limit", f"{cfg.get('flood_limit', 7)} messages"),
+            ("Window", f"{cfg.get('flood_window', 8.0)} seconds"),
+            ("Mode", str(cfg.get("flood_mode", "tmute 5m"))),
+            ("Clear flood", "🟢 On" if cfg.get("clearflood") else "🔴 Off"),
+            ("Usage", "/setflood <number> · /setfloodtimer <number> <seconds> · /setfloodmode <action> · /clearflood on|off"),
+        ])
+        return await rich.reply(message, doc)
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_restrict_members",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    args = (message.command or [])[1:]
+    if cmd == "setflood":
+        if len(args) != 1 or not args[0].isascii() or not args[0].isdigit() or not 2 <= int(args[0]) <= 50:
+            return await rich.reply(message, Doc("🌊", "Anti-Flood").status("warning", "Invalid limit", "Use /setflood <2–50>."))
+        await update_group_cfg(message.chat.id, {"flood_limit": int(args[0]), "antiflood": True})
+        return await message.reply_text(Doc("🌊", "Anti-Flood Updated").status("success", f"{args[0]} messages", "Anti-flood enabled.").classic(), parse_mode=enums.ParseMode.HTML)
+    if cmd == "setfloodtimer":
+        if len(args) != 2 or not args[0].isascii() or not args[0].isdigit() or not 2 <= int(args[0]) <= 50:
+            return await rich.reply(message, Doc("🌊", "Anti-Flood Timer").status("warning", "Invalid timer", "Use /setfloodtimer <2–50> <seconds>."))
+        try:
+            secs = float(args[1].rstrip("s"))
+        except ValueError:
+            return await rich.reply(message, Doc("🌊", "Anti-Flood Timer").status("warning", "Invalid window", "Use seconds like 10 or 10s."))
+        if not 1 <= secs <= 300:
+            return await rich.reply(message, Doc("🌊", "Anti-Flood Timer").status("warning", "Invalid window", "Use 1–300 seconds."))
+        await update_group_cfg(message.chat.id, {"flood_limit": int(args[0]), "flood_window": secs, "antiflood": True})
+        return await message.reply_text(Doc("🌊", "Anti-Flood Timer Updated").status("success", f"{args[0]} / {secs:g}s", "Anti-flood enabled.").classic(), parse_mode=enums.ParseMode.HTML)
+    if cmd == "setfloodmode":
+        parsed = parse_mode(" ".join(args))
+        if parsed is None or parsed[0] == "nothing":
+            return await rich.reply(message, Doc("🌊", "Anti-Flood Mode").status("warning", "Invalid mode", "Use /setfloodmode <kick|ban|tban TIME|mute|tmute TIME>."))
+        await update_group_cfg(message.chat.id, {"flood_mode": parsed[2]})
+        return await message.reply_text(Doc("🌊", "Anti-Flood Mode Updated").status("success", parsed[2], "Applies when the flood limit is exceeded.").classic(), parse_mode=enums.ParseMode.HTML)
+    # /clearflood on|off
+    if len(args) != 1 or args[0].lower() not in ("on", "off", "yes", "no", "true", "false"):
+        return await rich.reply(message, Doc("🌊", "Clear Flood").status("info", "Usage", "/clearflood on|off"))
+    enabled = args[0].lower() in ("on", "yes", "true")
+    await update_group_cfg(message.chat.id, {"clearflood": enabled})
+    return await message.reply_text(Doc("🌊", "Clear Flood").status("success", "On" if enabled else "Off", "Flood messages will be fully deleted." if enabled else "Only the triggering message is handled.").classic(), parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.group & filters.command(["captcha", "captchamode", "setcaptchatext", "resetcaptchatext"]) & PLG_FILTER)
+async def captcha_cmd(client: Client, message: Message):
+    cmd = (message.command or ["captcha"])[0].lower()
+    cfg = await get_group_cfg(message.chat.id)
+    if cmd == "captcha" and not (message.command or [])[1:]:
+        doc = Doc("🤖", "CAPTCHA", message.chat.title or "Group").kv_table([
+            ("State", "🟢 Button" if cfg.get("captcha_on") else "🔴 Off"),
+            ("Button text", str(cfg.get("captcha_text") or "Click here to prove you're human")),
+            ("Requires", "Welcome messages enabled"),
+            ("Usage", "/captcha on|off · /captchamode button · /setcaptchatext <text>"),
+        ])
+        return await rich.reply(message, doc)
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    if cmd == "captcha":
+        args = [a.lower() for a in (message.command or [])[1:]]
+        if len(args) != 1 or args[0] not in ("on", "off", "yes", "no", "true", "false"):
+            return await rich.reply(message, Doc("🤖", "CAPTCHA").status("info", "Usage", "/captcha on|off"))
+        enabled = args[0] in ("on", "yes", "true")
+        if enabled and not cfg.get("welcome_on"):
+            return await rich.reply(message, Doc("🤖", "CAPTCHA").status("warning", "Welcome required", "Enable welcomes first with /welcome on."))
+        await update_group_cfg(message.chat.id, {"captcha_on": enabled})
+        return await message.reply_text(Doc("🤖", "CAPTCHA").status("success", "On" if enabled else "Off", "New members will be muted until they press the verify button." if enabled else "New members will not be muted.").classic(), parse_mode=enums.ParseMode.HTML)
+    if cmd == "captchamode":
+        args = [a.lower() for a in (message.command or [])[1:]]
+        if args != ["button"]:
+            return await rich.reply(message, Doc("🤖", "CAPTCHA Mode").status("warning", "Unsupported mode", "Only the button CAPTCHA is available here. Use /captchamode button."))
+        return await message.reply_text(Doc("🤖", "CAPTCHA Mode").status("success", "button", "New members press the button under the welcome message.").classic(), parse_mode=enums.ParseMode.HTML)
+    if cmd == "resetcaptchatext":
+        await update_group_cfg(message.chat.id, {"captcha_text": "Click here to prove you're human"})
+        return await message.reply_text(Doc("🤖", "CAPTCHA Text Reset").status("success", "Default", "Button text restored.").classic(), parse_mode=enums.ParseMode.HTML)
+    parts = (message.text or "").split(maxsplit=1)
+    text = parts[1].strip()[:64] if len(parts) > 1 else ""
+    if not text:
+        return await rich.reply(message, Doc("🤖", "CAPTCHA Text").status("info", "Usage", "/setcaptchatext <plain text>"))
+    await update_group_cfg(message.chat.id, {"captcha_text": text})
+    return await message.reply_text(Doc("🤖", "CAPTCHA Text Updated").status("success", text, "Plain text only.").classic(), parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.group & filters.command(["pin", "unpin", "purge"]) & PLG_FILTER)
+async def pin_purge_cmd(client: Client, message: Message):
+    cmd = (message.command or ["pin"])[0].lower()
+    uid = message.from_user.id if message.from_user else None
+    privilege = "can_pin_messages" if cmd in ("pin", "unpin") else "can_delete_messages"
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege=privilege,
+        is_anon_admin=_is_anon_group_admin(message),
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    if cmd == "purge":
+        args = (message.command or [])[1:]
+        if len(args) != 1 or not args[0].isascii() or not args[0].isdigit() or not 1 <= int(args[0]) <= 100:
+            return await rich.reply(message, Doc("🧹", "Purge").status("info", "Usage", "/purge <1–100>"))
+        count = int(args[0])
+        try:
+            ids = []
+            async for m in client.get_chat_history(message.chat.id, limit=count + 1):
+                if m.id != message.id:
+                    ids.append(m.id)
+                if len(ids) >= count:
+                    break
+            if ids:
+                await client.delete_messages(message.chat.id, ids)
+            await message.reply_text(Doc("🧹", "Purge Complete").status("success", f"{len(ids)} messages deleted", "Recent history purged.").classic(), parse_mode=enums.ParseMode.HTML)
+        except Exception as e:
+            return await rich.reply(message, Doc("❌", "Purge Failed").status("error", "Telegram API error", str(e)))
+        return
+    rep = message.reply_to_message
+    if not rep:
+        return await rich.reply(message, Doc("📌", "Pin").status("info", "Usage", f"Reply to a message with /{cmd}."))
+    try:
+        if cmd == "pin":
+            await client.pin_chat_message(message.chat.id, rep.id)
+            text = "Message pinned."
+        else:
+            await client.unpin_chat_message(message.chat.id, rep.id)
+            text = "Message unpinned."
+    except Exception as e:
+        return await rich.reply(message, Doc("❌", "Pin Failed").status("error", "Telegram API error", str(e)))
+    return await message.reply_text(Doc("📌", "Pin Updated").status("success", text, f"Message #{rep.id}").classic(), parse_mode=enums.ParseMode.HTML)
 
 
 @Client.on_message(filters.group & filters.command("antiraid") & PLG_FILTER)
@@ -1216,6 +2231,22 @@ async def group_member_greeting_handler(client: Client, update: ChatMemberUpdate
             return
         if cfg.get("welcome_on"):
             txt = _format_greeting(cfg.get("welcome_text") or "👋 Welcome {mention}!", new_u, update.chat.title or "")
+            uid = getattr(new_u, "id", None)
+            if cfg.get("captcha_on") and type(uid) is int and uid > 0:
+                ok, _ = await verify_bot_privilege(client, update.chat.id, "can_restrict_members")
+                if ok:
+                    try:
+                        await client.restrict_chat_member(update.chat.id, uid, ChatPermissions())
+                    except Exception:
+                        pass
+                    btn_text = str(cfg.get("captcha_text") or "Click here to prove you're human")[:64]
+                    kb = InlineKeyboardMarkup([[Btn(btn_text, callback_data=f"plg_gmod:captcha:{uid}")]])
+                    try:
+                        sent = await client.send_message(update.chat.id, txt, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
+                        await update_group_cfg(update.chat.id, {"last_welcome_id": getattr(sent, "id", 0) or 0})
+                    except Exception:
+                        pass
+                    return
             try:
                 await client.send_message(update.chat.id, txt, parse_mode=enums.ParseMode.HTML)
             except Exception:
@@ -1236,30 +2267,53 @@ async def group_passive_guard(client: Client, message: Message):
     locks = cfg.get("locks") or []
     antiflood = bool(cfg.get("antiflood"))
     fmap: dict[str, str] = cfg.get("filters") or {}
-    if not (locks or antiflood or fmap):
+    bmap: dict[str, str] = cfg.get("blocklist") or {}
+    nmap: dict[str, str] = cfg.get("notes") or {}
+    if not (locks or antiflood or fmap or bmap or nmap):
         return
 
     user = message.from_user
     text = message.text or message.caption or ""
-    # Check locks & anti-flood against non-admins
-    if user and (locks or antiflood):
+    # Notes: #trigger opens a note (non-admins may open, admins manage).
+    if nmap and text.startswith("#") and len(text) > 1 and not text.startswith("/"):
+        trig = text[1:].split()[0].lower()
+        if trig in nmap:
+            formatted = _format_greeting(nmap[trig], user, message.chat.title or "")
+            try:
+                await message.reply_text(formatted, parse_mode=enums.ParseMode.HTML)
+            except Exception:
+                pass
+            return
+    # Check locks, blocklists & anti-flood against non-admins
+    if user and (locks or antiflood or bmap):
         violated = match_locked_content(message, locks)
+        block_hit = match_blocklist(text, bmap) if bmap else None
 
         flood_hit = False
         if antiflood:
             now = time.monotonic()
             bkey = (message.chat.id, user.id)
-            bucket = [t for t in _FLOOD_BUCKETS.get(bkey, []) if now - t < 8.0]
+            try:
+                flood_limit = int(cfg.get("flood_limit", 7))
+            except (TypeError, ValueError):
+                flood_limit = 7
+            try:
+                flood_window = float(cfg.get("flood_window", 8.0))
+            except (TypeError, ValueError):
+                flood_window = 8.0
+            flood_limit = max(2, min(50, flood_limit))
+            flood_window = max(1.0, min(300.0, flood_window))
+            bucket = [t for t in _FLOOD_BUCKETS.get(bkey, []) if now - t < flood_window]
             bucket.append(now)
             _FLOOD_BUCKETS[bkey] = bucket
             _FLOOD_BUCKETS.move_to_end(bkey)
             while len(_FLOOD_BUCKETS) > _FLOOD_MAX:
                 _FLOOD_BUCKETS.popitem(last=False)
-            if len(bucket) >= 7:
+            if len(bucket) >= flood_limit:
                 flood_hit = True
                 _FLOOD_BUCKETS.pop(bkey, None)
 
-        if violated or flood_hit:
+        if violated or block_hit or flood_hit:
             try:
                 mem = await client.get_chat_member(message.chat.id, user.id)
                 member_status = getattr(mem, "status", None)
@@ -1274,26 +2328,83 @@ async def group_passive_guard(client: Client, message: Message):
                         await message.delete()
                     except Exception:
                         pass
+                    if cfg.get("lockwarns"):
+                        try:
+                            await message.reply_text(
+                                f"🔒 <b>Locked content:</b> {rich.esc(user.first_name or user.id)}, {rich.esc(violated)} content is not allowed here.",
+                                parse_mode=enums.ParseMode.HTML,
+                            )
+                        except Exception:
+                            pass
+                    return
+                if block_hit:
+                    trig, reason = block_hit
+                    if cfg.get("blocklist_delete", True):
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
+                    mode_raw = str(cfg.get("blocklist_mode", "nothing"))
+                    parsed = parse_mode(mode_raw)
+                    if parsed is not None and parsed[0] != "nothing":
+                        mode, delta, label = parsed
+                        ok, _ = await verify_bot_privilege(client, message.chat.id, "can_restrict_members")
+                        if ok:
+                            await _apply_restriction(client, message.chat.id, user.id, mode, delta)
+                        try:
+                            await message.reply_text(
+                                f"🚫 <b>Blocklist:</b> {rich.esc(user.first_name or user.id)} — {rich.esc(reason)} ({rich.esc(label)})",
+                                parse_mode=enums.ParseMode.HTML,
+                            )
+                        except Exception:
+                            pass
                     return
                 if flood_hit:
                     ok, _ = await verify_bot_privilege(client, message.chat.id, "can_restrict_members")
                     if not ok:
                         _automation_warn("flood_bot_rights", "Anti-flood action skipped: bot permission unavailable")
                         return
+                    mode_raw = str(cfg.get("flood_mode", "tmute 5m"))
+                    parsed = parse_mode(mode_raw)
+                    if parsed is None:
+                        parsed = ("tmute", timedelta(minutes=5), "tmute 5m")
+                    mode, delta, label = parsed
+                    if cfg.get("clearflood"):
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
                     try:
-                        result = await client.restrict_chat_member(
-                            message.chat.id, user.id, ChatPermissions(),
-                            until_date=_until_dt(timedelta(minutes=5)),
-                        )
-                        if not result:
-                            _automation_warn("flood_mute", "Anti-flood action was not confirmed")
+                        if mode == "mute":
+                            result = await client.restrict_chat_member(
+                                message.chat.id, user.id, ChatPermissions(),
+                                until_date=_until_dt(timedelta(hours=6)),
+                            )
+                            done = bool(result)
+                        elif mode == "ban":
+                            done = bool(await client.ban_chat_member(message.chat.id, user.id))
+                        elif mode == "tban":
+                            done = bool(await client.ban_chat_member(message.chat.id, user.id, until_date=_until_dt(delta)))
+                        elif mode == "kick":
+                            await client.ban_chat_member(message.chat.id, user.id)
+                            await client.unban_chat_member(message.chat.id, user.id)
+                            done = True
+                        elif mode == "tmute":
+                            done = bool(await client.restrict_chat_member(
+                                message.chat.id, user.id, ChatPermissions(),
+                                until_date=_until_dt(delta),
+                            ))
+                        else:
+                            done = False
+                        if not done:
+                            _automation_warn("flood_action", "Anti-flood action was not confirmed")
                             return
                         await message.reply_text(
-                            f"🌊 <b>Anti-Flood:</b> Muted {rich.esc(user.first_name or user.id)} for 5 minutes.",
+                            f"🌊 <b>Anti-Flood:</b> {rich.esc(label)} applied to {rich.esc(user.first_name or user.id)}.",
                             parse_mode=enums.ParseMode.HTML,
                         )
                     except Exception:
-                        _automation_warn("flood_mute", "Anti-flood action failed or was not confirmed")
+                        _automation_warn("flood_action", "Anti-flood action failed or was not confirmed")
                     return
 
     # Keyword filters (non-command messages)
@@ -1355,11 +2466,30 @@ async def group_mod_cb(client: Client, query: CallbackQuery):
                     return await query.answer(f"🔒 {err}"[:190], show_alert=True)
             cfg = await update_group_cfg(chat_id, {"joinmode": nxt, "joinmode_auto_confirmed": False})
         elif field_key == "warnact":
-            nxt = "ban" if cfg.get("warn_action", "mute") == "mute" else "mute"
+            cur = str(cfg.get("warn_action", "mute"))
+            nxt = {"mute": "ban", "ban": "kick", "kick": "tmute 5m", "tmute 5m": "tban 1d"}.get(cur, "mute")
             cfg = await update_group_cfg(chat_id, {"warn_action": nxt})
         await query.answer("Updated!")
         doc, kb = build_gsettings_doc(query.message.chat.title or "Group", cfg)
         return await query.message.edit_text(doc.classic(), reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+
+    if action == "captcha" and len(parts) == 3 and parts[2].lstrip("-").isdigit():
+        target_id = int(parts[2])
+        if uid != target_id:
+            return await query.answer("Only the new member can verify.", show_alert=True)
+        cfg = await get_group_cfg(chat_id)
+        if not cfg.get("captcha_on"):
+            return await query.answer("CAPTCHA is not active.", show_alert=True)
+        try:
+            await client.restrict_chat_member(chat_id, target_id, _full_send_permissions(query.message.chat))
+        except Exception:
+            return await query.answer("Could not unmute. Ask an admin to check.", show_alert=True)
+        await query.answer("✅ Verified! Welcome to the group.")
+        try:
+            await query.message.edit_text("✅ <b>Verified!</b> You can now chat.", parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
+        return
 
     if action == "unwarn" and len(parts) >= 3 and parts[2].lstrip("-").isdigit():
         ok, err = await verify_mod_permissions(client, chat_id, uid, privilege="can_restrict_members", check_bot=False)

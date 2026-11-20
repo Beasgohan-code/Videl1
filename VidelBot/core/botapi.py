@@ -210,7 +210,7 @@ def _explicit_button_style(b) -> str | None:
     return None
 
 
-def convert_markup(markup):
+def convert_markup(markup, *, premium_icons=False):
     """WzGram InlineKeyboardMarkup → aiogram InlineKeyboardMarkup with styles.
     Returns None if a button can't be represented (caller then uses WzGram)."""
     if markup is None or not HAVE_AIOGRAM:
@@ -225,8 +225,16 @@ def convert_markup(markup):
             cb_raw = getattr(b, "callback_data", "") or ""
             cb_str = cb_raw.decode() if isinstance(cb_raw, bytes) else str(cb_raw)
             kw = {"text": b.text, "style": _explicit_button_style(b) or style_for(b.text, cb_str)}
-            if getattr(b, "icon_custom_emoji_id", None):
-                kw["icon_custom_emoji_id"] = str(b.icon_custom_emoji_id)
+            explicit_icon = getattr(b, "icon_custom_emoji_id", None)
+            if not explicit_icon and premium_icons:
+                from core.premium_icons import icon_for
+                try:
+                    primary_id = int(BOT_TOKEN.split(":", 1)[0])
+                except (TypeError, ValueError):
+                    primary_id = None
+                explicit_icon = icon_for(b, primary_id)
+            if explicit_icon:
+                kw["icon_custom_emoji_id"] = str(explicit_icon)
             if getattr(b, "disabled", None) is not None and hasattr(at, "DisabledButton"):
                 kw["disabled"] = at.DisabledButton()
                 kw["style"] = None
@@ -284,12 +292,24 @@ def _preview(pic: str, preview: bool = False):
     return at.LinkPreviewOptions(is_disabled=not preview)
 
 
+def _premium_icon_rejected(error) -> bool:
+    """Only retry after an explicit Telegram Bad Request about emoji/icon validity."""
+    if not HAVE_AIOGRAM:
+        return False
+    from aiogram.exceptions import TelegramBadRequest
+    if not isinstance(error, TelegramBadRequest):
+        return False
+    text = str(error).lower()
+    return (("emoji" in text or "button_icon" in text)
+            and any(word in text for word in ("invalid", "not allowed", "forbidden", "not available")))
+
+
 async def send_text(chat_id: int, text: str, reply_markup=None, pic: str = "", reply_to: int = None,
                     effect_id=None) -> bool:
     """Send an HTML text message (optional big preview above the text) with coloured buttons."""
     if not colored():
         return False
-    kb = convert_markup(reply_markup)
+    kb = convert_markup(reply_markup, premium_icons=True)
     if reply_markup is not None and kb is None:
         return False
     kwargs = dict(chat_id=chat_id, text=text, link_preview_options=_preview(pic), reply_markup=kb)
@@ -301,6 +321,9 @@ async def send_text(chat_id: int, text: str, reply_markup=None, pic: str = "", r
         await call(lambda b: b.send_message(**kwargs))
         return True
     except Exception as e:
+        if _premium_icon_rejected(e) and kb != convert_markup(reply_markup):
+            kwargs["reply_markup"] = convert_markup(reply_markup)
+            return bool(await try_call(lambda b: b.send_message(**kwargs)))
         if "effect" in str(e).lower() and "message_effect_id" in kwargs:
             kwargs.pop("message_effect_id")
             return bool(await try_call(lambda b: b.send_message(**kwargs)))
@@ -312,7 +335,7 @@ async def edit_text(chat_id: int, message_id: int, text: str, reply_markup=None,
     """Edit a message's text (+ preview) with coloured buttons. True when handled."""
     if not colored():
         return False
-    kb = convert_markup(reply_markup)
+    kb = convert_markup(reply_markup, premium_icons=True)
     if reply_markup is not None and kb is None:
         return False
     try:
@@ -320,6 +343,14 @@ async def edit_text(chat_id: int, message_id: int, text: str, reply_markup=None,
                                                  link_preview_options=_preview(pic, preview), reply_markup=kb))
         return True
     except Exception as e:
+        if _premium_icon_rejected(e) and kb != convert_markup(reply_markup):
+            try:
+                await call(lambda b: b.edit_message_text(
+                    chat_id=chat_id, message_id=message_id, text=text,
+                    link_preview_options=_preview(pic, preview), reply_markup=convert_markup(reply_markup)))
+                return True
+            except Exception as fallback_error:
+                return "not modified" in str(fallback_error).lower()
         return "not modified" in str(e).lower()
 
 

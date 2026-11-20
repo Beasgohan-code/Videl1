@@ -24,3 +24,46 @@ The dashboard checks the bot's restrict-members permission before turning anti-f
 ## Operational limits
 
 Group configuration remains keyed by chat ID and is cached locally for up to 45 seconds. Workers can temporarily disagree after changes; in-flight Telegram actions may complete after a setting is turned off. Do not mix old and new workers: old workers do not honor the new confirmation flags and can still take actions based on earlier settings. Review all groups' modes after upgrade. There is no atomic transaction across MongoDB and Telegram, and privileges or target status can change after a check. Tests use fake Telegram clients and mocked MongoDB; live Telegram, real multi-worker behavior and operational alerts remain unverified.
+
+## Rose-style restrictions
+
+- `/ban`, `/tban <30m|2h|7d>`, `/dban` (delete+ban), `/sban` (silent), `/unban` — ban family. `/dban` and `/sban` require a replied message.
+- `/tmute <30m|2h|7d>`, `/dmute`, `/smute` — mute family with the same delete/silent variants.
+- `/dkick`, `/skick` — kick with delete/silent variants.
+- `/swarn`, `/dwarn` — silent/delete warning variants. `/rmwarn` removes one warning; `/resetwarn` clears all.
+- `/warnings`, `/setwarnlimit <1–20>`, `/setwarnmode <kick|ban|tban TIME|mute|tmute TIME>` — warning policy. `/warnconfig` accepts the same modes. Plain `mute` keeps the legacy 6-hour duration.
+- All restriction commands reuse live caller/bot/target permission verification and admin-target immunity. Unconfirmed Telegram results are reported as failures, not successes.
+
+## Locks
+
+- 40+ granular types: text, photo, video, document, audio, voice, videonote, sticker, gif, poll, contact, location, game, dice, checklist, album, command, url, invitelink, botlink, email, phone, emoji, forwarduser/forwardbot/forwardchannel, inline, externalreply, spoiler, plus legacy links/forwards/media/bots/all.
+- `/lock <types>` and `/unlock <types>` manage locks. `/locks list` shows all types with state; `/locktypes` lists available types.
+- `/lockwarns on|off` toggles a warning message when locked content is deleted.
+- Custom per-lock modes: `/lock url ### spam {tmute 1h}` applies the mode when the lock triggers.
+
+## Blocklists
+
+- `/addblocklist <word|"phrase"|(a, b)> <reason>` adds triggers. `/rmblocklist` removes them. `/blocklist` lists triggers.
+- `/blocklistmode <nothing|warn|kick|ban|tban TIME|mute|tmute TIME>` sets enforcement. `/blocklistdelete on|off` toggles message deletion.
+- Locks take precedence over blocklists in the passive guard.
+
+## Filters and notes
+
+- `/filter <word|"phrase"|(a, b)|prefix:text|exact:text> <reply>` adds keyword filters. `/stop` removes them. `/filters` lists them.
+- `/save <trigger> <text>` saves a note. `/get <trigger>` or `#<trigger>` opens it. `/notes` lists notes. `/clear <trigger>` deletes one.
+
+## Anti-flood
+
+- `/setflood <2–50>` sets the message limit. `/setfloodtimer <2–50> <seconds>` sets limit and window. `/setfloodmode <kick|ban|tban TIME|mute|tmute TIME>` sets enforcement. `/flood` shows settings. `/clearflood on|off` toggles deleting all flood messages.
+- The flood tracker is process-local and per-chat; it is not a distributed rate limiter.
+
+## CAPTCHA
+
+- `/captcha on|off` toggles the button CAPTCHA (requires welcomes enabled). `/captchamode button` selects the mode. `/setcaptchatext <text>` sets the button label.
+- New members are muted until they press the verify button. Only the new member can verify; admins cannot verify on their behalf.
+
+## Moderation log
+
+- Every confirmed moderation action is recorded to a bounded `group_modlog` collection (newest 1000 per chat): bans, mutes, kicks, warns, unbans, unmutes and Rose-style aliases, with actor, target, reason and UTC timestamp.
+- `/modlog` lists recent group actions. `/modhistory <user>` lists actions against a specific user. Both are admin-only.
+- Logging is best-effort and never raises into the moderation handler. Entries are not encrypted and persist until trimmed by the per-chat cap; this is an operational aid, not an immutable audit ledger.

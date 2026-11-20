@@ -425,6 +425,8 @@ def test_clone_start_worker_stops_orphan_client_if_after_start_fails(monkeypatch
         "owner_id": 111,
         "bot_username": "orphan_test_bot",
     }
+    # Workers now reload the authoritative registry record before startup.
+    run(eng_mod.main_db.bots.insert_one(dict(doc)))
     with pytest.raises(RuntimeError, match="menu sync exploded"):
         run(engine.start_worker(doc))
 

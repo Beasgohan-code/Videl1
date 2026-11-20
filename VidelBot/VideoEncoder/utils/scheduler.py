@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import shutil
-import time
 import weakref
 from datetime import datetime, timedelta
 
@@ -61,22 +60,50 @@ def waiting() -> list:
     return [m for m in data if not any(m is r for r in run)]
 
 
+def memory_overloaded() -> bool:
+    """True when container RAM is at/above the configured pause threshold."""
+    pause_pct = int(getattr(config, "MEMORY_PAUSE_NEW_TASKS_PCT", 0) or 0)
+    if pause_pct <= 0:
+        return False
+    try:
+        from core.sysinfo import memory_pressure
+        over, _ = memory_pressure(pause_pct)
+        return bool(over)
+    except Exception:
+        return False
+
+
+def queue_full() -> bool:
+    """Global overload guard: stop admitting once queued + running tasks hit the cap."""
+    cap = int(getattr(config, "ENC_MAX_QUEUE_TOTAL", 50) or 50)
+    return len(data) >= max(1, cap)
+
+
+def disk_low() -> bool:
+    """True when free disk is below the configured minimum for new Encoder work."""
+    try:
+        threshold = float(getattr(config, "MIN_FREE_DISK_GB", 2) or 0)
+    except (TypeError, ValueError):
+        return False
+    if threshold <= 0:
+        return False
+    try:
+        free_gb = shutil.disk_usage(".").free / 1073741824
+        return free_gb < threshold
+    except Exception:
+        return False
+
+
 def slots_free() -> int:
     active_count = len(running())
     free = config.ENCODER_WORKERS - active_count
     if free <= 0:
         return 0
     # Prevent OOM kills on parallel workers: if >=1 task is already running and container RAM is critical,
-    # hold extra worker slots back until memory drops or the active encode finishes.
-    pause_pct = int(getattr(config, "MEMORY_PAUSE_NEW_TASKS_PCT", 0) or 0)
-    if active_count >= 1 and pause_pct > 0:
-        try:
-            from core.sysinfo import memory_pressure
-            over, _ = memory_pressure(pause_pct)
-            if over:
-                return 0
-        except Exception:
-            pass
+    # hold extra worker slots back until memory drops or the active encode finishes. An idle queue is
+    # never starved by this check; admission overload is handled separately in _enqueue.
+    if active_count >= 1 and memory_overloaded():
+        return 0
     return free
 
 
@@ -325,6 +352,9 @@ async def restore_queue(app) -> int:
             msg = None
         if not msg or getattr(msg, "empty", False):
             continue
+        if queue_full():
+            log.warning("queue restore: dropping task beyond ENC_MAX_QUEUE_TOTAL")
+            continue
         add(msg, d.get("mode") or parse_mode(msg) or "tg", priority=d.get("prio", False), extra=d.get("extra"))
         await persist(msg, d.get("mode"), d.get("extra"), d.get("prio", False))
         restored += 1
@@ -340,9 +370,3 @@ async def restore_queue(app) -> int:
         from core.bg import spawn
         spawn(dispatch(spawn_all=True), name="encoder-restore-dispatch")
     return restored
-
-
-def snapshot() -> dict:
-    """Numbers for /status, the dashboard and the watchdog."""
-    return {"workers": config.ENCODER_WORKERS, "running": len(running()), "waiting": len(waiting()),
-            "priority_waiting": sum(1 for m in waiting() if id(m) in PRIO), "ts": int(time.time())}

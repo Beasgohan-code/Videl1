@@ -1,5 +1,5 @@
 name: group_mod
-version: "1.0.0"
+version: "1.2.0"
 author: Videl
 description: Richgram-powered group management & Bot API 10.3 moderation (bans, mutes, warns, member tags, reaction moderation, topics, join-requests, locks, anti-raid, welcome/rules & filters)
 entry: plugin.py
@@ -104,7 +104,148 @@ commands:
   - name: modreport
     description: Report a replied message to group administrators
     access: user
+  - name: ban
+    description: Ban a member (Rose-style, reply or user + optional reason)
+    access: admin
+  - name: tban
+    description: Temporarily ban a member for a duration
+    access: admin
+  - name: dban
+    description: Delete the replied message and ban the author
+    access: admin
+  - name: sban
+    description: Silently delete the replied message and ban the author
+    access: admin
+  - name: unban
+    description: Unban a member so they can rejoin
+    access: admin
+  - name: tmute
+    description: Temporarily mute a member for a duration
+    access: admin
+  - name: dmute
+    description: Delete the replied message and mute the author
+    access: admin
+  - name: smute
+    description: Silently delete the replied message and mute the author
+    access: admin
+  - name: dkick
+    description: Delete the replied message and kick the author
+    access: admin
+  - name: skick
+    description: Silently delete the replied message and kick the author
+    access: admin
+  - name: swarn
+    description: Silently warn a member (no public message)
+    access: admin
+  - name: dwarn
+    description: Delete the replied message and warn the author
+    access: admin
+  - name: rmwarn
+    description: Remove one warning from a member
+    access: admin
+  - name: resetwarn
+    description: Clear all warnings for a member
+    access: admin
+  - name: warnings
+    description: View warning threshold and action settings
+    access: admin
+  - name: setwarnlimit
+    description: Set how many warnings trigger enforcement
+    access: admin
+  - name: setwarnmode
+    description: Set the warning enforcement action
+    access: admin
+  - name: pin
+    description: Pin the replied message (Bot API 10.3)
+    access: admin
+  - name: unpin
+    description: Unpin the replied message
+    access: admin
+  - name: purge
+    description: Delete the last N messages in the group
+    access: admin
+  - name: setwelcome
+    description: Set the welcome message template
+    access: admin
+  - name: resetwelcome
+    description: Restore the default welcome template
+    access: admin
+  - name: locks
+    description: List active locks or all lock types
+    access: admin
+  - name: locktypes
+    description: List all available lock types
+    access: admin
+  - name: lockwarns
+    description: Toggle warnings when locked content is deleted
+    access: admin
+  - name: filter
+    description: Add a keyword filter (word, "phrase", or list)
+    access: admin
+  - name: stop
+    description: Remove a keyword filter
+    access: admin
+  - name: filters
+    description: List active keyword filters
+    access: user
+  - name: addblocklist
+    description: Add a blocklist trigger and reason
+    access: admin
+  - name: rmblocklist
+    description: Remove a blocklist trigger
+    access: admin
+  - name: blocklist
+    description: List blocklist triggers
+    access: admin
+  - name: blocklistmode
+    description: Set the blocklist enforcement action
+    access: admin
+  - name: blocklistdelete
+    description: Toggle deletion of blocklisted messages
+    access: admin
+  - name: save
+    description: Save a note under a trigger
+    access: admin
+  - name: get
+    description: Open a saved note
+    access: user
+  - name: notes
+    description: List saved notes
+    access: user
+  - name: clear
+    description: Delete a saved note
+    access: admin
+  - name: setflood
+    description: Set the anti-flood message limit
+    access: admin
+  - name: setfloodtimer
+    description: Set the anti-flood limit and time window
+    access: admin
+  - name: setfloodmode
+    description: Set the anti-flood enforcement action
+    access: admin
+  - name: flood
+    description: View anti-flood settings
+    access: admin
+  - name: clearflood
+    description: Toggle deleting all flood messages
+    access: admin
+  - name: captcha
+    description: Toggle the button CAPTCHA for new members
+    access: admin
+  - name: captchamode
+    description: Set the CAPTCHA mode (button)
+    access: admin
+  - name: setcaptchatext
+    description: Set the CAPTCHA button text
+    access: admin
+  - name: modlog
+    description: View recent moderation actions in this group
+    access: admin
+  - name: modhistory
+    description: View moderation actions against a specific user
+    access: admin
 callbacks:
   - pattern: "^plg_gmod:[\\w:_-]+$"
-    description: Group settings, warn removal, join-request approval & modreport actions
+    description: Group settings, warn removal, join-request approval, CAPTCHA verify & modreport actions
     access: admin

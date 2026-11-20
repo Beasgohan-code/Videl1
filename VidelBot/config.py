@@ -214,8 +214,14 @@ STREAM_REPLIES = _bool("STREAM_REPLIES", True)
 AIOGRAM_ENABLED = _bool("AIOGRAM_ENABLED", True)
 BOT_API_URL = os.environ.get("BOT_API_URL", "")          # optional self-hosted Bot API server
 COLORED_BUTTONS = _bool("COLORED_BUTTONS", True)         # 🟩 success / 🟥 danger / 🟦 primary buttons
+# Experimental premium button icons: allowlist only bots the operator has verified.
+PREMIUM_BUTTON_ICONS = _bool("PREMIUM_BUTTON_ICONS", False)
+PREMIUM_BUTTON_ICON_BOT_IDS = _ids("PREMIUM_BUTTON_ICON_BOT_IDS")
 EPHEMERAL_REPLIES = _bool("EPHEMERAL_REPLIES", True)     # /help /id /ping … in groups → visible only to the caller
+MANAGED_ROTATION_ENABLED = _bool("MANAGED_ROTATION_ENABLED", False)  # irreversible, operator-reviewed opt-in
 MANAGED_BOTS = _bool("MANAGED_BOTS", True)               # one-tap clone creation (needs Bot Management Mode)
+GUEST_REPLIES_ENABLED = _bool("GUEST_REPLIES_ENABLED", True)  # fixed public guest introduction only
+GUARD_QUEUE_ENABLED = _bool("GUARD_QUEUE_ENABLED", True)       # guardian queries go to manual review
 MANAGED_PAIR_TIMEOUT = env_int("MANAGED_PAIR_TIMEOUT", 300)  # seconds to wait for the new bot
 SUPPORT_ENABLED = _bool("SUPPORT_ENABLED", True)  # /support inbox → owners reply by replying
 
@@ -259,6 +265,8 @@ BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "")
 BACKEND_API_SECRET = os.environ.get("BACKEND_API_SECRET", "")
 FREEIMAGE_API_KEY = os.environ.get("FREEIMAGE_API_KEY", "")  # empty → catbox.moe fallback
 CLONE_ENABLED = _bool("CLONE_ENABLED", True)
+# Experimental profile selection requires exactly one up-to-date clone-worker process.
+CLONE_PROFILES_SINGLE_INSTANCE = _bool("CLONE_PROFILES_SINGLE_INSTANCE", False)
 TG_BOT_WORKERS = env_int("TG_BOT_WORKERS", 16)
 
 # ==============================
@@ -280,6 +288,7 @@ PLAN_DAYS = env_int("PLAN_DAYS", 30)
 ENCODER_WORKERS = max(1, env_int("ENCODER_WORKERS", 1))          # encodes running at the same time
 ENC_MAX_TASKS_FREE = max(1, env_int("ENC_MAX_TASKS_FREE", 3))    # queued + running tasks per user
 ENC_MAX_TASKS_PRO = max(1, env_int("ENC_MAX_TASKS_PRO", 10))
+ENC_MAX_QUEUE_TOTAL = max(1, env_int("ENC_MAX_QUEUE_TOTAL", 50))  # global queued + running tasks (overload guard)
 HW_ENCODER = os.environ.get("HW_ENCODER", "auto").strip().lower()  # auto | nvenc | qsv | vaapi | off
 VAAPI_DEVICE = os.environ.get("VAAPI_DEVICE", "/dev/dri/renderD128")
 SPLIT_SIZE_MB = env_int("SPLIT_SIZE_MB", 1950)                   # uploads above this are split into parts

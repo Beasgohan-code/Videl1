@@ -16,6 +16,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from config import SOURCE_URL
 from core import fastdl, rich
 from core.rich import Doc
+from core.telegram_profile import profile_flag
 from core.ui import humanbytes, upload_to_host
 
 log = logging.getLogger("videl.tools")
@@ -144,6 +145,41 @@ async def _group_info(client: Client, message: Message):
         log.debug("Group detail widget preparation failed (%s)", type(exc).__name__)
 
 
+def _user_info_doc(user):
+    """Render only Telegram-provided profile fields; never infer missing flags."""
+    uid = getattr(user, "id", None)
+    if type(uid) is not int or uid <= 0:
+        raise ValueError("Invalid user identity")
+
+    def text(value, limit=120):
+        value = str(value or "").replace("\x00", "").strip()
+        return (value[:limit - 1] + "…" if len(value) > limit else value) or "Unavailable"
+
+    def flag(field):
+        value = profile_flag(user, field)
+        return "Yes" if value is True else "No" if value is False else "Unavailable"
+
+    name = text(" ".join(str(x) for x in (getattr(user, "first_name", None),
+                                          getattr(user, "last_name", None)) if x))
+    # Do not trust a user object's pre-rendered mention: escape the display name
+    # and construct the link only from a validated integer Telegram user ID.
+    mention = rich.Raw(f'<a href="tg://user?id={uid}">{html.escape(name, quote=False)}</a>')
+    username = getattr(user, "username", None)
+    username = "@" + text(username, 64) if username else "Unavailable"
+    status = getattr(getattr(user, "status", None), "name", None)
+    status = text(status.replace("_", " ").title()) if isinstance(status, str) and status else "Hidden or unavailable"
+    dc = getattr(user, "dc_id", None)
+    dc = dc if type(dc) is int and dc > 0 else "Unavailable"
+    return Doc("👤", "User info", "Telegram-visible fields · snapshot").table([
+        ("Name", mention), ("ID", rich.code(uid)), ("Username", username),
+        ("Data center", dc), ("Last seen", status), ("Bot", flag("is_bot")),
+        ("Premium", flag("is_premium")), ("Verified", flag("is_verified")),
+        ("Scam", flag("is_scam")), ("Fake", flag("is_fake")),
+        ("Restricted", flag("is_restricted")), ("Deleted", flag("is_deleted")),
+        ("Support account", flag("is_support")),
+    ], header=("Field", "Value"))
+
+
 @Client.on_message(filters.command("info"))
 async def info_cmd(client: Client, message: Message):
     if len(message.command) > 1 and message.command[1].lower() == "group":
@@ -156,20 +192,14 @@ async def info_cmd(client: Client, message: Message):
         target = int(arg) if arg.lstrip("-").isdigit() else arg
     elif message.from_user:
         target = message.from_user.id
+    if target is None:
+        return await message.reply_text("Reply to a user or send <code>/info &lt;user ID or @username&gt;</code>.")
     try:
         u = await client.get_users(target)
-    except Exception as e:
-        return await message.reply_text(f"❌ Couldn't find that user: <code>{html.escape(str(e))}</code>")
-    status = getattr(u.status, "name", str(u.status or "")).replace("_", " ").title() if u.status else "Hidden"
-    doc = Doc("👤", "User info").table([
-        ("Name", rich.Raw(u.mention)),
-        ("ID", rich.code(u.id)),
-        ("Username", f"@{u.username}" if u.username else "—"),
-        ("DC", u.dc_id or "?"),
-        ("Premium", "⭐ Yes" if u.is_premium else "No"),
-        ("Bot", "🤖 Yes" if u.is_bot else "No"),
-        ("Last seen", status),
-    ], header=("Field", "Value"))
+        doc = _user_info_doc(u)
+    except Exception:
+        # Telegram/client errors can contain sensitive inputs or transport details.
+        return await message.reply_text("❌ User unavailable or could not be resolved. Check the ID or username and try again.")
     await rich.reply(message, doc)
     # Preserve group behavior; widgets are only attempted in private chats.
     from pyrogram import enums

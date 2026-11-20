@@ -5,15 +5,20 @@ an in-progress Next App Router Studio (`apps/studio`). The existing Python
 backend and served Studio remain in place. These sources are not a production
 cutover or feature parity.
 
+Use Node.js **22.23.4 or newer** (the checked-in `.nvmrc` selects 22.23.4); the Astro 7 upgrade raises the previous Node minimum. The install and build do not deploy either application.
+
 ```sh
 npm ci
+npm audit
 npm run typecheck
 npm run build
 ```
 
+The locked Astro 7/Vite 8 migration is verified against the standalone static site and the synthetic Next fixture, not the production front door. Registry advisory scans change over time and a clean result is not a security certification. See `docs/OUTBOUND_DEPENDENCY_REVIEW.md`.
+
 The Next application is currently mounted at `/next-preview`; it includes an
 overview and partial Bot, Command, File Store, Hosting, Template, Notification, Team and Analytics workflows. Other features
-remain in the existing `/app`. The page finder (Ctrl/Cmd K) navigates rebuilt pages locally; it does not search workspace records. The finder and sidebar guard existing Studio drafts and unsaved workspace-creation names; the selector and form-close action also guard workspace names. Browser history and other navigation paths still need a comprehensive unsaved-state audit. To use real data, configure `VIDEL_BACKEND_ORIGIN`
+remain in the existing `/app`. The page finder (Ctrl/Cmd K) navigates rebuilt pages locally; it does not search workspace records. The finder, sidebar and overview links guard existing Studio drafts and unsaved workspace-creation names; the selector and form-close action also guard workspace names. Modified clicks that open another tab do not clear the current page’s draft guard. Browser history and other navigation paths still need a comprehensive unsaved-state audit. To use real data, configure `VIDEL_BACKEND_ORIGIN`
 to a plain backend origin at both build and server startup. The Next server
 proxies browser requests via same-origin `/api/v1` paths. Without that setting,
 sign-in is disabled. The Astro site's `/app` fallback is not a backend either.
@@ -23,7 +28,7 @@ that backend. Do not point it at production without authorization; use an
 isolated disposable backend and database for testing. A separate synthetic
 fixture and browser test instructions are in `VidelBot/tests/browser/README.md`.
 
-See `docs/FRONTEND_REWRITE_MIGRATION.md` and `TODO.md` for limitations,
+See `docs/WORKSPACE_NAVIGATION_SAFETY.md`, `docs/OUTBOUND_DEPENDENCY_REVIEW.md` and `TODO.md` for limitations,
 security blockers, remaining workflows, and cutover requirements. No provider
 integration, release deployment or Android APK is implied by this workspace.
 
@@ -47,3 +52,13 @@ The local test suite uses mock Mongo, not a real multi-worker deployment. The
 legacy generic bot endpoint remains unconditional for existing clients, and
 permission-revocation races, index readiness and mixed-version operation are
 not solved by this change.
+
+### File Store list sampling
+
+The Python API samples at most 2,000 records after its database-level workspace,
+bot, category and trash filters; search and sorting happen on that sample. The
+response reports the cap and whether one more record was observed. Results,
+counts and pages can therefore omit matches; ordering and sample membership can
+change between requests. Older/mixed backends without valid sampling metadata
+still display records but show completeness as unavailable. This is not
+indexed, consistent-snapshot or real-Mongo concurrency pagination.

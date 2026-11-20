@@ -894,7 +894,8 @@ async def api_analytics(request: web.Request) -> web.Response:
         return web.Response(
             text=csv_text,
             content_type="text/csv",
-            headers={**_security_headers(content_type="text/csv"), "Content-Disposition": 'attachment; filename="videl_analytics.csv"'},
+            headers={**_security_headers(content_type="text/csv"), "Content-Disposition": 'attachment; filename="videl_analytics.csv"',
+                     "X-Videl-Analytics-Contract": "utc-range-v1"},
         )
     return _ok(data)
 
@@ -1107,7 +1108,7 @@ async def api_notifications_and_activity(request: web.Request) -> web.Response:
         ntfs = await db_models.notifications_col().find(q).sort("created_ts", -1).limit(80).to_list(length=80)
         for n in ntfs:
             n.pop("_id", None)
-        return _ok({"notifications": ntfs, "activity_logs": [],
+        return _ok({"notifications": ntfs, "activity_logs": [], "conditional_read_updates": True,
                     "activity_logs_availability": "unavailable: legacy audit records are not workspace-scoped"})
     body = await _json_body(request)
     if body.get("mark_all_read"):
@@ -1118,6 +1119,42 @@ async def api_notifications_and_activity(request: web.Request) -> web.Response:
             {"$set": {"read": bool(body.get("read", True))}},
         )
     return _ok({"updated": True})
+
+
+@_api
+async def api_notification_conditional_read(request: web.Request) -> web.Response:
+    """New route only: older workers cannot silently ignore the expected state."""
+    ctx = await auth.authenticate_request(request)
+    ws_id = request.match_info["ws_id"]
+    await auth.require_workspace_access(ctx, ws_id, scope="logs")
+    body = await _json_body(request)
+    action = body.get("action")
+    collection = db_models.notifications_col()
+    if action == "mark_all_read":
+        if set(body) != {"action"}:
+            raise services_bots.SaaSValidationError("Invalid mark-all request.")
+        # Explicitly affects all workspace notifications, including unseen/new arrivals.
+        result = await collection.update_many({"workspace_id": ws_id}, {"$set": {"read": True}})
+        if not result.acknowledged:
+            raise RuntimeError("Notification update could not be confirmed.")
+        return _ok({"updated": True, "conditional_read_updates": True})
+    if action != "set_read" or set(body) != {"action", "notification_id", "expected_read", "read"}:
+        raise services_bots.SaaSValidationError("Invalid notification read-state request.")
+    uid, expected, desired = body["notification_id"], body["expected_read"], body["read"]
+    if not isinstance(uid, str) or not uid or len(uid) > 128 or type(expected) is not bool or type(desired) is not bool or expected == desired:
+        raise services_bots.SaaSValidationError("A notification ID and different boolean read states are required.")
+    rows = await collection.find({"workspace_id": ws_id, "notification_id": uid}).limit(2).to_list(length=2)
+    if len(rows) != 1 or "_id" not in rows[0] or type(rows[0].get("read")) is not bool:
+        return web.json_response({"error": "Notification state could not be reviewed; refresh the inbox."}, status=409, headers=_security_headers())
+    result = await collection.update_one(
+        {"_id": rows[0]["_id"], "workspace_id": ws_id, "notification_id": uid, "read": expected},
+        {"$set": {"read": desired}},
+    )
+    if not result.acknowledged:
+        raise RuntimeError("Notification update could not be confirmed.")
+    if result.matched_count != 1:
+        return web.json_response({"error": "Notification state changed; refresh the inbox."}, status=409, headers=_security_headers())
+    return _ok({"updated": True, "conditional_read_updates": True})
 
 
 @_api
@@ -1288,6 +1325,7 @@ def mount_webapp(app: web.Application) -> None:
     r.add_route("*", "/api/v1/workspaces/{ws_id}/api-keys", api_developer_keys)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/bundle", api_bundle_backup)
     r.add_route("*", "/api/v1/workspaces/{ws_id}/notifications", api_notifications_and_activity)
+    r.add_post("/api/v1/workspaces/{ws_id}/notifications/read", api_notification_conditional_read)
     r.add_get("/api/v1/workspaces/{ws_id}/search", api_global_search)
 
     # Platform Admin Center

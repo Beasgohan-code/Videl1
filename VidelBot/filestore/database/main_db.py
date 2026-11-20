@@ -17,6 +17,9 @@ class BotRegistrationConflict(Exception):
     """The ID is already claimed or the requested restoration is no longer valid."""
 
 
+_PROFILE_NOT_CHECKED = object()
+
+
 class MainDB:
     """Database operations for the main controller bot."""
 
@@ -88,12 +91,16 @@ class MainDB:
         managed: bool = False,
         restore_deleted: bool = False,
         expected_old_token: str | None = None,
+        initial_profile: str | None = None,
+        expected_old_profile=_PROFILE_NOT_CHECKED,
     ) -> dict:
         """Insert a clone, or explicitly restore an owner's soft-deleted record.
 
         MongoDB's unique _id prevents check-then-write races. Restoration uses
         a single conditional update and leaves other stored data unchanged.
         """
+        if initial_profile not in (None, "filestore", "group") or (restore_deleted and initial_profile is not None):
+            raise ValueError("Invalid initial clone profile")
         doc = {
             "_id": bot_id,
             "owner_id": owner_id,
@@ -119,12 +126,17 @@ class MainDB:
                 "domain": "",
             },
         }
+        if initial_profile is not None:
+            doc["clone_profile"] = initial_profile
         if restore_deleted:
             if not isinstance(expected_old_token, str):
                 raise BotRegistrationConflict
+            match = {"_id": bot_id, "owner_id": owner_id, "is_deleted": True,
+                     "bot_token_encrypted": expected_old_token}
+            if expected_old_profile is not _PROFILE_NOT_CHECKED:
+                match["clone_profile"] = ({"$exists": False} if expected_old_profile is None else expected_old_profile)
             restored = await self.bots.find_one_and_update(
-                {"_id": bot_id, "owner_id": owner_id, "is_deleted": True,
-                 "bot_token_encrypted": expected_old_token},
+                match,
                 {"$set": {"bot_token_encrypted": bot_token_encrypted,
                           "bot_username": bot_username, "log_channel_id": log_channel_id,
                           "is_active": True, "is_deleted": False, "managed": bool(managed)}},
@@ -135,7 +147,9 @@ class MainDB:
                 raise BotRegistrationConflict
             return restored
         try:
-            await self.bots.insert_one(dict(doc))
+            result = await self.bots.insert_one(dict(doc))
+            if not result.acknowledged:
+                raise RuntimeError("Clone registration was not acknowledged")
         except DuplicateKeyError:
             raise BotRegistrationConflict from None
         return doc
@@ -168,10 +182,102 @@ class MainDB:
         cursor = self.bots.find({})
         return await cursor.to_list(length=None)
 
+    async def get_clone_directory_records(self) -> list:
+        """Read only fields needed for owner directory views; never fetch credentials."""
+        projection = {"_id": 1, "owner_id": 1, "bot_username": 1,
+                      "clone_profile": 1, "is_active": 1, "is_deleted": 1}
+        cursor = self.bots.find({}, projection)
+        return await cursor.to_list(length=None)
+
+    @staticmethod
+    def _clone_directory_projection() -> dict:
+        return {"_id": 1, "owner_id": 1, "bot_username": 1,
+                "clone_profile": 1, "is_active": 1, "is_deleted": 1}
+
+    @staticmethod
+    def _clone_directory_valid_filter() -> dict:
+        """DB-side filter for valid, non-deleted clone directory records.
+
+        Mirrors `valid_registry_id` + the owner directory's deletion rules:
+        numeric `_id` in Telegram range (doubles excluded; bools/strings fail
+        the range comparison), and `is_deleted` missing or exactly False.
+        Callers still re-validate in Python before display.
+        """
+        return {
+            "_id": {"$gt": 0, "$lt": 9223372036854775807, "$not": {"$type": "double"}},
+            "$or": [{"is_deleted": {"$exists": False}}, {"is_deleted": False}],
+        }
+
+    async def get_clone_directory_page(self, page: int, page_size: int) -> list:
+        """Return one bounded page of valid directory records, sorted by `_id`."""
+        page = max(1, int(page))
+        page_size = max(1, int(page_size))
+        cursor = (self.bots.find(self._clone_directory_valid_filter(),
+                                 self._clone_directory_projection())
+                  .sort("_id", 1).skip((page - 1) * page_size).limit(page_size))
+        return await cursor.to_list(length=page_size)
+
+    async def count_clone_directory_records(self) -> int:
+        """Count valid, non-deleted directory records without loading them."""
+        return await self.bots.count_documents(self._clone_directory_valid_filter())
+
+    async def count_invalid_clone_directory_records(self) -> int:
+        """Count non-deleted records excluded as invalid (never fetched)."""
+        non_deleted = await self.bots.count_documents({"is_deleted": {"$ne": True}})
+        valid = await self.bots.count_documents(self._clone_directory_valid_filter())
+        return max(0, non_deleted - valid)
+
+    async def clone_directory_profile_counts(self) -> dict:
+        """Bounded profile aggregation for `/clonestats` (no record loading).
+
+        Missing `clone_profile` means the legacy File Store profile; any
+        other present value outside filestore/group/music counts as unknown.
+        """
+        filt = self._clone_directory_valid_filter()
+        total = await self.bots.count_documents(filt)
+        missing = await self.bots.count_documents(
+            {**filt, "clone_profile": {"$exists": False}})
+        groups: dict = {}
+        async for row in self.bots.aggregate([
+                {"$match": filt},
+                {"$group": {"_id": "$clone_profile", "count": {"$sum": 1}}},
+        ]):
+            groups[row.get("_id")] = row.get("count", 0)
+        filestore = missing + int(groups.get("filestore", 0) or 0)
+        group = int(groups.get("group", 0) or 0)
+        music = int(groups.get("music", 0) or 0)
+        unknown = max(0, total - filestore - group - music)
+        return {"filestore": filestore, "group": group, "music": music,
+                "unknown": unknown, "total": total}
+
+    async def iter_clone_directory_ids(self):
+        """Stream valid directory `_id`s one at a time (bounded memory)."""
+        cursor = self.bots.find(self._clone_directory_valid_filter(),
+                                {"_id": 1}).sort("_id", 1)
+        async for doc in cursor:
+            yield doc["_id"]
+
     async def get_all_active_bots(self) -> list:
         """Get all active bots for worker engine startup."""
         cursor = self.bots.find({"is_active": True})
         return await cursor.to_list(length=None)
+
+    async def get_active_clone_sweep_records(self) -> list:
+        """Projected active records for the idle sweep (no unrelated fields)."""
+        projection = {"_id": 1, "owner_id": 1, "is_active": 1, "is_deleted": 1,
+                      "bot_token_encrypted": 1, "clone_profile": 1,
+                      "last_active": 1, "created_at": 1, "bot_username": 1,
+                      "inactive_warned": 1}
+        cursor = self.bots.find({"is_active": True}, projection)
+        return await cursor.to_list(length=None)
+
+    async def count_all_clone_records(self) -> int:
+        """Count every registry record (including deleted/invalid) without loading."""
+        return await self.bots.count_documents({})
+
+    async def count_active_clone_records(self) -> int:
+        """Count records marked active without loading full bot records."""
+        return await self.bots.count_documents({"is_active": True})
 
     async def delete_bot(self, bot_id: int) -> bool:
         """Soft-delete a bot (keeps data for transfer)."""
@@ -209,6 +315,42 @@ class MainDB:
         else:
             update = {"$set": {"is_active": False}}
         await self.bots.update_one({"_id": bot_id}, update)
+
+    async def reactivate_inactive_if_unchanged(self, bot: dict) -> bool:
+        """Mark a previously read inactive clone active, only if key state still matches.
+
+        A failed acknowledgement is uncertain and must not be retried blindly.
+        This is not a lifecycle lease or transaction with the Telegram client.
+        """
+        match = {"_id": bot["_id"], "owner_id": bot["owner_id"], "is_active": False}
+        for field in ("is_deleted", "bot_token_encrypted", "clone_profile", "last_active"):
+            match[field] = ({"$exists": True, "$eq": bot[field]} if field in bot
+                            else {"$exists": False})
+        update = {"$set": {"is_active": True, "last_active": datetime.now(timezone.utc)},
+                  "$unset": {"deactivated_at": "", "deactivated_reason": "", "inactive_warned": ""}}
+        result = await self.bots.update_one(match, update)
+        if not result.acknowledged:
+            raise RuntimeError("Reactivation write was not acknowledged")
+        return result.matched_count == 1
+
+    async def deactivate_inactive_if_unchanged(self, bot: dict) -> bool:
+        """Conditionally mark a previously inspected active clone inactive.
+
+        This write is not atomic with stopping a Telegram client, other writers,
+        or in-memory activity. Failed acknowledgements remain uncertain.
+        """
+        match = {"_id": bot["_id"], "owner_id": bot["owner_id"], "is_active": True}
+        for field in ("is_deleted", "bot_token_encrypted", "clone_profile", "last_active", "created_at"):
+            match[field] = ({"$exists": True, "$eq": bot[field]} if field in bot
+                            else {"$exists": False})
+        result = await self.bots.update_one(
+            match,
+            {"$set": {"is_active": False, "deactivated_at": datetime.now(timezone.utc),
+                      "deactivated_reason": "inactive"}, "$unset": {"inactive_warned": ""}},
+        )
+        if not result.acknowledged:
+            raise RuntimeError("Inactivity update was not acknowledged")
+        return result.matched_count == 1
 
     async def deactivate_inactive(self, bot_id: int):
         """Switch a clone off because nobody used it for CLONE_INACTIVE_DAYS."""

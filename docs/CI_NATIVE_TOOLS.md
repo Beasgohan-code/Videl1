@@ -39,3 +39,14 @@ repository root. Mock tests do not prove GitHub's runner or Ubuntu mirrors work.
 Previous Python jobs timed out during native installation before pytest; the
 bounded attempt subsequently failed with exit 100 in that step. Detailed logs
 were inaccessible in the sandbox, so the exact cause remains unconfirmed.
+
+## Later PR check
+
+For PR #3 at `ea2f1663d35194b7804a53cf81cd10b26c83096b`, GitHub run
+`44531075138` passed Python verification but its native-tools job failed during
+package installation. GitHub's annotation reports `apt install exited 124`;
+the detailed job log returned EOF, so the underlying cause is not established.
+Frontend run `44531075160` and Vercel checks passed. This is separate from an
+earlier native job that passed; intermittent successful runs do not prove why a
+later package installation timed out. No production packages or deployment were
+changed to address this failure.

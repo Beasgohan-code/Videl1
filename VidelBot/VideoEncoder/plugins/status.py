@@ -95,6 +95,32 @@ def _mini_bar(pct: float, width: int = 8) -> str:
     return "▰" * filled + "▱" * (width - filled)
 
 
+def _admission_row(snap: dict) -> tuple[str, str]:
+    """Human-readable Encoder admission state for `/status`.
+
+    Mirrors `_enqueue()`'s overload checks so users can see why new encodes
+    are paused without guessing. Memory pressure only blocks admission when
+    work is already queued, matching the idle-queue no-starvation rule.
+    """
+    import config
+
+    try:
+        cap = max(1, int(getattr(config, "ENC_MAX_QUEUE_TOTAL", 50) or 50))
+    except (TypeError, ValueError):
+        cap = 50
+    queued = len(data)
+    reasons: list[str] = []
+    if scheduler.queue_full():
+        reasons.append(f"queue full ({queued}/{cap})")
+    if data and scheduler.memory_overloaded():
+        reasons.append(f"memory {snap.get('mem_percent', 0)}%")
+    if scheduler.disk_low():
+        reasons.append(f"low disk ({get_readable_file_size(snap.get('disk_free_bytes', 0))} free)")
+    if reasons:
+        return "Paused", ", ".join(reasons)
+    return "Open", f"{queued}/{cap} queued"
+
+
 def collect_task_entries(filter_mode: str = "all", viewer_id: int | None = None) -> list[dict]:
     """Combine live `jobs.snapshot()` telemetry with queued `VideoEncoder.data` tasks."""
     live_map = jobs.snapshot()
@@ -174,11 +200,13 @@ def status_doc(page: int = 1, filter_mode: str = "all", viewer_id: int | None = 
     if filter_mode != "all":
         subtitle += f" · {filter_mode}"
 
+    admission_label, admission_detail = _admission_row(snap)
     doc = Doc("📈", "Server & Task Status", subtitle)
     doc.table([
         ("⚙️ CPU", f"{snap['cpu_percent']} % ({snap['cpu_cores']} vCPU)"),
         ("🧠 RAM", mem_label),
         ("💽 Free disk", f"{get_readable_file_size(snap['disk_free_bytes'])} ({100.0 - snap['disk_percent']:.1f}% free)"),
+        ("🚦 Admissions", f"{admission_label} · {admission_detail}"),
         ("📤 Up / 📥 Down", f"{get_readable_file_size(snap['net_sent_bytes'])} / {get_readable_file_size(snap['net_recv_bytes'])}"),
         ("⏱ Uptime", get_readable_time(time() - botStartTime)),
     ], header=("System", "Value"))

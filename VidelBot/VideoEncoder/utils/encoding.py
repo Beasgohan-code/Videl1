@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import html as _html
 import json
 import math
@@ -6,6 +7,7 @@ import os
 import re
 import subprocess
 import time
+from collections import OrderedDict
 
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
@@ -18,36 +20,14 @@ from .display_progress import TimeFormatter, humanbytes
 from core.style import hdr, hint, row
 
 
-def get_codec(filepath, channel='v:0'):
-    try:
-        output = subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', channel,
-                                          '-show_entries', 'stream=codec_name,codec_tag_string', '-of',
-                                          'default=nokey=1:noprint_wrappers=1', filepath], timeout=120)
-        return output.decode('utf-8').split()
-    except subprocess.CalledProcessError as e:
-        LOGGER.error(f"ffprobe failed for {filepath}: {e}")
-        return []
-    except Exception as e:
-        LOGGER.error(f"ffprobe exception for {filepath}: {e}")
-        return []
-
-def get_media_streams(filepath):
-    try:
-        cmd = ['ffprobe', '-hide_banner', '-print_format', 'json', '-show_streams', filepath]
-        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=120)
-        return json.loads(output.decode('utf-8')).get('streams', [])
-    except Exception as e:
-        LOGGER.error(f"Failed to get media streams: {e}")
-        return []
-
 async def extract_subs(filepath, msg, user_id):
-
-    path, extension = os.path.splitext(filepath)
-    name = os.path.basename(path)
-    check = await asyncio.to_thread(get_codec, filepath, 's:0')
-    if not check:
+    info = await probe(filepath)
+    subs = info.get("subs") or []
+    if not subs:
         return None
-    if any(c in ffcmd.BITMAP_SUBS for c in check):
+    first = subs[0] or {}
+    codecs = {str(first.get("codec_name") or ""), str(first.get("codec_tag_string") or "")}
+    if codecs & ffcmd.BITMAP_SUBS:
         return None                      # picture subtitles (PGS / VobSub) can't become .ass
     else:
         output = os.path.join(encode_dir, str(msg.id) + '.ass')
@@ -134,6 +114,42 @@ class Encoded(str):
     where: str = "CPU"
 
 
+_PROBE_CACHE_MAX = 128
+_PROBE_CACHE_TTL = 300.0
+_PROBE_CACHE: "OrderedDict[tuple, tuple[float, dict]]" = OrderedDict()
+
+
+def _probe_key(filepath):
+    try:
+        st = os.stat(filepath)
+    except OSError:
+        return None
+    return (os.path.abspath(str(filepath)), st.st_mtime_ns, st.st_size)
+
+
+def _probe_cached(key):
+    if key is None:
+        return None
+    hit = _PROBE_CACHE.get(key)
+    if hit is None:
+        return None
+    ts, info = hit
+    if time.monotonic() - ts > _PROBE_CACHE_TTL:
+        _PROBE_CACHE.pop(key, None)
+        return None
+    _PROBE_CACHE.move_to_end(key)
+    return copy.deepcopy(info)
+
+
+def _probe_store(key, info):
+    if key is None or not info.get("ok"):
+        return
+    _PROBE_CACHE[key] = (time.monotonic(), copy.deepcopy(info))
+    _PROBE_CACHE.move_to_end(key)
+    while len(_PROBE_CACHE) > _PROBE_CACHE_MAX:
+        _PROBE_CACHE.popitem(last=False)
+
+
 def _probe_sync(filepath):
     try:
         out = subprocess.check_output(['ffprobe', '-v', 'error', '-print_format', 'json', '-show_streams',
@@ -145,7 +161,15 @@ def _probe_sync(filepath):
 
 
 async def probe(filepath) -> dict:
-    """One ffprobe for everything (streams + format), off the event loop → ffcmd.summarize() dict."""
+    """One ffprobe for everything (streams + format), off the event loop → ffcmd.summarize() dict.
+
+    Successful probes are cached briefly by path + mtime + size so mux/merge/compress
+    do not re-probe the same unchanged file repeatedly in one process.
+    """
+    key = _probe_key(filepath)
+    cached = _probe_cached(key)
+    if cached is not None:
+        return cached
     info = ffcmd.summarize(await asyncio.to_thread(_probe_sync, filepath))
     if not info["size"]:
         try:
@@ -157,7 +181,22 @@ async def probe(filepath) -> dict:
             info["duration"] = float(await asyncio.to_thread(get_duration, filepath) or 0)
         except Exception:
             pass
+    _probe_store(key, info)
     return info
+
+
+async def probe_many(filepaths) -> list:
+    """Probe several files concurrently, preserving input order."""
+    return list(await asyncio.gather(*(probe(p) for p in filepaths)))
+
+
+async def media_metadata(filepath) -> tuple:
+    """(duration seconds, width, height) from one cached probe; upload-safe fallbacks."""
+    info = await probe(filepath)
+    duration = int(info.get("duration") or 0)
+    width = int(info.get("width") or 0) or 1280
+    height = int(info.get("height") or 0) or 720
+    return duration, width, height
 
 
 def _motion_ass(opacity: str) -> str:
@@ -473,19 +512,38 @@ async def trim(filepath, start, end, key=None, out_dir=None):
 
 
 async def screenshots(filepath, count, duration=None, key=None, out_dir=None):
-    """`count` evenly spread JPEG screenshots → list of paths."""
+    """`count` evenly spread JPEG screenshots → list of paths.
+
+    All frames are captured by one ffmpeg process when possible. If that batch
+    fails or leaves gaps (older FFmpeg builds, odd inputs), only the missing
+    frames fall back to the previous one-process-per-frame path, preserving order.
+    """
     if not duration:
         duration = (await probe(filepath))["duration"]
+    times = ffcmd.screenshot_times(duration, count)
+    if not times:
+        return []
+    if key is not None and jobs.is_cancelled(key):
+        return []
     base = os.path.join(out_dir or encode_dir, f"shot_{int(time.time() * 1000)}")
-    shots = []
-    for i, at in enumerate(ffcmd.screenshot_times(duration, count)):
+    outs = [f"{base}_{i + 1:02d}.jpg" for i in range(len(times))]
+    code, _ = await run_ffmpeg(ffcmd.screenshots_command(filepath, outs, times), key, timeout=120)
+    shots = [(out, at) for out, at in zip(outs, times) if os.path.isfile(out) and os.path.getsize(out)]
+    if len(shots) == len(outs):
+        return shots
+    if key is not None and jobs.is_cancelled(key):
+        return shots
+    have = {out for out, _ in shots}
+    for out, at in zip(outs, times):
+        if out in have:
+            continue
         if key is not None and jobs.is_cancelled(key):
             break
-        out = f"{base}_{i + 1:02d}.jpg"
         code, _ = await run_ffmpeg(ffcmd.screenshot_command(filepath, out, at), key, timeout=120)
         if code == 0 and os.path.isfile(out) and os.path.getsize(out):
             shots.append((out, at))
-    return shots
+    order = {out: i for i, out in enumerate(outs)}
+    return sorted(shots, key=lambda item: order.get(item[0], 0))
 
 
 def summary_text(result, new_size: int, link: str | None = None, title="Encode complete") -> str:
@@ -569,28 +627,6 @@ def get_duration(filepath):
         except Exception as e:
             LOGGER.error(f"hachoir duration failed: {e}")
     return 0
-
-
-def get_width_height(filepath):
-    try:
-        # Try using ffprobe first
-        cmd = [
-            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height', '-of',
-            'csv=s=x:p=0', filepath
-        ]
-        output = subprocess.check_output(cmd, timeout=120).decode('utf-8').strip()
-        width, height = map(int, output.split('x'))
-        return width, height
-    except Exception as e:
-        LOGGER.warning(f"ffprobe width/height failed: {e}, falling back to hachoir")
-        try:
-            metadata = extractMetadata(createParser(filepath))
-            if metadata and metadata.has("width") and metadata.has("height"):
-                return metadata.get("width"), metadata.get("height")
-        except Exception as e:
-            LOGGER.error(f"hachoir width/height failed: {e}")
-    return (1280, 720)
 
 
 def _media_info_sync(saved_file_path):

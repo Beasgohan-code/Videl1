@@ -73,11 +73,17 @@ create/copy/delete, notification read state, workspace isolation and permission
 presentation at 320/390/1440px. `node next-team.test.cjs` checks direct member grants, reviewed role changes,
 removal and role denial against the fixture. `npm run test:next` runs all eleven
 Next browser suites. `node next-analytics.test.cjs` checks time/bot filters,
-CSV download, workspace changes, sample disclosure, permissions and responsive
+CSV download, workspace changes, sample and older-backend bucket disclosure, permissions and responsive
 layout with fixture data. These assertions do not establish
 live Telegram verification, real file safety, production RBAC or full parity.
 
-`node next-settings.test.cjs` exercises account preference saves, account-wide workspace behavior, empty-workspace access, older-backend safety gating, draft/pending guards and uncertain responses at synthetic browser widths. These are in-memory fixtures, not evidence of Mongo concurrency or production behavior.
+`node next-notification-safety.test.cjs` checks synthetic shared-read toggles, old/mixed backend gating, unknown read values and pending/conflict behavior at representative widths. The separate local-backend browser contract checks a real aiohttp notification read toggle with mock Mongo; neither validates real Mongo concurrency or production.
+
+`node next-analytics-custom.test.cjs` covers synthetic date validation, draft navigation, custom CSV and old/mixed backend responses at 320/390/1440px. The separate local-backend contract test also checks custom chart/CSV with mock Mongo; neither validates production, real Mongo concurrency or physical devices.
+
+`node next-settings.test.cjs` exercises account preference saves, preserved drafts and pending saves during workspace switching, workspace-creation overlap, empty-workspace access, older-backend safety gating, draft/pending guards and uncertain responses at synthetic browser widths. These are in-memory fixtures, not evidence of Mongo concurrency or production behavior.
+
+`node next-file-rename-safety.test.cjs` checks changed rename cancellation, switching, focus, sidebar navigation and delayed/error responses at synthetic Chromium widths. It does not exercise real storage, browser history, physical devices or assistive technology.
 
 `node next-file-filters.test.cjs` checks category and active-record filters with synthetic uploads, trash visibility and responsive layout. The fixture is not a storage or authorization integration test.
 
@@ -128,3 +134,46 @@ responsive layout at 320/390/1440px. It does not exercise real Mongo or Telegram
 `next-bot-directory-availability.test.cjs` exercises isolated bot-list
 failures, clone-panel availability, focused retry, draft preservation,
 workspace/session races and unrelated tools using synthetic responses only.
+
+`node next-navigation-safety.test.cjs` covers overview links with unsaved
+workspace names, an empty bot directory, pending creation and modified-link
+clicks with synthetic APIs at representative widths. Headless modified-click
+checks dispatch browser events and cancel their default action; they do not
+verify a real new-tab workflow. Browser history and other navigation paths
+remain outside this targeted check.
+
+## Astro static build
+
+`astro-public-build.test.cjs` checks the **built static site** (not production)
+at 320/390/1440px: 14 routes, page titles/landmarks, horizontal overflow, the
+hydrated theme switch and persistence, mobile navigation, and the standalone
+`/app/` fallback. It does not connect to the backend or prove that any
+production routing, authentication, Telegram or accessibility is correct.
+
+After `npm ci && npm run build` in `frontend-platform`, serve
+`frontend-platform/apps/site/dist` on port 4321, install this directory's
+locked test dependencies, set `CHROMIUM_PATH` and run `npm run test:astro-build`.
+The dedicated frontend workflow performs these checks against its own local
+static build; it does not deploy the site.
+
+`node next-file-sampling.test.cjs` checks old, current and malformed sampling
+metadata in synthetic Next responses at 320/390/1440px. For an additional
+contract check, run `telegram_auth_fixture.py` on 8088 with `DOWNLOAD_DIR` set
+to a disposable temporary directory, start Next with
+`VIDEL_BACKEND_ORIGIN=http://127.0.0.1:8088`, then run
+`node next-file-backend.test.cjs`. This exercises a signed synthetic login,
+actual local aiohttp File Store, Analytics and inbox routes, CSV export, temporary disk and mock Mongo; it is not
+live Telegram, real Mongo, production storage, concurrency or device evidence.
+
+`node next-navigation-safety.test.cjs` also stalls a synthetic route response to verify that an accepted click does not prematurely disable the dirty/unload guard. It does not prove browser-history, actual route-failure, real modified-click new-tab or embedded-client behavior. CI runs this and the settings test against the in-memory fixture.
+
+`node next-file-pagination.test.cjs` intercepts synthetic File Store responses to
+check server-clamped pages, button boundaries, malformed page metadata, retry and
+layout at 320/390/1440px. Sampling tests also check sample-specific aggregate and
+empty-state labels. These are not real database concurrency or device tests.
+
+`node next-notification-filters.test.cjs` uses intercepted synthetic inbox
+responses to check category retention across refresh, loading and failure,
+clearing filters, empty-list write failure and workspace changes. The notification
+filter and read-safety tests run in CI with the synthetic API; they do not prove
+real MongoDB concurrency, live Telegram, physical-device or production behavior.

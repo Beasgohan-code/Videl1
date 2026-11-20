@@ -1,7 +1,10 @@
 
 import asyncio
 import time
+import weakref
 import html as _html
+
+import config
 
 from config import env_int
 from pyrogram import Client, filters, ContinuePropagation
@@ -25,6 +28,12 @@ MAX_LINK_FILES = env_int("MAX_LINK_FILES", 1000)   # files one share link may de
 log = LOGGER(__name__)
 main_db = MainDB()
 
+
+def _client_still_running(app):
+    return (getattr(app, "is_connected", False) is True
+            or getattr(app, "is_initialized", False) is True)
+
+
 class WorkerEngine:
     """
     Manages multiple Pyrogram bot clients concurrently.
@@ -36,6 +45,45 @@ class WorkerEngine:
     def __init__(self):
         self.workers: dict[int, Client] = {}  # bot_id -> Client
         self._lock = asyncio.Lock()
+        # The per-bot locks coordinate starts, stops and profile selection in
+        # this process only. They do not provide a distributed lease.
+        self._operation_locks = weakref.WeakValueDictionary()
+        self._uncertain_stops = {}
+
+    def _operation_lock(self, bot_id: int):
+        lock = self._operation_locks.get(bot_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._operation_locks[bot_id] = lock
+        return lock
+
+    async def select_profile(self, bot_id: int, owner_id: int, profile: str) -> str:
+        """Switch only a stopped owned clone; no runtime or stored data is deleted."""
+        if profile not in ("filestore", "group"):
+            return "unavailable"
+        if not config.CLONE_PROFILES_SINGLE_INSTANCE:
+            return "disabled"
+        async with self._operation_lock(bot_id):
+            bot = await main_db.get_bot(bot_id)
+            if not bot or bot.get("owner_id") != owner_id or bot.get("is_deleted"):
+                return "denied"
+            if bot.get("is_active") is not False or bot_id in self.workers or bot_id in self._uncertain_stops:
+                return "stop_first"
+            if "clone_profile" in bot:
+                old = bot["clone_profile"]
+                if old not in ("filestore", "group"):
+                    return "unsupported"
+                match = old
+            else:
+                old, match = "filestore", {"$exists": False}
+            if old == profile:
+                return "unchanged"
+            result = await main_db.bots.update_one(
+                {"_id": bot_id, "owner_id": owner_id, "is_deleted": {"$ne": True},
+                 "is_active": False, "clone_profile": match},
+                {"$set": {"clone_profile": profile}},
+            )
+            return "saved" if result.matched_count else "changed"
 
     async def start_all_workers(self):
         """Start all active bots from the database."""
@@ -64,8 +112,23 @@ class WorkerEngine:
             log.error(f"Failed to start worker bot {bot_id}.")
 
     async def start_worker(self, bot_doc: dict):
-        """Start a single worker bot."""
+        """Start using the current registry record, serialized per bot locally."""
         bot_id = bot_doc["_id"]
+        async with self._operation_lock(bot_id):
+            current = await main_db.get_bot(bot_id)
+            if not current or current.get("is_deleted"):
+                raise RuntimeError("Clone record is unavailable")
+            if bot_id in self._uncertain_stops:
+                raise RuntimeError("Previous clone stop could not be confirmed")
+            await self._start_worker_locked(current)
+
+    async def _start_worker_locked(self, bot_doc: dict):
+        bot_id = bot_doc["_id"]
+        profile = bot_doc.get("clone_profile", "filestore")
+        if profile not in ("filestore", "group"):
+            raise RuntimeError("Unsupported clone profile")
+        if profile == "group" and not config.CLONE_PROFILES_SINGLE_INSTANCE:
+            raise RuntimeError("Clone profiles require a verified single worker instance")
 
         async with self._lock:
             if bot_id in self.workers:
@@ -74,9 +137,9 @@ class WorkerEngine:
 
         try:
             token = decrypt_token(bot_doc["bot_token_encrypted"])
-        except Exception as e:
-            log.error(f"Cannot decrypt token for bot {bot_id}: {e}")
-            return
+        except Exception:
+            log.error("Cannot decrypt token for bot %s.", bot_id)
+            raise RuntimeError("Clone credential unavailable") from None
 
         log_channel_id = bot_doc["log_channel_id"]
         owner_id = bot_doc["owner_id"]
@@ -103,6 +166,27 @@ class WorkerEngine:
 
         app.add_handler(MessageHandler(update_activity_middleware), group=-1)
         app.add_handler(CallbackQueryHandler(update_activity_middleware), group=-1)
+
+        if profile == "group":
+            from filestore.worker_bot.group_profile import setup_group_profile, set_group_commands
+            setup_group_profile(app)
+            try:
+                await app.start()
+                app.set_parse_mode(ParseMode.HTML)
+                await set_group_commands(app, owner_id, worker_db)
+                async with self._lock:
+                    self.workers[bot_id] = app
+            except Exception:
+                if _client_still_running(app):
+                    try:
+                        await asyncio.wait_for(app.stop(block=True), timeout=3.0)
+                    except Exception:
+                        self._uncertain_stops[bot_id] = app
+                    if _client_still_running(app):
+                        self._uncertain_stops[bot_id] = app
+                log.error("Group-profile worker startup failed for %s.", bot_id)
+                raise
+            return
 
         from filestore.worker_bot.flink_logic import setup_flink
         from filestore.worker_bot.link_gen import setup_link_gen
@@ -659,39 +743,49 @@ class WorkerEngine:
         except Exception:
             for task in getattr(ctx, "tasks", []):
                 task.cancel()
-            if getattr(app, "is_connected", False):
+            if _client_still_running(app):
                 try:
-                    await asyncio.wait_for(app.stop(block=False), timeout=3.0)
+                    await asyncio.wait_for(app.stop(block=True), timeout=3.0)
                 except Exception:
-                    pass
+                    self._uncertain_stops[bot_id] = app
+                if _client_still_running(app):
+                    self._uncertain_stops[bot_id] = app
             # Telegram/client exceptions may include token-bearing URLs.
             log.error(f"Failed to start worker {bot_id}.")
             raise
 
     async def stop_worker(self, bot_id: int):
-        """Stop a single worker bot."""
-        async with self._lock:
-            app = self.workers.pop(bot_id, None)
-
-        if app:
-            for task in getattr(getattr(app, "_videl_ctx", None), "tasks", []):
-                task.cancel()
-            try:
-                # Prevent app.stop() from hanging forever if there's a connection issue
-                await asyncio.wait_for(app.stop(block=False), timeout=3.0)
-                log.info(f"Worker stopped: {bot_id}")
-            except Exception:
-                log.error(f"Error stopping worker {bot_id}.")
+        """Stop a worker; block profile changes when stopping is uncertain."""
+        async with self._operation_lock(bot_id):
+            async with self._lock:
+                app = self.workers.pop(bot_id, None) or self._uncertain_stops.pop(bot_id, None)
+            if app:
+                for task in getattr(getattr(app, "_videl_ctx", None), "tasks", []):
+                    task.cancel()
+                try:
+                    await asyncio.wait_for(app.stop(block=True), timeout=3.0)
+                    if _client_still_running(app):
+                        self._uncertain_stops[bot_id] = app
+                        log.warning("Worker stop could not be confirmed: %s.", bot_id)
+                    else:
+                        log.info("Worker stopped: %s", bot_id)
+                except Exception:
+                    self._uncertain_stops[bot_id] = app
+                    log.error("Error stopping worker %s.", bot_id)
+            return bot_id not in self._uncertain_stops
 
     async def stop_all_workers(self):
         """Stop all running worker bots."""
         async with self._lock:
-            bot_ids = list(self.workers.keys())
+            bot_ids = list(set(self.workers) | set(self._uncertain_stops))
 
         for bot_id in bot_ids:
             await self.stop_worker(bot_id)
 
-        log.info("All workers stopped")
+        if self._uncertain_stops:
+            log.warning("Some worker stops could not be confirmed.")
+        else:
+            log.info("All workers stopped")
 
     def get_worker(self, bot_id: int) -> Client | None:
         """Get a running worker client by bot_id."""

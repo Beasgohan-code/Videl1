@@ -81,6 +81,8 @@ def _regexes(f):
 
 def _callback_data(pattern: str) -> str:
     """Fill a handler's own regex: the first bot id is the victim clone, a second id is the attacker's clone."""
+    if pattern == r"^rotate_tok_(?:do_)?\d+(?:_[A-Za-z0-9_-]{1,32})?$":
+        return "rotate_tok_4242"
     ids = iter(["4242", "5151"])
 
     def fill(m):

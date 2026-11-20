@@ -211,6 +211,9 @@ def test_real_ffmpeg_trim_and_screenshot(clip, tmp_path):
     assert _run(ffcmd.trim_command(str(src), str(out), 1.0, 2.5))[0] == 0 and out.stat().st_size
     shot = tmp_path / "s.jpg"
     assert _run(ffcmd.screenshot_command(str(src), str(shot), 1.5))[0] == 0 and shot.stat().st_size
+    shots = [tmp_path / "b1.jpg", tmp_path / "b2.jpg"]
+    assert _run(ffcmd.screenshots_command(str(src), [str(s) for s in shots], [0.5, 2.0]))[0] == 0
+    assert all(s.stat().st_size for s in shots)
 
 
 # ───────────────────────── encode() / progress / summary ─────────────────────────
