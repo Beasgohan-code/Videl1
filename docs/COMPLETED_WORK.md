@@ -328,3 +328,7 @@ Admin stats now counts clones from projected clone-directory records instead of 
 ## Bounded owner clone directory reads (d574595)
 
 Owner `/bots` now fetches one DB-side page at a time (valid/non-deleted filter, `_id` sort, projection), and `/clonestats` uses bounded profile aggregation plus counts instead of loading every projected record. The local-client count streams valid `_id`s one at a time. Focused owner/BSON/health tests passed 37; full backend passed 1641 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock MongoDB only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
+
+## Admin clone counts without loading records (144136d)
+
+Admin stats now counts clones via `count_all_clone_records()` and active clones via `count_active_clone_records()` instead of loading projected/full records just to count them. Semantics preserved (total includes deleted/invalid; active is `is_active` true). Focused admin/owner tests passed 111; full backend passed 1641 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock MongoDB only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
