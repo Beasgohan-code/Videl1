@@ -332,3 +332,7 @@ Owner `/bots` now fetches one DB-side page at a time (valid/non-deleted filter, 
 ## Admin clone counts without loading records (144136d)
 
 Admin stats now counts clones via `count_all_clone_records()` and active clones via `count_active_clone_records()` instead of loading projected/full records just to count them. Semantics preserved (total includes deleted/invalid; active is `is_active` true). Focused admin/owner tests passed 111; full backend passed 1641 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock MongoDB only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
+
+## Per-bot stats counts without loading IDs (89a7016)
+
+Per-bot `/stats` and backup counts now use `WorkerDB.total_admins()`, `total_channels()`, and `total_banned()` (`count_documents`) instead of loading every ID just to count. List methods remain for callers that need the IDs. Focused WorkerDB/settings tests passed 71; full backend passed 1642 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock MongoDB only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
