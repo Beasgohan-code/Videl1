@@ -5,6 +5,14 @@
 
 ---
 
+## Current priority — bot work first
+
+The user asked to schedule the webapp rewrite last. Prioritize Telegram bot/runtime,
+clone-controller migration planning, group-management and actual voice-chat Music
+research first, while keeping the File Store worker folder untouched. Existing web
+and security/deployment blockers stay open; deferral is not production approval.
+Do not bypass the single-controller or tenant-isolation safeguards to accelerate cutover.
+
 ## Completed Milestones
 
 ### Retired by request — `/widget` calculator and query listener
