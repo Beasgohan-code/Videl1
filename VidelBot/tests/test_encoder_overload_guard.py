@@ -136,3 +136,58 @@ def test_enqueue_still_starts_one_task_when_idle_under_memory_pressure(monkeypat
     m = _msg(5)
     assert run(enc_plugin._enqueue(m, "tg")) is True
     assert started == ["tg"]
+
+
+def _fake_snapshot():
+    return {
+        "cpu_percent": 12.0,
+        "cpu_cores": 2,
+        "mem_percent": 99.0,
+        "mem_used_bytes": 1024,
+        "mem_total_bytes": 2048,
+        "container_mem": False,
+        "disk_free_bytes": 1024,
+        "disk_percent": 99.0,
+        "net_sent_bytes": 0,
+        "net_recv_bytes": 0,
+    }
+
+
+def test_status_shows_open_admissions_when_guards_clear(monkeypatch):
+    from VideoEncoder.plugins import status as status_mod
+
+    monkeypatch.setattr(status_mod, "system_snapshot", lambda _path: _fake_snapshot())
+    monkeypatch.setattr(scheduler, "queue_full", lambda: False)
+    monkeypatch.setattr(scheduler, "memory_overloaded", lambda: False)
+    monkeypatch.setattr(scheduler, "disk_low", lambda: False)
+    monkeypatch.setattr(config, "ENC_MAX_QUEUE_TOTAL", 50)
+    html = status_mod.status_doc().classic()
+    assert "Open" in html and "0/50 queued" in html
+
+
+def test_status_shows_paused_admissions_with_reasons(monkeypatch):
+    from VideoEncoder.plugins import status as status_mod
+
+    queue.append(_msg(9))
+    monkeypatch.setattr(status_mod, "system_snapshot", lambda _path: _fake_snapshot())
+    monkeypatch.setattr(scheduler, "queue_full", lambda: True)
+    monkeypatch.setattr(scheduler, "memory_overloaded", lambda: True)
+    monkeypatch.setattr(scheduler, "disk_low", lambda: True)
+    monkeypatch.setattr(config, "ENC_MAX_QUEUE_TOTAL", 1)
+    html = status_mod.status_doc().classic()
+    assert "Paused" in html
+    assert "queue full (1/1)" in html
+    assert "memory 99.0%" in html
+    assert "low disk" in html
+
+
+def test_status_idle_memory_pressure_does_not_pause_admissions(monkeypatch):
+    from VideoEncoder.plugins import status as status_mod
+
+    monkeypatch.setattr(status_mod, "system_snapshot", lambda _path: _fake_snapshot())
+    monkeypatch.setattr(scheduler, "queue_full", lambda: False)
+    monkeypatch.setattr(scheduler, "memory_overloaded", lambda: True)
+    monkeypatch.setattr(scheduler, "disk_low", lambda: False)
+    monkeypatch.setattr(config, "ENC_MAX_QUEUE_TOTAL", 50)
+    html = status_mod.status_doc().classic()
+    assert "Open" in html and "0/50 queued" in html
