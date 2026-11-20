@@ -292,7 +292,7 @@ Support: users send /support → it lands in your DM → <b>reply</b> to answer.
 
 <b>Clone bots</b>
 /clonestats — platform stats · /bots — list all clone bots · /sys — system snapshot
-/check — health-check every clone (<code>/check fix</code> restarts broken ones)</blockquote>
+/check — inspect local clone clients (<code>/check fix</code> can stop and restart clones; coordinate workers first)</blockquote>
 """
 
 SETTINGS_HUB = (

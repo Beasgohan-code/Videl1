@@ -7,6 +7,7 @@ Owner commands for the Videl clone (FileStore) platform
 
 import asyncio
 import html
+import re
 import time
 import psutil
 from datetime import datetime, timezone
@@ -133,61 +134,107 @@ async def system_stats(client: Client, message: Message):
 
 @Client.on_message(filters.command(["check", "checkbots"]) & filters.private & filters.user(OWNERS))
 async def check_bots(client: Client, message: Message):
-    """Health-check every clone bot: running / reachable / should-be-running. `/check fix` restarts the missing ones."""
+    """Inspect local clone clients; explicit `/check fix` also runs watchdog recovery."""
     from core import stream
     async with stream.progress(message, "🩺 <i>Checking every clone bot…</i>") as status:
         await _check_bots(client, message, status)
 
 
 async def _check_bots(client, message, status):
-    import asyncio
+    """Report local observations without exposing raw worker/DB errors or credentials."""
     from filestore.worker_bot.engine import worker_engine
-    bots = [b for b in await main_db.get_all_bots() if not b.get("is_deleted")]
-    ok, dead, missing, off = [], [], [], []
-    dead_ids = []
+    try:
+        records = await main_db.get_all_bots()
+    except Exception:
+        return await status.finish('⚠️ Could not load clone records. No health result is available.')
+
+    if not isinstance(records, list):
+        return await status.finish('⚠️ Could not load clone records. No health result is available.')
+
+    ok, dead, missing, off, unknown = [], [], [], [], []
+    dead_workers = {}
+
+    def label(bot_id, bot):
+        # Do not echo arbitrary database fields: malformed entries can contain
+        # credentials, HTML, or other private information.
+        username = bot.get('bot_username')
+        name = f'@{username}' if isinstance(username, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}', username, flags=re.ASCII) else 'Username unavailable'
+        return f'{name} (<code>{bot_id}</code>)'
 
     async def probe(bot):
-        bot_id = bot["_id"]
+        if not isinstance(bot, dict):
+            unknown.append('Invalid record')
+            return
+        deleted = bot.get('is_deleted', False)
+        if deleted is True:
+            return
+        bot_id = bot.get('_id')
+        if type(bot_id) is not int or not 0 < bot_id < 2**63 or type(deleted) is not bool:
+            unknown.append('Invalid record')
+            return
+        name = label(bot_id, bot)
         worker = worker_engine.get_worker(bot_id)
-        name = f"@{bot.get('bot_username', '?')} (<code>{bot_id}</code>)"
         if worker:
             try:
-                await asyncio.wait_for(worker.get_me(), timeout=15)
+                identity = await asyncio.wait_for(worker.get_me(), timeout=15)
+            except Exception:
+                # Telegram exceptions can contain secrets; this handler does not echo or log them.
+                if worker_engine.get_worker(bot_id) is worker:
+                    dead.append(name)
+                    dead_workers[bot_id] = worker
+                else:
+                    unknown.append(name)
+                return
+            if worker_engine.get_worker(bot_id) is not worker or type(getattr(identity, 'id', None)) is not int or identity.id != bot_id:
+                unknown.append(name)
+            else:
                 ok.append(name)
-            except Exception as e:
-                dead.append(f"{name} – {str(e)[:60]}")
-                dead_ids.append(bot_id)
-        elif bot.get("is_active"):
+        elif bot.get('is_active') is True:
             missing.append(name)
-        else:
+        elif bot.get('is_active') is False:
             off.append(name)
+        else:
+            unknown.append(name)
 
-    for i in range(0, len(bots), 20):
-        await asyncio.gather(*(probe(b) for b in bots[i:i + 20]))
+    for i in range(0, len(records), 20):
+        await asyncio.gather(*(probe(bot) for bot in records[i:i + 20]))
 
-    fixed = ""
-    if len(message.command) > 1 and message.command[1].lower() == "fix" and (missing or dead):
-        import watchdog
-        dog = watchdog.dog or watchdog.Watchdog(client)
-        for bot_id in dead_ids:  # stop unresponsive ones so they are started fresh
-            await worker_engine.stop_worker(bot_id)
-        healed = await dog.heal_workers()
-        fixed = f"\n\n🔧 <b>Fix:</b> {healed} clone(s) (re)started."
+    fixed = ''
+    if len(message.command) > 1 and message.command[1].lower() == 'fix' and (missing or dead):
+        try:
+            import watchdog
+            dog = watchdog.dog or watchdog.Watchdog(client)
+            for bot_id, observed in dead_workers.items():
+                # A replacement observed after the probe must not be stopped.
+                # This is not an atomic lease; another writer can still race.
+                if worker_engine.get_worker(bot_id) is not observed:
+                    raise RuntimeError('Worker changed')
+                if await worker_engine.stop_worker(bot_id) is not True:
+                    raise RuntimeError('Stop unconfirmed')
+            healed = await dog.heal_workers()
+            fixed = f'\n\n🔧 Watchdog reported <code>{int(healed)}</code> starts/restarts. Results are not independently verified.'
+        except Exception:
+            fixed = ('\n\n⚠️ Repair was not confirmed and may be partial. Check current worker and registry state before retrying; '
+                     'a stop or start may already have happened.')
 
     def block(title, items):
         if not items:
-            return ""
-        shown = "\n".join(f"• {x}" for x in items[:25])
-        more = f"\n<i>… and {len(items) - 25} more</i>" if len(items) > 25 else ""
-        return f"\n\n<b>{title} ({len(items)})</b>\n<blockquote expandable>{shown}{more}</blockquote>"
+            return ''
+        shown = '\n'.join(f'• {x}' for x in items[:12])
+        more = f'\n<i>… and {len(items) - 12} more</i>' if len(items) > 12 else ''
+        return f'\n\n<b>{title} ({len(items)})</b>\n<blockquote expandable>{shown}{more}</blockquote>'
 
     text = (
-        f"<b>🩺 Clone bots health</b>\n\n"
-        f"🟢 Running &amp; reachable: <code>{len(ok)}</code>\n"
-        f"🔴 Running but not responding: <code>{len(dead)}</code>\n"
-        f"⚠️ Active but not running: <code>{len(missing)}</code>\n"
-        f"💤 Stopped / deactivated: <code>{len(off)}</code>"
-        + block("🔴 Not responding", dead) + block("⚠️ Not running", missing)
-        + (fixed or ("\n\n<i>Use /check fix to restart the broken ones.</i>" if (dead or missing) else ""))
+        '<b>🩺 Clone bots health</b>\n\n'
+        f'🟢 Local client &amp; matching identity: <code>{len(ok)}</code>\n'
+        f'⚠️ Local client, check unconfirmed: <code>{len(dead)}</code>\n'
+        f'⚠️ Marked active, no local client: <code>{len(missing)}</code>\n'
+        f'💤 Marked inactive, no local client: <code>{len(off)}</code>\n'
+        f'❔ Unknown or changed: <code>{len(unknown)}</code>'
+        + block('Unconfirmed', dead) + block('No local client', missing) + block('Unknown or changed', unknown)
+        + '\n\n<i>Local process snapshot only, not proof of overall runtime or exclusive ownership. '
+          'Checks can be stale or inconclusive.</i>'
+        + (fixed or ('\n\n<i>/check fix may stop clients and run a fleet-wide watchdog repair; '
+                     'inspect state and coordinate workers first.</i>' if (dead or missing) else ''))
     )
-    await status.finish(text[:4096])
+    await status.finish(text)
