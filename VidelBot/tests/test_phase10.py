@@ -39,7 +39,8 @@ class Engine:
 def _bot(bot_id, idle_days, owner=5, **extra):
     from filestore.database.main_db import MainDB
     doc = {"_id": bot_id, "bot_username": f"b{bot_id}_bot", "owner_id": owner, "is_active": True,
-           "last_active": _naive(NOW - timedelta(days=idle_days)), "created_at": _naive(NOW - timedelta(days=30))}
+           "last_active": _naive(NOW - timedelta(days=idle_days)), "created_at": _naive(NOW - timedelta(days=30)),
+           "bot_token_encrypted": "test-encrypted-token"}
     doc.update(extra)
     run(MainDB().bots.insert_one(doc))
 
@@ -130,7 +131,7 @@ def test_reactivate_button_is_owner_only_and_starts_the_worker(monkeypatch):
     q = FakeQuery("cl_on_1", uid=5)
     run(cl.reactivate_cb(FakeClient(), q))
     assert eng.started == [1] and _doc(1)["is_active"] is True
-    assert "back online" in q.message.edits[-1]
+    assert "Clone marked active; a local client was found" in q.message.edits[-1]
 
 
 def test_keep_running_resets_the_timer(monkeypatch):

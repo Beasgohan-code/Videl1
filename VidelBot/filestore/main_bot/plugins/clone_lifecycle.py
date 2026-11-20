@@ -156,35 +156,66 @@ async def keep_running_cb(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^cl_on_(\d+)$"))
 async def reactivate_cb(client: Client, query: CallbackQuery):
-    bot = await _owned(query, int(query.data.rsplit("_", 1)[1]))
+    """Reactivate an owned inactive clone; report ambiguous effects conservatively."""
+    from pyrogram import enums
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    uid = getattr(user, "id", None)
+    if (type(uid) is not int or not 0 < uid < 2**63
+            or getattr(user, "is_bot", None) is not False
+            or not chat or getattr(chat, "type", None) != enums.ChatType.PRIVATE
+            or getattr(chat, "id", None) != uid):
+        return await query.answer("❌ Bot not found or access denied!", show_alert=True)
+    requested_id = int(query.data.rsplit("_", 1)[1])
+    if not 0 < requested_id < 2**63:
+        return await query.answer("❌ Bot not found or access denied!", show_alert=True)
+    bot = await _owned(query, requested_id)
     if not bot:
         return
     from filestore.worker_bot.engine import worker_engine
     from core.ui import smart_edit
-    bot_id = bot["_id"]
-    name = bot.get("bot_username", "unknown")
-    if not worker_engine.get_worker(bot_id):
-        await query.answer("🟢 Starting…")
-        try:
-            await worker_engine.start_worker(bot)
-        except Exception as e:
-            import html
-            return await smart_edit(
-                query.message,
-                f"<b>❌ Couldn't start @{html.escape(str(name))}:</b> <code>{html.escape(str(e))[:200]}</code>\n"
-                "<i>If you revoked the token in @BotFather, add the bot again.</i>",
-                _dash_kb(bot_id),
-            )
-        if not worker_engine.get_worker(bot_id):
-            return await smart_edit(query.message, f"<b>❌ @{name} didn't come online.</b> Check its token in "
-                                                   "@BotFather and try again.", _dash_kb(bot_id))
-    else:
-        await query.answer("Already running")
-    await main_db.set_bot_active(bot_id, True)
+    bot_id = bot.get("_id")
+    # Old buttons must not start or reset an already-active or malformed record.
+    if (type(bot_id) is not int or bot_id != requested_id
+            or type(bot.get("owner_id")) is not int or bot["owner_id"] != uid
+            or bot.get("is_active") is not False
+            or bot.get("is_deleted", False) is not False
+            or not isinstance(bot.get("bot_token_encrypted"), str)
+            or not bot["bot_token_encrypted"]
+            or ("clone_profile" in bot and bot["clone_profile"] not in ("filestore", "group"))):
+        return await query.answer("This clone is not in a supported inactive state. Open its dashboard.", show_alert=True)
+
+    await query.answer("Starting clone…")
+    try:
+        # A local client on an inactive record is contradictory; do not adopt it.
+        if worker_engine.get_worker(bot_id) is not None:
+            raise RuntimeError("Client already present on inactive record")
+        await worker_engine.start_worker(bot)
+        if worker_engine.get_worker(bot_id) is None:
+            raise RuntimeError("No local client found after start")
+        if not await main_db.reactivate_inactive_if_unchanged(bot):
+            raise RuntimeError("Registry changed during reactivation")
+    except Exception:
+        # A start or write may have succeeded even if its response was lost.
+        # Do not disclose error text or automatically start, stop, or write again.
+        log.warning("Clone reactivation could not be confirmed.")
+        return await smart_edit(query.message,
+                                "<b>⚠️ Reactivation could not be confirmed.</b>\n\n"
+                                "The client or registry may have changed. Check the dashboard and "
+                                "contact the operator before retrying.", _dash_kb(bot_id))
+
     try:
         from filestore.main_bot.plugins.my_bots import _clone_log
-        await _clone_log(client, "CloneReactivated", query.from_user, bot)
+        import re
+        name = bot.get("bot_username")
+        safe_name = (name if isinstance(name, str)
+                     and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", name, flags=re.ASCII)
+                     else "unavailable")
+        await _clone_log(client, "CloneReactivated", query.from_user,
+                         {"_id": bot_id, "bot_username": safe_name})
     except Exception:
         pass
-    await smart_edit(query.message, f"<b>🟢 @{name} is back online.</b>\n<i>Users can open their links again.</i>",
+    await smart_edit(query.message,
+                     "<b>✅ Clone marked active; a local client was found.</b>\n"
+                     "<i>This snapshot does not guarantee availability. Verify the bot in Telegram.</i>",
                      _dash_kb(bot_id))

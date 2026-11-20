@@ -231,6 +231,23 @@ class MainDB:
             update = {"$set": {"is_active": False}}
         await self.bots.update_one({"_id": bot_id}, update)
 
+    async def reactivate_inactive_if_unchanged(self, bot: dict) -> bool:
+        """Mark a previously read inactive clone active, only if key state still matches.
+
+        A failed acknowledgement is uncertain and must not be retried blindly.
+        This is not a lifecycle lease or transaction with the Telegram client.
+        """
+        match = {"_id": bot["_id"], "owner_id": bot["owner_id"], "is_active": False}
+        for field in ("is_deleted", "bot_token_encrypted", "clone_profile", "last_active"):
+            match[field] = ({"$exists": True, "$eq": bot[field]} if field in bot
+                            else {"$exists": False})
+        update = {"$set": {"is_active": True, "last_active": datetime.now(timezone.utc)},
+                  "$unset": {"deactivated_at": "", "deactivated_reason": "", "inactive_warned": ""}}
+        result = await self.bots.update_one(match, update)
+        if not result.acknowledged:
+            raise RuntimeError("Reactivation write was not acknowledged")
+        return result.matched_count == 1
+
     async def deactivate_inactive(self, bot_id: int):
         """Switch a clone off because nobody used it for CLONE_INACTIVE_DAYS."""
         await self.bots.update_one(
