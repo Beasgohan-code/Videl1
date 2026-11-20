@@ -154,12 +154,20 @@ Admins can use `/guardcheck <group/channel ID or @username>` in a private chat
 with the primary bot. This read-only check obtains a full chat, verifies the
 requester is currently an owner or administrator of that exact chat, and reports
 whether Telegram exposes this bot or a different bot as its guard. An absent or
-malformed guard value is **unknown**, not proof that no guard is assigned. The
-response shows only this process's queue configuration; it does not expose another
-bot's identity or prove rights, updates, outcomes, or protection. Unsupported
-links, anonymous/bot callers and non-admins are rejected, and API failures are
-reported without raw errors. No group settings or applicants are changed. Changes
-in privileges or assignment during or after the check can make the snapshot stale.
+malformed guard value is **unknown**, not proof that no guard is assigned. After
+checking the requesting admin, it separately looks up this bot's membership and
+`can_invite_users` right. Missing, malformed or failed lookups are unavailable;
+these are observations, not guarantees of current authorization. It shows only
+this process's queue configuration and does not expose another bot's identity or
+prove update delivery, outcomes, or protection. Unsupported links, anonymous/bot
+callers and non-admins are rejected, and API failures are reported without raw
+errors. Up to three reads each use a five-second timeout; transport cancellation/retries
+are not proven to honor a hard wall-clock limit. Diagnostic requests use
+a three-second per-caller cooldown, a one-second global start limit and a bounded
+in-flight limit, independently of query handling. These are process-local limits;
+multiple processes or restarts can bypass them. No group settings or applicants
+are changed. Changes in privileges or assignment during or after the check can
+make the snapshot stale.
 
 Mixed/old primary workers can still process guard queries with their previous
 handlers, so coordinate all workers before relying on the separation. Inspect

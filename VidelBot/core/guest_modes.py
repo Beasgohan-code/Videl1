@@ -19,6 +19,9 @@ _guest_users = OrderedDict()
 _seen_guard = OrderedDict()
 _guest_starts = []
 _guard_starts = []
+_guardcheck_recent = OrderedDict()
+_guardcheck_active = set()
+_guardcheck_starts = []
 _inflight_guest = 0
 _inflight_guard = 0
 _GUEST_REPLY = ("Hi, I'm Videl! I offer file tools, media utilities and bot management. "
@@ -28,7 +31,8 @@ _GUEST_REPLY = ("Hi, I'm Videl! I offer file tools, media utilities and bot mana
 
 def _primary(client):
     prefix = str(config.BOT_TOKEN or '').split(':', 1)[0]
-    return prefix.isdigit() and getattr(getattr(client, 'me', None), 'id', None) == int(prefix)
+    bot_id = getattr(getattr(client, 'me', None), 'id', None)
+    return prefix.isdigit() and type(bot_id) is int and bot_id > 0 and bot_id == int(prefix)
 
 
 def _guest_markup(client):
@@ -121,9 +125,24 @@ async def guardian_manual_queue(client, request):
     raise StopPropagation
 
 
+def _guardcheck_rights(member):
+    """Describe only explicit membership and invite-right observations."""
+    status = getattr(member, 'status', None)
+    if status == enums.ChatMemberStatus.OWNER:
+        return 'Owner', 'Available to the owner'
+    if status == enums.ChatMemberStatus.ADMINISTRATOR:
+        right = getattr(getattr(member, 'privileges', None), 'can_invite_users', None)
+        return 'Administrator', 'Yes' if right is True else 'No' if right is False else 'Unavailable'
+    if status in (enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.RESTRICTED,
+                  enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
+        return 'Not an administrator', 'Not applicable'
+    return 'Unavailable', 'Unavailable'
+
+
 @Client.on_message(filters.command("guardcheck") & filters.private)
 async def guardian_check(client, message):
-    """Read-only assignment check for a directly identified chat administrator."""
+    """Read-only assignment and rights check for a verified chat administrator."""
+    global _guardcheck_starts
     user = getattr(message, 'from_user', None)
     chat = getattr(message, 'chat', None)
     uid = getattr(user, 'id', None)
@@ -147,26 +166,47 @@ async def guardian_check(client, message):
         target = arg
     else:
         return await message.reply_text('Use a group/channel numeric ID or @username.')
+
+    # Bound the diagnostic independently of live guardian-query capacity. Keep
+    # active IDs until their requests finish; never evict an in-flight claim.
+    now = time.monotonic()
+    _guardcheck_starts = [t for t in _guardcheck_starts if t > now - 1]
+    if (uid in _guardcheck_active or len(_guardcheck_active) >= 20 or len(_guardcheck_starts) >= 20
+            or not _remember(_guardcheck_recent, uid, now, 3, 1024)):
+        return await message.reply_text('Guard checks are busy or were requested too recently. Please wait and try again.')
+    _guardcheck_active.add(uid)
+    _guardcheck_starts.append(now)
     try:
-        found = await asyncio.wait_for(client.get_chat(target), timeout=5)
-        found_id = getattr(found, 'id', None)
-        if (getattr(found, 'type', None) not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL)
-                or type(found_id) is not int or found_id >= 0):
-            raise ValueError('Unsupported chat')
-        member = await asyncio.wait_for(client.get_chat_member(found_id, uid), timeout=5)
-        if getattr(member, 'status', None) not in (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR):
-            raise ValueError('Administrator not verified')
-    except Exception:
-        return await message.reply_text('Chat unavailable or administrator access could not be verified. Check the ID and bot access.')
-    guard = getattr(found, 'guard_bot', None)
-    guard_id = getattr(guard, 'id', None)
-    if type(guard_id) is int and guard_id > 0:
-        assignment = 'This bot is reported as the guard bot.' if guard_id == client.me.id else 'A different bot is reported as the guard bot.'
-    else:
-        assignment = 'Guard assignment is unavailable; no assignment can be confirmed.'
-    mode = 'enabled' if config.GUARD_QUEUE_ENABLED else 'disabled'
-    await message.reply_text(
-        f'<b>🛡 Guard check</b>\n\n{assignment}\n'
-        f'This process: manual-review queue answers are <b>{mode}</b>.\n'
-        'This snapshot does not prove update delivery, permissions, successful queueing or protection. '
-        'Only this primary bot is checked; confirm with a disposable group.')
+        try:
+            found = await asyncio.wait_for(client.get_chat(target), timeout=5)
+            found_id = getattr(found, 'id', None)
+            if (getattr(found, 'type', None) not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL)
+                    or type(found_id) is not int or found_id >= 0):
+                raise ValueError('Unsupported chat')
+            member = await asyncio.wait_for(client.get_chat_member(found_id, uid), timeout=5)
+            if getattr(member, 'status', None) not in (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR):
+                raise ValueError('Administrator not verified')
+        except Exception:
+            return await message.reply_text('Chat unavailable or administrator access could not be verified. Check the ID and bot access.')
+
+        guard = getattr(found, 'guard_bot', None)
+        guard_id = getattr(guard, 'id', None)
+        if type(guard_id) is int and guard_id > 0:
+            assignment = 'This bot is reported as the guard bot.' if guard_id == client.me.id else 'A different bot is reported as the guard bot.'
+        else:
+            assignment = 'Guard assignment is unavailable; no assignment can be confirmed.'
+        try:
+            bot_member = await asyncio.wait_for(client.get_chat_member(found_id, client.me.id), timeout=5)
+            bot_status, invite_right = _guardcheck_rights(bot_member)
+        except Exception:
+            bot_status, invite_right = 'Unavailable', 'Unavailable'
+        mode = 'enabled' if config.GUARD_QUEUE_ENABLED else 'disabled'
+        await message.reply_text(
+            f'<b>🛡 Guard check</b>\n\n{assignment}\n'
+            f'Bot membership: <b>{bot_status}</b>\n'
+            f'Invite users permission: <b>{invite_right}</b>\n'
+            f'This process: manual-review queue answers are <b>{mode}</b>.\n'
+            'This snapshot does not prove update delivery, successful queueing or protection; rights and assignment can change. '
+            'Only this primary bot is checked; confirm with a disposable group.')
+    finally:
+        _guardcheck_active.discard(uid)
