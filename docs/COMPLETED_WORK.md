@@ -320,3 +320,7 @@ Owner `/check` now reads only projected clone-directory fields instead of full b
 ## Admin clone count uses projected records (9821948)
 
 Admin stats now counts clones from projected clone-directory records instead of fetching full bot records just for a count. Focused admin/clone tests passed 149; full backend passed 1637 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock evidence only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker untouched.
+
+## Encoder status admission state (6ac705c)
+
+`/status` now shows an Admissions row mirroring the overload guards: `Open` with queued/cap count, or `Paused` with active reasons (queue full, memory pressure while busy, or low disk). Memory pressure alone does not pause an idle queue, matching `_enqueue()`. Focused overload/status tests passed 37; full backend passed 1640 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock evidence only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
