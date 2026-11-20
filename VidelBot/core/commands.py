@@ -131,6 +131,7 @@ GROUP_COMMANDS = [
     ("ping", "🏓 Latency"),
     # group moderation & Bot API 10.3 community tools
     ("gsettings", "🛡 Group moderation & settings dashboard"),
+    ("gcheck", "🔍 Check this bot's group rights (admin)"),
     ("rules", "📜 View group rules"),
     ("setrules", "✍️ Set group rules (admin)"),
     ("gban", "🚫 Ban a group member (admin)"),

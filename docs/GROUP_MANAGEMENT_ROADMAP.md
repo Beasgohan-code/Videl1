@@ -63,3 +63,7 @@ The separate `group_knowledge` plugin adds a group-visible `/faq` knowledge base
 ## Stage 9 — private moderation casebook (implemented in branch)
 
 `group_cases` adds a manually maintained casebook in private chat using `/modcase`. Each read, write and callback checks the caller's live Telegram group-admin restriction privilege and the bot's membership; data is scoped by bot and group. Cases support searching by subject ID, revision-checked notes, close/reopen and explicit purge; no Telegram moderation action is performed. Records contain user/admin IDs and manually entered text, are not encrypted by the plugin, and persist until explicit purge; see `VidelBot/plugins/group_cases/README.md` for limits, permission races and retention caveats. This is not an immutable audit ledger or verification of live Telegram/MongoDB. Other advanced plugin, security and frontend roadmap work remains outstanding.
+
+## Stage 10 — read-only group setup check (implemented in branch)
+
+The main `group_mod` plugin adds admin-only `/gcheck`: a read-only diagnostic showing automation state (anti-raid, join requests, anti-flood, warning policy, locks, filters) plus a live snapshot of this bot's restrict/delete/pin/change-info/invite rights as granted, missing, or unknown. It performs no moderation and changes no settings. Rights can change after the snapshot; fake-client tests do not prove live Telegram behavior. This is separate from the clone worker and does not copy the Group Mode plugin into it.

@@ -692,3 +692,44 @@ def test_unrecognized_target_status_is_not_safe_to_moderate():
             return await super().get_chat_member(chat_id, user_id)
     c = UnknownStatus({10: (enums.ChatMemberStatus.OWNER, None), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())})
     assert not run(gmod.verify_mod_permissions(c, -100888, 10, target_id=77))[0]
+
+
+def test_gcheck_shows_readonly_bot_rights_snapshot_for_admin():
+    from plugins.group_mod import plugin as gmod
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs(can_pin_messages=False)),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+    })
+    m = _grp_msg("/gcheck", uid=10, client=c)
+    run(gmod.gcheck_cmd(c, m))
+    text = m.replies[-1]
+    lowered = text.lower()
+    assert "𝗚𝗥𝗢𝗨𝗣 𝗖𝗛𝗘𝗖𝗞" in text
+    assert "ʀᴇꜱᴛʀɪᴄᴛ ᴍᴇᴍʙᴇʀꜱ" in text and "granted" in lowered
+    assert "ᴘɪɴ ᴍᴇꜱꜱᴀɢᴇꜱ" in text and "missing" in lowered
+    assert "read-only snapshot" in lowered
+    assert not c.called("ban_chat_member") and not c.called("restrict_chat_member")
+
+
+def test_gcheck_refuses_non_admin_and_reports_unknown_bot_rights():
+    from plugins.group_mod import plugin as gmod
+
+    class FailingBotClient(GroupFakeClient):
+        async def get_chat_member(self, chat_id, user_id):
+            if int(user_id) == 999:
+                raise RuntimeError("telegram unavailable")
+            return await super().get_chat_member(chat_id, user_id)
+
+    c = FailingBotClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        20: (enums.ChatMemberStatus.MEMBER, None),
+    })
+    denied = _grp_msg("/gcheck", uid=20, client=c)
+    run(gmod.gcheck_cmd(c, denied))
+    assert "permission" in denied.replies[-1].lower()
+
+    m = _grp_msg("/gcheck", uid=10, client=c)
+    run(gmod.gcheck_cmd(c, m))
+    assert "unknown" in m.replies[-1]

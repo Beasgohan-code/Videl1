@@ -14,7 +14,7 @@ Highlights:
         `deleteAllMessageReactions`)
       - `/topic new|close|reopen` (forum topic lifecycle)
       - `/joinmode off|notify|auto` (join-request approval cards + raid guard)
-  • Community & protection: `/gsettings`, `/rules` (ephemeral), `/setrules`,
+  • Community & protection: `/gsettings`, `/gcheck`, `/rules` (ephemeral), `/setrules`,
     `/welcome`, `/goodbye`, `/lock`, `/unlock`, `/gfilter`, `/delfilter`,
     `/gfilters`, `/antiraid`, `/modreport`.
 """
@@ -55,7 +55,7 @@ LINK_RE = re.compile(r"(https?://\S+|t\.me/\S+|telegram\.me/\S+)", re.IGNORECASE
 VALID_LOCKS = ("links", "forwards", "bots", "media", "all")
 
 GROUP_ANON_COMMANDS = frozenset({
-    "gsettings", "gban", "gunban", "kick", "punch", "mute", "unmute",
+    "gsettings", "gcheck", "gban", "gunban", "kick", "punch", "mute", "unmute",
     "warn", "unwarn", "warns", "warnconfig", "warnrecover", "tag", "deltag", "clearreactions", "delreactions",
     "topic", "joinmode", "rules", "setrules", "welcome", "goodbye",
     "lock", "unlock", "gfilter", "delfilter", "gfilters", "antiraid",
@@ -188,6 +188,35 @@ async def verify_bot_privilege(client: Client, chat_id: int, privilege: str) -> 
         pretty = privilege.replace("can_", "").replace("_", " ")
         return False, f"Promote me as admin with permission: {pretty}."
     return True, ""
+
+
+_GROUP_CHECK_PRIVILEGES = (
+    "can_restrict_members",
+    "can_delete_messages",
+    "can_pin_messages",
+    "can_change_info",
+    "can_invite_users",
+)
+
+
+async def _bot_rights_snapshot(client: Client, chat_id: int) -> dict[str, str]:
+    """Read-only snapshot of this bot's key rights: granted / missing / unknown."""
+    unknown = {p: "unknown" for p in _GROUP_CHECK_PRIVILEGES}
+    bot_uid = getattr(getattr(client, "me", None), "id", None)
+    if type(bot_uid) is not int or bot_uid <= 0:
+        return unknown
+    try:
+        bot_mem = await client.get_chat_member(chat_id, bot_uid)
+    except Exception:
+        return unknown
+    status = getattr(bot_mem, "status", None)
+    if status == enums.ChatMemberStatus.OWNER:
+        return {p: "granted" for p in _GROUP_CHECK_PRIVILEGES}
+    if status != enums.ChatMemberStatus.ADMINISTRATOR:
+        return {p: "missing" for p in _GROUP_CHECK_PRIVILEGES}
+    if getattr(bot_mem, "privileges", None) is None:
+        return unknown
+    return {p: ("granted" if _has_privilege(bot_mem, p) else "missing") for p in _GROUP_CHECK_PRIVILEGES}
 
 
 def _raid_active(cfg: dict[str, Any]) -> bool:
@@ -411,6 +440,39 @@ async def gsettings_cmd(client: Client, message: Message):
     cfg = await get_group_cfg(message.chat.id)
     doc, kb = build_gsettings_doc(message.chat.title or "Group", cfg)
     return await message.reply_text(doc.classic(), reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.group & filters.command("gcheck") & PLG_FILTER)
+async def gcheck_cmd(client: Client, message: Message):
+    """Read-only setup diagnostic: automation state + this bot's live rights snapshot."""
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Access Denied").status("error", "Admin permission required", err))
+    cfg = await get_group_cfg(message.chat.id)
+    rights = await _bot_rights_snapshot(client, message.chat.id)
+    raid_active = _raid_active(cfg)
+    legacy_raid = cfg.get("antiraid_until", 0) > time.time() and not raid_active
+    legacy_auto = cfg.get("joinmode") == "auto" and _join_mode(cfg) != "auto"
+    doc = Doc("🔍", "Group Check", message.chat.title or "Supergroup")
+    doc.kv_table([
+        ("🚨 Anti-Raid", "🛡 Active" if raid_active else "⚠️ Previous setting inactive; confirm again" if legacy_raid else "⚪ Standby"),
+        ("🚪 Join Requests", "⚠️ AUTO inactive; confirm again" if legacy_auto else _join_mode(cfg).upper()),
+        ("🌊 Anti-Flood", "🟢 Enabled" if cfg.get("antiflood") else "🔴 Off"),
+        ("⚠️ Warn Limit", f"{cfg.get('warn_limit', 3)} → {cfg.get('warn_action', 'mute')}"),
+        ("🔒 Locks", ", ".join(cfg.get("locks") or []) or "None"),
+        ("💬 Filters", str(len(cfg.get("filters") or {}))),
+        ("🤖 Restrict members", rights.get("can_restrict_members", "unknown")),
+        ("🗑 Delete messages", rights.get("can_delete_messages", "unknown")),
+        ("📌 Pin messages", rights.get("can_pin_messages", "unknown")),
+        ("✏️ Change info", rights.get("can_change_info", "unknown")),
+        ("✉️ Invite users", rights.get("can_invite_users", "unknown")),
+    ], key_header="Check", val_header="State")
+    doc.status("info", "Read-only snapshot", "Rights are checked live; Telegram can change them at any time. No settings were changed.")
+    return await rich.reply(message, doc)
 
 
 @Client.on_message(filters.group & filters.command("rules") & PLG_FILTER)
