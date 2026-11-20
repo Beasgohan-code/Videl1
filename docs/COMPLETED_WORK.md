@@ -316,3 +316,7 @@ Removed pyflakes-flagged unused imports/locals in Encoder encoding/tasks/encode 
 ## Clone health checks use projected records (091e8da)
 
 Owner `/check` now reads only projected clone-directory fields instead of full bot records, so health diagnostics never fetch tokens or other credentials. Focused clone tests passed 82; full backend passed 1637 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock evidence only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker untouched.
+
+## Admin clone count uses projected records (9821948)
+
+Admin stats now counts clones from projected clone-directory records instead of fetching full bot records just for a count. Focused admin/clone tests passed 149; full backend passed 1637 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock evidence only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker untouched.
