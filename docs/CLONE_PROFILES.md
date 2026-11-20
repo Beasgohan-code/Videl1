@@ -297,8 +297,8 @@ no new folder is currently active.
 `python scripts/audit_clone_controller.py` provides a read-only JSON inventory
 of explicit application imports of the existing engine and group modules. It
 parses source without importing it, excludes test files, and returns an error for
-unreadable or unparseable files. Its current scan finds 33 engine references in
-16 files (including two File Store link-generator references to a constant) and
+unreadable or unparseable files. Its current scan finds 35 engine references in
+17 files (including two File Store link-generator references to a constant) and
 11 group references in five files. It is an aid to review, not proof that all
 call sites are found: computed imports, indirect references, plugins and older
 running deployments still need manual inspection.

@@ -42,7 +42,8 @@ HELP_TXT = f"""<b>📚 Comprehensive Help &amp; User Guide</b>
 • Stop anytime with <code>/cancel</code>.
 <blockquote><b>4️⃣ More Modules</b></blockquote>
 • 🎬 Reply <code>/dl</code> to any video to encode it.
-• ⚡ <code>/clone</code> — create your own FileStore bot.
+• ⚡ <code>/clone</code> — create your own clone bot.
+• 🛡 <code>/clonegroupcheck BOT_ID GROUP_ID</code> — inspect an owned group clone privately (group admin required).
 • ✏️ <code>/autorename {{title}} S{{season}}E{{episode}} [{{quality}}]</code> — then just send files to rename them
    (<code>/setmedia</code> · <code>/metadata</code> · <code>/start_sequence</code> · <code>/leaderboard</code> · <code>/tutorial</code>)
 • 🧰 <code>/rename</code> · <code>/mediainfo</code> · <code>/upload</code> · <code>/qr</code> · <code>/short</code>

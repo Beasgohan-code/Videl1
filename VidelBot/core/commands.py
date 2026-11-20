@@ -31,6 +31,7 @@ USER_COMMANDS = [
     # clone bots
     ("clone", "🤖 Create your own FileStore bot"),
     ("mybots", "📋 Manage your clone bots"),
+    ("clonegroupcheck", "🛡 Inspect an owned group clone’s rights"),
     # content saver
     ("login", "🔐 Login to save from private channels"),
     ("logout", "🚪 Logout your account"),
