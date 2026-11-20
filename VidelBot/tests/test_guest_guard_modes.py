@@ -143,6 +143,128 @@ def test_real_plugin_loader_registers_priority_handlers():
     by_callback = {h.callback: group for h, group in registry.added}
     assert by_callback[modes.guest_introduction] == 0
     assert by_callback[modes.guardian_manual_queue] == -10
+    assert by_callback[modes.guardian_check] == 0
     assert by_callback[fsub.record_join_request] == 0
     assert by_callback[group_mod.group_join_request_handler] == 4
     assert not app_run.boot_import_errors
+
+
+def test_guest_link_uses_only_valid_primary_bot_username_and_serializes():
+    from pyrogram import raw
+    client = Client(); client.me.username = 'Videl_TestBot'
+    run(modes.guest_introduction(client, guest()))
+    article = client.guests[0][1]
+    button = article.reply_markup.inline_keyboard[0][0]
+    assert button.url == 'https://t.me/Videl_TestBot' and button.callback_data is None
+    assert 'private input' not in button.url
+    serializer = FakeClient(); serializer.link_preview_options = None
+    encoded = run(article.write(serializer))
+    assert isinstance(encoded, raw.types.InputBotInlineResult)
+    assert isinstance(encoded.send_message.reply_markup, raw.types.ReplyInlineMarkup)
+    button_raw = encoded.send_message.reply_markup.rows[0].buttons[0]
+    assert isinstance(button_raw.type, raw.types.InlineButtonTypeUrl)
+    assert button_raw.type.url == 'https://t.me/Videl_TestBot'
+
+
+@pytest.mark.parametrize('name', [None, '', 'a', 'a'*33, 'test.bot', 'test/bot',
+                                   'testbot?start=secret', 'тestbot', '@testbot'])
+def test_guest_invalid_username_never_creates_link(name):
+    client = Client(); client.me.username = name
+    run(modes.guest_introduction(client, guest()))
+    assert len(client.guests) == 1 and client.guests[0][1].reply_markup is None
+
+
+def test_query_id_aliases_share_replay_guard_for_guest_and_guard():
+    client = Client()
+    run(modes.guest_introduction(client, guest(qid='123', uid=7)))
+    run(modes.guest_introduction(client, guest(qid='000123', uid=8)))
+    assert len(client.guests) == 1
+    for value in ('-123', '-000123'):
+        with pytest.raises(StopPropagation):
+            run(modes.guardian_manual_queue(client, SimpleNamespace(query_id=value)))
+    assert len(client.guards) == 1
+
+
+def test_guardcheck_reports_assignment_only_to_private_chat_admin(monkeypatch):
+    from tests.harness import FakeMsg
+    class CheckClient(Client):
+        def __init__(self): super().__init__(); self.calls=[]; self.guard=self.me.id
+        async def get_chat(self, target):
+            self.calls.append(('chat', target))
+            return SimpleNamespace(id=-10055, type=enums.ChatType.SUPERGROUP, guard_bot=SimpleNamespace(id=self.guard))
+        async def get_chat_member(self, cid, uid):
+            self.calls.append(('member', cid, uid))
+            return SimpleNamespace(status=enums.ChatMemberStatus.ADMINISTRATOR)
+    c=CheckClient(); msg=FakeMsg('/guardcheck @examplegroup', uid=7)
+    run(modes.guardian_check(c,msg))
+    assert c.calls==[('chat','@examplegroup'),('member',-10055,7)]
+    assert 'This bot is reported as the guard bot' in msg.replies[-1]
+    assert 'manual-review queue answers are <b>enabled</b>' in msg.replies[-1]
+    assert 'does not prove update delivery' in msg.replies[-1]
+    c.guard=999; monkeypatch.setattr(config, 'GUARD_QUEUE_ENABLED', False)
+    msg=FakeMsg('/guardcheck -10055',uid=7); run(modes.guardian_check(c,msg))
+    assert 'A different bot' in msg.replies[-1] and '<b>disabled</b>' in msg.replies[-1]
+    assert '999' not in msg.replies[-1]
+    c.guard=None; msg=FakeMsg('/guardcheck -10055',uid=7); run(modes.guardian_check(c,msg))
+    assert 'no assignment can be confirmed' in msg.replies[-1]
+
+
+def test_guardcheck_rejects_nonadmins_and_no_error_details():
+    from tests.harness import FakeMsg
+    class CheckClient(Client):
+        async def get_chat(self, target):
+            return SimpleNamespace(id=-10055, type=enums.ChatType.CHANNEL, guard_bot=SimpleNamespace(id=999))
+        async def get_chat_member(self, cid, uid): return SimpleNamespace(status=enums.ChatMemberStatus.MEMBER)
+    msg=FakeMsg('/guardcheck -10055',uid=7); run(modes.guardian_check(CheckClient(),msg))
+    assert 'administrator access could not be verified' in msg.replies[-1] and '999' not in msg.replies[-1]
+    class Broken(CheckClient):
+        async def get_chat(self, target): raise RuntimeError('private-secret')
+    msg=FakeMsg('/guardcheck -10055',uid=7); run(modes.guardian_check(Broken(),msg))
+    assert 'administrator access could not be verified' in msg.replies[-1] and 'private-secret' not in msg.replies[-1]
+
+
+@pytest.mark.parametrize('text', ['/guardcheck', '/guardcheck https://t.me/+secret', '/guardcheck @abc',
+                                    '/guardcheck 123', '/guardcheck -99999999999999999999', '/guardcheck -0'])
+def test_guardcheck_invalid_target_never_resolves(text):
+    from tests.harness import FakeMsg
+    class NoCalls(Client):
+        async def get_chat(self, *args): pytest.fail('invalid target resolved')
+    msg=FakeMsg(text,uid=7); run(modes.guardian_check(NoCalls(),msg)); assert msg.replies
+
+
+def test_guardcheck_ignores_untrusted_context_and_nonprimary_bot():
+    from tests.harness import FakeMsg
+    class NoCalls(Client):
+        async def get_chat(self, *args): pytest.fail('untrusted context resolved')
+    for message in (FakeMsg('/guardcheck -10055',uid=7,chat_type=enums.ChatType.SUPERGROUP,chat_id=-10055),
+                    FakeMsg('/guardcheck -10055',uid=7,chat_id=8), FakeMsg('/guardcheck -10055',uid=0)):
+        run(modes.guardian_check(NoCalls(),message)); assert not message.replies
+    bot_message=FakeMsg('/guardcheck -10055',uid=7); bot_message.from_user.is_bot=True
+    run(modes.guardian_check(NoCalls(),bot_message)); assert not bot_message.replies
+    c=NoCalls(); c.me.id+=1; msg=FakeMsg('/guardcheck -10055',uid=7)
+    run(modes.guardian_check(c,msg)); assert not msg.replies
+
+
+def test_guardcheck_missing_guard_and_failed_membership_are_unknown():
+    from tests.harness import FakeMsg
+    class Missing(Client):
+        async def get_chat(self, target): return SimpleNamespace(id=-10055, type=enums.ChatType.GROUP)
+        async def get_chat_member(self, cid, uid): return SimpleNamespace(status=enums.ChatMemberStatus.OWNER)
+    msg=FakeMsg('/guardcheck -10055',uid=7); run(modes.guardian_check(Missing(),msg))
+    assert 'assignment is unavailable' in msg.replies[-1]
+    class Failed(Missing):
+        async def get_chat_member(self, cid, uid): raise TimeoutError('secret')
+    msg=FakeMsg('/guardcheck -10055',uid=7); run(modes.guardian_check(Failed(),msg))
+    assert 'could not be verified' in msg.replies[-1] and 'secret' not in msg.replies[-1]
+
+
+def test_guardcheck_cancellation_propagates():
+    from tests.harness import FakeMsg
+    async def check():
+        class Slow(Client):
+            async def get_chat(self, target): await asyncio.Event().wait()
+        msg=FakeMsg('/guardcheck -10055',uid=7)
+        task=asyncio.create_task(modes.guardian_check(Slow(),msg)); await asyncio.sleep(0); task.cancel()
+        with pytest.raises(asyncio.CancelledError): await task
+        assert not msg.replies
+    run(check())

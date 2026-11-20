@@ -115,11 +115,15 @@ still store tokens in plaintext without a valid key.
 WzGram 3.1.6 exposes a dedicated `GuestMessageHandler` and
 `answer_guest_query`. The primary bot registers a guest handler through the
 existing MTProto dispatcher, **not** a second Bot API poller. It replies once
-with a fixed public introduction and a prompt to open private chat for setup;
-it does not echo or store the guest message or run normal commands, paid/admin
+with a fixed public introduction and a prompt to open private chat for setup.
+When the primary client has a syntactically valid cached username, the reply
+includes a URL button to that username; otherwise it sends the introduction
+without a button. The username can change or be reassigned, so recipients
+should verify the bot identity before sharing sensitive information. It does not echo or store the guest message or run normal commands, paid/admin
 operations, external services, AI or group moderation. It accepts only directly
 identified human callers, skips unknown/bot callers, and keeps bounded
-process-local replay, per-caller and global rate guards. Queries may be skipped
+process-local replay, per-caller and global rate guards. Numeric query IDs are
+canonicalized for the local replay guard (not a distributed deduplication). Queries may be skipped
 under load. Responses are public in the invoking chat and can be forwarded. A
 failed or timed-out answer is not retried by the handler; it might already have
 been sent, and WzGram's transport may have its own retry behavior.
@@ -146,6 +150,17 @@ verified guarantee that applicants are queued or that a group is protected.
 File Store and Group Management clone workers were not changed. Do **not**
 assign a clone as a guardian assuming it has this primary-bot implementation;
 the untouched File Store join-request handler has its own existing behavior.
+Admins can use `/guardcheck <group/channel ID or @username>` in a private chat
+with the primary bot. This read-only check obtains a full chat, verifies the
+requester is currently an owner or administrator of that exact chat, and reports
+whether Telegram exposes this bot or a different bot as its guard. An absent or
+malformed guard value is **unknown**, not proof that no guard is assigned. The
+response shows only this process's queue configuration; it does not expose another
+bot's identity or prove rights, updates, outcomes, or protection. Unsupported
+links, anonymous/bot callers and non-admins are rejected, and API failures are
+reported without raw errors. No group settings or applicants are changed. Changes
+in privileges or assignment during or after the check can make the snapshot stale.
+
 Mixed/old primary workers can still process guard queries with their previous
 handlers, so coordinate all workers before relying on the separation. Inspect
 permissions and test on a disposable group before any rollout.

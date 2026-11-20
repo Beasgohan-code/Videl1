@@ -4,12 +4,14 @@ No guest commands, context echo, moderation decisions, new receiver or persisten
 """
 import asyncio
 import logging
+import re
 import time
 from collections import OrderedDict
 
 import config
-from pyrogram import Client, ContinuePropagation, StopPropagation, enums
-from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
+from pyrogram import Client, ContinuePropagation, StopPropagation, enums, filters
+from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
+                            InlineQueryResultArticle, InputTextMessageContent)
 
 log = logging.getLogger(__name__)
 _seen_guest = OrderedDict()
@@ -20,13 +22,21 @@ _guard_starts = []
 _inflight_guest = 0
 _inflight_guard = 0
 _GUEST_REPLY = ("Hi, I'm Videl! I offer file tools, media utilities and bot management. "
-                "For setup and private actions, open a private chat with me. "
+                "For setup and private actions, open a private chat with me and verify the bot identity. "
                 "This guest reply is a public introduction; it doesn't run commands.")
 
 
 def _primary(client):
     prefix = str(config.BOT_TOKEN or '').split(':', 1)[0]
     return prefix.isdigit() and getattr(getattr(client, 'me', None), 'id', None) == int(prefix)
+
+
+def _guest_markup(client):
+    """Link only to this primary bot's validated Telegram username, if known."""
+    username = getattr(getattr(client, 'me', None), 'username', None)
+    if not isinstance(username, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}', username, flags=re.ASCII):
+        return None
+    return InlineKeyboardMarkup([[InlineKeyboardButton('Open private chat', url=f'https://t.me/{username}')]])
 
 
 def _query_id(value):
@@ -68,13 +78,14 @@ async def guest_introduction(client, message):
         _guest_users.popitem(last=False)
     if uid in _guest_users or len(_guest_users) >= 1024 or len(_guest_starts) >= 20 or _inflight_guest >= 20:
         return
-    if not _remember(_seen_guest, query_id, now, 120, 4096):
+    if not _remember(_seen_guest, str(int(query_id)), now, 120, 4096):
         return
     _guest_users[uid] = now
     _guest_starts.append(now)
     _inflight_guest += 1
     try:
-        result = InlineQueryResultArticle('About Videl', InputTextMessageContent(_GUEST_REPLY, parse_mode=enums.ParseMode.DISABLED))
+        result = InlineQueryResultArticle('About Videl', InputTextMessageContent(_GUEST_REPLY, parse_mode=enums.ParseMode.DISABLED),
+                                          reply_markup=_guest_markup(client))
         await asyncio.wait_for(client.answer_guest_query(query_id, result), timeout=8)
     except Exception:
         # A lost response may mean Telegram sent it: never retry automatically.
@@ -95,7 +106,7 @@ async def guardian_manual_queue(client, request):
         now = time.monotonic()
         _guard_starts = [t for t in _guard_starts if t > now - 1]
         if (_inflight_guard < 20 and len(_guard_starts) < 20
-                and _remember(_seen_guard, query_id, now, 120, 4096)):
+                and _remember(_seen_guard, str(int(query_id)), now, 120, 4096)):
             _guard_starts.append(now)
             _inflight_guard += 1
             try:
@@ -108,3 +119,54 @@ async def guardian_manual_queue(client, request):
             finally:
                 _inflight_guard -= 1
     raise StopPropagation
+
+
+@Client.on_message(filters.command("guardcheck") & filters.private)
+async def guardian_check(client, message):
+    """Read-only assignment check for a directly identified chat administrator."""
+    user = getattr(message, 'from_user', None)
+    chat = getattr(message, 'chat', None)
+    uid = getattr(user, 'id', None)
+    if (not _primary(client) or type(uid) is not int or uid <= 0
+            or getattr(user, 'is_bot', None) is not False
+            or getattr(message, 'sender_chat', None) is not None
+            or getattr(chat, 'type', None) != enums.ChatType.PRIVATE
+            or getattr(chat, 'id', None) != uid):
+        return
+    command = getattr(message, 'command', None)
+    if not isinstance(command, list) or len(command) != 2:
+        return await message.reply_text('Usage: <code>/guardcheck &lt;group/channel ID or @username&gt;</code>')
+    arg = command[1]
+    if not isinstance(arg, str) or len(arg) > 32:
+        return await message.reply_text('Use a group/channel numeric ID or @username.')
+    if re.fullmatch(r'-[1-9][0-9]{0,19}', arg, flags=re.ASCII):
+        target = int(arg)
+        if target < -(2**63):
+            return await message.reply_text('Use a group/channel numeric ID or @username.')
+    elif re.fullmatch(r'@[A-Za-z][A-Za-z0-9_]{4,31}', arg, flags=re.ASCII):
+        target = arg
+    else:
+        return await message.reply_text('Use a group/channel numeric ID or @username.')
+    try:
+        found = await asyncio.wait_for(client.get_chat(target), timeout=5)
+        found_id = getattr(found, 'id', None)
+        if (getattr(found, 'type', None) not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL)
+                or type(found_id) is not int or found_id >= 0):
+            raise ValueError('Unsupported chat')
+        member = await asyncio.wait_for(client.get_chat_member(found_id, uid), timeout=5)
+        if getattr(member, 'status', None) not in (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR):
+            raise ValueError('Administrator not verified')
+    except Exception:
+        return await message.reply_text('Chat unavailable or administrator access could not be verified. Check the ID and bot access.')
+    guard = getattr(found, 'guard_bot', None)
+    guard_id = getattr(guard, 'id', None)
+    if type(guard_id) is int and guard_id > 0:
+        assignment = 'This bot is reported as the guard bot.' if guard_id == client.me.id else 'A different bot is reported as the guard bot.'
+    else:
+        assignment = 'Guard assignment is unavailable; no assignment can be confirmed.'
+    mode = 'enabled' if config.GUARD_QUEUE_ENABLED else 'disabled'
+    await message.reply_text(
+        f'<b>🛡 Guard check</b>\n\n{assignment}\n'
+        f'This process: manual-review queue answers are <b>{mode}</b>.\n'
+        'This snapshot does not prove update delivery, permissions, successful queueing or protection. '
+        'Only this primary bot is checked; confirm with a disposable group.')

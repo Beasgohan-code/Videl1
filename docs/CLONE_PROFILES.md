@@ -258,7 +258,14 @@ Kurigram. It is not a tenant-isolated clone worker. An offline constructor probe
 of `py-tgcalls==2.3.3` with installed WzGram 3.1.6 failed before any network
 access: its Pyrogram adapter imports `GroupcallForbidden`, which WzGram does
 not expose. This is not a complete compatibility audit or proof that an adapter
-cannot be built. PyTgCalls also brings native `ntgcalls` and LGPL obligations.
+cannot be built. The PyPI 3.0.0 metadata requires `ntgcalls>=3,<4`; a deliberately
+unsupported offline probe with available `ntgcalls==2.2.5` failed importing
+`VideoRotation` before the WzGram constructor, so it is not a valid compatibility
+test of the supported dependency set. The required native dependency and its
+compatible versions, licenses and platform wheels need separate review; do not
+install that forced combination. PyTgCalls also brings native `ntgcalls` and LGPL
+obligations. See [PyTgCalls](https://github.com/pytgcalls/pytgcalls) and
+[the 3.0.0 package](https://pypi.org/project/py-tgcalls/3.0.0/).
 
 Music remains unavailable and the picker does **not** request a session string.
 A session is an account credential, not a playback setup detail to collect for a
