@@ -2,7 +2,7 @@
 const {chromium}=require('playwright-core');const assert=require('node:assert/strict');
 const base=process.env.NEXT_PREVIEW_TEST_URL||'http://localhost:3001/next-preview';
 async function login(p){await p.goto(base);await p.getByLabel('One-time key or link').fill('l.valid');await p.getByRole('button',{name:'Continue to workspace'}).click();await p.getByRole('link',{name:'Notifications',exact:true}).click();await p.getByRole('heading',{name:'Slow workspace alert'}).waitFor()}
-(async()=>{const b=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});b.setDefaultTimeout(60000);try{
+(async()=>{const b=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});try{
 for(const width of [320,390,1440]){
  const p=await b.newPage({viewport:{width,height:900}}),posts=[];p.on('request',r=>{if(r.url().includes('/notifications/read')&&r.method()==='POST')posts.push(r.postDataJSON())});await login(p);
  await p.getByRole('button',{name:'Mark read Slow workspace alert'}).click();await p.getByRole('button',{name:'Mark unread Slow workspace alert'}).waitFor();assert.deepEqual(posts[0],{action:'set_read',notification_id:'notice_1',expected_read:false,read:true});

@@ -1,7 +1,7 @@
 // Intercepted synthetic notifications only; no real workspace data or MongoDB.
 const {chromium}=require('playwright-core');const assert=require('node:assert/strict');
 const base=process.env.NEXT_PREVIEW_TEST_URL||'http://localhost:3001/next-preview';
-(async()=>{const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});browser.setDefaultTimeout(60000);try{
+(async()=>{const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/tmp/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});try{
  for(const width of [320,390,1440]){
   const page=await browser.newPage({viewport:{width,height:900},reducedMotion:'reduce'});let mode='both',release;const gate=()=>new Promise(r=>release=r);
   let pending=null,posts=0;
