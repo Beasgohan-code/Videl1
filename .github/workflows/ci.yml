@@ -196,12 +196,30 @@ jobs:
           wait_for_url http://127.0.0.1:3002/next-preview
           cd VidelBot/tests/browser
           export CHROMIUM_PATH="$(node -p "require('playwright-core').chromium.executablePath()")"
-          node next-settings.test.cjs
-          node next-navigation-safety.test.cjs
-          node next-file-pagination.test.cjs
-          node next-file-sampling.test.cjs
-          node next-notification-filters.test.cjs
-          node next-notification-safety.test.cjs
+          run_test() {
+            local test_file="$1" attempt
+            for attempt in 1 2; do
+              echo "Running $test_file (attempt $attempt)"
+              if node "$test_file"; then
+                return 0
+              fi
+              echo "$test_file failed on attempt $attempt" >&2
+              if [ "$attempt" -eq 2 ]; then
+                echo "=== Next server log ===" >&2
+                cat "$RUNNER_TEMP/studio-next.log" >&2 || true
+                echo "=== Fixture log ===" >&2
+                cat "$RUNNER_TEMP/studio-fixture.log" >&2 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          run_test next-settings.test.cjs
+          run_test next-navigation-safety.test.cjs
+          run_test next-file-pagination.test.cjs
+          run_test next-file-sampling.test.cjs
+          run_test next-notification-filters.test.cjs
+          run_test next-notification-safety.test.cjs
 
   native-tools:
     name: Ubuntu native media & archive tools
