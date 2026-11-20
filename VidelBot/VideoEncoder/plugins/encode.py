@@ -51,6 +51,14 @@ async def _enqueue(message, mode, extra=None, card=None) -> bool:
                             + ("" if pro else f", or get 🎬 Encoder Pro for up to {config.ENC_MAX_TASKS_PRO} + "
                                               "priority – /plans") + ".</i>")
         return False
+    if scheduler.queue_full():
+        await say(f"🚦 <b>Encoder queue is full</b> – {len(scheduler.data)} tasks waiting/running. "
+                  "<i>Please try again in a bit.</i>")
+        return False
+    if scheduler.data and scheduler.memory_overloaded():
+        await say("🔥 <b>Bot is overloaded</b> – memory is high right now. "
+                  "<i>Please try again when a task finishes.</i>")
+        return False
     pos = scheduler.add(message, mode, priority=pro, extra=extra)
     await scheduler.persist(message, mode, extra, pro)
     if scheduler.can_start(message):

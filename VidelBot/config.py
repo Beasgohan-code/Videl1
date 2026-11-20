@@ -288,6 +288,7 @@ PLAN_DAYS = env_int("PLAN_DAYS", 30)
 ENCODER_WORKERS = max(1, env_int("ENCODER_WORKERS", 1))          # encodes running at the same time
 ENC_MAX_TASKS_FREE = max(1, env_int("ENC_MAX_TASKS_FREE", 3))    # queued + running tasks per user
 ENC_MAX_TASKS_PRO = max(1, env_int("ENC_MAX_TASKS_PRO", 10))
+ENC_MAX_QUEUE_TOTAL = max(1, env_int("ENC_MAX_QUEUE_TOTAL", 50))  # global queued + running tasks (overload guard)
 HW_ENCODER = os.environ.get("HW_ENCODER", "auto").strip().lower()  # auto | nvenc | qsv | vaapi | off
 VAAPI_DEVICE = os.environ.get("VAAPI_DEVICE", "/dev/dri/renderD128")
 SPLIT_SIZE_MB = env_int("SPLIT_SIZE_MB", 1950)                   # uploads above this are split into parts

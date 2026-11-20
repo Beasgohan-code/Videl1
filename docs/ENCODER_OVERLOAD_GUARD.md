@@ -1,0 +1,8 @@
+# Encoder overload guard
+
+The Encoder now has two admission guards in addition to per-user limits:
+
+- `ENC_MAX_QUEUE_TOTAL` (default 50) caps total queued + running Encoder tasks for everyone. When full, new tasks are rejected with a queue-full message instead of growing the in-memory queue without bound.
+- When container RAM is at/above `MEMORY_PAUSE_NEW_TASKS_PCT` and the queue is already non-empty, new tasks are rejected with an overloaded message. An idle queue can still start one task, preserving the existing no-starvation behavior; extra parallel slots remain held back while a task is running under memory pressure.
+
+These guards are process-local and do not coordinate multiple bot processes or prove live Telegram/MongoDB behavior. They do not change encoder quality, worker counts, or hardware selection.

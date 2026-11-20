@@ -61,22 +61,35 @@ def waiting() -> list:
     return [m for m in data if not any(m is r for r in run)]
 
 
+def memory_overloaded() -> bool:
+    """True when container RAM is at/above the configured pause threshold."""
+    pause_pct = int(getattr(config, "MEMORY_PAUSE_NEW_TASKS_PCT", 0) or 0)
+    if pause_pct <= 0:
+        return False
+    try:
+        from core.sysinfo import memory_pressure
+        over, _ = memory_pressure(pause_pct)
+        return bool(over)
+    except Exception:
+        return False
+
+
+def queue_full() -> bool:
+    """Global overload guard: stop admitting once queued + running tasks hit the cap."""
+    cap = int(getattr(config, "ENC_MAX_QUEUE_TOTAL", 50) or 50)
+    return len(data) >= max(1, cap)
+
+
 def slots_free() -> int:
     active_count = len(running())
     free = config.ENCODER_WORKERS - active_count
     if free <= 0:
         return 0
     # Prevent OOM kills on parallel workers: if >=1 task is already running and container RAM is critical,
-    # hold extra worker slots back until memory drops or the active encode finishes.
-    pause_pct = int(getattr(config, "MEMORY_PAUSE_NEW_TASKS_PCT", 0) or 0)
-    if active_count >= 1 and pause_pct > 0:
-        try:
-            from core.sysinfo import memory_pressure
-            over, _ = memory_pressure(pause_pct)
-            if over:
-                return 0
-        except Exception:
-            pass
+    # hold extra worker slots back until memory drops or the active encode finishes. An idle queue is
+    # never starved by this check; admission overload is handled separately in _enqueue.
+    if active_count >= 1 and memory_overloaded():
+        return 0
     return free
 
 
