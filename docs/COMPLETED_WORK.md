@@ -340,3 +340,13 @@ Per-bot `/stats` and backup counts now use `WorkerDB.total_admins()`, `total_cha
 ## Projected idle sweep records (bc104aa)
 
 The idle sweep now reads only the fields it needs (`get_active_clone_sweep_records`) instead of full active bot records, including `inactive_warned` so warnings are not repeated. Watchdog startup still uses full records because it needs tokens. Focused sweep tests passed 46; full backend passed 1643 with 33 skipped and 1 warning; inventory passed 4; compile/diff checks passed. Mock MongoDB only; no live Telegram, real MongoDB, multi-process, or production proof. Protected worker and Group Mode plugin untouched.
+
+## Rose-style group management and moderation log
+
+Commits `b099ca2` (Rose-style expansion), `5ef5d68` (moderation log), `125867b` (roadmap docs), `d5175b8` (version bump), `5c6c751` (README), `ed46dba` (TODO) on branch `arena/18baa515-videl1` (PR #3, not merged).
+
+The main-bot `group_mod` plugin gained Miss Rose-style restriction aliases (`/ban`, `/tban`, `/dban`, `/sban`, `/unban`, `/tmute`, `/dmute`, `/smute`, `/dkick`, `/skick`, `/swarn`, `/dwarn`, `/rmwarn`, `/resetwarn`), warning policy commands (`/warnings`, `/setwarnlimit`, `/setwarnmode`), 40+ granular locks with custom modes, blocklists, phrase/list filters, notes, configurable anti-flood, button CAPTCHA, `/pin`/`/unpin`/`/purge`, and a bounded moderation log (`/modlog`, `/modhistory`). No Rose credits added. Clone worker untouched. See `VidelBot/plugins/group_mod/plugin.py`, `VidelBot/plugins/group_mod/plugin.yaml`, `VidelBot/plugins/group_mod/README.md`, `docs/GROUP_MANAGEMENT_ROADMAP.md` Stages 11–13, and `VidelBot/tests/test_group_mod_and_security.py`.
+
+Verification: focused group tests **48 passed**; complete offline backend suite **1645 passed, 33 skipped**, with one Python-version warning. Tests use fake Telegram clients and mock MongoDB; no live Telegram, real Mongo concurrency, or production deployment was performed. CI on PR #3: all checks pass (Python CI, Frontend, native tools, Vercel).
+
+CI reliability fix: commits `2589dbf` and `5808602` replaced fragile `curl --retry 30` health checks with a `wait_for_url` polling loop (up to ~3 min) and added per-test retries with server log dumping. The "Test Next workspace drafts with synthetic API" step had been failing consistently since `a04f6cd` despite identical frontend code; all six browser tests pass locally with sparticuz Chromium.
