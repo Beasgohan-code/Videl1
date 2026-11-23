@@ -548,7 +548,7 @@ def test_every_callback_button_has_a_handler():
                     hs[id(h)] = (f"{mod.__name__}.{name}", g, h)
     datas = set()
     for p in pathlib.Path(".").rglob("*.py"):
-        if "tests" in p.parts or "worker_bot" in p.parts:  # worker callbacks live on clone clients
+        if "tests" in p.parts or "worker_bot" in p.parts or "group_worker" in p.parts:  # worker callbacks live on clone clients
             continue
         for m in re.finditer(r'callback_data\s*=\s*(f?)(["\'])(.+?)\2', p.read_text()):
             d = m.group(3)

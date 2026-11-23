@@ -316,3 +316,20 @@ File Store parity, old/new worker incompatibilities, and real Telegram/Mongo
 behavior in a disposable environment. Keep the default-off gate and require a
 coordinated non-overlapping rollout. No such controller migration, deployment or
 data migration has been performed. Music remains unavailable.
+
+## Separate Group Management worker (new)
+
+`VidelBot/group_worker/` is a standalone worker program for Group
+Management clones, built in the same spirit as the File Store worker
+but as its own codebase. It does not import or copy the main bot's
+`plugins/group_mod` plugin, does not modify `filestore/worker_bot/`,
+and uses its own commands (`/panel`, `/modwarn`, `/modmute`, `/modkick`,
+`/modban`, `/modunban`, `/modpurge`), settings model
+(`group_worker_settings` / `group_worker_warns`, scoped per clone bot
+and chat), guard, warn and flood logic. Stage 1 (core moderation +
+greetings) is implemented and unit-tested. It is not wired into
+`run.py` yet: group-profile clones are still served by the existing
+in-worker profile, and running both would double-handle the same bots.
+The production runtime choice and retirement of the old path remain a
+separate approved step. A Music worker will be its own folder under
+the same pattern once the voice-chat dependency stack is verified.
