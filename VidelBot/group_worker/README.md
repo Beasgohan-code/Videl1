@@ -92,3 +92,13 @@ it is not a mode flag inside this worker.
   names anywhere in this worker; a regression test enforces that).
 - `/setlog <chat_id>` (verified by a test post), `/logchannel`, and
   `/unsetlog` route moderation log posts to another group/channel.
+
+## Stage 9 — welcome viewing, resets, media welcomes, clean welcome
+
+- `/welcome` previews the greeting (formatted), `/welcome noformat`
+  shows the raw template, `/welcome on|off` toggles greetings.
+  `/resetwelcome` / `/resetgoodbye` restore the defaults.
+- Replying to a photo/sticker with `/setwelcome` stores it as a media
+  welcome (photo gets the text as caption; stickers send alone).
+- Clean welcome (Settings → Greetings) deletes the previous welcome
+  message whenever a new one is posted.

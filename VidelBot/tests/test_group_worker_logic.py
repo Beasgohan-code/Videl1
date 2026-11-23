@@ -230,3 +230,20 @@ def test_group_worker_no_plugin_style_commands_and_log_defaults():
     for cmd in ("setlog", "logchannel", "unsetlog"):
         assert cmd in names
     assert default_settings()["log_chat"] == 0
+
+
+def test_group_worker_welcome_family_and_media_defaults():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS
+    from group_worker.logic import default_settings
+
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    for cmd in ("welcome", "resetwelcome", "resetgoodbye"):
+        assert cmd in names
+    settings = default_settings()
+    assert settings["greet_media"] == "" and settings["clean_welcome"] is False
+
+    from group_worker.handlers import _BotHandlers
+    handlers = _BotHandlers(bot_id=7, owner_id=1, store=None)
+    greet = handlers._settings_markup("greet", settings)
+    callbacks = [b.callback_data for row in greet.inline_keyboard for b in row]
+    assert "gw:7:tog:clean_welcome" in callbacks

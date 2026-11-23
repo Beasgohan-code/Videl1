@@ -56,6 +56,9 @@ def default_settings() -> dict:
         "greet_dm": False,        # also DM the welcome text to new members
         "approved": {},           # user_id (str) -> reason; exempt from automation
         "log_chat": 0,            # chat ID receiving moderation log posts (0 = off)
+        "greet_media": "",        # file_id of a photo/sticker welcome ("" = text only)
+        "greet_media_type": "",   # photo | sticker
+        "clean_welcome": False,   # delete the previous welcome when a new one posts
     }
 
 

@@ -77,6 +77,7 @@ class _BotHandlers:
         self.flood = FloodWatch()
         self.joins = JoinWatch()
         self.connections: dict[int, int] = {}  # admin user_id -> group chat_id (DM mode)
+        self._last_welcome: dict[int, int] = {}  # chat_id -> last welcome message_id
 
     # ── settings (worker-style) ────────────────────────────────
     def _settings_markup(self, page: str, s: dict) -> InlineKeyboardMarkup:
@@ -95,6 +96,7 @@ class _BotHandlers:
             return InlineKeyboardMarkup([
                 [tog(bool(s.get("greetings")), "Greetings enabled", f"gw:{bot}:tog:greetings")],
                 [tog(bool(s.get("greet_dm")), "Also DM the welcome", f"gw:{bot}:tog:greet_dm")],
+                [tog(bool(s.get("clean_welcome")), "Clean old welcomes", f"gw:{bot}:tog:clean_welcome")],
                 [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "security":
@@ -148,8 +150,9 @@ class _BotHandlers:
                     "The anti-raid shield temporarily bans joiners during join bursts.</i>")
         if page == "greet":
             return (f"{head}\n\n👋 <b>Greetings</b> — {'on' if s.get('greetings') else 'off'}\n"
-                    "<i>Set texts with /setwelcome and /setgoodbye. "
-                    "Placeholders: {name} {chat} {id}.</i>")
+                    "<i>Set texts with /setwelcome and /setgoodbye (reply to a photo/sticker "
+                    "to use it as the welcome). Placeholders: {name} {chat} {id}. "
+                    "Preview with /welcome.</i>")
         if page == "night":
             state = (f"{s.get('night_start', 23):02d}:00–{s.get('night_end', 7):02d}:00 UTC"
                      if s.get("night_on") else "off")
@@ -163,6 +166,7 @@ class _BotHandlers:
             return InlineKeyboardMarkup([
                 [tog(bool(s.get("greetings")), "Greetings enabled", f"gw:{bot}:tog:greetings")],
                 [tog(bool(s.get("greet_dm")), "Also DM the welcome", f"gw:{bot}:tog:greet_dm")],
+                [tog(bool(s.get("clean_welcome")), "Clean old welcomes", f"gw:{bot}:tog:clean_welcome")],
                 [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "security":
@@ -416,6 +420,7 @@ class _BotHandlers:
                 "/filter /stop /filters — keyword auto-replies\n"
                 "/report — (reply) send a report to admins by DM\n"
                 "/save /get /notes /clear — saved notes (#trigger works too)\n"
+                "/welcome — preview greetings; /welcome on|off toggles them\n"
                 "/setwelcome /setgoodbye — greeting texts\n"
                 "/whois — member card (admins get action buttons)\n"
                 "/approve /unapprove /approved — trusted members exempt from automation\n"
@@ -559,6 +564,9 @@ class _BotHandlers:
                 elif key == "greet_dm":
                     s = await store.update_settings(bot_id, chat_id, {"greet_dm": not s.get("greet_dm")})
                     page = "greet"
+                elif key == "clean_welcome":
+                    s = await store.update_settings(bot_id, chat_id, {"clean_welcome": not s.get("clean_welcome")})
+                    page = "greet"
             elif action == "kind" and len(parts) > 3 and parts[3] in GUARD_KINDS:
                 kinds = set(s.get("guard_kinds") or [])
                 kinds.symmetric_difference_update({parts[3]})
@@ -620,18 +628,64 @@ class _BotHandlers:
                 await c.delete_messages(m.chat.id, ids)
             await m.reply_text(f"🧹 <b>Purged {len(ids)} messages.</b>", parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message(filters.group & filters.command(["welcome", "resetwelcome", "resetgoodbye"]))
+        async def _welcome_cmd(c, m: Message):
+            cmd = (m.command or ["welcome"])[0].lower()
+            s = await store.get_settings(bot_id, m.chat.id)
+            if cmd in ("resetwelcome", "resetgoodbye"):
+                if not await _is_admin(c, m.chat.id, m.from_user.id):
+                    return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+                key = "greet_text" if cmd == "resetwelcome" else "farewell_text"
+                defaults = {"greet_text": "👋 Welcome {name} to {chat}!",
+                            "farewell_text": "👋 {name} left {chat}."}
+                updates = {key: defaults[key]}
+                if cmd == "resetwelcome":
+                    updates.update({"greet_media": "", "greet_media_type": ""})
+                await store.update_settings(bot_id, m.chat.id, updates)
+                return await m.reply_text("✅ Greeting reset to the default.", parse_mode=enums.ParseMode.HTML)
+            args = [a.lower() for a in (m.command or [])[1:]]
+            if args and args[0] in ("on", "off", "yes", "no", "true", "false"):
+                if not await _is_admin(c, m.chat.id, m.from_user.id):
+                    return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+                enabled = args[0] in ("on", "yes", "true")
+                await store.update_settings(bot_id, m.chat.id, {"greetings": enabled})
+                return await m.reply_text(f"👋 Greetings {'enabled' if enabled else 'disabled'}.",
+                                          parse_mode=enums.ParseMode.HTML)
+            name = _esc(m.from_user.first_name or "member")
+            text = render_greeting(s.get("greet_text") or "", name=name,
+                                   chat=_esc(m.chat.title or "this group"), user_id=m.from_user.id)
+            if args and args[0] == "noformat":
+                return await m.reply_text(f"<code>{_esc(s.get('greet_text') or '')}</code>",
+                                          parse_mode=enums.ParseMode.HTML)
+            media = s.get("greet_media") or ""
+            if media and s.get("greet_media_type") == "photo":
+                return await c.send_photo(m.chat.id, media, caption=text, parse_mode=enums.ParseMode.HTML)
+            if media and s.get("greet_media_type") == "sticker":
+                return await c.send_sticker(m.chat.id, media)
+            return await m.reply_text(text, parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.command(["setwelcome", "setgoodbye"]))
         async def _set_greeting(c, m: Message):
             cmd = (m.command or ["setwelcome"])[0].lower()
             if not await _is_admin(c, m.chat.id, m.from_user.id):
                 return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
             parts = (m.text or "").split(maxsplit=1)
-            if len(parts) < 2 or not parts[1].strip():
-                return await m.reply_text(
-                    f"Usage: <code>/{cmd} Hello {{name}}, welcome to {{chat}}!</code>",
-                    parse_mode=enums.ParseMode.HTML)
             key = "greet_text" if cmd == "setwelcome" else "farewell_text"
-            await store.update_settings(bot_id, m.chat.id, {key: parts[1].strip()[:1000], "greetings": True})
+            updates = {key: parts[1].strip()[:1000] if len(parts) > 1 else "", "greetings": True}
+            replied = m.reply_to_message
+            if cmd == "setwelcome" and replied is not None:
+                if getattr(replied, "photo", None):
+                    updates.update({"greet_media": replied.photo.file_id, "greet_media_type": "photo"})
+                elif getattr(replied, "sticker", None):
+                    updates.update({"greet_media": replied.sticker.file_id, "greet_media_type": "sticker"})
+            if len(parts) < 2 and "greet_media" not in updates:
+                return await m.reply_text(
+                    f"Usage: <code>/{cmd} Hello {{name}}, welcome to {{chat}}!</code> — "
+                    "or reply to a photo/sticker with it.",
+                    parse_mode=enums.ParseMode.HTML)
+            if not updates[key]:
+                updates.pop(key)
+            await store.update_settings(bot_id, m.chat.id, updates)
             await m.reply_text("✅ <b>Saved & greetings enabled.</b>", parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command(["save", "get", "notes", "clear"]))
@@ -896,7 +950,25 @@ class _BotHandlers:
                     continue
                 text = render_greeting(s.get("greet_text") or "", name=name,
                                        chat=chat_name, user_id=user.id)
-                await c.send_message(m.chat.id, text, parse_mode=enums.ParseMode.HTML)
+                sent = None
+                media = s.get("greet_media") or ""
+                try:
+                    if media and s.get("greet_media_type") == "photo":
+                        sent = await c.send_photo(m.chat.id, media, caption=text,
+                                                  parse_mode=enums.ParseMode.HTML)
+                    elif media and s.get("greet_media_type") == "sticker":
+                        sent = await c.send_sticker(m.chat.id, media)
+                    else:
+                        sent = await c.send_message(m.chat.id, text, parse_mode=enums.ParseMode.HTML)
+                except Exception:
+                    sent = None
+                if sent is not None and getattr(sent, "id", None):
+                    if s.get("clean_welcome") and self._last_welcome.get(m.chat.id):
+                        try:
+                            await c.delete_messages(m.chat.id, [self._last_welcome[m.chat.id]])
+                        except Exception:
+                            pass
+                    self._last_welcome[m.chat.id] = sent.id
                 if s.get("greet_dm"):
                     try:
                         await c.send_message(user.id, text, parse_mode=enums.ParseMode.HTML)
@@ -998,6 +1070,9 @@ GROUP_WORKER_COMMANDS = [
     ("stop", "Remove an auto-reply (admins)"),
     ("filters", "List auto-replies"),
     ("report", "Report a message to admins by DM"),
+    ("welcome", "Preview greetings or turn them on/off"),
+    ("resetwelcome", "Reset the welcome text (admins)"),
+    ("resetgoodbye", "Reset the goodbye text (admins)"),
     ("setwelcome", "Set the welcome text (admins)"),
     ("setgoodbye", "Set the goodbye text (admins)"),
     ("save", "Save a note: /save faq text (admins)"),
