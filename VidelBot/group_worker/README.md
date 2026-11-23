@@ -50,3 +50,12 @@ it is not a mode flag inside this worker.
   enable greetings) with `{name}` `{chat}` `{id}` placeholders.
 - Night mode (Settings → Night hours): pick the UTC window with buttons;
   during it, members' messages are quietly deleted and admins are exempt.
+
+## Stage 4 — join CAPTCHA, anti-raid shield and welcome DMs
+
+- Security settings page: join CAPTCHA (new members stay muted until
+  they tap their personal verify button) and an anti-raid join shield
+  (6 joins/minute trips a 10-minute lock; joiners during the lock are
+  banned for 15 minutes and the group is told why).
+- Greetings can also DM the welcome text to the new member
+  (best-effort; requires the member to be reachable by the bot).

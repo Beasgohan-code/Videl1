@@ -51,7 +51,42 @@ def default_settings() -> dict:
         "night_on": False,        # quiet hours: delete member messages
         "night_start": 23,        # UTC hour, inclusive
         "night_end": 7,           # UTC hour, exclusive
+        "captcha_on": False,      # new members must tap a verify button
+        "raid_on": False,         # join shield against join bursts
+        "greet_dm": False,        # also DM the welcome text to new members
     }
+
+
+class JoinWatch:
+    """Bounded join-burst tracker used by the anti-raid shield."""
+
+    def __init__(self, max_keys: int = 1000):
+        self._joins: "OrderedDict[int, list[float]]" = OrderedDict()
+        self._max = max_keys
+        self.lock_until: dict[int, float] = {}
+
+    def record(self, chat_id: int, *, limit: int = 6, window: float = 60.0,
+               lock_seconds: float = 600.0, now: float | None = None) -> bool:
+        """Record a join; True when this join tripped (or extends) a raid lock."""
+        now = time.monotonic() if now is None else now
+        chat_id = int(chat_id)
+        if self.lock_until.get(chat_id, 0) > now:
+            return True
+        bucket = [t for t in self._joins.get(chat_id, []) if now - t < window]
+        bucket.append(now)
+        self._joins[chat_id] = bucket
+        self._joins.move_to_end(chat_id)
+        while len(self._joins) > self._max:
+            self._joins.popitem(last=False)
+        if len(bucket) >= limit:
+            self.lock_until[chat_id] = now + lock_seconds
+            self._joins.pop(chat_id, None)
+            return True
+        return False
+
+    def locked(self, chat_id: int, *, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        return self.lock_until.get(int(chat_id), 0) > now
 
 
 def in_quiet_hours(hour: int, start: int, end: int) -> bool:

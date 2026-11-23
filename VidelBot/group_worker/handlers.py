@@ -8,7 +8,7 @@ group-management plugin.
 from __future__ import annotations
 
 import html
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from pyrogram import Client, enums, filters
 from pyrogram.types import (
@@ -19,7 +19,7 @@ from pyrogram.types import (
     Message,
 )
 
-from .logic import GUARD_KINDS, FloodWatch, content_violation, in_quiet_hours, match_reply, parse_duration, render_greeting
+from .logic import GUARD_KINDS, FloodWatch, JoinWatch, content_violation, in_quiet_hours, match_reply, parse_duration, render_greeting
 
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
@@ -65,6 +65,7 @@ class _BotHandlers:
         self.owner_id = int(owner_id)
         self.store = store
         self.flood = FloodWatch()
+        self.joins = JoinWatch()
 
     # ── settings (worker-style) ────────────────────────────────
     def _settings_markup(self, page: str, s: dict) -> InlineKeyboardMarkup:
@@ -81,6 +82,13 @@ class _BotHandlers:
         if page == "greet":
             return InlineKeyboardMarkup([
                 [tog(bool(s.get("greetings")), "Greetings enabled", f"gw:{bot}:tog:greetings")],
+                [tog(bool(s.get("greet_dm")), "Also DM the welcome", f"gw:{bot}:tog:greet_dm")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+            ])
+        if page == "security":
+            return InlineKeyboardMarkup([
+                [tog(bool(s.get("captcha_on")), "Join CAPTCHA (verify button)", f"gw:{bot}:tog:captcha_on")],
+                [tog(bool(s.get("raid_on")), "Anti-raid join shield", f"gw:{bot}:tog:raid_on")],
                 [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "night":
@@ -113,12 +121,19 @@ class _BotHandlers:
              tog(bool(s.get("night_on")), "Night mode", f"gw:{bot}:page:night")],
             [InlineKeyboardButton("👋 Greetings ›", callback_data=f"gw:{bot}:page:greet"),
              InlineKeyboardButton("🌙 Night hours ›", callback_data=f"gw:{bot}:page:night")],
+            [InlineKeyboardButton("🤖 Security (CAPTCHA · anti-raid) ›", callback_data=f"gw:{bot}:page:security")],
             [InlineKeyboardButton("🌊 Flood watch ›", callback_data=f"gw:{bot}:page:flood"),
              InlineKeyboardButton("❌ Close", callback_data=f"gw:{bot}:close")],
         ])
 
     def _settings_text(self, page: str, s: dict, chat_title: str = "") -> str:
         head = _bar("⚙️ SETTINGS") + (f"\n<i>{_esc(chat_title)}</i>" if chat_title else "")
+        if page == "security":
+            return (f"{head}\n\n🤖 <b>Security</b>\n"
+                    f"CAPTCHA: {'on' if s.get('captcha_on') else 'off'} · "
+                    f"Anti-raid: {'on' if s.get('raid_on') else 'off'}\n"
+                    "<i>With CAPTCHA, new members stay muted until they tap the verify button. "
+                    "The anti-raid shield temporarily bans joiners during join bursts.</i>")
         if page == "greet":
             return (f"{head}\n\n👋 <b>Greetings</b> — {'on' if s.get('greetings') else 'off'}\n"
                     "<i>Set texts with /setwelcome and /setgoodbye. "
@@ -135,6 +150,13 @@ class _BotHandlers:
         if page == "greet":
             return InlineKeyboardMarkup([
                 [tog(bool(s.get("greetings")), "Greetings enabled", f"gw:{bot}:tog:greetings")],
+                [tog(bool(s.get("greet_dm")), "Also DM the welcome", f"gw:{bot}:tog:greet_dm")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+            ])
+        if page == "security":
+            return InlineKeyboardMarkup([
+                [tog(bool(s.get("captcha_on")), "Join CAPTCHA (verify button)", f"gw:{bot}:tog:captcha_on")],
+                [tog(bool(s.get("raid_on")), "Anti-raid join shield", f"gw:{bot}:tog:raid_on")],
                 [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "night":
@@ -166,6 +188,8 @@ class _BotHandlers:
             f"💬 <b>Auto-replies</b> — {len(s.get('replies') or {})}\n"
             f"📩 <b>DM alerts</b> — {'on' if s.get('dm_alerts') else 'off'} · "
             f"🌙 <b>Night</b> — {'on' if s.get('night_on') else 'off'} · "
+            f"🤖 <b>CAPTCHA</b> — {'on' if s.get('captcha_on') else 'off'} · "
+            f"🚨 <b>Anti-raid</b> — {'on' if s.get('raid_on') else 'off'} · "
             f"📝 <b>Notes</b> — {len(s.get('notes') or {})}\n\n"
             "<i>Only group admins can change settings.</i>"
         )
@@ -325,6 +349,27 @@ class _BotHandlers:
                 return await q.message.delete()
             if not await _is_admin(c, q.message.chat.id, q.from_user.id):
                 return await q.answer("Admins only.", show_alert=True)
+            if action == "verify":
+                # data: gw:{bot}:verify:{chat}:{user}
+                try:
+                    target_chat, target_user = int(parts[3]), int(parts[4])
+                except Exception:
+                    return await q.answer("Bad verification.", show_alert=True)
+                if q.from_user.id != target_user:
+                    return await q.answer("This button is only for the new member.", show_alert=True)
+                try:
+                    await c.restrict_chat_member(
+                        target_chat, target_user,
+                        ChatPermissions(can_send_messages=True, can_send_media_messages=True,
+                                        can_send_other_messages=True, can_add_web_page_previews=True))
+                except Exception as exc:
+                    return await q.answer(f"Could not verify: {str(exc)[:60]}", show_alert=True)
+                try:
+                    await q.message.edit_text("✅ <b>Verified — welcome!</b> You can chat now.",
+                                              parse_mode=enums.ParseMode.HTML)
+                except Exception:
+                    pass
+                return await q.answer("Verified ✅")
             if action == "keep":
                 return await q.answer("Kept. ✅")
             if action in ("undo", "rep"):
@@ -382,6 +427,12 @@ class _BotHandlers:
                 elif key == "night_on":
                     s = await store.update_settings(bot_id, chat_id, {"night_on": not s.get("night_on")})
                     page = "night"
+                elif key in ("captcha_on", "raid_on"):
+                    s = await store.update_settings(bot_id, chat_id, {key: not s.get(key)})
+                    page = "security"
+                elif key == "greet_dm":
+                    s = await store.update_settings(bot_id, chat_id, {"greet_dm": not s.get("greet_dm")})
+                    page = "greet"
             elif action == "kind" and len(parts) > 3 and parts[3] in GUARD_KINDS:
                 kinds = set(s.get("guard_kinds") or [])
                 kinds.symmetric_difference_update({parts[3]})
@@ -589,14 +640,46 @@ class _BotHandlers:
         @app.on_message(filters.group & filters.new_chat_members)
         async def _joined(c, m: Message):
             s = await store.get_settings(bot_id, m.chat.id)
-            if not s.get("greetings"):
-                return
             for user in m.new_chat_members or []:
                 if getattr(user, "is_bot", False):
                     continue
-                text = render_greeting(s.get("greet_text") or "", name=_esc(user.first_name or "member"),
-                                       chat=_esc(m.chat.title or "this group"), user_id=user.id)
+                name = _esc(user.first_name or "member")
+                chat_name = _esc(m.chat.title or "this group")
+                if s.get("raid_on") and self.joins.record(m.chat.id):
+                    try:
+                        until = datetime.now(timezone.utc) + timedelta(minutes=15)
+                        await c.ban_chat_member(m.chat.id, user.id, until_date=until)
+                        await c.send_message(
+                            m.chat.id,
+                            "🚨 <b>Anti-raid shield:</b> join burst detected — new joiners are "
+                            "temporarily banned for 15 minutes.",
+                            parse_mode=enums.ParseMode.HTML)
+                    except Exception:
+                        pass
+                    continue
+                if s.get("captcha_on"):
+                    try:
+                        await c.restrict_chat_member(m.chat.id, user.id, ChatPermissions())
+                        markup = InlineKeyboardMarkup([[
+                            InlineKeyboardButton("✅ I'm human — let me chat",
+                                                 callback_data=f"gw:{bot_id}:verify:{m.chat.id}:{user.id}")]])
+                        await c.send_message(
+                            m.chat.id,
+                            f"👋 Welcome {name}! Tap the button below to verify and start chatting.",
+                            parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+                    except Exception:
+                        pass
+                    continue
+                if not s.get("greetings"):
+                    continue
+                text = render_greeting(s.get("greet_text") or "", name=name,
+                                       chat=chat_name, user_id=user.id)
                 await c.send_message(m.chat.id, text, parse_mode=enums.ParseMode.HTML)
+                if s.get("greet_dm"):
+                    try:
+                        await c.send_message(user.id, text, parse_mode=enums.ParseMode.HTML)
+                    except Exception:
+                        pass
 
         @app.on_message(filters.group & filters.left_chat_member)
         async def _left(c, m: Message):

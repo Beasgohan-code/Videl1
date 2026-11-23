@@ -152,3 +152,26 @@ def test_group_worker_quiet_hours_and_night_settings_ui():
     assert "gw:7:tog:night_on" in callbacks and "gw:7:nightstart" in callbacks
     text = handlers._settings_text("night", {**settings, "night_on": True}, "G")
     assert "23:00–07:00 UTC" in text
+
+
+def test_group_worker_join_watch_and_security_settings_ui():
+    from group_worker.handlers import _BotHandlers
+    from group_worker.logic import JoinWatch, default_settings
+
+    watch = JoinWatch()
+    for i in range(5):
+        assert watch.record(-1, now=100.0 + i) is False
+    assert watch.record(-1, now=105.0) is True          # 6th join in a minute trips
+    assert watch.locked(-1, now=106.0) is True
+    assert watch.record(-1, now=107.0) is True          # still locked
+    assert watch.locked(-1, now=10000.0) is False       # lock expired
+    assert watch.record(-2, now=100.0) is False         # other chat unaffected
+
+    settings = default_settings()
+    assert settings["captcha_on"] is False and settings["raid_on"] is False
+    handlers = _BotHandlers(bot_id=7, owner_id=1, store=None)
+    page = handlers._settings_markup("security", settings)
+    callbacks = [b.callback_data for row in page.inline_keyboard for b in row]
+    assert "gw:7:tog:captcha_on" in callbacks and "gw:7:tog:raid_on" in callbacks
+    text = handlers._settings_text("security", settings, "G")
+    assert "CAPTCHA" in text and "Anti-raid" in text
