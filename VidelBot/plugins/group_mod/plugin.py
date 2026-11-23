@@ -648,6 +648,10 @@ def build_gsettings_doc(chat_title: str, cfg: dict[str, Any]) -> tuple[Doc, Inli
         ("📝 Notes", str(len(cfg.get("notes") or {}))),
         ("🤖 CAPTCHA", "🟢 Button" if cfg.get("captcha_on") else "🔴 Off"),
         ("📜 Rules", "Configured" if cfg.get("rules") else "Not set"),
+        ("✅ URL Whitelist", str(len(cfg.get("url_whitelist") or []))),
+        ("🚫 Disabled Commands", str(len(cfg.get("disabled_commands") or []))),
+        ("🧹 Clean Welcome", "🟢 On" if cfg.get("cleanwelcome") else "🔴 Off"),
+        ("🧹 Clean Service", "🟢 On" if cfg.get("cleanservice") else "🔴 Off"),
     ], key_header="Module", val_header="State")
 
     kb = InlineKeyboardMarkup([
