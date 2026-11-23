@@ -218,3 +218,15 @@ def test_group_worker_connections_commands_registered():
     handlers = _BotHandlers(bot_id=1, owner_id=2, store=None)
     handlers.connections[99] = -100123
     assert handlers.connections[99] == -100123
+
+
+def test_group_worker_no_plugin_style_commands_and_log_defaults():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS
+    from group_worker.logic import default_settings
+
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    assert not any(n.startswith("g") and n not in ("get",) for n in names), names
+    assert "gsettings" not in names and "gban" not in names and "gcheck" not in names
+    for cmd in ("setlog", "logchannel", "unsetlog"):
+        assert cmd in names
+    assert default_settings()["log_chat"] == 0

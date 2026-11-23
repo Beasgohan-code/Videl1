@@ -55,6 +55,7 @@ def default_settings() -> dict:
         "raid_on": False,         # join shield against join bursts
         "greet_dm": False,        # also DM the welcome text to new members
         "approved": {},           # user_id (str) -> reason; exempt from automation
+        "log_chat": 0,            # chat ID receiving moderation log posts (0 = off)
     }
 
 

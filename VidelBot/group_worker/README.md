@@ -82,6 +82,13 @@ it is not a mode flag inside this worker.
 - In DM, `/connect <group_id>` links an admin to a group after verifying
   their admin status there; `/connection` shows it and `/disconnect`
   clears it. While connected, moderation commands (`/warn`, `/mute`,
-  `/kick`, `/ban`, … by user ID) act on that group, and `/gsettings`
+  `/kick`, `/ban`, … by user ID) act on that group, and `/settings` (in DM)
   shows its settings read-only (buttons still live in the group).
   Connections are process-local and re-verified on every action.
+
+## Stage 8 — DM settings naming + moderation log chat
+
+- The DM settings view is plain `/settings` (no plugin-style command
+  names anywhere in this worker; a regression test enforces that).
+- `/setlog <chat_id>` (verified by a test post), `/logchannel`, and
+  `/unsetlog` route moderation log posts to another group/channel.

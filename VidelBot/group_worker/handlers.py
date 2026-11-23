@@ -203,7 +203,8 @@ class _BotHandlers:
             f"🤝 <b>Approved</b> — {len(s.get('approved') or {})} · "
             f"🤖 <b>CAPTCHA</b> — {'on' if s.get('captcha_on') else 'off'} · "
             f"🚨 <b>Anti-raid</b> — {'on' if s.get('raid_on') else 'off'} · "
-            f"📝 <b>Notes</b> — {len(s.get('notes') or {})}\n\n"
+            f"📝 <b>Notes</b> — {len(s.get('notes') or {})} · "
+            f"📋 <b>Log chat</b> — {'set' if s.get('log_chat') else 'off'}\n\n"
             "<i>Only group admins can change settings.</i>"
         )
 
@@ -314,6 +315,18 @@ class _BotHandlers:
                                      callback_data=f"gw:{self.bot_id}:undo:{chat_id or message.chat.id}:{target_id}:{undo}"),
                 InlineKeyboardButton("✅ Keep", callback_data=f"gw:{self.bot_id}:keep"),
             ]])
+        if settings.get("log_chat"):
+            try:
+                await client.send_message(
+                    int(settings["log_chat"]),
+                    f"📋 <b>Moderation log</b>\n\n"
+                    f"Group: <b>{_esc(getattr(message.chat, 'title', None) or 'connected group')}</b>\n"
+                    f"Action: <b>{_esc(action)}</b> → {_esc(label)} ({target_id})\n"
+                    f"By: {_esc(message.from_user.first_name or message.from_user.id)}"
+                    + (f"\n📝 {_esc(reason)}" if reason else ""),
+                    parse_mode=enums.ParseMode.HTML)
+            except Exception:
+                pass
         try:
             await client.send_message(
                 self.owner_id,
@@ -369,10 +382,10 @@ class _BotHandlers:
                 f"🔌 <b>Connected to {chat_id}.</b>\n"
                 "Now moderation commands here act on that group (use user IDs): "
                 "/warn, /mute, /kick, /ban, /unwarn…\n"
-                "Check settings with /gsettings · /disconnect to stop.",
+                "Check settings with /settings here · /disconnect to stop.",
                 parse_mode=enums.ParseMode.HTML)
 
-        @app.on_message(filters.private & filters.command("gsettings"))
+        @app.on_message(filters.private & filters.command("settings"))
         async def _dm_settings(c, m: Message):
             chat_id = self.connections.get(m.from_user.id)
             if chat_id is None:
@@ -406,7 +419,8 @@ class _BotHandlers:
                 "/setwelcome /setgoodbye — greeting texts\n"
                 "/whois — member card (admins get action buttons)\n"
                 "/approve /unapprove /approved — trusted members exempt from automation\n"
-                "In DM: /connect &lt;group_id&gt; then moderate by ID; /gsettings views settings\n"
+                "In DM: /connect &lt;group_id&gt; then moderate by ID; /settings views settings\n"
+                "/setlog &lt;chat_id&gt; — post moderation logs to another chat\n"
                 "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
@@ -678,6 +692,38 @@ class _BotHandlers:
                 f"Status: <b>{_esc(getattr(status, 'value', status) or 'unknown')}</b>\n"
                 f"Warnings: <b>{warns}</b>/{s.get('warn_limit', 3)}",
                 parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+
+        @app.on_message(filters.group & filters.command(["setlog", "logchannel", "unsetlog"]))
+        async def _setlog(c, m: Message):
+            cmd = (m.command or ["logchannel"])[0].lower()
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            s = await store.get_settings(bot_id, m.chat.id)
+            if cmd == "logchannel":
+                current = s.get("log_chat") or 0
+                return await m.reply_text(
+                    f"📋 Log chat: <code>{current}</code>" if current else "📋 No log chat set. Use /setlog &lt;chat_id&gt;.",
+                    parse_mode=enums.ParseMode.HTML)
+            if cmd == "unsetlog":
+                await store.update_settings(bot_id, m.chat.id, {"log_chat": 0})
+                return await m.reply_text("📋 Log chat removed.", parse_mode=enums.ParseMode.HTML)
+            args = (m.command or [])[1:]
+            if len(args) != 1 or not args[0].lstrip("-").isdigit():
+                return await m.reply_text(
+                    "Usage: <code>/setlog -1001234567890</code>\n"
+                    "<i>Add me to the log group/channel as admin first, then run this here.</i>",
+                    parse_mode=enums.ParseMode.HTML)
+            log_chat = int(args[0])
+            try:
+                await c.send_message(log_chat, "✅ <b>Log chat connected.</b> Moderation actions will be posted here.",
+                                     parse_mode=enums.ParseMode.HTML)
+            except Exception as exc:
+                return await m.reply_text(
+                    f"❌ I couldn't post there: {_esc(str(exc)[:120])}\n"
+                    "Make sure I'm a member/admin of that chat and the ID is right.",
+                    parse_mode=enums.ParseMode.HTML)
+            await store.update_settings(bot_id, m.chat.id, {"log_chat": log_chat})
+            await m.reply_text(f"✅ <b>Log chat set:</b> <code>{log_chat}</code>", parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command(
             ["approve", "unapprove", "approval", "approved", "unapproveall"]))
@@ -967,4 +1013,7 @@ GROUP_WORKER_COMMANDS = [
     ("approval", "Check a member's approval"),
     ("approved", "List approved members"),
     ("unapproveall", "Clear all approvals (group owner)"),
+    ("setlog", "Set the moderation log chat (admins)"),
+    ("logchannel", "Show the moderation log chat"),
+    ("unsetlog", "Remove the moderation log chat (admins)"),
 ]
