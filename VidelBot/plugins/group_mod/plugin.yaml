@@ -105,7 +105,7 @@ commands:
     description: Report a replied message to group administrators
     access: user
   - name: ban
-    description: Ban a member (Rose-style, reply or user + optional reason)
+    description: Ban a member (standard, reply or user + optional reason)
     access: admin
   - name: tban
     description: Temporarily ban a member for a duration

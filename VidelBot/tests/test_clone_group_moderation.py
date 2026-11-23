@@ -1,4 +1,4 @@
-"""Independent Rose-inspired clone moderation, exercised without Telegram."""
+"""Independent Standard clone moderation, exercised without Telegram."""
 import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace

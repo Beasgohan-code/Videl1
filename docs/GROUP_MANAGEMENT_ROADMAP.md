@@ -68,9 +68,9 @@ The separate `group_knowledge` plugin adds a group-visible `/faq` knowledge base
 
 The main `group_mod` plugin adds admin-only `/gcheck`: a read-only diagnostic showing automation state (anti-raid, join requests, anti-flood, warning policy, locks, filters) plus a live snapshot of this bot's restrict/delete/pin/change-info/invite rights as granted, missing, or unknown. It performs no moderation and changes no settings. Rights can change after the snapshot; fake-client tests do not prove live Telegram behavior. This is separate from the clone worker and does not copy the Group Mode plugin into it.
 
-## Stage 11 — Rose-style restriction aliases and warning policy (implemented in branch)
+## Stage 11 — Standard restriction aliases and warning policy (implemented in branch)
 
-The main `group_mod` plugin adds Miss Rose-style restriction commands alongside the existing `/gban`, `/kick`, `/mute` family: `/ban`, `/tban <time>`, `/dban` (delete+ban), `/sban` (silent), `/unban`, `/tmute`, `/dmute`, `/smute`, `/dkick`, `/skick`, `/swarn`, `/dwarn`, `/rmwarn`, `/resetwarn`. Warning policy gains `/warnings`, `/setwarnlimit` and `/setwarnmode`; `/warnconfig` now accepts `kick|ban|tban TIME|mute|tmute TIME` and threshold enforcement applies the configured mode (plain `mute` keeps the legacy 6-hour duration). All actions reuse the existing live permission verification, admin-target immunity and unconfirmed-result handling. No Rose credits or currency were added.
+The main `group_mod` plugin adds standard restriction commands alongside the existing `/gban`, `/kick`, `/mute` family: `/ban`, `/tban <time>`, `/dban` (delete+ban), `/sban` (silent), `/unban`, `/tmute`, `/dmute`, `/smute`, `/dkick`, `/skick`, `/swarn`, `/dwarn`, `/rmwarn`, `/resetwarn`. Warning policy gains `/warnings`, `/setwarnlimit` and `/setwarnmode`; `/warnconfig` now accepts `kick|ban|tban TIME|mute|tmute TIME` and threshold enforcement applies the configured mode (plain `mute` keeps the legacy 6-hour duration). All actions reuse the existing live permission verification, admin-target immunity and unconfirmed-result handling. No credits or currency were added.
 
 ## Stage 12 — granular locks, blocklists, notes, flood and CAPTCHA (implemented in branch)
 
@@ -84,7 +84,7 @@ The main `group_mod` plugin adds Miss Rose-style restriction commands alongside 
 
 ## Stage 13 — moderation log (implemented in branch)
 
-Every confirmed moderation action is recorded to a bounded `group_modlog` collection (newest 1000 entries per chat retained): bans, mutes, kicks, warns, unbans, unmutes and all Rose-style aliases, with actor, target, reason and UTC timestamp. `/modlog` lists recent group actions and `/modhistory <user>` lists actions against a specific user; both are admin-only. Logging is best-effort and never raises into the moderation handler. This is an operational aid, not an immutable audit ledger; entries are not encrypted and persist until trimmed by the per-chat cap.
+Every confirmed moderation action is recorded to a bounded `group_modlog` collection (newest 1000 entries per chat retained): bans, mutes, kicks, warns, unbans, unmutes and all Standard aliases, with actor, target, reason and UTC timestamp. `/modlog` lists recent group actions and `/modhistory <user>` lists actions against a specific user; both are admin-only. Logging is best-effort and never raises into the moderation handler. This is an operational aid, not an immutable audit ledger; entries are not encrypted and persist until trimmed by the per-chat cap.
 
 ## Stage 14 — Bulk lock controls, URL whitelist, filter cleanup, and admin directory
 

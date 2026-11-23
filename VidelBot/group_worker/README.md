@@ -7,7 +7,7 @@ codebase:
 
 - It does **not** import or copy the main bot's `plugins/group_mod`
   plugin, and it does not modify the File Store worker in any way.
-- Normal Rose-style commands: `/settings` (worker-style settings with toggles and sub-pages),
+- Standard group commands: `/settings` (worker-style settings with toggles and sub-pages),
   `/warn`, `/unwarn`, `/mute`, `/tmute`, `/unmute`, `/kick`, `/ban`,
   `/tban`, `/sban`, `/unban`, `/purge`, with greetings, a content shield
   (links/media/stickers/forwards/bots), warns with automatic
@@ -69,3 +69,10 @@ it is not a mode flag inside this worker.
   the command message, best-effort so it can never fail the action.
 - Settings toggles use Bot API colored button styles (green/red) when
   the client supports them, with a plain-button fallback.
+
+## Stage 6 — approvals
+
+- `/approve` (reply or ID, optional reason), `/unapprove`, `/approval`,
+  `/approved`, and owner-only `/unapproveall`. Approved members are
+  exempt from the shield, flood watch and night mode (admins remain
+  governed separately). Approval state shows on the settings page.

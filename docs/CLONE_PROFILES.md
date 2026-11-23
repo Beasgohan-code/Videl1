@@ -8,15 +8,9 @@ Stop the clone, select the profile, and start it again. Music is displayed as
 unavailable: there is **no voice-chat playback runtime** in this implementation.
 
 Group Management is an independent clone worker, not a registration of the
-main bot's group plugin. It currently implements a subset inspired by the public
-[Miss Rose restrictions guide](https://missrose.org/docs/moderation/restrictions/),
-[pins guide](https://missrose.org/docs/moderation/pins/),
-[delete guide](https://missrose.org/docs/moderation/purges/),
-[warnings guide](https://missrose.org/docs/moderation/warnings/),
-[filters guide](https://missrose.org/docs/filters/),
-[rules guide](https://missrose.org/docs/basics/rules/) and
-[welcomes guide](https://missrose.org/docs/greetings/) and
-[notes guide](https://missrose.org/docs/notes/):
+main bot's group plugin. It currently implements a standard subset of
+group-management features — restrictions, pins, purges, warnings, filters,
+rules, welcomes and notes:
 
 - `/ban`, `/tban`, `/dban`, `/sban`, `/unban` (plus legacy `/gban`, `/gunban`);
 - `/mute`, `/tmute`, `/dmute`, `/smute`, `/unmute` and `/kick`, `/dkick`, `/skick`;
@@ -34,7 +28,7 @@ is plain and escaped, limited to 1,000 characters, and each clone/group pair
 holds at most 50 notes. Saving an existing name replaces it; clearing one note
 is explicit and leaves other notes and clone data intact. Notes do not support
 attachments, hashtags, private/admin-only delivery, rich formatting or scheduled
-repeats. They are not full Rose compatibility. Notes survive profile switches
+repeats. They are not full compatibility. Notes survive profile switches
 and clone soft-deletion; like other filestore collections they can be included
 in administrator backups. Clearing a note does not erase existing backups.
 
@@ -55,8 +49,8 @@ possible. Timed bans/mutes accept `m`, `h`, `d` and `w` units between **5 minute
 and 365 days**. Very long API delays or an incorrect system clock can still affect
 Telegram's interpretation of a timed restriction; verify the result in Telegram.
 Reasons are shown in non-silent responses, but are not stored or sent to a log
-channel. This is not full Rose compatibility: automatic warning actions, advanced
-filters, locks, antiflood, federations, logging, purges and other Rose features are not implemented here.
+channel. This is not full compatibility: automatic warning actions, advanced
+filters, locks, antiflood, federations, logging, purges and other features are not implemented here.
 
 Bans, mutes, kicks and their reversals require a **supergroup**, with the actor and
 bot both having Telegram restrict-members permission; delete variants also require
@@ -92,8 +86,7 @@ looks for a whole-word match, using Unicode word boundaries and case-insensitive
 matching. Where multiple triggers match, the longest wins; ties are alphabetical.
 It skips slash/dot/exclamation/hash-prefixed messages, bot senders, sender-chat
 posts, outgoing messages and text over 4,096 characters. It uses a separate
-handler group so normal clone commands still run. This is **not** full Rose
-filters: phrases, media, formatting, buttons, per-user rules and `/stop` or
+handler group so normal clone commands still run. This is **not** a complete filter system: phrases, media, formatting, buttons, per-user rules and `/stop` or
 `/stopall` are not implemented. Telegram bot privacy mode or missing group
 permissions can prevent ordinary messages from reaching the bot.
 
@@ -129,7 +122,7 @@ this bot, administrators and owners cannot be warned. Reset/removal by an admin
 also works for users who have left or become admins, given an ID or resolvable
 username. Telegram permissions and membership can change between checks.
 
-This is **not** Rose's automatic punishment system: counts never trigger bans,
+This is **not** an automatic punishment system: counts never trigger bans,
 mutes, kicks, expiry or deletion, and there are no warning histories or reasons
 stored in the database. The reason is escaped and shown once in the group; the
 original command and reply can still remain in Telegram. Counts are visible in
@@ -188,7 +181,7 @@ Welcomes start **off**. `/setwelcome TEXT` saves plain text without enabling it;
 shows an admin a preview, and `/resetwelcome` explicitly clears the custom text
 but leaves the toggle unchanged. The default welcome is used after reset.
 Templates support only `{first}`, `{id}` and `{chatname}`; names and text are
-HTML-escaped, with no Rose formatting, buttons, mentions, media or Markdown.
+HTML-escaped, with no formatting, buttons, mentions, media or Markdown.
 Text is limited to 1,000 characters, and templates with potentially excessive
 placeholder expansion are rejected. At most the first 10 entries in a join event
 are considered; bots are skipped and names/titles are limited to 128 characters.
@@ -323,7 +316,7 @@ data migration has been performed. Music remains unavailable.
 Management clones, built in the same spirit as the File Store worker
 but as its own codebase. It does not import or copy the main bot's
 `plugins/group_mod` plugin, does not modify `filestore/worker_bot/`,
-and uses normal Rose-style commands (`/settings`, `/warn`, `/mute`,
+and uses normal Standard commands (`/settings`, `/warn`, `/mute`,
 `/tmute`, `/kick`, `/ban`, `/tban`, `/sban`, `/unban`, `/purge`), settings model
 (`group_worker_settings` / `group_worker_warns`, scoped per clone bot
 and chat), guard, warn and flood logic. Stage 1 (core moderation +

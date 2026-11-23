@@ -89,7 +89,7 @@ def test_group_worker_store_is_scoped_per_clone_and_chat():
     run(scenario())
 
 
-def test_group_worker_uses_normal_rose_style_commands_and_settings_ui():
+def test_group_worker_uses_standard_commands_and_settings_ui():
     from group_worker.handlers import GROUP_WORKER_COMMANDS, _BotHandlers
     from group_worker.logic import default_settings
 
@@ -189,3 +189,19 @@ def test_group_worker_whois_card_buttons_and_styled_toggles():
     main = handlers._settings_markup("main", default_settings())
     shield_btn = main.inline_keyboard[0][0]
     assert shield_btn.callback_data == "gw:7:page:shield"
+
+
+def test_group_worker_approvals_exemption_logic():
+    from group_worker.logic import default_settings, is_approved
+
+    settings = default_settings()
+    assert settings["approved"] == {}
+    assert not is_approved(settings, 42)
+    settings["approved"] = {"42": "trusted"}
+    assert is_approved(settings, 42)
+    assert not is_approved(settings, 43)
+
+    from group_worker.handlers import GROUP_WORKER_COMMANDS
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    for cmd in ("approve", "unapprove", "approval", "approved", "unapproveall"):
+        assert cmd in names

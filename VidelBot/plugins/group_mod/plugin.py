@@ -7,7 +7,7 @@ Highlights:
     (never trusts a stale admin cache), honours anonymous group admins, and
     prevents acting against group owners/administrators.
   • Core moderation: `/gban`, `/gunban`, `/kick` (`/punch`), `/mute`, `/unmute`,
-    `/warn`, `/unwarn`, `/warns`, plus Rose-style aliases `/ban`, `/tban`,
+    `/warn`, `/unwarn`, `/warns`, plus standard aliases `/ban`, `/tban`,
     `/dban`, `/sban`, `/unban`, `/tmute`, `/dmute`, `/smute`, `/dkick`, `/skick`,
     `/swarn`, `/dwarn`, `/rmwarn`, `/resetwarn`, `/warnings`, `/setwarnlimit`,
     `/setwarnmode`.
@@ -832,7 +832,7 @@ async def _change_warns(chat_id: int, target_id: int, reason: str | None) -> lis
 
 async def _apply_restriction(client: Client, chat_id: int, target_id: int, mode: str,
                              delta: timedelta | None = None) -> bool:
-    """Apply a Rose-style restriction mode. Returns True when confirmed."""
+    """Apply a standard restriction mode. Returns True when confirmed."""
     try:
         if mode == "kick":
             await client.ban_chat_member(chat_id, target_id)

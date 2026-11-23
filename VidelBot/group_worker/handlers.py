@@ -1,6 +1,6 @@
 """Telegram handlers for one clone running the Group Management worker.
 
-Normal Rose-style commands (``/ban``, ``/kick``, ``/mute``, ``/warn`` …)
+Standard group commands (``/ban``, ``/kick``, ``/mute``, ``/warn`` …)
 with a polished worker-style settings panel at ``/settings``. This worker is its
 own codebase for clones — it shares no code with the main bot's
 group-management plugin.
@@ -19,7 +19,7 @@ from pyrogram.types import (
     Message,
 )
 
-from .logic import GUARD_KINDS, FloodWatch, JoinWatch, content_violation, in_quiet_hours, match_reply, parse_duration, render_greeting
+from .logic import GUARD_KINDS, FloodWatch, JoinWatch, content_violation, in_quiet_hours, is_approved, match_reply, parse_duration, render_greeting
 
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
@@ -199,6 +199,7 @@ class _BotHandlers:
             f"💬 <b>Auto-replies</b> — {len(s.get('replies') or {})}\n"
             f"📩 <b>DM alerts</b> — {'on' if s.get('dm_alerts') else 'off'} · "
             f"🌙 <b>Night</b> — {'on' if s.get('night_on') else 'off'} · "
+            f"🤝 <b>Approved</b> — {len(s.get('approved') or {})} · "
             f"🤖 <b>CAPTCHA</b> — {'on' if s.get('captcha_on') else 'off'} · "
             f"🚨 <b>Anti-raid</b> — {'on' if s.get('raid_on') else 'off'} · "
             f"📝 <b>Notes</b> — {len(s.get('notes') or {})}\n\n"
@@ -346,6 +347,7 @@ class _BotHandlers:
                 "/save /get /notes /clear — saved notes (#trigger works too)\n"
                 "/setwelcome /setgoodbye — greeting texts\n"
                 "/whois — member card (admins get action buttons)\n"
+                "/approve /unapprove /approved — trusted members exempt from automation\n"
                 "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
@@ -618,6 +620,47 @@ class _BotHandlers:
                 f"Warnings: <b>{warns}</b>/{s.get('warn_limit', 3)}",
                 parse_mode=enums.ParseMode.HTML, reply_markup=markup)
 
+        @app.on_message(filters.group & filters.command(
+            ["approve", "unapprove", "approval", "approved", "unapproveall"]))
+        async def _approvals(c, m: Message):
+            cmd = (m.command or ["approved"])[0].lower()
+            s = await store.get_settings(bot_id, m.chat.id)
+            approved = dict(s.get("approved") or {})
+            if cmd == "approved":
+                if not approved:
+                    return await m.reply_text("🤝 No approved members yet.", parse_mode=enums.ParseMode.HTML)
+                lines = "\n".join(
+                    f"• <code>{uid}</code>" + (f" — {_esc(r)}" if r else "")
+                    for uid, r in sorted(approved.items()))
+                return await m.reply_text(f"{_bar('🤝 APPROVED MEMBERS')}\n\n{lines}",
+                                          parse_mode=enums.ParseMode.HTML)
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            if cmd == "unapproveall":
+                status = await _status(c, m.chat.id, m.from_user.id)
+                if status != enums.ChatMemberStatus.OWNER:
+                    return await m.reply_text("🔒 Only the group owner can clear all approvals.",
+                                              parse_mode=enums.ParseMode.HTML)
+                await store.update_settings(bot_id, m.chat.id, {"approved": {}})
+                return await m.reply_text("🗑 All approvals cleared.", parse_mode=enums.ParseMode.HTML)
+            target_id, label, rest = _resolve(m)
+            if target_id is None:
+                return await m.reply_text("Reply to a member or give a user ID.", parse_mode=enums.ParseMode.HTML)
+            if cmd == "approve":
+                approved[str(target_id)] = " ".join(rest)[:100]
+                await store.update_settings(bot_id, m.chat.id, {"approved": approved})
+                return await m.reply_text(
+                    f"🤝 <b>{_esc(label)}</b> approved — exempt from shield, flood and night mode.",
+                    parse_mode=enums.ParseMode.HTML)
+            if cmd == "unapprove":
+                approved.pop(str(target_id), None)
+                await store.update_settings(bot_id, m.chat.id, {"approved": approved})
+                return await m.reply_text(f"✅ Approval removed for <b>{_esc(label)}</b>.",
+                                          parse_mode=enums.ParseMode.HTML)
+            reason = approved.get(str(target_id))
+            state = f"approved{f' — {_esc(reason)}' if reason else ''}" if str(target_id) in approved else "not approved"
+            return await m.reply_text(f"🤝 <b>{_esc(label)}</b> is {state}.", parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.command(["rules", "setrules"]))
         async def _rules(c, m: Message):
             cmd = (m.command or ["rules"])[0].lower()
@@ -784,7 +827,7 @@ class _BotHandlers:
             if hit:
                 await m.reply_text(_esc(hit[1])[:1000], parse_mode=enums.ParseMode.HTML)
                 return
-            if s.get("night_on") and in_quiet_hours(
+            if s.get("night_on") and not is_approved(s, m.from_user.id) and in_quiet_hours(
                     datetime.now(timezone.utc).hour,
                     int(s.get("night_start", 23)), int(s.get("night_end", 7))):
                 if await _status(c, m.chat.id, m.from_user.id) == enums.ChatMemberStatus.MEMBER:
@@ -793,6 +836,8 @@ class _BotHandlers:
                     except Exception:
                         pass
                 return
+            if is_approved(s, m.from_user.id):
+                return  # approved members are exempt from automated actions
             if await _status(c, m.chat.id, m.from_user.id) != enums.ChatMemberStatus.MEMBER:
                 return  # admins/restricted/unknown are never auto-punished
             violation = content_violation(m, s.get("guard_kinds") or []) if s.get("shield") else ""
@@ -855,4 +900,9 @@ GROUP_WORKER_COMMANDS = [
     ("notes", "List saved notes"),
     ("clear", "Delete a note (admins)"),
     ("whois", "Member card with admin actions"),
+    ("approve", "Approve a member: exempt from automation"),
+    ("unapprove", "Remove a member's approval"),
+    ("approval", "Check a member's approval"),
+    ("approved", "List approved members"),
+    ("unapproveall", "Clear all approvals (group owner)"),
 ]

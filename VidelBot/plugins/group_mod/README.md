@@ -25,7 +25,7 @@ The dashboard checks the bot's restrict-members permission before turning anti-f
 
 Group configuration remains keyed by chat ID and is cached locally for up to 45 seconds. Workers can temporarily disagree after changes; in-flight Telegram actions may complete after a setting is turned off. Do not mix old and new workers: old workers do not honor the new confirmation flags and can still take actions based on earlier settings. Review all groups' modes after upgrade. There is no atomic transaction across MongoDB and Telegram, and privileges or target status can change after a check. Tests use fake Telegram clients and mocked MongoDB; live Telegram, real multi-worker behavior and operational alerts remain unverified.
 
-## Rose-style restrictions
+## Standard restrictions
 
 - `/ban`, `/tban <30m|2h|7d>`, `/dban` (delete+ban), `/sban` (silent), `/unban` — ban family. `/dban` and `/sban` require a replied message.
 - `/tmute <30m|2h|7d>`, `/dmute`, `/smute` — mute family with the same delete/silent variants.
@@ -66,7 +66,7 @@ Group configuration remains keyed by chat ID and is cached locally for up to 45 
 
 ## Moderation log
 
-- Every confirmed moderation action is recorded to a bounded `group_modlog` collection (newest 1000 per chat): bans, mutes, kicks, warns, unbans, unmutes and Rose-style aliases, with actor, target, reason and UTC timestamp.
+- Every confirmed moderation action is recorded to a bounded `group_modlog` collection (newest 1000 per chat): bans, mutes, kicks, warns, unbans, unmutes and Standard aliases, with actor, target, reason and UTC timestamp.
 - `/modlog` lists recent group actions. `/modhistory <user>` lists actions against a specific user. Both are admin-only.
 - Logging is best-effort and never raises into the moderation handler. Entries are not encrypted and persist until trimmed by the per-chat cap; this is an operational aid, not an immutable audit ledger.
 

@@ -1,4 +1,4 @@
-"""Rose-inspired plain-text notes; fake Telegram and in-memory Mongo only."""
+"""Standard plain-text notes; fake Telegram and in-memory Mongo only."""
 import asyncio
 from types import SimpleNamespace
 

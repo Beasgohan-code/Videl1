@@ -54,7 +54,12 @@ def default_settings() -> dict:
         "captcha_on": False,      # new members must tap a verify button
         "raid_on": False,         # join shield against join bursts
         "greet_dm": False,        # also DM the welcome text to new members
+        "approved": {},           # user_id (str) -> reason; exempt from automation
     }
+
+
+def is_approved(settings: dict, user_id: int) -> bool:
+    return str(int(user_id)) in (settings.get("approved") or {})
 
 
 class JoinWatch:
