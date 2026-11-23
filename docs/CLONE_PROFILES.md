@@ -323,8 +323,8 @@ data migration has been performed. Music remains unavailable.
 Management clones, built in the same spirit as the File Store worker
 but as its own codebase. It does not import or copy the main bot's
 `plugins/group_mod` plugin, does not modify `filestore/worker_bot/`,
-and uses its own commands (`/panel`, `/modwarn`, `/modmute`, `/modkick`,
-`/modban`, `/modunban`, `/modpurge`), settings model
+and uses normal Rose-style commands (`/panel`, `/warn`, `/mute`,
+`/tmute`, `/kick`, `/ban`, `/tban`, `/sban`, `/unban`, `/purge`), settings model
 (`group_worker_settings` / `group_worker_warns`, scoped per clone bot
 and chat), guard, warn and flood logic. Stage 1 (core moderation +
 greetings) is implemented and unit-tested. It is not wired into

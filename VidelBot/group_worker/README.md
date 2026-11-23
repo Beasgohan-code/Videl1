@@ -7,10 +7,11 @@ codebase:
 
 - It does **not** import or copy the main bot's `plugins/group_mod`
   plugin, and it does not modify the File Store worker in any way.
-- Commands are its own: `/panel` (control room with buttons),
-  `/modwarn`, `/modmute`, `/modkick`, `/modban`, `/modunban`,
-  `/modpurge`, with greetings, a content shield (links/media/stickers/
-  forwards/bots), warns with automatic mute/kick/ban, and a flood watch.
+- Normal Rose-style commands: `/panel` (polished button control room),
+  `/warn`, `/unwarn`, `/mute`, `/tmute`, `/unmute`, `/kick`, `/ban`,
+  `/tban`, `/sban`, `/unban`, `/purge`, with greetings, a content shield
+  (links/media/stickers/forwards/bots), warns with automatic
+  mute/kick/ban, and a flood watch.
 - Settings and warns live in `group_worker_settings` /
   `group_worker_warns`, scoped by (clone bot, chat), so clones are
   isolated from each other and from File Store data.

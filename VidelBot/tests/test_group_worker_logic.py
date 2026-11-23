@@ -87,3 +87,23 @@ def test_group_worker_store_is_scoped_per_clone_and_chat():
         assert await store.warn_count(222, -5, 9) == 0  # other clone unaffected
 
     run(scenario())
+
+
+def test_group_worker_uses_normal_rose_style_commands_and_polished_panel():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS, _BotHandlers
+    from group_worker.logic import default_settings
+
+    names = [name for name, _ in GROUP_WORKER_COMMANDS]
+    assert not any(name.startswith("mod") for name in names)
+    for expected in ("ban", "tban", "sban", "unban", "kick", "mute", "tmute",
+                     "unmute", "warn", "unwarn", "purge", "panel"):
+        assert expected in names
+
+    handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
+    markup = handlers._panel_markup(default_settings())
+    labels = [btn.text for row in markup.inline_keyboard for btn in row]
+    assert any("Shield" in label for label in labels)
+    assert any("links" in label for label in labels)
+    assert any("Flood watch" in label for label in labels)
+    callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+    assert all(cb.startswith("gw:42:") for cb in callbacks)
