@@ -129,3 +129,11 @@ copied, so no foreign credits or license encumbrance):
 - `/export` posts the group's settings as a JSON backup; `/import`
   (inline or by reply) validates types and bounds against the known
   settings model and applies nothing when validation fails.
+
+## Stage 13 — individual sticker blocklist
+
+- Reply to any sticker with `/blocksticker` to block just that sticker
+  (matched by Telegram's stable file_unique_id); `/unblocksticker`
+  reverses it and `/blockedstickers` shows the count. Blocked stickers
+  are deleted even when the broader shield is off; admins and approved
+  members keep their existing exemptions.

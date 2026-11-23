@@ -60,6 +60,7 @@ def default_settings() -> dict:
         "greet_media_type": "",   # photo | sticker
         "clean_welcome": False,   # delete the previous welcome when a new one posts
         "clean_service": False,   # delete Telegram service messages (joins, pins…)
+        "blocked_stickers": [],   # sticker file_unique_ids blocked individually
         "lang": "en",             # UI language: en | hi | es
     }
 
@@ -138,6 +139,15 @@ def in_quiet_hours(hour: int, start: int, end: int) -> bool:
     if start < end:
         return start <= hour < end
     return hour >= start or hour < end
+
+
+def sticker_blocked(message, blocked) -> bool:
+    """True when the message is a sticker whose unique ID is blocklisted."""
+    sticker = getattr(message, "sticker", None)
+    if sticker is None:
+        return False
+    unique = getattr(sticker, "file_unique_id", None)
+    return bool(unique) and unique in set(blocked or [])
 
 
 def match_reply(text: str, replies: dict) -> tuple[str, str] | None:

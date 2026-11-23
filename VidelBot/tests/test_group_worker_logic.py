@@ -371,3 +371,21 @@ def test_group_worker_afk_store_and_import_sanitizer():
     from group_worker.handlers import GROUP_WORKER_COMMANDS
     names = [n for n, _ in GROUP_WORKER_COMMANDS]
     assert "afk" in names and "export" in names and "import" in names
+
+
+def test_group_worker_sticker_blocklist_logic():
+    from types import SimpleNamespace
+
+    from group_worker.handlers import GROUP_WORKER_COMMANDS
+    from group_worker.logic import default_settings, sticker_blocked
+
+    assert default_settings()["blocked_stickers"] == []
+    sticker_msg = SimpleNamespace(sticker=SimpleNamespace(file_unique_id="AgADx"))
+    text_msg = SimpleNamespace(sticker=None, text="hi")
+    assert sticker_blocked(sticker_msg, ["AgADx"]) is True
+    assert sticker_blocked(sticker_msg, ["other"]) is False
+    assert sticker_blocked(text_msg, ["AgADx"]) is False
+
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    for cmd in ("blocksticker", "unblocksticker", "blockedstickers"):
+        assert cmd in names

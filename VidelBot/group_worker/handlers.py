@@ -20,7 +20,7 @@ from pyrogram.types import (
     Message,
 )
 
-from .logic import GUARD_KINDS, LANGUAGES, FloodWatch, JoinWatch, content_violation, default_settings, in_quiet_hours, is_approved, match_reply, parse_duration, render_greeting, sanitize_settings_import, tr
+from .logic import GUARD_KINDS, LANGUAGES, FloodWatch, JoinWatch, content_violation, default_settings, in_quiet_hours, is_approved, match_reply, parse_duration, render_greeting, sanitize_settings_import, sticker_blocked, tr
 
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
@@ -436,6 +436,7 @@ class _BotHandlers:
                 "/setlog &lt;chat_id&gt; — post moderation logs to another chat\n"
                 "/modlog — recent moderation actions\n"
                 "/afk — mark yourself away; /export /import — settings backup\n"
+                "/blocksticker — (reply to a sticker) block just that sticker\n"
                 "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
@@ -854,6 +855,35 @@ class _BotHandlers:
             state = f"approved{f' — {_esc(reason)}' if reason else ''}" if str(target_id) in approved else "not approved"
             return await m.reply_text(f"🤝 <b>{_esc(label)}</b> is {state}.", parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message(filters.group & filters.command(
+            ["blocksticker", "unblocksticker", "blockedstickers"]))
+        async def _stickers(c, m: Message):
+            cmd = (m.command or ["blockedstickers"])[0].lower()
+            s = await store.get_settings(bot_id, m.chat.id)
+            blocked = list(s.get("blocked_stickers") or [])
+            if cmd == "blockedstickers":
+                return await m.reply_text(
+                    f"🚫 <b>{len(blocked)}</b> sticker(s) blocked in this group.",
+                    parse_mode=enums.ParseMode.HTML)
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            replied = m.reply_to_message
+            sticker = getattr(replied, "sticker", None) if replied else None
+            if sticker is None:
+                return await m.reply_text("Reply to the sticker you want to manage.",
+                                          parse_mode=enums.ParseMode.HTML)
+            unique = sticker.file_unique_id
+            if cmd == "blocksticker":
+                if unique not in blocked:
+                    blocked.append(unique)
+                    await store.update_settings(bot_id, m.chat.id, {"blocked_stickers": blocked})
+                return await m.reply_text("🚫 Sticker blocked — I'll delete it here from now on.",
+                                          parse_mode=enums.ParseMode.HTML)
+            if unique in blocked:
+                blocked.remove(unique)
+                await store.update_settings(bot_id, m.chat.id, {"blocked_stickers": blocked})
+            return await m.reply_text("✅ Sticker unblocked.", parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.command("afk"))
         async def _afk(c, m: Message):
             parts = (m.text or "").split(maxsplit=1)
@@ -1150,6 +1180,12 @@ class _BotHandlers:
                 return  # approved members are exempt from automated actions
             if await _status(c, m.chat.id, m.from_user.id) != enums.ChatMemberStatus.MEMBER:
                 return  # admins/restricted/unknown are never auto-punished
+            if sticker_blocked(m, s.get("blocked_stickers") or []):
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
+                return
             violation = content_violation(m, s.get("guard_kinds") or []) if s.get("shield") else ""
             flooded = bool(s.get("flood_limit")) and self.flood.hit(
                 m.chat.id, m.from_user.id,
@@ -1215,6 +1251,9 @@ GROUP_WORKER_COMMANDS = [
     ("whois", "Member card with admin actions"),
     ("language", "Show or set my language"),
     ("afk", "Mark yourself AFK: /afk reason"),
+    ("blocksticker", "Block the replied sticker (admins)"),
+    ("unblocksticker", "Unblock the replied sticker (admins)"),
+    ("blockedstickers", "Count blocked stickers"),
     ("export", "Back up this group's settings (admins)"),
     ("import", "Restore a settings backup (admins)"),
     ("connect", "DM: connect to a group: /connect <group_id>"),
