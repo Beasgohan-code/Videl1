@@ -1,7 +1,7 @@
 """Telegram handlers for one clone running the Group Management worker.
 
 Normal Rose-style commands (``/ban``, ``/kick``, ``/mute``, ``/warn`` …)
-with a polished button control room at ``/panel``. This worker is its
+with a polished worker-style settings panel at ``/settings``. This worker is its
 own codebase for clones — it shares no code with the main bot's
 group-management plugin.
 """
@@ -66,46 +66,66 @@ class _BotHandlers:
         self.store = store
         self.flood = FloodWatch()
 
-    # ── control room ───────────────────────────────────────────────
-    def _panel_markup(self, s: dict) -> InlineKeyboardMarkup:
-        kinds = set(s.get("guard_kinds") or [])
-        kind_rows = []
-        row = []
-        for kind in GUARD_KINDS:
-            mark = _ON if kind in kinds else _OFF
-            row.append(InlineKeyboardButton(f"{mark} {kind}", callback_data=f"gw:{self.bot_id}:kind:{kind}"))
-            if len(row) == 3:
-                kind_rows.append(row)
-                row = []
-        if row:
-            kind_rows.append(row)
-        flood_on = bool(s.get("flood_limit"))
+    # ── settings (worker-style) ────────────────────────────────
+    def _settings_markup(self, page: str, s: dict) -> InlineKeyboardMarkup:
+        bot = self.bot_id
+        def tog(on, label, data):
+            return InlineKeyboardButton(f"{'✅' if on else '▫️'} {label}", callback_data=data)
+        if page == "shield":
+            kinds = set(s.get("guard_kinds") or [])
+            rows = [[tog(kind in kinds, kind.title(), f"gw:{bot}:kind:{kind}")]
+                    for kind in GUARD_KINDS]
+            rows.append([tog(bool(s.get("shield")), "Shield enabled", f"gw:{bot}:tog:shield")])
+            rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")])
+            return InlineKeyboardMarkup(rows)
+        if page == "warn":
+            return InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"➖ {s.get('warn_limit', 3)} warns ➕", callback_data=f"gw:{bot}:warnlimit")],
+                [InlineKeyboardButton(f"⚠️ On limit: {s.get('warn_action', 'mute')}", callback_data=f"gw:{bot}:warnaction")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+            ])
+        if page == "flood":
+            on = bool(s.get("flood_limit"))
+            flood_label = f"Flood watch · {s['flood_limit']} msgs/{s['flood_window']:g}s" if on else "Flood watch"
+            return InlineKeyboardMarkup([
+                [tog(on, flood_label, f"gw:{bot}:tog:flood")],
+                [InlineKeyboardButton(f"🌊 On flood: {s.get('flood_action', 'mute')}", callback_data=f"gw:{bot}:floodaction")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+            ])
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"{_ON if s.get('shield') else _OFF} Shield",
-                                  callback_data=f"gw:{self.bot_id}:shield"),
-             InlineKeyboardButton(f"{_ON if s.get('greetings') else _OFF} Greetings",
-                                  callback_data=f"gw:{self.bot_id}:greet")],
-            *kind_rows,
-            [InlineKeyboardButton(f"{_ON if flood_on else _OFF} Flood watch",
-                                  callback_data=f"gw:{self.bot_id}:flood"),
-             InlineKeyboardButton(f"⚠️ Warn act: {s.get('warn_action', 'mute')}",
-                                  callback_data=f"gw:{self.bot_id}:warnaction")],
-            [InlineKeyboardButton("❌ Close", callback_data=f"gw:{self.bot_id}:close")],
+            [tog(bool(s.get("shield")), "Shield", f"gw:{bot}:page:shield"),
+             tog(bool(s.get("greetings")), "Greetings", f"gw:{bot}:tog:greetings")],
+            [InlineKeyboardButton("🛡 Shield types ›", callback_data=f"gw:{bot}:page:shield"),
+             InlineKeyboardButton("⚠️ Warnings ›", callback_data=f"gw:{bot}:page:warn")],
+            [InlineKeyboardButton("🌊 Flood watch ›", callback_data=f"gw:{bot}:page:flood"),
+             InlineKeyboardButton("❌ Close", callback_data=f"gw:{bot}:close")],
         ])
 
-    async def _panel_text(self, chat_id: int) -> str:
-        s = await self.store.get_settings(self.bot_id, chat_id)
-        kinds = ", ".join(s.get("guard_kinds") or []) or "nothing yet"
-        flood = (f"{s['flood_limit']} msgs / {s['flood_window']:g}s → {s['flood_action']}"
+    def _settings_text(self, page: str, s: dict, chat_title: str = "") -> str:
+        head = _bar("⚙️ SETTINGS") + (f"\n<i>{_esc(chat_title)}</i>" if chat_title else "")
+        if page == "shield":
+            kinds = ", ".join(s.get("guard_kinds") or []) or "none"
+            return (f"{head}\n\n🛡 <b>Shield</b> — {'on' if s.get('shield') else 'off'}\n"
+                    f"Blocking: {_esc(kinds)}\n\n<i>Tap a type to toggle it. Turning a type on enables the shield.</i>")
+        if page == "warn":
+            return (f"{head}\n\n⚠️ <b>Warnings</b>\n"
+                    f"Members are {s.get('warn_action', 'mute')}d after <b>{s.get('warn_limit', 3)}</b> warns.\n"
+                    "<i>Tap the counter to change the limit (2–10), or the action to cycle mute → kick → ban.</i>")
+        if page == "flood":
+            state = (f"{s['flood_limit']} messages in {s['flood_window']:g}s → {s['flood_action']}"
+                     if s.get("flood_limit") else "off")
+            return (f"{head}\n\n🌊 <b>Flood watch</b> — {_esc(state)}\n"
+                    "<i>Members (never admins) who flood are acted on automatically.</i>")
+        kinds = ", ".join(s.get("guard_kinds") or []) or "none"
+        flood = (f"{s['flood_limit']}/{s['flood_window']:g}s → {s['flood_action']}"
                  if s.get("flood_limit") else "off")
         return (
-            f"{_bar('🛡️ GROUP CONTROL ROOM')}\n\n"
-            f"🛡 <b>Shield</b> — {'on' if s.get('shield') else 'off'} · guarding: {_esc(kinds)}\n"
+            f"{head}\n\n"
+            f"🛡 <b>Shield</b> — {'on' if s.get('shield') else 'off'} · {_esc(kinds)}\n"
             f"👋 <b>Greetings</b> — {'on' if s.get('greetings') else 'off'}\n"
-            f"⚠️ <b>Warnings</b> — {s.get('warn_limit', 3)} warns → {s.get('warn_action', 'mute')}\n"
+            f"⚠️ <b>Warnings</b> — {s.get('warn_limit', 3)} → {s.get('warn_action', 'mute')}\n"
             f"🌊 <b>Flood watch</b> — {_esc(flood)}\n\n"
-            "<i>Tap a button to change settings. Moderation: reply to a member with "
-            "/warn, /mute, /kick or /ban — or use an ID: /ban 123456 spam.</i>"
+            "<i>Only group admins can change settings.</i>"
         )
 
     # ── moderation core ────────────────────────────────────────────
@@ -194,7 +214,7 @@ class _BotHandlers:
         async def _start(_c, m: Message):
             await m.reply_text(
                 f"{_bar('🛡️ GROUP MANAGEMENT')}\n\n"
-                "Add me to a group, make me an admin, then open /panel there.\n"
+                "Add me to a group, make me an admin, then open /settings there.\n"
                 "I can greet members, guard the chat, and help admins with "
                 "/warn, /mute, /kick and /ban.",
                 parse_mode=enums.ParseMode.HTML)
@@ -209,49 +229,69 @@ class _BotHandlers:
                 "/kick — remove (can rejoin)\n"
                 "/ban /tban 7d /sban /unban — ban, timed, silent, undo\n"
                 "/purge 20 — delete recent messages\n"
-                "/panel — button control room\n\n"
+                "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
 
-        @app.on_message(filters.group & filters.command("panel"))
-        async def _panel(c, m: Message):
+        @app.on_message(filters.group & filters.command("settings"))
+        async def _settings(c, m: Message):
             if not await _is_admin(c, m.chat.id, m.from_user.id):
                 return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
             s = await store.get_settings(bot_id, m.chat.id)
-            await m.reply_text(await self._panel_text(m.chat.id),
-                               reply_markup=self._panel_markup(s),
+            await m.reply_text(self._settings_text("main", s, m.chat.title or ""),
+                               reply_markup=self._settings_markup("main", s),
                                parse_mode=enums.ParseMode.HTML)
 
         @app.on_callback_query(filters.regex(rf"^gw:{bot_id}:"))
-        async def _panel_cb(c, q: CallbackQuery):
+        async def _settings_cb(c, q: CallbackQuery):
             parts = (q.data or "").split(":")
             action = parts[2] if len(parts) > 2 else ""
             if action == "close":
                 return await q.message.delete()
             if not await _is_admin(c, q.message.chat.id, q.from_user.id):
                 return await q.answer("Admins only.", show_alert=True)
-            s = await store.get_settings(bot_id, q.message.chat.id)
-            if action == "shield":
-                s = await store.update_settings(bot_id, q.message.chat.id, {"shield": not s.get("shield")})
-            elif action == "greet":
-                s = await store.update_settings(bot_id, q.message.chat.id, {"greetings": not s.get("greetings")})
+            chat_id = q.message.chat.id
+            s = await store.get_settings(bot_id, chat_id)
+            page = "main"
+            if action == "page" and len(parts) > 3:
+                page = parts[3]
+            elif action == "tog" and len(parts) > 3:
+                key = parts[3]
+                if key == "shield":
+                    s = await store.update_settings(bot_id, chat_id, {"shield": not s.get("shield")})
+                    page = "shield"
+                elif key == "greetings":
+                    s = await store.update_settings(bot_id, chat_id, {"greetings": not s.get("greetings")})
+                elif key == "flood":
+                    s = await store.update_settings(bot_id, chat_id,
+                                                    {"flood_limit": 0 if s.get("flood_limit") else 6})
+                    page = "flood"
             elif action == "kind" and len(parts) > 3 and parts[3] in GUARD_KINDS:
                 kinds = set(s.get("guard_kinds") or [])
                 kinds.symmetric_difference_update({parts[3]})
-                s = await store.update_settings(bot_id, q.message.chat.id,
+                s = await store.update_settings(bot_id, chat_id,
                                                 {"guard_kinds": sorted(kinds), "shield": True})
-            elif action == "flood":
-                s = await store.update_settings(
-                    bot_id, q.message.chat.id,
-                    {"flood_limit": 0 if s.get("flood_limit") else 6})
+                page = "shield"
             elif action == "warnaction":
                 order = ["mute", "kick", "ban"]
                 nxt = order[(order.index(s.get("warn_action", "mute")) + 1) % len(order)]
-                s = await store.update_settings(bot_id, q.message.chat.id, {"warn_action": nxt})
+                s = await store.update_settings(bot_id, chat_id, {"warn_action": nxt})
+                page = "warn"
+            elif action == "warnlimit":
+                limit = int(s.get("warn_limit", 3)) + 1
+                if limit > 10:
+                    limit = 2
+                s = await store.update_settings(bot_id, chat_id, {"warn_limit": limit})
+                page = "warn"
+            elif action == "floodaction":
+                order = ["mute", "kick", "ban"]
+                nxt = order[(order.index(s.get("flood_action", "mute")) + 1) % len(order)]
+                s = await store.update_settings(bot_id, chat_id, {"flood_action": nxt})
+                page = "flood"
             else:
                 return await q.answer("Unknown control.", show_alert=True)
-            await q.message.edit_text(await self._panel_text(q.message.chat.id),
-                                      reply_markup=self._panel_markup(s),
+            await q.message.edit_text(self._settings_text(page, s, q.message.chat.title or ""),
+                                      reply_markup=self._settings_markup(page, s),
                                       parse_mode=enums.ParseMode.HTML)
             await q.answer("Saved ✅")
 
@@ -343,7 +383,7 @@ def attach_group_handlers(app: Client, *, bot_id: int, owner_id: int, store) -> 
 GROUP_WORKER_COMMANDS = [
     ("start", "About this group-management clone"),
     ("help", "List group commands"),
-    ("panel", "Open the group control room (admins)"),
+    ("settings", "Group settings & switches (admins)"),
     ("warn", "Warn a member (reply or user ID)"),
     ("unwarn", "Clear a member's warnings"),
     ("mute", "Mute a member (reply or user ID)"),

@@ -89,21 +89,30 @@ def test_group_worker_store_is_scoped_per_clone_and_chat():
     run(scenario())
 
 
-def test_group_worker_uses_normal_rose_style_commands_and_polished_panel():
+def test_group_worker_uses_normal_rose_style_commands_and_settings_ui():
     from group_worker.handlers import GROUP_WORKER_COMMANDS, _BotHandlers
     from group_worker.logic import default_settings
 
     names = [name for name, _ in GROUP_WORKER_COMMANDS]
     assert not any(name.startswith("mod") for name in names)
-    for expected in ("ban", "tban", "sban", "unban", "kick", "mute", "tmute",
-                     "unmute", "warn", "unwarn", "purge", "panel"):
+    assert "panel" not in names
+    for expected in ("settings", "ban", "tban", "sban", "unban", "kick", "mute",
+                     "tmute", "unmute", "warn", "unwarn", "purge"):
         assert expected in names
 
     handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
-    markup = handlers._panel_markup(default_settings())
-    labels = [btn.text for row in markup.inline_keyboard for btn in row]
+    settings = default_settings()
+    main = handlers._settings_markup("main", settings)
+    labels = [btn.text for row in main.inline_keyboard for btn in row]
     assert any("Shield" in label for label in labels)
-    assert any("links" in label for label in labels)
-    assert any("Flood watch" in label for label in labels)
-    callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+    assert any("Greetings" in label for label in labels)
+    callbacks = [btn.callback_data for row in main.inline_keyboard for btn in row]
     assert all(cb.startswith("gw:42:") for cb in callbacks)
+
+    shield = handlers._settings_markup("shield", {**settings, "guard_kinds": ["links"]})
+    shield_labels = [btn.text for row in shield.inline_keyboard for btn in row]
+    assert any(label.startswith("✅") and "Links" in label for label in shield_labels)
+    assert any("Back" in label for label in shield_labels)
+
+    text = handlers._settings_text("main", settings, "Dev <Hub>")
+    assert "SETTINGS" in text and "admins" in text and "<Hub>" not in text

@@ -7,7 +7,7 @@ codebase:
 
 - It does **not** import or copy the main bot's `plugins/group_mod`
   plugin, and it does not modify the File Store worker in any way.
-- Normal Rose-style commands: `/panel` (polished button control room),
+- Normal Rose-style commands: `/settings` (worker-style settings with toggles and sub-pages),
   `/warn`, `/unwarn`, `/mute`, `/tmute`, `/unmute`, `/kick`, `/ban`,
   `/tban`, `/sban`, `/unban`, `/purge`, with greetings, a content shield
   (links/media/stickers/forwards/bots), warns with automatic
