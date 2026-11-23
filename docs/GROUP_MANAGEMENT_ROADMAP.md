@@ -105,3 +105,12 @@ Status: implemented in the regular-bot `group_mod` plugin (v1.4.0); the protecte
 - `/cleanwelcome` now actually deletes the previous welcome when a new one is sent (both plain and CAPTCHA flows record the welcome message id); `/cleanservice` deletes service messages when enabled.
 - `/export` emits portable group settings JSON; `/import` validates types, bounds sizes, re-validates lock names, clamps numeric ranges, discards unknown keys, and applies nothing on invalid payloads.
 - Evidence: focused and full backend tests pass with mocked Telegram clients; no live Telegram or production claim is made.
+
+## Stage 16 — Per-group command disabling and permanent pins
+
+Status: implemented in the regular-bot `group_mod` plugin (v1.5.0); the protected clone worker remains untouched.
+
+- `/disable`, `/enable`, and `/disabled` manage a per-group disabled-command set enforced by the passive guard: non-admin invocations are deleted, administrators are exempt, unknown member status fails safe (no deletion), and the management commands cannot disable themselves.
+- `/permapin` sends and pins a permanent announcement with honest unconfirmed-pin reporting.
+- Disabled commands participate in settings export/import with validation (name pattern + protected-name exclusion).
+- Evidence: focused and full backend tests pass with mocked Telegram clients; no live Telegram or production claim is made.

@@ -75,3 +75,8 @@ Group configuration remains keyed by chat ID and is cached locally for up to 45 
 - `/setgoodbye <message>` saves and enables a goodbye template; `/resetgoodbye` restores the default.
 - `/cleanwelcome on|off` deletes the previous welcome message when a new welcome is sent. `/cleanservice on|off` deletes Telegram service messages (joins, leaves, pins, title/photo changes).
 - `/export` prints the group's portable settings as JSON (greetings, rules, warns, locks, filters, blocklist, notes, antiflood, CAPTCHA, whitelist, cleaning). `/import` accepts that JSON inline or as a reply: payloads are strictly validated (typed fields, bounded sizes, locks re-checked against the known list, numeric ranges clamped) and unknown keys are discarded — nothing is applied when validation fails.
+
+## Command disabling and permanent pins
+
+- `/disable <commands>` blocks non-admins from using those bot commands in this group (their invocation is deleted); `/enable <commands>` restores them and `/disabled` lists the current set. Admins are always exempt, and `/disable`, `/enable`, `/disabled` themselves cannot be disabled. The set is included in settings export/import.
+- `/permapin <message>` sends a permanent announcement through the bot and pins it, reporting failure honestly when Telegram does not confirm the pin.

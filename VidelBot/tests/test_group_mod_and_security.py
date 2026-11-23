@@ -912,3 +912,38 @@ def test_setgoodbye_clean_toggles_and_settings_export_import():
     assert cfg["locks"] == ["url"] and cfg["warn_limit"] == 20
     assert cfg["notes"] == {"faq": "Read the FAQ"}
     assert "evil" not in cfg or cfg.get("evil") is None
+
+
+def test_disable_enable_commands_guard_and_permapin():
+    from plugins.group_mod import plugin as gmod
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        20: (enums.ChatMemberStatus.MEMBER, None),
+    })
+    disabled = _grp_msg("/disable rules notes disable", uid=10, client=c)
+    run(gmod.disable_cmd(c, disabled))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["disabled_commands"] == ["notes", "rules"]  # protected names refused
+
+    member_msg = _grp_msg("/rules", uid=20, client=c)
+    run(gmod.group_passive_guard(c, member_msg))
+    assert member_msg.deleted is True or c.called("delete_messages") or getattr(member_msg, "deleted", False)
+
+    enabled = _grp_msg("/enable rules", uid=10, client=c)
+    run(gmod.disable_cmd(c, enabled))
+    assert run(gmod.get_group_cfg(-100888))["disabled_commands"] == ["notes"]
+
+    listed = _grp_msg("/disabled", uid=20, client=c)
+    run(gmod.disable_cmd(c, listed))
+    assert "notes" in listed.replies[-1]
+
+    pin = _grp_msg("/permapin Read the rules please", uid=10, client=c)
+    run(gmod.permapin_cmd(c, pin))
+    assert c.called("send_message") and c.called("pin_chat_message")
+    assert "pinned" in pin.replies[-1].lower()
+
+    denied = _grp_msg("/permapin nope", uid=20, client=c)
+    run(gmod.permapin_cmd(c, denied))
+    assert "permission" in denied.replies[-1].lower()

@@ -95,7 +95,7 @@ GROUP_ANON_COMMANDS = frozenset({
     "captcha", "captchamode", "setcaptchatext", "resetcaptchatext",
     "pin", "unpin", "purge",
     "modlog", "modhistory",
-    "setgoodbye", "resetgoodbye", "cleanwelcome", "cleanservice", "export", "import",
+    "setgoodbye", "resetgoodbye", "cleanwelcome", "cleanservice", "export", "import", "disable", "enable", "disabled", "permapin",
     "antiraid",
 })
 
@@ -150,6 +150,7 @@ def _default_cfg(chat_id: int) -> dict[str, Any]:
         "blocklist_mode": "nothing",
         "blocklist_delete": True,
         "notes": {},  # trigger -> text
+        "disabled_commands": [],  # bot commands blocked for non-admins
         "captcha_on": False,
         "captcha_text": "Click here to prove you're human",
         "cleanwelcome": False,
@@ -1700,7 +1701,7 @@ _EXPORT_FIELDS = (
     "warn_limit", "warn_action", "locks", "lockwarns", "lock_modes",
     "filters", "blocklist", "blocklist_mode", "blocklist_delete", "notes",
     "antiflood", "flood_limit", "flood_window", "flood_mode", "clearflood",
-    "captcha_on", "captcha_text", "url_whitelist", "cleanwelcome", "cleanservice",
+    "captcha_on", "captcha_text", "url_whitelist", "cleanwelcome", "cleanservice", "disabled_commands",
 )
 
 
@@ -1748,6 +1749,8 @@ def _sanitize_import(data: Any) -> dict[str, Any] | None:
     # Re-validate semantic fields so a hostile payload cannot smuggle bad state.
     if "locks" in out:
         out["locks"] = [lock for lock in out["locks"] if lock in VALID_LOCKS]
+    if "disabled_commands" in out:
+        out["disabled_commands"] = sorted({c.lower() for c in out["disabled_commands"] if re.fullmatch(r"[a-z][a-z0-9_]{0,31}", c.lower())} - _PROTECTED_COMMANDS)
     if "warn_limit" in out:
         out["warn_limit"] = max(1, min(20, int(out["warn_limit"])))
     if "flood_limit" in out:
@@ -2289,6 +2292,68 @@ async def captcha_cmd(client: Client, message: Message):
     return await message.reply_text(Doc("🤖", "CAPTCHA Text Updated").status("success", text, "Plain text only.").classic(), parse_mode=enums.ParseMode.HTML)
 
 
+_PROTECTED_COMMANDS = frozenset({"disable", "enable", "disabled"})
+
+
+@Client.on_message(filters.group & filters.command(["disable", "enable", "disabled"]) & PLG_FILTER)
+async def disable_cmd(client: Client, message: Message):
+    cmd = (message.command or ["disabled"])[0].lower()
+    cfg = await get_group_cfg(message.chat.id)
+    current = sorted({str(c).lower() for c in (cfg.get("disabled_commands") or [])})
+    if cmd == "disabled":
+        doc = Doc("🚫", "Disabled Commands", message.chat.title or "Group")
+        doc.status("info", ", ".join(current) if current else "None", "Disabled commands are deleted when non-admins use them. Admins are exempt.")
+        return await rich.reply(message, doc)
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    names = []
+    for raw in (message.command or [])[1:]:
+        name = raw.lower().lstrip("/").split("@", 1)[0]
+        if re.fullmatch(r"[a-z][a-z0-9_]{0,31}", name) and name not in _PROTECTED_COMMANDS:
+            names.append(name)
+    if not names:
+        return await rich.reply(message, Doc("🚫", "Disabled Commands").status("warning", "No valid commands supplied", "Example: /disable rules notes. The disable/enable commands themselves cannot be disabled."))
+    if cmd == "disable":
+        updated = sorted(set(current) | set(names))
+        verb = "Disabled"
+    else:
+        updated = sorted(set(current) - set(names))
+        verb = "Re-enabled"
+    await update_group_cfg(message.chat.id, {"disabled_commands": updated})
+    return await message.reply_text(
+        Doc("🚫", f"Commands {verb}").status("success", ", ".join(names), f"Currently disabled: {', '.join(updated) or 'None'}").classic(),
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.group & filters.command(["permapin"]) & PLG_FILTER)
+async def permapin_cmd(client: Client, message: Message):
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_pin_messages",
+        is_anon_admin=_is_anon_group_admin(message),
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    if not arg:
+        return await rich.reply(message, Doc("📌", "Permapin").status("info", "Usage", "/permapin <message> — sends and pins a permanent announcement."))
+    try:
+        sent = await client.send_message(message.chat.id, rich.esc(arg[:3500]), parse_mode=enums.ParseMode.HTML)
+        result = await client.pin_chat_message(message.chat.id, sent.id)
+    except Exception as e:
+        return await rich.reply(message, Doc("❌", "Permapin Failed").status("error", "Telegram API error", str(e)[:160]))
+    if not result:
+        return await rich.reply(message, Doc("❌", "Permapin Failed").status("error", "Pin was not confirmed", "The announcement was sent but Telegram did not confirm the pin."))
+    return await rich.reply(message, Doc("📌", "Announcement Pinned").status("success", "Pinned", arg[:120]))
+
+
 @Client.on_message(filters.group & filters.command(["pin", "unpin", "purge"]) & PLG_FILTER)
 async def pin_purge_cmd(client: Client, message: Message):
     cmd = (message.command or ["pin"])[0].lower()
@@ -2545,11 +2610,30 @@ async def group_passive_guard(client: Client, message: Message):
     fmap: dict[str, str] = cfg.get("filters") or {}
     bmap: dict[str, str] = cfg.get("blocklist") or {}
     nmap: dict[str, str] = cfg.get("notes") or {}
-    if not (locks or antiflood or fmap or bmap or nmap):
+    disabled = {str(c).lower() for c in (cfg.get("disabled_commands") or [])}
+    if not (locks or antiflood or fmap or bmap or nmap or disabled):
         return
 
     user = message.from_user
     text = message.text or message.caption or ""
+    # Disabled commands: delete non-admin invocations; admins stay exempt.
+    if disabled and user and text.startswith("/"):
+        invoked = text[1:].split(maxsplit=1)[0].split("@", 1)[0].lower()
+        if invoked in disabled:
+            try:
+                mem = await client.get_chat_member(message.chat.id, user.id)
+                status = getattr(mem, "status", None)
+            except Exception:
+                status = None
+            if status in (enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.RESTRICTED):
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                return
+            if status in (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR):
+                return  # Exempt; don't let other guards treat the command as content.
+            return  # Unknown status: suppress quietly rather than risk acting on an admin.
     # Notes: #trigger opens a note (non-admins may open, admins manage).
     if nmap and text.startswith("#") and len(text) > 1 and not text.startswith("/"):
         trig = text[1:].split()[0].lower()
