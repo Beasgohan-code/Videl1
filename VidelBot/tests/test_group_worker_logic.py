@@ -247,3 +247,22 @@ def test_group_worker_welcome_family_and_media_defaults():
     greet = handlers._settings_markup("greet", settings)
     callbacks = [b.callback_data for row in greet.inline_keyboard for b in row]
     assert "gw:7:tog:clean_welcome" in callbacks
+
+
+def test_group_worker_language_and_clean_service():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS, _BotHandlers
+    from group_worker.logic import default_settings, tr
+
+    assert "language" in [n for n, _ in GROUP_WORKER_COMMANDS]
+    settings = default_settings()
+    assert settings["lang"] == "en" and settings["clean_service"] is False
+    assert tr(settings, "settings") == "SETTINGS"
+    assert tr({**settings, "lang": "hi"}, "settings") == "सेटिंग्स"
+    assert tr({**settings, "lang": "xx"}, "settings") == "SETTINGS"  # safe fallback
+
+    handlers = _BotHandlers(bot_id=7, owner_id=1, store=None)
+    main = handlers._settings_markup("main", settings)
+    callbacks = [b.callback_data for row in main.inline_keyboard for b in row]
+    assert "gw:7:lang" in callbacks and "gw:7:tog:clean_service" in callbacks
+    text = handlers._settings_text("main", {**settings, "lang": "es"}, "G")
+    assert "AJUSTES" in text and "<blockquote>" in text

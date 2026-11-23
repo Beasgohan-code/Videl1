@@ -102,3 +102,12 @@ it is not a mode flag inside this worker.
   welcome (photo gets the text as caption; stickers send alone).
 - Clean welcome (Settings → Greetings) deletes the previous welcome
   message whenever a new one is posted.
+
+## Stage 10 — service cleaning, languages, UI refresh
+
+- `/language` views or sets the worker's per-group UI language
+  (English, हिन्दी, Español) with a matching 🌐 button in settings;
+  core UI strings are localized with a safe English fallback.
+- Clean service messages toggle deletes Telegram service posts
+  (join/leave/pin notices) while greetings keep working.
+- Settings home now uses a blockquote status card for a cleaner read.

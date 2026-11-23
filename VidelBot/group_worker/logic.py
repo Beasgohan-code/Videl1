@@ -59,7 +59,39 @@ def default_settings() -> dict:
         "greet_media": "",        # file_id of a photo/sticker welcome ("" = text only)
         "greet_media_type": "",   # photo | sticker
         "clean_welcome": False,   # delete the previous welcome when a new one posts
+        "clean_service": False,   # delete Telegram service messages (joins, pins…)
+        "lang": "en",             # UI language: en | hi | es
     }
+
+
+LANGUAGES = ("en", "hi", "es")
+
+_STRINGS = {
+    "settings": {"en": "SETTINGS", "hi": "सेटिंग्स", "es": "AJUSTES"},
+    "admins_only": {
+        "en": "Only group admins can change settings.",
+        "hi": "केवल ग्रुप एडमिन सेटिंग्स बदल सकते हैं।",
+        "es": "Solo los administradores del grupo pueden cambiar los ajustes.",
+    },
+    "welcome_title": {
+        "en": "GROUP MANAGEMENT",
+        "hi": "ग्रुप प्रबंधन",
+        "es": "GESTIÓN DE GRUPO",
+    },
+    "start_body": {
+        "en": "Add me to a group, make me an admin, then open /settings there.\n"
+              "I can greet members, guard the chat, and help admins with /warn, /mute, /kick and /ban.",
+        "hi": "मुझे किसी ग्रुप में जोड़ें, एडमिन बनाएं, फिर वहाँ /settings खोलें।\n"
+              "मैं सदस्यों का स्वागत कर सकता हूँ, चैट की रक्षा कर सकता हूँ और /warn, /mute, /kick, /ban में मदद कर सकता हूँ।",
+        "es": "Añádeme a un grupo, hazme administrador y abre /settings allí.\n"
+              "Puedo dar la bienvenida, proteger el chat y ayudar con /warn, /mute, /kick y /ban.",
+    },
+}
+
+
+def tr(settings: dict, key: str) -> str:
+    lang = (settings or {}).get("lang") or "en"
+    return _STRINGS.get(key, {}).get(lang) or _STRINGS.get(key, {}).get("en", key)
 
 
 def is_approved(settings: dict, user_id: int) -> bool:

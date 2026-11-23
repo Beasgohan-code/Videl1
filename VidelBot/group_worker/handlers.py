@@ -19,7 +19,7 @@ from pyrogram.types import (
     Message,
 )
 
-from .logic import GUARD_KINDS, FloodWatch, JoinWatch, content_violation, in_quiet_hours, is_approved, match_reply, parse_duration, render_greeting
+from .logic import GUARD_KINDS, LANGUAGES, FloodWatch, JoinWatch, content_violation, in_quiet_hours, is_approved, match_reply, parse_duration, render_greeting, tr
 
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
@@ -136,12 +136,14 @@ class _BotHandlers:
             [InlineKeyboardButton("👋 Greetings ›", callback_data=f"gw:{bot}:page:greet"),
              InlineKeyboardButton("🌙 Night hours ›", callback_data=f"gw:{bot}:page:night")],
             [InlineKeyboardButton("🤖 Security (CAPTCHA · anti-raid) ›", callback_data=f"gw:{bot}:page:security")],
+            [tog(bool(s.get("clean_service")), "Clean service msgs", f"gw:{bot}:tog:clean_service"),
+             InlineKeyboardButton(f"🌐 {str(s.get('lang', 'en')).upper()}", callback_data=f"gw:{bot}:lang")],
             [InlineKeyboardButton("🌊 Flood watch ›", callback_data=f"gw:{bot}:page:flood"),
              InlineKeyboardButton("❌ Close", callback_data=f"gw:{bot}:close")],
         ])
 
     def _settings_text(self, page: str, s: dict, chat_title: str = "") -> str:
-        head = _bar("⚙️ SETTINGS") + (f"\n<i>{_esc(chat_title)}</i>" if chat_title else "")
+        head = _bar(f"⚙️ {tr(s, 'settings')}") + (f"\n<i>{_esc(chat_title)}</i>" if chat_title else "")
         if page == "security":
             return (f"{head}\n\n🤖 <b>Security</b>\n"
                     f"CAPTCHA: {'on' if s.get('captcha_on') else 'off'} · "
@@ -195,7 +197,7 @@ class _BotHandlers:
         flood = (f"{s['flood_limit']}/{s['flood_window']:g}s → {s['flood_action']}"
                  if s.get("flood_limit") else "off")
         return (
-            f"{head}\n\n"
+            f"{head}\n\n<blockquote>"
             f"🛡 <b>Shield</b> — {'on' if s.get('shield') else 'off'} · {_esc(kinds)}\n"
             f"👋 <b>Greetings</b> — {'on' if s.get('greetings') else 'off'}\n"
             f"⚠️ <b>Warnings</b> — {s.get('warn_limit', 3)} → {s.get('warn_action', 'mute')}\n"
@@ -208,8 +210,10 @@ class _BotHandlers:
             f"🤖 <b>CAPTCHA</b> — {'on' if s.get('captcha_on') else 'off'} · "
             f"🚨 <b>Anti-raid</b> — {'on' if s.get('raid_on') else 'off'} · "
             f"📝 <b>Notes</b> — {len(s.get('notes') or {})} · "
-            f"📋 <b>Log chat</b> — {'set' if s.get('log_chat') else 'off'}\n\n"
-            "<i>Only group admins can change settings.</i>"
+            f"📋 <b>Log chat</b> — {'set' if s.get('log_chat') else 'off'} · "
+            f"🧹 <b>Clean service</b> — {'on' if s.get('clean_service') else 'off'} · "
+            f"🌐 <b>Language</b> — {s.get('lang', 'en')}</blockquote>\n\n"
+            f"<i>{tr(s, 'admins_only')}</i>"
         )
 
     # ── moderation core ────────────────────────────────────────────
@@ -351,10 +355,8 @@ class _BotHandlers:
         @app.on_message(filters.private & filters.command("start"))
         async def _start(_c, m: Message):
             await m.reply_text(
-                f"{_bar('🛡️ GROUP MANAGEMENT')}\n\n"
-                "Add me to a group, make me an admin, then open /settings there.\n"
-                "I can greet members, guard the chat, and help admins with "
-                "/warn, /mute, /kick and /ban.",
+                f"{_bar('🛡️ ' + tr({}, 'welcome_title'))}\n\n{tr({}, 'start_body')}\n\n"
+                "<i>Change my language per-group in /settings (🌐 button).</i>",
                 parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.private & filters.command(["connect", "disconnect", "connection"]))
@@ -558,6 +560,8 @@ class _BotHandlers:
                 elif key == "night_on":
                     s = await store.update_settings(bot_id, chat_id, {"night_on": not s.get("night_on")})
                     page = "night"
+                elif key == "clean_service":
+                    s = await store.update_settings(bot_id, chat_id, {"clean_service": not s.get("clean_service")})
                 elif key in ("captcha_on", "raid_on"):
                     s = await store.update_settings(bot_id, chat_id, {key: not s.get(key)})
                     page = "security"
@@ -584,6 +588,11 @@ class _BotHandlers:
                     limit = 2
                 s = await store.update_settings(bot_id, chat_id, {"warn_limit": limit})
                 page = "warn"
+            elif action == "lang":
+                order = list(LANGUAGES)
+                current = s.get("lang") or "en"
+                nxt = order[(order.index(current) + 1) % len(order)] if current in order else "en"
+                s = await store.update_settings(bot_id, chat_id, {"lang": nxt})
             elif action == "nightstart":
                 s = await store.update_settings(bot_id, chat_id,
                                                 {"night_start": (int(s.get("night_start", 23)) + 1) % 24})
@@ -820,6 +829,21 @@ class _BotHandlers:
             state = f"approved{f' — {_esc(reason)}' if reason else ''}" if str(target_id) in approved else "not approved"
             return await m.reply_text(f"🤝 <b>{_esc(label)}</b> is {state}.", parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message(filters.group & filters.command("language"))
+        async def _language(c, m: Message):
+            s = await store.get_settings(bot_id, m.chat.id)
+            args = [a.lower() for a in (m.command or [])[1:]]
+            if not args:
+                return await m.reply_text(
+                    f"🌐 Current language: <b>{s.get('lang', 'en')}</b>\nAvailable: {', '.join(LANGUAGES)}",
+                    parse_mode=enums.ParseMode.HTML)
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            if args[0] not in LANGUAGES:
+                return await m.reply_text(f"Available: {', '.join(LANGUAGES)}", parse_mode=enums.ParseMode.HTML)
+            await store.update_settings(bot_id, m.chat.id, {"lang": args[0]})
+            await m.reply_text(f"🌐 Language set to <b>{args[0]}</b>.", parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.command(["rules", "setrules"]))
         async def _rules(c, m: Message):
             cmd = (m.command or ["rules"])[0].lower()
@@ -985,6 +1009,15 @@ class _BotHandlers:
                                    chat=_esc(m.chat.title or "this group"), user_id=user.id)
             await c.send_message(m.chat.id, text, parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message(filters.group & filters.service, group=5)
+        async def _service_cleaner(c, m: Message):
+            s = await store.get_settings(bot_id, m.chat.id)
+            if s.get("clean_service"):
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
+
         @app.on_message(filters.group & filters.incoming & ~filters.service, group=5)
         async def _guard(c, m: Message):
             if m.from_user is None:
@@ -1080,6 +1113,7 @@ GROUP_WORKER_COMMANDS = [
     ("notes", "List saved notes"),
     ("clear", "Delete a note (admins)"),
     ("whois", "Member card with admin actions"),
+    ("language", "Show or set my language"),
     ("connect", "DM: connect to a group: /connect <group_id>"),
     ("disconnect", "DM: disconnect from the group"),
     ("connection", "DM: show current connection"),
