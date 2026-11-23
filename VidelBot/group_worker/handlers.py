@@ -19,7 +19,7 @@ from pyrogram.types import (
     Message,
 )
 
-from .logic import GUARD_KINDS, FloodWatch, content_violation, parse_duration, render_greeting
+from .logic import GUARD_KINDS, FloodWatch, content_violation, match_reply, parse_duration, render_greeting
 
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
@@ -97,6 +97,7 @@ class _BotHandlers:
              tog(bool(s.get("greetings")), "Greetings", f"gw:{bot}:tog:greetings")],
             [InlineKeyboardButton("🛡 Shield types ›", callback_data=f"gw:{bot}:page:shield"),
              InlineKeyboardButton("⚠️ Warnings ›", callback_data=f"gw:{bot}:page:warn")],
+            [tog(bool(s.get("dm_alerts")), "DM alerts to owner", f"gw:{bot}:tog:dm_alerts")],
             [InlineKeyboardButton("🌊 Flood watch ›", callback_data=f"gw:{bot}:page:flood"),
              InlineKeyboardButton("❌ Close", callback_data=f"gw:{bot}:close")],
         ])
@@ -124,7 +125,10 @@ class _BotHandlers:
             f"🛡 <b>Shield</b> — {'on' if s.get('shield') else 'off'} · {_esc(kinds)}\n"
             f"👋 <b>Greetings</b> — {'on' if s.get('greetings') else 'off'}\n"
             f"⚠️ <b>Warnings</b> — {s.get('warn_limit', 3)} → {s.get('warn_action', 'mute')}\n"
-            f"🌊 <b>Flood watch</b> — {_esc(flood)}\n\n"
+            f"🌊 <b>Flood watch</b> — {_esc(flood)}\n"
+            f"📜 <b>Rules</b> — {'set' if s.get('rules') else 'not set'} · "
+            f"💬 <b>Auto-replies</b> — {len(s.get('replies') or {})}\n"
+            f"📩 <b>DM alerts</b> — {'on' if s.get('dm_alerts') else 'off'}\n\n"
             "<i>Only group admins can change settings.</i>"
         )
 
@@ -192,6 +196,7 @@ class _BotHandlers:
             return await message.reply_text(
                 f"❌ <b>Telegram refused that.</b>\n{_esc(str(exc)[:120])}",
                 parse_mode=enums.ParseMode.HTML)
+        await self._notify_owner(client, message, base, target_id, label, reason)
         if silent:
             try:
                 await message.delete()
@@ -204,6 +209,32 @@ class _BotHandlers:
             + (f" {note}" if note else "")
             + (f"\n📝 {_esc(reason)}" if reason else ""),
             parse_mode=enums.ParseMode.HTML)
+
+    async def _notify_owner(self, client: Client, message: Message, action: str,
+                            target_id: int, label: str, reason: str = "") -> None:
+        """Best-effort DM to the clone owner with an undo button."""
+        settings = await self.store.get_settings(self.bot_id, message.chat.id)
+        if not settings.get("dm_alerts") or self.owner_id == message.from_user.id:
+            return
+        undo = {"ban": "unban", "tban": "unban", "mute": "unmute", "tmute": "unmute"}.get(action)
+        markup = None
+        if undo:
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"↩️ Undo ({undo})",
+                                     callback_data=f"gw:{self.bot_id}:undo:{message.chat.id}:{target_id}:{undo}"),
+                InlineKeyboardButton("✅ Keep", callback_data=f"gw:{self.bot_id}:keep"),
+            ]])
+        try:
+            await client.send_message(
+                self.owner_id,
+                f"📩 <b>Moderation alert</b>\n\n"
+                f"Group: <b>{_esc(message.chat.title or message.chat.id)}</b>\n"
+                f"Action: <b>{_esc(action)}</b> → {_esc(label)} ({target_id})\n"
+                f"By: {_esc(message.from_user.first_name or message.from_user.id)}"
+                + (f"\n📝 {_esc(reason)}" if reason else ""),
+                parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+        except Exception:
+            pass  # owner may not have started the bot; alerts are best-effort
 
     # ── registration ───────────────────────────────────────────────
     def attach(self, app: Client) -> None:
@@ -229,6 +260,10 @@ class _BotHandlers:
                 "/kick — remove (can rejoin)\n"
                 "/ban /tban 7d /sban /unban — ban, timed, silent, undo\n"
                 "/purge 20 — delete recent messages\n"
+                "/pin /unpin — manage pins\n"
+                "/rules /setrules — group rules\n"
+                "/filter /stop /filters — keyword auto-replies\n"
+                "/report — (reply) send a report to admins by DM\n"
                 "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
@@ -250,6 +285,42 @@ class _BotHandlers:
                 return await q.message.delete()
             if not await _is_admin(c, q.message.chat.id, q.from_user.id):
                 return await q.answer("Admins only.", show_alert=True)
+            if action == "keep":
+                return await q.answer("Kept. ✅")
+            if action in ("undo", "rep"):
+                # data: gw:{bot}:undo:{chat}:{user}:{undo} / gw:{bot}:rep:{chat}:{msg}:{user}:{verb}
+                try:
+                    target_chat = int(parts[3])
+                except Exception:
+                    return await q.answer("Bad alert.", show_alert=True)
+                if not await _is_admin(c, target_chat, q.from_user.id) and q.from_user.id != self.owner_id:
+                    return await q.answer("Admins only.", show_alert=True)
+                try:
+                    if action == "undo":
+                        target_user, verb = int(parts[4]), parts[5]
+                        if verb == "unban":
+                            await c.unban_chat_member(target_chat, target_user)
+                        else:
+                            await c.restrict_chat_member(
+                                target_chat, target_user,
+                                ChatPermissions(can_send_messages=True, can_send_media_messages=True,
+                                                can_send_other_messages=True, can_add_web_page_previews=True))
+                        await q.answer("Undone ↩️")
+                    else:
+                        msg_id, target_user, verb = int(parts[4]), int(parts[5]), parts[6]
+                        if verb == "del":
+                            await c.delete_messages(target_chat, [msg_id])
+                        else:
+                            await c.ban_chat_member(target_chat, target_user)
+                        await q.answer("Done ✅")
+                except Exception as exc:
+                    return await q.answer(f"Failed: {str(exc)[:60]}", show_alert=True)
+                try:
+                    await q.message.edit_text(q.message.text + "\n\n<i>Handled ✅</i>",
+                                              parse_mode=enums.ParseMode.HTML)
+                except Exception:
+                    pass
+                return
             chat_id = q.message.chat.id
             s = await store.get_settings(bot_id, chat_id)
             page = "main"
@@ -262,6 +333,8 @@ class _BotHandlers:
                     page = "shield"
                 elif key == "greetings":
                     s = await store.update_settings(bot_id, chat_id, {"greetings": not s.get("greetings")})
+                elif key == "dm_alerts":
+                    s = await store.update_settings(bot_id, chat_id, {"dm_alerts": not s.get("dm_alerts")})
                 elif key == "flood":
                     s = await store.update_settings(bot_id, chat_id,
                                                     {"flood_limit": 0 if s.get("flood_limit") else 6})
@@ -319,6 +392,99 @@ class _BotHandlers:
                 await c.delete_messages(m.chat.id, ids)
             await m.reply_text(f"🧹 <b>Purged {len(ids)} messages.</b>", parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message(filters.group & filters.command(["rules", "setrules"]))
+        async def _rules(c, m: Message):
+            cmd = (m.command or ["rules"])[0].lower()
+            s = await store.get_settings(bot_id, m.chat.id)
+            if cmd == "rules":
+                if not s.get("rules"):
+                    return await m.reply_text("📜 <b>No rules set yet.</b>\nAdmins can add them with /setrules.",
+                                              parse_mode=enums.ParseMode.HTML)
+                return await m.reply_text(f"{_bar('📜 GROUP RULES')}\n\n{_esc(s['rules'])}",
+                                          parse_mode=enums.ParseMode.HTML)
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            parts = (m.text or "").split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                return await m.reply_text("Usage: <code>/setrules Be kind. No spam.</code>",
+                                          parse_mode=enums.ParseMode.HTML)
+            await store.update_settings(bot_id, m.chat.id, {"rules": parts[1].strip()[:2000]})
+            await m.reply_text("✅ <b>Rules saved.</b> Members can read them with /rules.",
+                               parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command(["filter", "stop", "filters"]))
+        async def _filters_cmd(c, m: Message):
+            cmd = (m.command or ["filters"])[0].lower()
+            s = await store.get_settings(bot_id, m.chat.id)
+            replies = dict(s.get("replies") or {})
+            if cmd == "filters":
+                if not replies:
+                    return await m.reply_text("💬 No auto-replies yet. Admins: <code>/filter hello Hi there!</code>",
+                                              parse_mode=enums.ParseMode.HTML)
+                lines = "\n".join(f"• <b>{_esc(k)}</b> → {_esc(v)[:60]}" for k, v in sorted(replies.items()))
+                return await m.reply_text(f"{_bar('💬 AUTO-REPLIES')}\n\n{lines}",
+                                          parse_mode=enums.ParseMode.HTML)
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            parts = (m.text or "").split(maxsplit=2 if cmd == "filter" else 1)
+            if cmd == "filter":
+                if len(parts) < 3:
+                    return await m.reply_text("Usage: <code>/filter &lt;word&gt; &lt;reply&gt;</code>",
+                                              parse_mode=enums.ParseMode.HTML)
+                replies[parts[1].lower()[:40]] = parts[2].strip()[:500]
+                await store.update_settings(bot_id, m.chat.id, {"replies": replies})
+                return await m.reply_text(f"✅ Auto-reply saved for <b>{_esc(parts[1].lower())}</b>.",
+                                          parse_mode=enums.ParseMode.HTML)
+            if len(parts) < 2 or parts[1].lower() not in replies:
+                return await m.reply_text("That auto-reply doesn't exist.", parse_mode=enums.ParseMode.HTML)
+            replies.pop(parts[1].lower())
+            await store.update_settings(bot_id, m.chat.id, {"replies": replies})
+            await m.reply_text("🗑 Auto-reply removed.", parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command(["pin", "unpin"]))
+        async def _pin(c, m: Message):
+            cmd = (m.command or ["pin"])[0].lower()
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            if cmd == "unpin":
+                await c.unpin_all_chat_messages(m.chat.id)
+                return await m.reply_text("📌 All pins removed.", parse_mode=enums.ParseMode.HTML)
+            if m.reply_to_message is None:
+                return await m.reply_text("Reply to the message you want pinned.", parse_mode=enums.ParseMode.HTML)
+            await c.pin_chat_message(m.chat.id, m.reply_to_message.id)
+            await m.reply_text("📌 Pinned.", parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command("report"))
+        async def _report(c, m: Message):
+            if m.reply_to_message is None or m.reply_to_message.from_user is None:
+                return await m.reply_text("Reply to the message you want to report.", parse_mode=enums.ParseMode.HTML)
+            reported = m.reply_to_message
+            offender = reported.from_user
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑 Delete", callback_data=f"gw:{bot_id}:rep:{m.chat.id}:{reported.id}:{offender.id}:del"),
+                InlineKeyboardButton("🔨 Ban", callback_data=f"gw:{bot_id}:rep:{m.chat.id}:{reported.id}:{offender.id}:ban"),
+                InlineKeyboardButton("✅ Ignore", callback_data=f"gw:{bot_id}:keep"),
+            ]])
+            text = (f"🚩 <b>Member report</b>\n\nGroup: <b>{_esc(m.chat.title or m.chat.id)}</b>\n"
+                    f"Reported: {_esc(offender.first_name or offender.id)} ({offender.id})\n"
+                    f"By: {_esc(m.from_user.first_name or m.from_user.id)}")
+            sent = 0
+            try:
+                async for member in c.get_chat_administrators(m.chat.id):
+                    user = getattr(member, "user", None)
+                    if user is None or getattr(user, "is_bot", False):
+                        continue
+                    try:
+                        await c.send_message(user.id, text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+                        sent += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            await m.reply_text(f"🚩 Report sent to {sent} admin(s) by DM." if sent
+                               else "🚩 Report noted. (No admin could be reached by DM.)",
+                               parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.new_chat_members)
         async def _joined(c, m: Message):
             s = await store.get_settings(bot_id, m.chat.id)
@@ -346,7 +512,11 @@ class _BotHandlers:
             if m.from_user is None:
                 return
             s = await store.get_settings(bot_id, m.chat.id)
-            if not s.get("shield") and not s.get("flood_limit"):
+            if not s.get("shield") and not s.get("flood_limit") and not s.get("replies"):
+                return
+            hit = match_reply(m.text or m.caption or "", s.get("replies") or {})
+            if hit:
+                await m.reply_text(_esc(hit[1])[:1000], parse_mode=enums.ParseMode.HTML)
                 return
             if await _status(c, m.chat.id, m.from_user.id) != enums.ChatMemberStatus.MEMBER:
                 return  # admins/restricted/unknown are never auto-punished
@@ -395,4 +565,12 @@ GROUP_WORKER_COMMANDS = [
     ("sban", "Silent ban (no announcement)"),
     ("unban", "Unban a member"),
     ("purge", "Delete recent messages: /purge 20"),
+    ("pin", "Pin the replied message (admins)"),
+    ("unpin", "Remove all pins (admins)"),
+    ("rules", "Show the group rules"),
+    ("setrules", "Set the group rules (admins)"),
+    ("filter", "Auto-reply: /filter word reply (admins)"),
+    ("stop", "Remove an auto-reply (admins)"),
+    ("filters", "List auto-replies"),
+    ("report", "Report a message to admins by DM"),
 ]

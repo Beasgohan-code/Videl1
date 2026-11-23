@@ -97,7 +97,8 @@ def test_group_worker_uses_normal_rose_style_commands_and_settings_ui():
     assert not any(name.startswith("mod") for name in names)
     assert "panel" not in names
     for expected in ("settings", "ban", "tban", "sban", "unban", "kick", "mute",
-                     "tmute", "unmute", "warn", "unwarn", "purge"):
+                     "tmute", "unmute", "warn", "unwarn", "purge", "pin", "unpin",
+                     "rules", "setrules", "filter", "stop", "filters", "report"):
         assert expected in names
 
     handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
@@ -116,3 +117,18 @@ def test_group_worker_uses_normal_rose_style_commands_and_settings_ui():
 
     text = handlers._settings_text("main", settings, "Dev <Hub>")
     assert "SETTINGS" in text and "admins" in text and "<Hub>" not in text
+
+
+def test_group_worker_reply_matching_and_new_defaults():
+    from group_worker.logic import default_settings, match_reply
+
+    settings = default_settings()
+    assert settings["dm_alerts"] is True and settings["rules"] == ""
+    assert settings["replies"] == {}
+
+    replies = {"hello": "Hi there!", "price list": "See /rules"}
+    assert match_reply("well HELLO friend", replies) == ("hello", "Hi there!")
+    assert match_reply("the price list please", replies) == ("price list", "See /rules")
+    assert match_reply("helloagain", replies) is None       # whole-word only
+    assert match_reply("/hello", replies) is None            # commands ignored
+    assert match_reply("", replies) is None

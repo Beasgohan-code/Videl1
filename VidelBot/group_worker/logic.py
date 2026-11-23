@@ -44,7 +44,22 @@ def default_settings() -> dict:
         "flood_limit": 0,         # 0 = off; otherwise messages per window
         "flood_window": 10.0,     # seconds
         "flood_action": "mute",   # mute | kick | ban
+        "rules": "",              # group rules text (/rules)
+        "replies": {},            # keyword -> auto-reply (/filter)
+        "dm_alerts": True,        # DM the clone owner on moderation actions
     }
+
+
+def match_reply(text: str, replies: dict) -> tuple[str, str] | None:
+    """First keyword auto-reply matching *text* (whole-word, case-insensitive)."""
+    if not text or text.startswith("/") or not replies:
+        return None
+    low = f" {text.lower()} "
+    for keyword, reply in replies.items():
+        needle = str(keyword).lower().strip()
+        if needle and f" {needle} " in low:
+            return str(keyword), str(reply)
+    return None
 
 
 def render_greeting(template: str, *, name: str, chat: str, user_id: int) -> str:

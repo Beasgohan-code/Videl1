@@ -18,7 +18,7 @@ import weakref
 
 from pyrogram import Client
 from pyrogram.enums import ParseMode
-from pyrogram.types import BotCommand
+from pyrogram.types import BotCommand, BotCommandScopeAllGroupChats
 
 from filestore.database.main_db import MainDB
 from filestore.database.mongo import get_db
@@ -102,8 +102,12 @@ class GroupWorkerEngine:
         try:
             await app.start()
             app.set_parse_mode(ParseMode.HTML)
-            await app.set_bot_commands(
-                [BotCommand(name, desc) for name, desc in GROUP_WORKER_COMMANDS])
+            commands = [BotCommand(name, desc) for name, desc in GROUP_WORKER_COMMANDS]
+            await app.set_bot_commands(commands)
+            try:
+                await app.set_bot_commands(commands, scope=BotCommandScopeAllGroupChats())
+            except Exception:
+                log.warning("Group-scope commands unavailable for clone %s.", bot_id)
             async with self._lock:
                 self.workers[bot_id] = app
         except Exception:

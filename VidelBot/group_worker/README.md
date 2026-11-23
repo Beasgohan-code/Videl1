@@ -28,3 +28,17 @@ without touching File Store behavior — is a separate approved step.
 A Music worker will follow the same pattern as its own folder
 (`music_worker/`) once the voice-chat dependency stack is verified;
 it is not a mode flag inside this worker.
+
+## Stage 2 — rules, auto-replies, reports and DM alerts
+
+- `/rules` / `/setrules` for group rules; `/filter`, `/stop`, `/filters`
+  for keyword auto-replies (whole-word matching, commands ignored).
+- `/pin` / `/unpin`, plus member `/report` (reply to a message): admins
+  receive a DM with **Delete** / **Ban** / **Ignore** buttons.
+- Moderation actions DM the clone owner (toggleable in `/settings`)
+  with an **Undo** button for bans and mutes. DM delivery is
+  best-effort — Telegram only allows it after the admin/owner has
+  started the bot — and every button re-checks admin rights in the
+  original group before acting.
+- Commands are registered for both the default and all-group-chats
+  BotCommand scopes at startup.
