@@ -206,17 +206,20 @@ jobs:
           export CHROMIUM_PATH="$(node -p "require('playwright-core').chromium.executablePath()")"
           run_test() {
             local test_file="$1" attempt
+            local log_file="$RUNNER_TEMP/browser-${test_file%.cjs}.log"
             for attempt in 1 2 3; do
               echo "Running $test_file (attempt $attempt)"
-              if node "$test_file"; then
+              if node "$test_file" > "$log_file" 2>&1; then
+                cat "$log_file"
                 return 0
               fi
-              echo "$test_file failed on attempt $attempt" >&2
+              echo "=== $test_file failed on attempt $attempt; test output follows ===" >&2
+              cat "$log_file" >&2 || true
               if [ "$attempt" -eq 3 ]; then
-                echo "=== Next server log ===" >&2
-                cat "$RUNNER_TEMP/studio-next.log" >&2 || true
-                echo "=== Fixture log ===" >&2
-                cat "$RUNNER_TEMP/studio-fixture.log" >&2 || true
+                echo "=== Next server log (last 200 lines) ===" >&2
+                tail -n 200 "$RUNNER_TEMP/studio-next.log" >&2 || true
+                echo "=== Fixture log (last 200 lines) ===" >&2
+                tail -n 200 "$RUNNER_TEMP/studio-fixture.log" >&2 || true
                 return 1
               fi
               sleep 5
@@ -228,6 +231,18 @@ jobs:
           run_test next-file-sampling.test.cjs
           run_test next-notification-filters.test.cjs
           run_test next-notification-safety.test.cjs
+
+      - name: Upload Next browser test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-browser-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/browser-*.log
+            ${{ runner.temp }}/studio-next.log
+            ${{ runner.temp }}/studio-fixture.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   native-tools:
     name: Ubuntu native media & archive tools
