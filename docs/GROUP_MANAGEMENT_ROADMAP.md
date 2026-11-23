@@ -96,3 +96,12 @@ Status: implemented in the regular-bot `group_mod` plugin; the protected clone w
 - `/adminlist` lists the owner and administrators currently returned by Telegram, with escaped names and username/ID labels.
 - Plugin manifest/index upgraded to group_mod 1.3.0 with 82 unique commands; the Telegram group command scope remains below the 100-command ceiling.
 - Evidence: focused group-management/security tests and the full backend test suite pass locally with mocked Telegram clients; no live Telegram or production deployment claim is made.
+
+## Stage 15 — Goodbye templates, chat cleaning, and portable group settings
+
+Status: implemented in the regular-bot `group_mod` plugin (v1.4.0); the protected clone worker remains untouched.
+
+- `/setgoodbye` / `/resetgoodbye` complete the greeting pair alongside welcomes.
+- `/cleanwelcome` now actually deletes the previous welcome when a new one is sent (both plain and CAPTCHA flows record the welcome message id); `/cleanservice` deletes service messages when enabled.
+- `/export` emits portable group settings JSON; `/import` validates types, bounds sizes, re-validates lock names, clamps numeric ranges, discards unknown keys, and applies nothing on invalid payloads.
+- Evidence: focused and full backend tests pass with mocked Telegram clients; no live Telegram or production claim is made.

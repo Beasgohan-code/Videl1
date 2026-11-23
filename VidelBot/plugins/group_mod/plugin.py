@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
+import json
 import logging
 import secrets
 import re
@@ -94,6 +95,7 @@ GROUP_ANON_COMMANDS = frozenset({
     "captcha", "captchamode", "setcaptchatext", "resetcaptchatext",
     "pin", "unpin", "purge",
     "modlog", "modhistory",
+    "setgoodbye", "resetgoodbye", "cleanwelcome", "cleanservice", "export", "import",
     "antiraid",
 })
 
@@ -151,6 +153,7 @@ def _default_cfg(chat_id: int) -> dict[str, Any]:
         "captcha_on": False,
         "captcha_text": "Click here to prove you're human",
         "cleanwelcome": False,
+        "cleanservice": False,
         "last_welcome_id": 0,
     }
 
@@ -1660,6 +1663,135 @@ async def setwelcome_cmd(client: Client, message: Message):
     return await rich.reply(message, Doc("👋", "Welcome Updated").status("success", "Template saved & enabled", arg[:120]))
 
 
+@Client.on_message(filters.group & filters.command(["setgoodbye", "resetgoodbye", "cleanwelcome", "cleanservice"]) & PLG_FILTER)
+async def greeting_options_cmd(client: Client, message: Message):
+    cmd = (message.command or ["setgoodbye"])[0].lower()
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    cfg = await get_group_cfg(message.chat.id)
+    args = (message.command or [])[1:]
+    if cmd in ("cleanwelcome", "cleanservice"):
+        key = cmd
+        if not args:
+            state = "on" if cfg.get(key) else "off"
+            return await rich.reply(message, Doc("🧹", cmd.title()).status("info", state, f"Use /{cmd} on or /{cmd} off."))
+        enabled = args[0].lower() in ("on", "yes", "true")
+        await update_group_cfg(message.chat.id, {key: enabled})
+        detail = "Previous welcome messages will be deleted when a new one is sent." if key == "cleanwelcome" else "Join/leave and other service messages will be deleted."
+        return await rich.reply(message, Doc("🧹", cmd.title()).status("success", "Enabled" if enabled else "Disabled", detail))
+    if cmd == "resetgoodbye":
+        await update_group_cfg(message.chat.id, {"goodbye_text": "👋 Goodbye, {first}!"})
+        return await rich.reply(message, Doc("👋", "Goodbye Reset").status("success", "Default template restored", "Placeholders: {mention} · {first} · {chat} · {id}"))
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    if not arg:
+        return await rich.reply(message, Doc("👋", "Set Goodbye").status("info", "Usage", "/setgoodbye <message> — placeholders {mention} {first} {chat} {id}"))
+    await update_group_cfg(message.chat.id, {"goodbye_on": True, "goodbye_text": arg[:1000]})
+    return await rich.reply(message, Doc("👋", "Goodbye Updated").status("success", "Template saved & enabled", arg[:120]))
+
+
+_EXPORT_FIELDS = (
+    "welcome_on", "welcome_text", "goodbye_on", "goodbye_text", "rules",
+    "warn_limit", "warn_action", "locks", "lockwarns", "lock_modes",
+    "filters", "blocklist", "blocklist_mode", "blocklist_delete", "notes",
+    "antiflood", "flood_limit", "flood_window", "flood_mode", "clearflood",
+    "captcha_on", "captcha_text", "url_whitelist", "cleanwelcome", "cleanservice",
+)
+
+
+def _sanitize_import(data: Any) -> dict[str, Any] | None:
+    """Validate an imported settings payload; return None when unusable."""
+    if not isinstance(data, dict):
+        return None
+    out: dict[str, Any] = {}
+    defaults = _default_cfg(0)
+    for key in _EXPORT_FIELDS:
+        if key not in data:
+            continue
+        value = data[key]
+        default = defaults[key]
+        if isinstance(default, bool):
+            if not isinstance(value, bool):
+                return None
+            out[key] = value
+        elif isinstance(default, (int, float)) and not isinstance(default, bool):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            out[key] = value
+        elif isinstance(default, str):
+            if not isinstance(value, str):
+                return None
+            out[key] = value[:2000]
+        elif isinstance(default, list):
+            if not isinstance(value, list) or len(value) > 100 or not all(isinstance(v, str) for v in value):
+                return None
+            out[key] = [v[:100] for v in value]
+        elif isinstance(default, dict):
+            if not isinstance(value, dict) or len(value) > 200:
+                return None
+            clean: dict[str, Any] = {}
+            for k, v in value.items():
+                if not isinstance(k, str):
+                    return None
+                if isinstance(v, str):
+                    clean[k[:100]] = v[:1000]
+                elif isinstance(v, dict) and all(isinstance(x, str) for x in v.values()):
+                    clean[k[:100]] = {str(x)[:50]: str(y)[:200] for x, y in v.items()}
+                else:
+                    return None
+            out[key] = clean
+    # Re-validate semantic fields so a hostile payload cannot smuggle bad state.
+    if "locks" in out:
+        out["locks"] = [lock for lock in out["locks"] if lock in VALID_LOCKS]
+    if "warn_limit" in out:
+        out["warn_limit"] = max(1, min(20, int(out["warn_limit"])))
+    if "flood_limit" in out:
+        out["flood_limit"] = max(2, min(50, int(out["flood_limit"])))
+    if "flood_window" in out:
+        out["flood_window"] = max(1.0, min(300.0, float(out["flood_window"])))
+    return out
+
+
+@Client.on_message(filters.group & filters.command(["export", "import"]) & PLG_FILTER)
+async def group_settings_transfer_cmd(client: Client, message: Message):
+    cmd = (message.command or ["export"])[0].lower()
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_change_info",
+        is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+    cfg = await get_group_cfg(message.chat.id)
+    if cmd == "export":
+        payload = {key: cfg.get(key) for key in _EXPORT_FIELDS}
+        text = json.dumps(payload, ensure_ascii=False, indent=1, sort_keys=True)
+        return await rich.reply(message, Doc("📤", "Group Settings Export").text(f"<pre>{rich.esc(text)}</pre>"))
+    raw = ""
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) > 1:
+        raw = parts[1]
+    elif message.reply_to_message is not None:
+        raw = message.reply_to_message.text or message.reply_to_message.caption or ""
+    raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    if not raw or len(raw) > 60000:
+        return await rich.reply(message, Doc("📥", "Import Settings").status("warning", "No valid payload", "Reply to an exported settings message with /import, or paste the JSON after /import."))
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return await rich.reply(message, Doc("📥", "Import Settings").status("error", "Invalid JSON", "The supplied settings could not be parsed; nothing was changed."))
+    updates = _sanitize_import(data)
+    if updates is None:
+        return await rich.reply(message, Doc("📥", "Import Settings").status("error", "Unsafe or invalid settings", "The payload failed validation; nothing was changed."))
+    await update_group_cfg(message.chat.id, updates)
+    return await rich.reply(message, Doc("📥", "Settings Imported").status("success", f"{len(updates)} sections applied", "Review /gsettings to confirm the imported configuration."))
+
+
 @Client.on_message(filters.group & filters.command(["lock", "unlock", "locks", "locktypes", "lockwarns", "lockall", "unlockall"]) & PLG_FILTER)
 async def lock_cmd(client: Client, message: Message):
     cmd = (message.command or ["lock"])[0].lower()
@@ -2372,13 +2504,33 @@ async def group_member_greeting_handler(client: Client, update: ChatMemberUpdate
                         pass
                     return
             try:
-                await client.send_message(update.chat.id, txt, parse_mode=enums.ParseMode.HTML)
+                sent = await client.send_message(update.chat.id, txt, parse_mode=enums.ParseMode.HTML)
+                new_id = getattr(sent, "id", 0) or 0
+                if cfg.get("cleanwelcome") and cfg.get("last_welcome_id") and cfg.get("last_welcome_id") != new_id:
+                    try:
+                        await client.delete_messages(update.chat.id, [int(cfg["last_welcome_id"])])
+                    except Exception:
+                        pass
+                if new_id:
+                    await update_group_cfg(update.chat.id, {"last_welcome_id": new_id})
             except Exception:
                 pass
     elif left and old_u and not getattr(old_u, "is_bot", False) and cfg.get("goodbye_on"):
         txt = _format_greeting(cfg.get("goodbye_text") or "👋 Goodbye, {first}!", old_u, update.chat.title or "")
         try:
             await client.send_message(update.chat.id, txt, parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
+
+
+@Client.on_message(filters.group & filters.service, group=6)
+async def group_service_cleaner(client: Client, message: Message):
+    if not plugin_enabled("group_mod"):
+        return
+    cfg = await get_group_cfg(message.chat.id)
+    if cfg.get("cleanservice"):
+        try:
+            await message.delete()
         except Exception:
             pass
 

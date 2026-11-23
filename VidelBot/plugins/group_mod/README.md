@@ -69,3 +69,9 @@ Group configuration remains keyed by chat ID and is cached locally for up to 45 
 - Every confirmed moderation action is recorded to a bounded `group_modlog` collection (newest 1000 per chat): bans, mutes, kicks, warns, unbans, unmutes and Rose-style aliases, with actor, target, reason and UTC timestamp.
 - `/modlog` lists recent group actions. `/modhistory <user>` lists actions against a specific user. Both are admin-only.
 - Logging is best-effort and never raises into the moderation handler. Entries are not encrypted and persist until trimmed by the per-chat cap; this is an operational aid, not an immutable audit ledger.
+
+## Goodbyes, cleaning, and settings transfer
+
+- `/setgoodbye <message>` saves and enables a goodbye template; `/resetgoodbye` restores the default.
+- `/cleanwelcome on|off` deletes the previous welcome message when a new welcome is sent. `/cleanservice on|off` deletes Telegram service messages (joins, leaves, pins, title/photo changes).
+- `/export` prints the group's portable settings as JSON (greetings, rules, warns, locks, filters, blocklist, notes, antiflood, CAPTCHA, whitelist, cleaning). `/import` accepts that JSON inline or as a reply: payloads are strictly validated (typed fields, bounded sizes, locks re-checked against the known list, numeric ranges clamped) and unknown keys are discarded — nothing is applied when validation fails.

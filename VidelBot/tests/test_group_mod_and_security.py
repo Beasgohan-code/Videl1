@@ -869,3 +869,46 @@ def test_adminlist_formats_telegram_administrators():
     assert "@ada" in text and "ID 11" in text
     assert "@ada" in text and "ID 11" in text
     assert "<Admin>" not in text
+
+
+def test_setgoodbye_clean_toggles_and_settings_export_import():
+    from plugins.group_mod import plugin as gmod
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        20: (enums.ChatMemberStatus.MEMBER, None),
+    })
+    bye = _grp_msg("/setgoodbye Bye {first}!", uid=10, client=c)
+    run(gmod.greeting_options_cmd(c, bye))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["goodbye_on"] is True and cfg["goodbye_text"] == "Bye {first}!"
+
+    clean = _grp_msg("/cleanwelcome on", uid=10, client=c)
+    run(gmod.greeting_options_cmd(c, clean))
+    service = _grp_msg("/cleanservice on", uid=10, client=c)
+    run(gmod.greeting_options_cmd(c, service))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["cleanwelcome"] is True and cfg["cleanservice"] is True
+
+    denied = _grp_msg("/cleanservice off", uid=20, client=c)
+    run(gmod.greeting_options_cmd(c, denied))
+    assert run(gmod.get_group_cfg(-100888))["cleanservice"] is True
+    assert "permission" in denied.replies[-1].lower()
+
+    exported = _grp_msg("/export", uid=10, client=c)
+    run(gmod.group_settings_transfer_cmd(c, exported))
+    assert '"goodbye_text": "Bye {first}!"' in exported.replies[-1]
+    assert '"cleanservice": true' in exported.replies[-1]
+
+    hostile = _grp_msg('/import {"locks": ["url", "bogus"], "warn_limit": 99, "notes": {"x": 1}, "evil": true}', uid=10, client=c)
+    run(gmod.group_settings_transfer_cmd(c, hostile))
+    assert "invalid" in hostile.replies[-1].lower() or "unsafe" in hostile.replies[-1].lower()
+    assert run(gmod.get_group_cfg(-100888))["locks"] == []
+
+    imported = _grp_msg('/import {"locks": ["url", "bogus"], "warn_limit": 99, "notes": {"faq": "Read the FAQ"}}', uid=10, client=c)
+    run(gmod.group_settings_transfer_cmd(c, imported))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["locks"] == ["url"] and cfg["warn_limit"] == 20
+    assert cfg["notes"] == {"faq": "Read the FAQ"}
+    assert "evil" not in cfg or cfg.get("evil") is None

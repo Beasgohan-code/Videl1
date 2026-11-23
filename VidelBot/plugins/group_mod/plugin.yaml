@@ -1,5 +1,5 @@
 name: group_mod
-version: "1.3.0"
+version: "1.4.0"
 author: Videl
 description: Richgram-powered group management & Bot API 10.3 moderation (bans, mutes, warns, member tags, reaction moderation, topics, join-requests, locks, anti-raid, welcome/rules & filters)
 entry: plugin.py
@@ -238,6 +238,24 @@ commands:
     access: admin
   - name: setcaptchatext
     description: Set the CAPTCHA button text
+    access: admin
+  - name: setgoodbye
+    description: Set the goodbye message template
+    access: admin
+  - name: resetgoodbye
+    description: Restore the default goodbye template
+    access: admin
+  - name: cleanwelcome
+    description: Toggle deleting the previous welcome when a new one is sent
+    access: admin
+  - name: cleanservice
+    description: Toggle deleting service messages
+    access: admin
+  - name: export
+    description: Export this group's settings as JSON
+    access: admin
+  - name: import
+    description: Import validated group settings JSON
     access: admin
   - name: lockall
     description: Lock all message content for non-admins
