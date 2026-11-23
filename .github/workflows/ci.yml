@@ -164,6 +164,10 @@ jobs:
           }
           wait_for_url http://127.0.0.1:8088/app
           wait_for_url http://127.0.0.1:3001/next-preview
+          # Warm up routes the browser tests navigate to (triggers Turbopack compile)
+          for route in settings files notifications bots commands; do
+            curl --fail --silent --max-time 30 "http://127.0.0.1:3001/next-preview/$route" > /dev/null 2>&1 || true
+          done
           cd VidelBot/tests/browser
           export CHROMIUM_PATH="$(node -p "require('playwright-core').chromium.executablePath()")"
           node next-file-backend.test.cjs
@@ -194,6 +198,10 @@ jobs:
           }
           wait_for_url http://127.0.0.1:8084/app
           wait_for_url http://127.0.0.1:3002/next-preview
+          # Warm up routes the browser tests navigate to (triggers Turbopack compile)
+          for route in settings files notifications bots commands; do
+            curl --fail --silent --max-time 30 "http://127.0.0.1:3002/next-preview/$route" > /dev/null 2>&1 || true
+          done
           cd VidelBot/tests/browser
           export CHROMIUM_PATH="$(node -p "require('playwright-core').chromium.executablePath()")"
           run_test() {
