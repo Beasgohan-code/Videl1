@@ -85,8 +85,9 @@ GROUP_ANON_COMMANDS = frozenset({
     "warnconfig", "warnrecover", "setwarnlimit", "setwarnmode",
     "tag", "deltag", "clearreactions", "delreactions",
     "topic", "joinmode", "rules", "setrules", "welcome", "goodbye", "setwelcome", "resetwelcome",
-    "lock", "unlock", "locks", "locktypes", "lockwarns",
-    "gfilter", "delfilter", "gfilters", "filter", "stop", "filters",
+    "lock", "unlock", "locks", "locktypes", "lockwarns", "lockall", "unlockall",
+    "whitelist", "rmwhitelist", "allowlist", "rmallowlist", "adminlist", "adminlists", "adminslist",
+    "gfilter", "delfilter", "gfilters", "filter", "stop", "filters", "stopall",
     "addblocklist", "rmblocklist", "blocklist", "blocklistmode", "blocklistdelete",
     "save", "get", "notes", "clear",
     "setflood", "setfloodtimer", "setfloodmode", "flood", "clearflood",
@@ -142,6 +143,7 @@ def _default_cfg(chat_id: int) -> dict[str, Any]:
         "lockwarns": False,
         "lock_modes": {},  # locktype -> {"mode": str, "reason": str}
         "filters": {},
+        "url_whitelist": [],  # domains exempt from links/url locks
         "blocklist": {},  # trigger -> reason
         "blocklist_mode": "nothing",
         "blocklist_delete": True,
@@ -456,14 +458,40 @@ async def extract_target_and_args(client: Client, message: Message) -> tuple[int
     return None, "", args
 
 
-def match_locked_content(message: Message, locks: list[str]) -> str:
+def _normalise_domain(value: str) -> str:
+    domain = (value or "").strip().lower()
+    domain = re.sub(r"^https?://", "", domain)
+    domain = domain.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    domain = domain.rsplit("@", 1)[-1].split(":", 1)[0]
+    return domain[4:] if domain.startswith("www.") else domain
+
+
+def _url_is_whitelisted(text: str, whitelist: list[str] | None) -> bool:
+    """True only when every URL in *text* belongs to a whitelisted domain."""
+    allowed = {_normalise_domain(item) for item in (whitelist or [])}
+    allowed.discard("")
+    if not allowed:
+        return False
+    urls = LINK_RE.findall(text or "")
+    if not urls:
+        return False
+    for raw_url in urls:
+        candidate = raw_url if isinstance(raw_url, str) else "".join(str(part) for part in raw_url if part)
+        host = _normalise_domain(candidate)
+        if not any(host == domain or host.endswith("." + domain) for domain in allowed):
+            return False
+    return True
+
+
+def match_locked_content(message: Message, locks: list[str], url_whitelist: list[str] | None = None) -> str:
     """Return the first lock hit, using the same precedence as the live guard."""
     text = message.text or message.caption or ""
     if "all" in locks:
         return "all"
     lockset = set(locks)
+    url_allowed = _url_is_whitelisted(text, url_whitelist)
     # Legacy broad locks keep their original meanings.
-    if "links" in lockset and LINK_RE.search(text):
+    if "links" in lockset and not url_allowed and LINK_RE.search(text):
         return "links"
     if "forwards" in lockset and (getattr(message, "forward_date", None) or getattr(message, "forward_origin", None)):
         return "forwards"
@@ -522,7 +550,7 @@ def match_locked_content(message: Message, locks: list[str]) -> str:
     if "forwardchannel" in lockset and getattr(message, "forward_from_chat", None):
         return "forwardchannel"
     # Text-pattern locks.
-    if "url" in lockset and LINK_RE.search(text):
+    if "url" in lockset and not url_allowed and LINK_RE.search(text):
         return "url"
     if "invitelink" in lockset and re.search(r"t\.me/(?:joinchat/|\+)\S+|telegram\.me/(?:joinchat/|\+)\S+", text, re.IGNORECASE):
         return "invitelink"
@@ -1632,10 +1660,23 @@ async def setwelcome_cmd(client: Client, message: Message):
     return await rich.reply(message, Doc("👋", "Welcome Updated").status("success", "Template saved & enabled", arg[:120]))
 
 
-@Client.on_message(filters.group & filters.command(["lock", "unlock", "locks", "locktypes", "lockwarns"]) & PLG_FILTER)
+@Client.on_message(filters.group & filters.command(["lock", "unlock", "locks", "locktypes", "lockwarns", "lockall", "unlockall"]) & PLG_FILTER)
 async def lock_cmd(client: Client, message: Message):
     cmd = (message.command or ["lock"])[0].lower()
     cfg = await get_group_cfg(message.chat.id)
+    if cmd in ("lockall", "unlockall"):
+        uid = message.from_user.id if message.from_user else None
+        ok, err = await verify_mod_permissions(
+            client, message.chat.id, uid, privilege="can_delete_messages",
+            is_anon_admin=_is_anon_group_admin(message),
+        )
+        if not ok:
+            return await rich.reply(message, Doc("🔒", "Locks Refused").status("error", "Permission check failed", err))
+        if cmd == "lockall":
+            await update_group_cfg(message.chat.id, {"locks": ["all"], "lock_modes": {}})
+            return await message.reply_text(Doc("🔒", "All Content Locked").status("success", "All", "Only admins can send messages.").classic(), parse_mode=enums.ParseMode.HTML)
+        await update_group_cfg(message.chat.id, {"locks": [], "lock_modes": {}})
+        return await message.reply_text(Doc("🔓", "All Content Unlocked").status("success", "None", "All members can send messages.").classic(), parse_mode=enums.ParseMode.HTML)
     if cmd == "locks":
         args = [a.lower() for a in (message.command or [])[1:]]
         cur = cfg.get("locks") or []
@@ -1709,9 +1750,92 @@ async def lock_cmd(client: Client, message: Message):
     )
 
 
-@Client.on_message(filters.group & filters.command(["gfilter", "delfilter", "gfilters", "filter", "stop", "filters"]) & PLG_FILTER)
+@Client.on_message(filters.group & filters.command(["whitelist", "rmwhitelist", "allowlist", "rmallowlist"]) & PLG_FILTER)
+async def whitelist_cmd(client: Client, message: Message):
+    cmd = (message.command or ["whitelist"])[0].lower()
+    cfg = await get_group_cfg(message.chat.id)
+    current = sorted({_normalise_domain(item) for item in (cfg.get("url_whitelist") or []) if _normalise_domain(item)})
+    args = [_normalise_domain(item) for item in (message.command or [])[1:]]
+    args = [item for item in args if item]
+    if cmd in ("whitelist", "allowlist") and not args:
+        doc = Doc("✅", "URL Whitelist", message.chat.title or "Group")
+        doc.status("info", ", ".join(current) if current else "None", "Whitelisted domains are exempt from links/url locks. Add domains with /whitelist example.com.")
+        return await rich.reply(message, doc)
+
+    uid = message.from_user.id if message.from_user else None
+    ok, err = await verify_mod_permissions(
+        client, message.chat.id, uid, privilege="can_delete_messages",
+        is_anon_admin=_is_anon_group_admin(message),
+    )
+    if not ok:
+        return await rich.reply(message, Doc("🔒", "Whitelist Refused").status("error", "Permission check failed", err))
+    if not args:
+        return await rich.reply(message, Doc("✅", "URL Whitelist").status("warning", "No domains supplied", "Example: /whitelist example.com docs.example.com"))
+    if cmd in ("whitelist", "allowlist"):
+        updated = sorted(set(current) | set(args))
+        verb = "Added to whitelist"
+    else:
+        updated = sorted(set(current) - set(args))
+        verb = "Removed from whitelist"
+    await update_group_cfg(message.chat.id, {"url_whitelist": updated})
+    return await message.reply_text(
+        Doc("✅", verb).status("success", ", ".join(args), f"Active: {', '.join(updated) or 'None'}").classic(),
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+async def _collect_chat_administrators(client: Client, chat_id: int) -> list[Any]:
+    """Collect administrators across WzGram's list/async-iterator variants."""
+    result = client.get_chat_administrators(chat_id)
+    if hasattr(result, "__aiter__"):
+        return [member async for member in result]
+    if hasattr(result, "__await__"):
+        result = await result
+    if hasattr(result, "__aiter__"):
+        return [member async for member in result]
+    return list(result or [])
+
+
+@Client.on_message(filters.group & filters.command(["adminlist", "adminlists", "adminslist"]) & PLG_FILTER)
+async def adminlist_cmd(client: Client, message: Message):
+    try:
+        members = await _collect_chat_administrators(client, message.chat.id)
+    except Exception as exc:
+        return await rich.reply(message, Doc("👮", "Administrators").status("error", "Could not load administrators", str(exc)[:160]))
+    rows: list[tuple[str, str]] = []
+    for member in members:
+        user = getattr(member, "user", None)
+        if user is None:
+            continue
+        name = getattr(user, "first_name", None) or str(getattr(user, "id", "Admin"))
+        username = getattr(user, "username", None)
+        label = f"@{username}" if username else f"ID {getattr(user, 'id', '')}"
+        status = getattr(member, "status", "")
+        role = "Owner" if status == enums.ChatMemberStatus.OWNER else "Admin"
+        rows.append((f"{role} · {name}", label))
+    doc = Doc("👮", f"Administrators · {len(rows)}", message.chat.title or "Group")
+    if not rows:
+        doc.status("empty", "No administrators returned", "Telegram did not provide an administrator list for this chat.")
+    else:
+        doc.table(rows, header=("Administrator", "Contact"))
+    return await rich.reply(message, doc)
+
+
+@Client.on_message(filters.group & filters.command(["gfilter", "delfilter", "gfilters", "filter", "stop", "filters", "stopall"]) & PLG_FILTER)
 async def gfilter_cmd(client: Client, message: Message):
     cmd = (message.command or ["gfilters"])[0].lower()
+    if cmd == "stopall":
+        uid = message.from_user.id if message.from_user else None
+        ok, err = await verify_mod_permissions(
+            client, message.chat.id, uid, privilege="can_change_info",
+            is_anon_admin=_is_anon_group_admin(message), check_bot=False,
+        )
+        if not ok:
+            return await rich.reply(message, Doc("🔒", "Refused").status("error", "Permission check failed", err))
+        cfg = await get_group_cfg(message.chat.id)
+        count = len(cfg.get("filters") or {})
+        await update_group_cfg(message.chat.id, {"filters": {}})
+        return await message.reply_text(Doc("🗑", "All Filters Removed").status("success", f"{count} filters deleted", "Keyword filters cleared.").classic(), parse_mode=enums.ParseMode.HTML)
     if cmd in ("gfilters", "filters"):
         cfg = await get_group_cfg(message.chat.id)
         fmap: dict[str, str] = dict(cfg.get("filters") or {})
@@ -2286,7 +2410,7 @@ async def group_passive_guard(client: Client, message: Message):
             return
     # Check locks, blocklists & anti-flood against non-admins
     if user and (locks or antiflood or bmap):
-        violated = match_locked_content(message, locks)
+        violated = match_locked_content(message, locks, cfg.get("url_whitelist") or [])
         block_hit = match_blocklist(text, bmap) if bmap else None
 
         flood_hit = False

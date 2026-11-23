@@ -85,3 +85,14 @@ The main `group_mod` plugin adds Miss Rose-style restriction commands alongside 
 ## Stage 13 — moderation log (implemented in branch)
 
 Every confirmed moderation action is recorded to a bounded `group_modlog` collection (newest 1000 entries per chat retained): bans, mutes, kicks, warns, unbans, unmutes and all Rose-style aliases, with actor, target, reason and UTC timestamp. `/modlog` lists recent group actions and `/modhistory <user>` lists actions against a specific user; both are admin-only. Logging is best-effort and never raises into the moderation handler. This is an operational aid, not an immutable audit ledger; entries are not encrypted and persist until trimmed by the per-chat cap.
+
+## Stage 14 — Bulk lock controls, URL whitelist, filter cleanup, and admin directory
+
+Status: implemented in the regular-bot `group_mod` plugin; the protected clone worker remains untouched.
+
+- `/lockall` enables the all-content lock, and `/unlockall` clears all locks and per-lock modes after live admin and bot permission checks.
+- `/whitelist` and `/rmwhitelist` manage domains exempt from `links` and `url` locks; `/allowlist` and `/rmallowlist` are aliases. Exemption requires every URL in a message to use a whitelisted domain or subdomain, so mixed safe/unsafe messages remain blocked.
+- `/stopall` clears every keyword filter after permission verification and reports how many were removed.
+- `/adminlist` lists the owner and administrators currently returned by Telegram, with escaped names and username/ID labels.
+- Plugin manifest/index upgraded to group_mod 1.3.0 with 82 unique commands; the Telegram group command scope remains below the 100-command ceiling.
+- Evidence: focused group-management/security tests and the full backend test suite pass locally with mocked Telegram clients; no live Telegram or production deployment claim is made.

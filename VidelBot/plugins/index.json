@@ -42,7 +42,7 @@
         },
         {
             "name": "group_mod",
-            "version": "1.2.0",
+            "version": "1.3.0",
             "author": "Videl",
             "description": "Richgram-powered group management & Bot API 10.3 moderation (bans, mutes, warns, member tags, reaction moderation, topics, join-requests, locks, anti-raid, welcome/rules & filters)",
             "commands": [
@@ -118,6 +118,14 @@
                 "captcha",
                 "captchamode",
                 "setcaptchatext",
+                "lockall",
+                "unlockall",
+                "whitelist",
+                "rmwhitelist",
+                "allowlist",
+                "rmallowlist",
+                "stopall",
+                "adminlist",
                 "modlog",
                 "modhistory"
             ]

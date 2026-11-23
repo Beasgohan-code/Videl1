@@ -40,6 +40,8 @@ Group configuration remains keyed by chat ID and is cached locally for up to 45 
 - `/lock <types>` and `/unlock <types>` manage locks. `/locks list` shows all types with state; `/locktypes` lists available types.
 - `/lockwarns on|off` toggles a warning message when locked content is deleted.
 - Custom per-lock modes: `/lock url ### spam {tmute 1h}` applies the mode when the lock triggers.
+- `/lockall` enables the `all` lock and `/unlockall` clears every lock. `/whitelist example.com` lists or adds domains exempt from `links`/`url` locks; `/rmwhitelist` removes them. `/allowlist` and `/rmallowlist` are aliases. A message is exempt only when every URL it contains is on a whitelisted domain or subdomain.
+- `/adminlist` shows the group's current owner and administrators as returned by Telegram.
 
 ## Blocklists
 
@@ -49,7 +51,7 @@ Group configuration remains keyed by chat ID and is cached locally for up to 45 
 
 ## Filters and notes
 
-- `/filter <word|"phrase"|(a, b)|prefix:text|exact:text> <reply>` adds keyword filters. `/stop` removes them. `/filters` lists them.
+- `/filter <word|"phrase"|(a, b)|prefix:text|exact:text> <reply>` adds keyword filters. `/stop` removes one and `/stopall` removes every keyword filter. `/filters` lists them.
 - `/save <trigger> <text>` saves a note. `/get <trigger>` or `#<trigger>` opens it. `/notes` lists notes. `/clear <trigger>` deletes one.
 
 ## Anti-flood

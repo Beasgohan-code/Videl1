@@ -795,3 +795,77 @@ def test_modlog_is_bounded_per_chat():
     count, newest = run(_fill())
     assert count <= gmod._MODLOG_MAX_PER_CHAT
     assert newest["action"] == "ban"
+
+
+def test_lockall_unlockall_whitelist_and_stopall_management():
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        20: (enums.ChatMemberStatus.MEMBER, None),
+    })
+
+    locked = _grp_msg("/lockall", uid=10, client=c)
+    run(gmod.lock_cmd(c, locked))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["locks"] == ["all"]
+    assert "only admins can send messages" in locked.replies[-1].lower()
+
+    denied = _grp_msg("/unlockall", uid=20, client=c)
+    run(gmod.lock_cmd(c, denied))
+    assert run(gmod.get_group_cfg(-100888))["locks"] == ["all"]
+    assert "permission" in denied.replies[-1].lower()
+
+    unlocked = _grp_msg("/unlockall", uid=10, client=c)
+    run(gmod.lock_cmd(c, unlocked))
+    assert run(gmod.get_group_cfg(-100888))["locks"] == []
+
+    added = _grp_msg("/whitelist https://www.Example.com/path docs.example.com", uid=10, client=c)
+    run(gmod.whitelist_cmd(c, added))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["url_whitelist"] == ["docs.example.com", "example.com"]
+
+    allowed = SimpleNamespace(text="Read https://docs.example.com/guide", caption=None)
+    blocked = SimpleNamespace(text="Read https://evil.example.net/guide", caption=None)
+    mixed = SimpleNamespace(text="https://example.com/a https://evil.example.net/b", caption=None)
+    assert gmod.match_locked_content(allowed, ["url"], cfg["url_whitelist"]) == ""
+    assert gmod.match_locked_content(blocked, ["url"], cfg["url_whitelist"]) == "url"
+    assert gmod.match_locked_content(mixed, ["links"], cfg["url_whitelist"]) == "links"
+
+    removed = _grp_msg("/rmallowlist example.com", uid=10, client=c)
+    run(gmod.whitelist_cmd(c, removed))
+    assert run(gmod.get_group_cfg(-100888))["url_whitelist"] == ["docs.example.com"]
+
+    run(vdb.db["group_settings"].update_one(
+        {"_id": -100888}, {"$set": {"filters": {"hello": "Hi", "bye": "Bye"}}}, upsert=True,
+    ))
+    gmod._CFG_CACHE.clear()
+    stopped = _grp_msg("/stopall", uid=10, client=c)
+    run(gmod.gfilter_cmd(c, stopped))
+    assert run(gmod.get_group_cfg(-100888))["filters"] == {}
+    assert "2 filters deleted" in stopped.replies[-1].lower()
+
+
+def test_adminlist_formats_telegram_administrators():
+    from plugins.group_mod import plugin as gmod
+
+    class AdminClient(GroupFakeClient):
+        async def get_chat_administrators(self, chat_id):
+            yield SimpleNamespace(
+                status=enums.ChatMemberStatus.OWNER,
+                user=SimpleNamespace(id=10, first_name="Ada <Admin>", username="ada"),
+            )
+            yield SimpleNamespace(
+                status=enums.ChatMemberStatus.ADMINISTRATOR,
+                user=SimpleNamespace(id=11, first_name="Grace", username=None),
+            )
+
+    c = AdminClient({999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())})
+    msg = _grp_msg("/adminlist", uid=20, client=c)
+    run(gmod.adminlist_cmd(c, msg))
+    text = msg.replies[-1]
+    assert "@ada" in text and "ID 11" in text
+    assert "@ada" in text and "ID 11" in text
+    assert "<Admin>" not in text
