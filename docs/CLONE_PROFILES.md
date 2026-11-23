@@ -326,3 +326,16 @@ in-worker profile, and running both would double-handle the same bots.
 The production runtime choice and retirement of the old path remain a
 separate approved step. A Music worker will be its own folder under
 the same pattern once the voice-chat dependency stack is verified.
+
+## Group Management mode ON by default + clone settings (main bot)
+
+Clone profile selection now defaults to enabled
+(`CLONE_PROFILES_SINGLE_INSTANCE=True`; set it to `False` to turn
+Group Management mode back off) — Group Management can be picked during
+clone creation and from the clone profile panel. The profile panel also
+has a **Group clone settings** button (owner-only): it lists the groups
+that configured the clone and toggles greetings, shield, DM alerts,
+CAPTCHA and night mode per group, stored in the group worker's own
+`group_worker_settings`. These toggles take effect wherever the group
+worker serves the clone; groups appear after the clone has been added
+to them and /settings has been used there.

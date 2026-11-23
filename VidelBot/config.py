@@ -265,8 +265,10 @@ BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "")
 BACKEND_API_SECRET = os.environ.get("BACKEND_API_SECRET", "")
 FREEIMAGE_API_KEY = os.environ.get("FREEIMAGE_API_KEY", "")  # empty → catbox.moe fallback
 CLONE_ENABLED = _bool("CLONE_ENABLED", True)
-# Experimental profile selection requires exactly one up-to-date clone-worker process.
-CLONE_PROFILES_SINGLE_INSTANCE = _bool("CLONE_PROFILES_SINGLE_INSTANCE", False)
+# Clone profile selection (File Store / Group Management) assumes exactly one
+# up-to-date clone-worker process; Group Management mode is ON by default and
+# can be turned off by setting CLONE_PROFILES_SINGLE_INSTANCE=False.
+CLONE_PROFILES_SINGLE_INSTANCE = _bool("CLONE_PROFILES_SINGLE_INSTANCE", True)
 TG_BOT_WORKERS = env_int("TG_BOT_WORKERS", 16)
 
 # ==============================

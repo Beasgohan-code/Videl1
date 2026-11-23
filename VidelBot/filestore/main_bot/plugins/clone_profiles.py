@@ -47,6 +47,7 @@ async def profile_panel(client, query):
         [Btn("📁 File Store", callback_data=f"clprofile_set_{bot_id}_filestore"),
          Btn("🛡 Group Management", callback_data=f"clprofile_set_{bot_id}_group")],
         [Btn("🎵 Music · not available", callback_data=f"clprofile_set_{bot_id}_music")],
+        [Btn("🛡 Group clone settings", callback_data=f"clgset_{bot_id}")],
         [Btn("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")],
     ])
     await smart_edit(query.message, text, buttons)
