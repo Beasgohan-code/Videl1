@@ -243,3 +243,43 @@ def content_violation(message, guard_kinds) -> str:
     ):
         return "media"
     return ""
+
+
+def sanitize_settings_import(data, defaults: dict) -> dict | None:
+    """Validate an imported settings payload against the defaults' types.
+
+    Returns a cleaned dict containing only known keys, or None when the
+    payload is unusable. Dict values must map strings to strings.
+    """
+    if not isinstance(data, dict):
+        return None
+    out: dict = {}
+    for key, default in defaults.items():
+        if key not in data:
+            continue
+        value = data[key]
+        if isinstance(default, bool):
+            if not isinstance(value, bool):
+                return None
+            out[key] = value
+        elif isinstance(default, (int, float)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            out[key] = value
+        elif isinstance(default, str):
+            if not isinstance(value, str):
+                return None
+            out[key] = value[:2000]
+        elif isinstance(default, list):
+            if (not isinstance(value, list) or len(value) > 100
+                    or not all(isinstance(v, str) for v in value)):
+                return None
+            out[key] = [v[:60] for v in value]
+        elif isinstance(default, dict):
+            if not isinstance(value, dict) or len(value) > 200:
+                return None
+            if not all(isinstance(k, str) and isinstance(v, str)
+                       for k, v in value.items()):
+                return None
+            out[key] = {k[:60]: v[:500] for k, v in value.items()}
+    return out

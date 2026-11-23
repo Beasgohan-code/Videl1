@@ -14,6 +14,7 @@ class GroupWorkerStore:
         self._settings = db["group_worker_settings"]
         self._warns = db["group_worker_warns"]
         self._modlog = db["group_worker_modlog"]
+        self._afk = db["group_worker_afk"]
 
     @staticmethod
     def _key(bot_id: int, chat_id: int) -> dict:
@@ -74,3 +75,22 @@ class GroupWorkerStore:
     async def recent_actions(self, bot_id: int, chat_id: int, limit: int = 10) -> list[dict]:
         cursor = self._modlog.find(self._key(bot_id, chat_id)).sort("_id", -1).limit(limit)
         return [doc async for doc in cursor]
+
+
+    async def set_afk(self, bot_id: int, chat_id: int, user_id: int,
+                      name: str, reason: str = "") -> None:
+        await self._afk.update_one(
+            {**self._key(bot_id, chat_id), "user_id": int(user_id)},
+            {"$set": {"name": (name or "")[:60], "reason": (reason or "")[:200]}},
+            upsert=True)
+
+    async def get_afk(self, bot_id: int, chat_id: int, user_id: int) -> dict | None:
+        return await self._afk.find_one(
+            {**self._key(bot_id, chat_id), "user_id": int(user_id)})
+
+    async def clear_afk(self, bot_id: int, chat_id: int, user_id: int) -> dict | None:
+        doc = await self.get_afk(bot_id, chat_id, user_id)
+        if doc:
+            await self._afk.delete_one(
+                {**self._key(bot_id, chat_id), "user_id": int(user_id)})
+        return doc

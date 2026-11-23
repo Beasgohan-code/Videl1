@@ -71,7 +71,7 @@ def test_group_worker_store_is_scoped_per_clone_and_chat():
     from group_worker.store import GroupWorkerStore
 
     async def scenario():
-        db = {"group_worker_settings": _FakeCollection(), "group_worker_warns": _FakeCollection(), "group_worker_modlog": _FakeCollection()}
+        db = {"group_worker_settings": _FakeCollection(), "group_worker_warns": _FakeCollection(), "group_worker_modlog": _FakeCollection(), "group_worker_afk": _FakeCollection()}
         store = GroupWorkerStore(db)
         await store.update_settings(111, -5, {"shield": True, "not_a_setting": 1})
         mine = await store.get_settings(111, -5)
@@ -326,7 +326,7 @@ def test_group_worker_modlog_records_and_scopes_actions():
     async def scenario():
         db = {"group_worker_settings": _FakeCollection(),
               "group_worker_warns": _FakeCollection(),
-              "group_worker_modlog": _FakeLogCollection()}
+              "group_worker_modlog": _FakeLogCollection(), "group_worker_afk": _FakeLogCollection()}
         store = GroupWorkerStore(db)
         await store.log_action(1, -5, "ban", 9, 2, "spam")
         await store.log_action(1, -5, "warn", 8, 2, "")
@@ -337,3 +337,37 @@ def test_group_worker_modlog_records_and_scopes_actions():
         assert await store.recent_actions(1, -6) == []
 
     run(scenario())
+
+
+def test_group_worker_afk_store_and_import_sanitizer():
+    from group_worker.logic import default_settings, sanitize_settings_import
+    from group_worker.store import GroupWorkerStore
+
+    cleaned = sanitize_settings_import(
+        {"shield": True, "warn_limit": 5, "guard_kinds": ["links"],
+         "replies": {"hi": "hello"}, "unknown": 1, "lang": "hi"},
+        default_settings())
+    assert cleaned == {"shield": True, "warn_limit": 5, "guard_kinds": ["links"],
+                       "replies": {"hi": "hello"}, "lang": "hi"}
+    assert sanitize_settings_import({"shield": "yes"}, default_settings()) is None
+    assert sanitize_settings_import(["nope"], default_settings()) is None
+
+    async def scenario():
+        db = {"group_worker_settings": _FakeCollection(),
+              "group_worker_warns": _FakeCollection(),
+              "group_worker_modlog": _FakeLogCollection(),
+              "group_worker_afk": _FakeLogCollection()}
+        store = GroupWorkerStore(db)
+        await store.set_afk(1, -5, 9, "Ada", "lunch")
+        doc = await store.get_afk(1, -5, 9)
+        assert doc["name"] == "Ada" and doc["reason"] == "lunch"
+        assert await store.get_afk(2, -5, 9) is None  # other clone isolated
+        cleared = await store.clear_afk(1, -5, 9)
+        assert cleared["name"] == "Ada"
+        assert await store.get_afk(1, -5, 9) is None
+
+    run(scenario())
+
+    from group_worker.handlers import GROUP_WORKER_COMMANDS
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    assert "afk" in names and "export" in names and "import" in names

@@ -117,3 +117,15 @@ it is not a mode flag inside this worker.
 - Every moderation action is recorded per (clone, chat) in
   `/modlog` (newest first, kept to the latest 200 entries), and joins
   and leaves are posted to the log chat alongside moderation posts.
+
+## Stage 12 — AFK and settings backup (fresh implementations)
+
+Ideas reviewed from a GPL-licensed reference bot's public feature list;
+implemented clean-room in this worker's own code (no third-party code
+copied, so no foreign credits or license encumbrance):
+
+- `/afk [reason]` marks a member away; replying to their message
+  announces it, and their next message clears it with a welcome-back.
+- `/export` posts the group's settings as a JSON backup; `/import`
+  (inline or by reply) validates types and bounds against the known
+  settings model and applies nothing when validation fails.

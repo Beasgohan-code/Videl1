@@ -8,6 +8,7 @@ group-management plugin.
 from __future__ import annotations
 
 import html
+import json
 from datetime import datetime, timedelta, timezone
 
 from pyrogram import Client, enums, filters
@@ -19,7 +20,7 @@ from pyrogram.types import (
     Message,
 )
 
-from .logic import GUARD_KINDS, LANGUAGES, FloodWatch, JoinWatch, content_violation, in_quiet_hours, is_approved, match_reply, parse_duration, render_greeting, tr
+from .logic import GUARD_KINDS, LANGUAGES, FloodWatch, JoinWatch, content_violation, default_settings, in_quiet_hours, is_approved, match_reply, parse_duration, render_greeting, sanitize_settings_import, tr
 
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
@@ -434,6 +435,7 @@ class _BotHandlers:
                 "In DM: /connect &lt;group_id&gt; then moderate by ID; /settings views settings\n"
                 "/setlog &lt;chat_id&gt; — post moderation logs to another chat\n"
                 "/modlog — recent moderation actions\n"
+                "/afk — mark yourself away; /export /import — settings backup\n"
                 "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
@@ -852,6 +854,51 @@ class _BotHandlers:
             state = f"approved{f' — {_esc(reason)}' if reason else ''}" if str(target_id) in approved else "not approved"
             return await m.reply_text(f"🤝 <b>{_esc(label)}</b> is {state}.", parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message(filters.group & filters.command("afk"))
+        async def _afk(c, m: Message):
+            parts = (m.text or "").split(maxsplit=1)
+            reason = parts[1].strip()[:200] if len(parts) > 1 else ""
+            await store.set_afk(bot_id, m.chat.id, m.from_user.id,
+                                m.from_user.first_name or str(m.from_user.id), reason)
+            await m.reply_text(
+                f"💤 <b>{_esc(m.from_user.first_name or 'You')}</b> is now AFK."
+                + (f"\n📝 {_esc(reason)}" if reason else ""),
+                parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command(["export", "import"]))
+        async def _transfer(c, m: Message):
+            cmd = (m.command or ["export"])[0].lower()
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            s = await store.get_settings(bot_id, m.chat.id)
+            if cmd == "export":
+                payload = {k: s.get(k) for k in default_settings()}
+                return await m.reply_text(
+                    f"{_bar('📤 SETTINGS BACKUP')}\n\n<pre>{_esc(json.dumps(payload, ensure_ascii=False, indent=1, sort_keys=True))}</pre>",
+                    parse_mode=enums.ParseMode.HTML)
+            raw = ""
+            parts = (m.text or "").split(maxsplit=1)
+            if len(parts) > 1:
+                raw = parts[1]
+            elif m.reply_to_message is not None:
+                raw = m.reply_to_message.text or m.reply_to_message.caption or ""
+            raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            if not raw or len(raw) > 60000:
+                return await m.reply_text("📥 Reply to a backup with /import, or paste the JSON after /import.",
+                                          parse_mode=enums.ParseMode.HTML)
+            try:
+                data = json.loads(raw)
+            except Exception:
+                return await m.reply_text("❌ That isn't valid JSON — nothing was changed.",
+                                          parse_mode=enums.ParseMode.HTML)
+            updates = sanitize_settings_import(data, default_settings())
+            if updates is None:
+                return await m.reply_text("❌ That backup failed validation — nothing was changed.",
+                                          parse_mode=enums.ParseMode.HTML)
+            await store.update_settings(bot_id, m.chat.id, updates)
+            await m.reply_text(f"✅ <b>Imported {len(updates)} settings.</b> Open /settings to review.",
+                               parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.command("language"))
         async def _language(c, m: Message):
             s = await store.get_settings(bot_id, m.chat.id)
@@ -1061,9 +1108,24 @@ class _BotHandlers:
             if m.from_user is None:
                 return
             s = await store.get_settings(bot_id, m.chat.id)
-            if not (s.get("shield") or s.get("flood_limit") or s.get("replies")
-                    or s.get("notes") or s.get("night_on")):
-                return
+            afk_doc = await store.get_afk(bot_id, m.chat.id, m.from_user.id)
+            if afk_doc:
+                await store.clear_afk(bot_id, m.chat.id, m.from_user.id)
+                try:
+                    await m.reply_text(f"👋 Welcome back, {_esc(m.from_user.first_name or 'friend')}!",
+                                       parse_mode=enums.ParseMode.HTML)
+                except Exception:
+                    pass
+            if m.reply_to_message is not None and m.reply_to_message.from_user is not None:
+                other = await store.get_afk(bot_id, m.chat.id, m.reply_to_message.from_user.id)
+                if other:
+                    try:
+                        await m.reply_text(
+                            f"💤 <b>{_esc(other.get('name') or 'That member')}</b> is AFK."
+                            + (f"\n📝 {_esc(other.get('reason'))}" if other.get("reason") else ""),
+                            parse_mode=enums.ParseMode.HTML)
+                    except Exception:
+                        pass
             text_in = m.text or m.caption or ""
             notes = s.get("notes") or {}
             if notes and text_in.startswith("#") and len(text_in) > 1:
@@ -1152,6 +1214,9 @@ GROUP_WORKER_COMMANDS = [
     ("clear", "Delete a note (admins)"),
     ("whois", "Member card with admin actions"),
     ("language", "Show or set my language"),
+    ("afk", "Mark yourself AFK: /afk reason"),
+    ("export", "Back up this group's settings (admins)"),
+    ("import", "Restore a settings backup (admins)"),
     ("connect", "DM: connect to a group: /connect <group_id>"),
     ("disconnect", "DM: disconnect from the group"),
     ("connection", "DM: show current connection"),
