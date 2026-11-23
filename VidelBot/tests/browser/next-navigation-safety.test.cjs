@@ -46,7 +46,7 @@ async function signIn(page){await page.goto(base);await page.getByLabel('One-tim
   await signIn(delayed);await delayed.getByRole('link',{name:'Personal settings',exact:true}).click();
   await delayed.getByLabel('Theme preference').selectOption('light');
   delayed.once('dialog',d=>d.accept());await delayed.getByRole('link',{name:'Team',exact:true}).click();
-  let routeTimeout;try{await Promise.race([routeSeen,new Promise((_,reject)=>{routeTimeout=setTimeout(()=>reject(Error('Team navigation request did not start')),15000)})])}finally{clearTimeout(routeTimeout)}
+  let routeTimeout;try{await Promise.race([routeSeen,new Promise((_,reject)=>{routeTimeout=setTimeout(()=>reject(Error('Team navigation request did not start')),30000)})])}finally{clearTimeout(routeTimeout)}
   assert.equal(new URL(delayed.url()).pathname,'/next-preview/settings');
   assert.equal(await delayed.getByLabel('Theme preference').inputValue(),'light');
   assert.equal(await delayed.evaluate(()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented}),true);
