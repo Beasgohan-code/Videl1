@@ -8,7 +8,7 @@ group-management plugin.
 from __future__ import annotations
 
 import html
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from pyrogram import Client, enums, filters
 from pyrogram.types import (
@@ -19,7 +19,7 @@ from pyrogram.types import (
     Message,
 )
 
-from .logic import GUARD_KINDS, FloodWatch, content_violation, match_reply, parse_duration, render_greeting
+from .logic import GUARD_KINDS, FloodWatch, content_violation, in_quiet_hours, match_reply, parse_duration, render_greeting
 
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
@@ -78,6 +78,18 @@ class _BotHandlers:
             rows.append([tog(bool(s.get("shield")), "Shield enabled", f"gw:{bot}:tog:shield")])
             rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")])
             return InlineKeyboardMarkup(rows)
+        if page == "greet":
+            return InlineKeyboardMarkup([
+                [tog(bool(s.get("greetings")), "Greetings enabled", f"gw:{bot}:tog:greetings")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+            ])
+        if page == "night":
+            return InlineKeyboardMarkup([
+                [tog(bool(s.get("night_on")), "Night mode enabled", f"gw:{bot}:tog:night_on")],
+                [InlineKeyboardButton(f"🌙 From {s.get('night_start', 23):02d}:00 UTC", callback_data=f"gw:{bot}:nightstart"),
+                 InlineKeyboardButton(f"☀️ To {s.get('night_end', 7):02d}:00 UTC", callback_data=f"gw:{bot}:nightend")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+            ])
         if page == "warn":
             return InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"➖ {s.get('warn_limit', 3)} warns ➕", callback_data=f"gw:{bot}:warnlimit")],
@@ -97,17 +109,41 @@ class _BotHandlers:
              tog(bool(s.get("greetings")), "Greetings", f"gw:{bot}:tog:greetings")],
             [InlineKeyboardButton("🛡 Shield types ›", callback_data=f"gw:{bot}:page:shield"),
              InlineKeyboardButton("⚠️ Warnings ›", callback_data=f"gw:{bot}:page:warn")],
-            [tog(bool(s.get("dm_alerts")), "DM alerts to owner", f"gw:{bot}:tog:dm_alerts")],
+            [tog(bool(s.get("dm_alerts")), "DM alerts to owner", f"gw:{bot}:tog:dm_alerts"),
+             tog(bool(s.get("night_on")), "Night mode", f"gw:{bot}:page:night")],
+            [InlineKeyboardButton("👋 Greetings ›", callback_data=f"gw:{bot}:page:greet"),
+             InlineKeyboardButton("🌙 Night hours ›", callback_data=f"gw:{bot}:page:night")],
             [InlineKeyboardButton("🌊 Flood watch ›", callback_data=f"gw:{bot}:page:flood"),
              InlineKeyboardButton("❌ Close", callback_data=f"gw:{bot}:close")],
         ])
 
     def _settings_text(self, page: str, s: dict, chat_title: str = "") -> str:
         head = _bar("⚙️ SETTINGS") + (f"\n<i>{_esc(chat_title)}</i>" if chat_title else "")
+        if page == "greet":
+            return (f"{head}\n\n👋 <b>Greetings</b> — {'on' if s.get('greetings') else 'off'}\n"
+                    "<i>Set texts with /setwelcome and /setgoodbye. "
+                    "Placeholders: {name} {chat} {id}.</i>")
+        if page == "night":
+            state = (f"{s.get('night_start', 23):02d}:00–{s.get('night_end', 7):02d}:00 UTC"
+                     if s.get("night_on") else "off")
+            return (f"{head}\n\n🌙 <b>Night mode</b> — {_esc(state)}\n"
+                    "<i>During night hours, members' messages are quietly deleted. Admins are exempt.</i>")
         if page == "shield":
             kinds = ", ".join(s.get("guard_kinds") or []) or "none"
             return (f"{head}\n\n🛡 <b>Shield</b> — {'on' if s.get('shield') else 'off'}\n"
                     f"Blocking: {_esc(kinds)}\n\n<i>Tap a type to toggle it. Turning a type on enables the shield.</i>")
+        if page == "greet":
+            return InlineKeyboardMarkup([
+                [tog(bool(s.get("greetings")), "Greetings enabled", f"gw:{bot}:tog:greetings")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+            ])
+        if page == "night":
+            return InlineKeyboardMarkup([
+                [tog(bool(s.get("night_on")), "Night mode enabled", f"gw:{bot}:tog:night_on")],
+                [InlineKeyboardButton(f"🌙 From {s.get('night_start', 23):02d}:00 UTC", callback_data=f"gw:{bot}:nightstart"),
+                 InlineKeyboardButton(f"☀️ To {s.get('night_end', 7):02d}:00 UTC", callback_data=f"gw:{bot}:nightend")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+            ])
         if page == "warn":
             return (f"{head}\n\n⚠️ <b>Warnings</b>\n"
                     f"Members are {s.get('warn_action', 'mute')}d after <b>{s.get('warn_limit', 3)}</b> warns.\n"
@@ -128,7 +164,9 @@ class _BotHandlers:
             f"🌊 <b>Flood watch</b> — {_esc(flood)}\n"
             f"📜 <b>Rules</b> — {'set' if s.get('rules') else 'not set'} · "
             f"💬 <b>Auto-replies</b> — {len(s.get('replies') or {})}\n"
-            f"📩 <b>DM alerts</b> — {'on' if s.get('dm_alerts') else 'off'}\n\n"
+            f"📩 <b>DM alerts</b> — {'on' if s.get('dm_alerts') else 'off'} · "
+            f"🌙 <b>Night</b> — {'on' if s.get('night_on') else 'off'} · "
+            f"📝 <b>Notes</b> — {len(s.get('notes') or {})}\n\n"
             "<i>Only group admins can change settings.</i>"
         )
 
@@ -264,6 +302,8 @@ class _BotHandlers:
                 "/rules /setrules — group rules\n"
                 "/filter /stop /filters — keyword auto-replies\n"
                 "/report — (reply) send a report to admins by DM\n"
+                "/save /get /notes /clear — saved notes (#trigger works too)\n"
+                "/setwelcome /setgoodbye — greeting texts\n"
                 "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
@@ -339,6 +379,9 @@ class _BotHandlers:
                     s = await store.update_settings(bot_id, chat_id,
                                                     {"flood_limit": 0 if s.get("flood_limit") else 6})
                     page = "flood"
+                elif key == "night_on":
+                    s = await store.update_settings(bot_id, chat_id, {"night_on": not s.get("night_on")})
+                    page = "night"
             elif action == "kind" and len(parts) > 3 and parts[3] in GUARD_KINDS:
                 kinds = set(s.get("guard_kinds") or [])
                 kinds.symmetric_difference_update({parts[3]})
@@ -356,6 +399,14 @@ class _BotHandlers:
                     limit = 2
                 s = await store.update_settings(bot_id, chat_id, {"warn_limit": limit})
                 page = "warn"
+            elif action == "nightstart":
+                s = await store.update_settings(bot_id, chat_id,
+                                                {"night_start": (int(s.get("night_start", 23)) + 1) % 24})
+                page = "night"
+            elif action == "nightend":
+                s = await store.update_settings(bot_id, chat_id,
+                                                {"night_end": (int(s.get("night_end", 7)) + 1) % 24})
+                page = "night"
             elif action == "floodaction":
                 order = ["mute", "kick", "ban"]
                 nxt = order[(order.index(s.get("flood_action", "mute")) + 1) % len(order)]
@@ -391,6 +442,56 @@ class _BotHandlers:
             if ids:
                 await c.delete_messages(m.chat.id, ids)
             await m.reply_text(f"🧹 <b>Purged {len(ids)} messages.</b>", parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command(["setwelcome", "setgoodbye"]))
+        async def _set_greeting(c, m: Message):
+            cmd = (m.command or ["setwelcome"])[0].lower()
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            parts = (m.text or "").split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                return await m.reply_text(
+                    f"Usage: <code>/{cmd} Hello {{name}}, welcome to {{chat}}!</code>",
+                    parse_mode=enums.ParseMode.HTML)
+            key = "greet_text" if cmd == "setwelcome" else "farewell_text"
+            await store.update_settings(bot_id, m.chat.id, {key: parts[1].strip()[:1000], "greetings": True})
+            await m.reply_text("✅ <b>Saved & greetings enabled.</b>", parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command(["save", "get", "notes", "clear"]))
+        async def _notes(c, m: Message):
+            cmd = (m.command or ["notes"])[0].lower()
+            s = await store.get_settings(bot_id, m.chat.id)
+            notes = dict(s.get("notes") or {})
+            if cmd == "notes":
+                if not notes:
+                    return await m.reply_text("📝 No notes yet. Admins: <code>/save faq &lt;text&gt;</code>",
+                                              parse_mode=enums.ParseMode.HTML)
+                listing = ", ".join(sorted(notes))
+                return await m.reply_text(f"{_bar('📝 NOTES')}\n\n{_esc(listing)}\n\n<i>Open one with /get or #trigger.</i>",
+                                          parse_mode=enums.ParseMode.HTML)
+            if cmd == "get":
+                args = (m.command or [])[1:]
+                note = notes.get(args[0].lower()) if args else None
+                if note is None:
+                    return await m.reply_text("That note doesn't exist.", parse_mode=enums.ParseMode.HTML)
+                return await m.reply_text(_esc(note)[:3500], parse_mode=enums.ParseMode.HTML)
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            if cmd == "save":
+                parts = (m.text or "").split(maxsplit=2)
+                if len(parts) < 3:
+                    return await m.reply_text("Usage: <code>/save &lt;trigger&gt; &lt;text&gt;</code>",
+                                              parse_mode=enums.ParseMode.HTML)
+                notes[parts[1].lower()[:40]] = parts[2].strip()[:3000]
+                await store.update_settings(bot_id, m.chat.id, {"notes": notes})
+                return await m.reply_text(f"✅ Note <b>{_esc(parts[1].lower())}</b> saved.",
+                                          parse_mode=enums.ParseMode.HTML)
+            args = (m.command or [])[1:]
+            if not args or args[0].lower() not in notes:
+                return await m.reply_text("That note doesn't exist.", parse_mode=enums.ParseMode.HTML)
+            notes.pop(args[0].lower())
+            await store.update_settings(bot_id, m.chat.id, {"notes": notes})
+            await m.reply_text("🗑 Note deleted.", parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command(["rules", "setrules"]))
         async def _rules(c, m: Message):
@@ -512,11 +613,28 @@ class _BotHandlers:
             if m.from_user is None:
                 return
             s = await store.get_settings(bot_id, m.chat.id)
-            if not s.get("shield") and not s.get("flood_limit") and not s.get("replies"):
+            if not (s.get("shield") or s.get("flood_limit") or s.get("replies")
+                    or s.get("notes") or s.get("night_on")):
                 return
-            hit = match_reply(m.text or m.caption or "", s.get("replies") or {})
+            text_in = m.text or m.caption or ""
+            notes = s.get("notes") or {}
+            if notes and text_in.startswith("#") and len(text_in) > 1:
+                note = notes.get(text_in[1:].split()[0].lower())
+                if note:
+                    await m.reply_text(_esc(note)[:3500], parse_mode=enums.ParseMode.HTML)
+                    return
+            hit = match_reply(text_in, s.get("replies") or {})
             if hit:
                 await m.reply_text(_esc(hit[1])[:1000], parse_mode=enums.ParseMode.HTML)
+                return
+            if s.get("night_on") and in_quiet_hours(
+                    datetime.now(timezone.utc).hour,
+                    int(s.get("night_start", 23)), int(s.get("night_end", 7))):
+                if await _status(c, m.chat.id, m.from_user.id) == enums.ChatMemberStatus.MEMBER:
+                    try:
+                        await m.delete()
+                    except Exception:
+                        pass
                 return
             if await _status(c, m.chat.id, m.from_user.id) != enums.ChatMemberStatus.MEMBER:
                 return  # admins/restricted/unknown are never auto-punished
@@ -573,4 +691,10 @@ GROUP_WORKER_COMMANDS = [
     ("stop", "Remove an auto-reply (admins)"),
     ("filters", "List auto-replies"),
     ("report", "Report a message to admins by DM"),
+    ("setwelcome", "Set the welcome text (admins)"),
+    ("setgoodbye", "Set the goodbye text (admins)"),
+    ("save", "Save a note: /save faq text (admins)"),
+    ("get", "Open a note: /get faq"),
+    ("notes", "List saved notes"),
+    ("clear", "Delete a note (admins)"),
 ]

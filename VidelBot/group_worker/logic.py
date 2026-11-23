@@ -47,7 +47,21 @@ def default_settings() -> dict:
         "rules": "",              # group rules text (/rules)
         "replies": {},            # keyword -> auto-reply (/filter)
         "dm_alerts": True,        # DM the clone owner on moderation actions
+        "notes": {},              # trigger -> saved note (/save, #trigger)
+        "night_on": False,        # quiet hours: delete member messages
+        "night_start": 23,        # UTC hour, inclusive
+        "night_end": 7,           # UTC hour, exclusive
     }
+
+
+def in_quiet_hours(hour: int, start: int, end: int) -> bool:
+    """True when *hour* falls in the [start, end) window (wraps midnight)."""
+    start, end, hour = int(start) % 24, int(end) % 24, int(hour) % 24
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
 
 
 def match_reply(text: str, replies: dict) -> tuple[str, str] | None:

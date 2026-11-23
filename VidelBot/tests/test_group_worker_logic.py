@@ -98,7 +98,8 @@ def test_group_worker_uses_normal_rose_style_commands_and_settings_ui():
     assert "panel" not in names
     for expected in ("settings", "ban", "tban", "sban", "unban", "kick", "mute",
                      "tmute", "unmute", "warn", "unwarn", "purge", "pin", "unpin",
-                     "rules", "setrules", "filter", "stop", "filters", "report"):
+                     "rules", "setrules", "filter", "stop", "filters", "report",
+                     "setwelcome", "setgoodbye", "save", "get", "notes", "clear"):
         assert expected in names
 
     handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
@@ -132,3 +133,22 @@ def test_group_worker_reply_matching_and_new_defaults():
     assert match_reply("helloagain", replies) is None       # whole-word only
     assert match_reply("/hello", replies) is None            # commands ignored
     assert match_reply("", replies) is None
+
+
+def test_group_worker_quiet_hours_and_night_settings_ui():
+    from group_worker.handlers import _BotHandlers
+    from group_worker.logic import default_settings, in_quiet_hours
+
+    assert in_quiet_hours(23, 23, 7) and in_quiet_hours(3, 23, 7)
+    assert not in_quiet_hours(7, 23, 7) and not in_quiet_hours(12, 23, 7)
+    assert in_quiet_hours(10, 9, 17) and not in_quiet_hours(17, 9, 17)
+    assert not in_quiet_hours(5, 5, 5)
+
+    settings = default_settings()
+    assert settings["night_on"] is False and settings["notes"] == {}
+    handlers = _BotHandlers(bot_id=7, owner_id=1, store=None)
+    night = handlers._settings_markup("night", settings)
+    callbacks = [b.callback_data for row in night.inline_keyboard for b in row]
+    assert "gw:7:tog:night_on" in callbacks and "gw:7:nightstart" in callbacks
+    text = handlers._settings_text("night", {**settings, "night_on": True}, "G")
+    assert "23:00–07:00 UTC" in text

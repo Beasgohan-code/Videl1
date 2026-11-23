@@ -42,3 +42,11 @@ it is not a mode flag inside this worker.
   original group before acting.
 - Commands are registered for both the default and all-group-chats
   BotCommand scopes at startup.
+
+## Stage 3 — notes, greeting texts and night mode
+
+- `/save`, `/get`, `/notes`, `/clear` for saved notes; `#trigger` opens a
+  note inline. `/setwelcome` / `/setgoodbye` set greeting texts (and
+  enable greetings) with `{name}` `{chat}` `{id}` placeholders.
+- Night mode (Settings → Night hours): pick the UTC window with buttons;
+  during it, members' messages are quietly deleted and admins are exempt.
