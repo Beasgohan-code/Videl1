@@ -13,6 +13,7 @@ class GroupWorkerStore:
     def __init__(self, db):
         self._settings = db["group_worker_settings"]
         self._warns = db["group_worker_warns"]
+        self._modlog = db["group_worker_modlog"]
 
     @staticmethod
     def _key(bot_id: int, chat_id: int) -> dict:
@@ -55,3 +56,21 @@ class GroupWorkerStore:
         await self._warns.delete_one(
             {**self._key(bot_id, chat_id), "user_id": int(user_id)}
         )
+
+
+    async def log_action(self, bot_id: int, chat_id: int, action: str,
+                         target_id: int | None, actor_id: int | None,
+                         reason: str = "") -> None:
+        """Append a moderation log entry, keeping the newest 200 per chat."""
+        key = self._key(bot_id, chat_id)
+        await self._modlog.insert_one({
+            **key, "action": action, "target_id": target_id,
+            "actor_id": actor_id, "reason": (reason or "")[:200],
+        })
+        old = await self._modlog.find(key, {"_id": 1}).sort("_id", -1).skip(200).to_list(length=200)
+        if old:
+            await self._modlog.delete_many({"_id": {"$in": [d["_id"] for d in old]}})
+
+    async def recent_actions(self, bot_id: int, chat_id: int, limit: int = 10) -> list[dict]:
+        cursor = self._modlog.find(self._key(bot_id, chat_id)).sort("_id", -1).limit(limit)
+        return [doc async for doc in cursor]

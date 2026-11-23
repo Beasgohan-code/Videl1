@@ -294,6 +294,11 @@ class _BotHandlers:
                                         "kick": "👢", "mute": "🤐", "tmute": "🤐"}.get(base, "✅"))
         except Exception:
             pass  # reactions are decoration; never fail the action over them
+        try:
+            await self.store.log_action(self.bot_id, chat_id, base, target_id,
+                                        message.from_user.id, reason)
+        except Exception:
+            pass
         await self._notify_owner(client, message, base, target_id, label, reason, chat_id=chat_id)
         if silent:
             try:
@@ -428,6 +433,7 @@ class _BotHandlers:
                 "/approve /unapprove /approved — trusted members exempt from automation\n"
                 "In DM: /connect &lt;group_id&gt; then moderate by ID; /settings views settings\n"
                 "/setlog &lt;chat_id&gt; — post moderation logs to another chat\n"
+                "/modlog — recent moderation actions\n"
                 "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
@@ -756,6 +762,23 @@ class _BotHandlers:
                 f"Warnings: <b>{warns}</b>/{s.get('warn_limit', 3)}",
                 parse_mode=enums.ParseMode.HTML, reply_markup=markup)
 
+        @app.on_message(filters.group & filters.command("modlog"))
+        async def _modlog(c, m: Message):
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            entries = await store.recent_actions(bot_id, m.chat.id, limit=10)
+            if not entries:
+                return await m.reply_text("📋 No moderation actions recorded yet.",
+                                          parse_mode=enums.ParseMode.HTML)
+            lines = []
+            for e in entries:
+                line = f"• <b>{_esc(e.get('action'))}</b> → <code>{e.get('target_id')}</code> by <code>{e.get('actor_id')}</code>"
+                if e.get("reason"):
+                    line += f" — {_esc(e['reason'])}"
+                lines.append(line)
+            await m.reply_text(f"{_bar('📋 MODERATION LOG')}\n\n" + "\n".join(lines),
+                               parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.command(["setlog", "logchannel", "unsetlog"]))
         async def _setlog(c, m: Message):
             cmd = (m.command or ["logchannel"])[0].lower()
@@ -945,6 +968,13 @@ class _BotHandlers:
                     continue
                 name = _esc(user.first_name or "member")
                 chat_name = _esc(m.chat.title or "this group")
+                if s.get("log_chat"):
+                    try:
+                        await c.send_message(int(s["log_chat"]),
+                                             f"👋 <b>Joined:</b> {_esc(user.first_name or user.id)} (<code>{user.id}</code>)\nGroup: {_esc(m.chat.title or m.chat.id)}",
+                                             parse_mode=enums.ParseMode.HTML)
+                    except Exception:
+                        pass
                 if s.get("raid_on") and self.joins.record(m.chat.id):
                     try:
                         until = datetime.now(timezone.utc) + timedelta(minutes=15)
@@ -1002,12 +1032,20 @@ class _BotHandlers:
         @app.on_message(filters.group & filters.left_chat_member)
         async def _left(c, m: Message):
             s = await store.get_settings(bot_id, m.chat.id)
-            if not s.get("greetings") or getattr(m.left_chat_member, "is_bot", False):
+            if getattr(m.left_chat_member, "is_bot", False):
                 return
             user = m.left_chat_member
-            text = render_greeting(s.get("farewell_text") or "", name=_esc(user.first_name or "member"),
-                                   chat=_esc(m.chat.title or "this group"), user_id=user.id)
-            await c.send_message(m.chat.id, text, parse_mode=enums.ParseMode.HTML)
+            if s.get("log_chat"):
+                try:
+                    await c.send_message(int(s["log_chat"]),
+                                         f"👋 <b>Left:</b> {_esc(user.first_name or user.id)} (<code>{user.id}</code>)\nGroup: {_esc(m.chat.title or m.chat.id)}",
+                                         parse_mode=enums.ParseMode.HTML)
+                except Exception:
+                    pass
+            if s.get("greetings"):
+                text = render_greeting(s.get("farewell_text") or "", name=_esc(user.first_name or "member"),
+                                       chat=_esc(m.chat.title or "this group"), user_id=user.id)
+                await c.send_message(m.chat.id, text, parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.service, group=5)
         async def _service_cleaner(c, m: Message):
@@ -1122,6 +1160,7 @@ GROUP_WORKER_COMMANDS = [
     ("approval", "Check a member's approval"),
     ("approved", "List approved members"),
     ("unapproveall", "Clear all approvals (group owner)"),
+    ("modlog", "Recent moderation actions (admins)"),
     ("setlog", "Set the moderation log chat (admins)"),
     ("logchannel", "Show the moderation log chat"),
     ("unsetlog", "Remove the moderation log chat (admins)"),

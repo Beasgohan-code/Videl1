@@ -111,3 +111,9 @@ it is not a mode flag inside this worker.
 - Clean service messages toggle deletes Telegram service posts
   (join/leave/pin notices) while greetings keep working.
 - Settings home now uses a blockquote status card for a cleaner read.
+
+## Stage 11 — moderation log
+
+- Every moderation action is recorded per (clone, chat) in
+  `/modlog` (newest first, kept to the latest 200 entries), and joins
+  and leaves are posted to the log chat alongside moderation posts.

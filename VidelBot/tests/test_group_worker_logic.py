@@ -71,7 +71,7 @@ def test_group_worker_store_is_scoped_per_clone_and_chat():
     from group_worker.store import GroupWorkerStore
 
     async def scenario():
-        db = {"group_worker_settings": _FakeCollection(), "group_worker_warns": _FakeCollection()}
+        db = {"group_worker_settings": _FakeCollection(), "group_worker_warns": _FakeCollection(), "group_worker_modlog": _FakeCollection()}
         store = GroupWorkerStore(db)
         await store.update_settings(111, -5, {"shield": True, "not_a_setting": 1})
         mine = await store.get_settings(111, -5)
@@ -94,7 +94,7 @@ def test_group_worker_uses_standard_commands_and_settings_ui():
     from group_worker.logic import default_settings
 
     names = [name for name, _ in GROUP_WORKER_COMMANDS]
-    assert not any(name.startswith("mod") for name in names)
+    assert not any(name in ("modwarn","modmute","modkick","modban","modunban","modpurge") for name in names)
     assert "panel" not in names
     for expected in ("settings", "ban", "tban", "sban", "unban", "kick", "mute",
                      "tmute", "unmute", "warn", "unwarn", "purge", "pin", "unpin",
@@ -266,3 +266,74 @@ def test_group_worker_language_and_clean_service():
     assert "gw:7:lang" in callbacks and "gw:7:tog:clean_service" in callbacks
     text = handlers._settings_text("main", {**settings, "lang": "es"}, "G")
     assert "AJUSTES" in text and "<blockquote>" in text
+
+
+class _FakeCursor:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def sort(self, *_a, **_k):
+        return self
+
+    def skip(self, n):
+        self._docs = self._docs[n:]
+        return self
+
+    def limit(self, n):
+        self._docs = self._docs[:n]
+        return self
+
+    async def to_list(self, length=None):
+        return list(self._docs[:length] if length else self._docs)
+
+    def __aiter__(self):
+        self._it = iter(self._docs)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+class _FakeLogCollection(_FakeCollection):
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+
+    async def insert_one(self, doc):
+        doc = dict(doc)
+        doc.setdefault("_id", len(self.rows) + 1)
+        self.rows.append(doc)
+
+    def find(self, key, *_a, **_k):
+        rows = [r for r in self.rows
+                if all(r.get(k) == v for k, v in key.items())]
+        return _FakeCursor(list(reversed(rows)))
+
+    async def delete_many(self, query):
+        ids = set(query.get("_id", {}).get("$in", []))
+        self.rows = [r for r in self.rows if r.get("_id") not in ids]
+
+
+def test_group_worker_modlog_records_and_scopes_actions():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS
+    from group_worker.store import GroupWorkerStore
+
+    assert "modlog" in [n for n, _ in GROUP_WORKER_COMMANDS]
+
+    async def scenario():
+        db = {"group_worker_settings": _FakeCollection(),
+              "group_worker_warns": _FakeCollection(),
+              "group_worker_modlog": _FakeLogCollection()}
+        store = GroupWorkerStore(db)
+        await store.log_action(1, -5, "ban", 9, 2, "spam")
+        await store.log_action(1, -5, "warn", 8, 2, "")
+        await store.log_action(2, -5, "ban", 9, 2, "other clone")
+        entries = await store.recent_actions(1, -5)
+        assert [e["action"] for e in entries] == ["warn", "ban"]  # newest first
+        assert entries[1]["reason"] == "spam"
+        assert await store.recent_actions(1, -6) == []
+
+    run(scenario())
