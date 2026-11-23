@@ -76,6 +76,7 @@ class _BotHandlers:
         self.store = store
         self.flood = FloodWatch()
         self.joins = JoinWatch()
+        self.connections: dict[int, int] = {}  # admin user_id -> group chat_id (DM mode)
 
     # ── settings (worker-style) ────────────────────────────────
     def _settings_markup(self, page: str, s: dict) -> InlineKeyboardMarkup:
@@ -212,16 +213,24 @@ class _BotHandlers:
         base = action[1:] if silent and action != "sban" else action
         if action == "sban":
             base = "ban"
-        if not await _is_admin(client, message.chat.id, message.from_user.id):
+        chat_id = chat_id
+        if message.chat.type == enums.ChatType.PRIVATE:
+            chat_id = self.connections.get(message.from_user.id)
+            if chat_id is None:
+                return await message.reply_text(
+                    "🔌 <b>Not connected.</b> Use /connect &lt;group_id&gt; first, then run "
+                    "moderation commands here by user ID.",
+                    parse_mode=enums.ParseMode.HTML)
+        if not await _is_admin(client, chat_id, message.from_user.id):
             return await message.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
         target_id, label, rest = _resolve(message)
         if target_id is None:
             return await message.reply_text(
                 "👤 Reply to a member, or give a user ID — e.g. <code>/ban 123456 reason</code>.",
                 parse_mode=enums.ParseMode.HTML)
-        if await _status(client, message.chat.id, target_id) in _ADMIN_STATUSES:
+        if await _status(client, chat_id, target_id) in _ADMIN_STATUSES:
             return await message.reply_text("🛡 That member is an admin — I won't act on them.")
-        settings = await self.store.get_settings(self.bot_id, message.chat.id)
+        settings = await self.store.get_settings(self.bot_id, chat_id)
         duration = None
         if rest and base in ("tban", "tmute"):
             duration = parse_duration(rest[0])
@@ -235,7 +244,7 @@ class _BotHandlers:
         try:
             if base == "warn":
                 count, reached = await self.store.add_warn(
-                    self.bot_id, message.chat.id, target_id, settings.get("warn_limit", 3))
+                    self.bot_id, chat_id, target_id, settings.get("warn_limit", 3))
                 if not reached:
                     if not silent:
                         await message.reply_text(
@@ -246,22 +255,22 @@ class _BotHandlers:
                 base = settings.get("warn_action", "mute")
                 note = "Warning limit reached."
             if base == "unwarn":
-                await self.store.reset_warns(self.bot_id, message.chat.id, target_id)
+                await self.store.reset_warns(self.bot_id, chat_id, target_id)
                 return await message.reply_text(f"✅ Warnings cleared for <b>{_esc(label)}</b>.",
                                                 parse_mode=enums.ParseMode.HTML)
             if base in ("ban", "tban"):
-                await client.ban_chat_member(message.chat.id, target_id, until_date=until)
+                await client.ban_chat_member(chat_id, target_id, until_date=until)
             elif base == "kick":
-                await client.ban_chat_member(message.chat.id, target_id)
-                await client.unban_chat_member(message.chat.id, target_id)
+                await client.ban_chat_member(chat_id, target_id)
+                await client.unban_chat_member(chat_id, target_id)
             elif base == "unban":
-                await client.unban_chat_member(message.chat.id, target_id)
+                await client.unban_chat_member(chat_id, target_id)
             elif base in ("mute", "tmute"):
                 await client.restrict_chat_member(
-                    message.chat.id, target_id, ChatPermissions(), until_date=until)
+                    chat_id, target_id, ChatPermissions(), until_date=until)
             elif base == "unmute":
                 await client.restrict_chat_member(
-                    message.chat.id, target_id,
+                    chat_id, target_id,
                     ChatPermissions(can_send_messages=True, can_send_media_messages=True,
                                     can_send_other_messages=True, can_add_web_page_previews=True))
             else:
@@ -276,7 +285,7 @@ class _BotHandlers:
                                         "kick": "👢", "mute": "🤐", "tmute": "🤐"}.get(base, "✅"))
         except Exception:
             pass  # reactions are decoration; never fail the action over them
-        await self._notify_owner(client, message, base, target_id, label, reason)
+        await self._notify_owner(client, message, base, target_id, label, reason, chat_id=chat_id)
         if silent:
             try:
                 await message.delete()
@@ -291,9 +300,10 @@ class _BotHandlers:
             parse_mode=enums.ParseMode.HTML)
 
     async def _notify_owner(self, client: Client, message: Message, action: str,
-                            target_id: int, label: str, reason: str = "") -> None:
+                            target_id: int, label: str, reason: str = "",
+                            chat_id: int | None = None) -> None:
         """Best-effort DM to the clone owner with an undo button."""
-        settings = await self.store.get_settings(self.bot_id, message.chat.id)
+        settings = await self.store.get_settings(self.bot_id, chat_id or message.chat.id)
         if not settings.get("dm_alerts") or self.owner_id == message.from_user.id:
             return
         undo = {"ban": "unban", "tban": "unban", "mute": "unmute", "tmute": "unmute"}.get(action)
@@ -301,14 +311,14 @@ class _BotHandlers:
         if undo:
             markup = InlineKeyboardMarkup([[
                 InlineKeyboardButton(f"↩️ Undo ({undo})",
-                                     callback_data=f"gw:{self.bot_id}:undo:{message.chat.id}:{target_id}:{undo}"),
+                                     callback_data=f"gw:{self.bot_id}:undo:{chat_id or message.chat.id}:{target_id}:{undo}"),
                 InlineKeyboardButton("✅ Keep", callback_data=f"gw:{self.bot_id}:keep"),
             ]])
         try:
             await client.send_message(
                 self.owner_id,
                 f"📩 <b>Moderation alert</b>\n\n"
-                f"Group: <b>{_esc(message.chat.title or message.chat.id)}</b>\n"
+                f"Group: <b>{_esc(getattr(message.chat, 'title', None) or 'connected group')}</b>\n"
                 f"Action: <b>{_esc(action)}</b> → {_esc(label)} ({target_id})\n"
                 f"By: {_esc(message.from_user.first_name or message.from_user.id)}"
                 + (f"\n📝 {_esc(reason)}" if reason else ""),
@@ -330,6 +340,54 @@ class _BotHandlers:
                 "/warn, /mute, /kick and /ban.",
                 parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message(filters.private & filters.command(["connect", "disconnect", "connection"]))
+        async def _connect(c, m: Message):
+            cmd = (m.command or ["connection"])[0].lower()
+            uid = m.from_user.id
+            if cmd == "disconnect":
+                self.connections.pop(uid, None)
+                return await m.reply_text("🔌 Disconnected.", parse_mode=enums.ParseMode.HTML)
+            if cmd == "connection":
+                chat_id = self.connections.get(uid)
+                return await m.reply_text(
+                    f"🔌 Connected to group <code>{chat_id}</code>." if chat_id
+                    else "🔌 Not connected. Use /connect &lt;group_id&gt;.",
+                    parse_mode=enums.ParseMode.HTML)
+            args = (m.command or [])[1:]
+            if len(args) != 1 or not args[0].lstrip("-").isdigit():
+                return await m.reply_text(
+                    "Usage: <code>/connect -1001234567890</code>\n"
+                    "<i>Tip: open /settings in the group to see its ID, or forward a group message to @userinfobot-style tools.</i>",
+                    parse_mode=enums.ParseMode.HTML)
+            chat_id = int(args[0])
+            if not await _is_admin(c, chat_id, uid):
+                return await m.reply_text(
+                    "🔒 I couldn't confirm you're an admin there (make sure I'm in the group too).",
+                    parse_mode=enums.ParseMode.HTML)
+            self.connections[uid] = chat_id
+            await m.reply_text(
+                f"🔌 <b>Connected to {chat_id}.</b>\n"
+                "Now moderation commands here act on that group (use user IDs): "
+                "/warn, /mute, /kick, /ban, /unwarn…\n"
+                "Check settings with /gsettings · /disconnect to stop.",
+                parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.private & filters.command("gsettings"))
+        async def _dm_settings(c, m: Message):
+            chat_id = self.connections.get(m.from_user.id)
+            if chat_id is None:
+                return await m.reply_text("🔌 Not connected. Use /connect &lt;group_id&gt; first.",
+                                          parse_mode=enums.ParseMode.HTML)
+            if not await _is_admin(c, chat_id, m.from_user.id):
+                self.connections.pop(m.from_user.id, None)
+                return await m.reply_text("🔒 You're no longer an admin there — disconnected.",
+                                          parse_mode=enums.ParseMode.HTML)
+            s = await store.get_settings(bot_id, chat_id)
+            await m.reply_text(self._settings_text("main", s, str(chat_id)),
+                               parse_mode=enums.ParseMode.HTML)
+            await m.reply_text("ℹ️ Buttons work in the group: open /settings there to change switches.",
+                               parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.command("help"))
         async def _help(_c, m: Message):
             await m.reply_text(
@@ -348,6 +406,7 @@ class _BotHandlers:
                 "/setwelcome /setgoodbye — greeting texts\n"
                 "/whois — member card (admins get action buttons)\n"
                 "/approve /unapprove /approved — trusted members exempt from automation\n"
+                "In DM: /connect &lt;group_id&gt; then moderate by ID; /gsettings views settings\n"
                 "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
@@ -523,7 +582,7 @@ class _BotHandlers:
                                       parse_mode=enums.ParseMode.HTML)
             await q.answer("Saved ✅")
 
-        @app.on_message(filters.group & filters.command(
+        @app.on_message((filters.group | filters.private) & filters.command(
             ["warn", "unwarn", "ban", "tban", "sban", "unban",
              "kick", "mute", "tmute", "unmute"]))
         async def _mod(c, m: Message):
@@ -900,6 +959,9 @@ GROUP_WORKER_COMMANDS = [
     ("notes", "List saved notes"),
     ("clear", "Delete a note (admins)"),
     ("whois", "Member card with admin actions"),
+    ("connect", "DM: connect to a group: /connect <group_id>"),
+    ("disconnect", "DM: disconnect from the group"),
+    ("connection", "DM: show current connection"),
     ("approve", "Approve a member: exempt from automation"),
     ("unapprove", "Remove a member's approval"),
     ("approval", "Check a member's approval"),

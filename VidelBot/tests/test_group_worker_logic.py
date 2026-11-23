@@ -205,3 +205,16 @@ def test_group_worker_approvals_exemption_logic():
     names = [n for n, _ in GROUP_WORKER_COMMANDS]
     for cmd in ("approve", "unapprove", "approval", "approved", "unapproveall"):
         assert cmd in names
+
+
+def test_group_worker_connections_commands_registered():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS
+
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    for cmd in ("connect", "disconnect", "connection"):
+        assert cmd in names
+
+    from group_worker.handlers import _BotHandlers
+    handlers = _BotHandlers(bot_id=1, owner_id=2, store=None)
+    handlers.connections[99] = -100123
+    assert handlers.connections[99] == -100123

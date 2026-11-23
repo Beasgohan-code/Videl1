@@ -76,3 +76,12 @@ it is not a mode flag inside this worker.
   `/approved`, and owner-only `/unapproveall`. Approved members are
   exempt from the shield, flood watch and night mode (admins remain
   governed separately). Approval state shows on the settings page.
+
+## Stage 7 — DM connections
+
+- In DM, `/connect <group_id>` links an admin to a group after verifying
+  their admin status there; `/connection` shows it and `/disconnect`
+  clears it. While connected, moderation commands (`/warn`, `/mute`,
+  `/kick`, `/ban`, … by user ID) act on that group, and `/gsettings`
+  shows its settings read-only (buttons still live in the group).
+  Connections are process-local and re-verified on every action.
