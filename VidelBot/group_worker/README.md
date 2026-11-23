@@ -59,3 +59,13 @@ it is not a mode flag inside this worker.
   banned for 15 minutes and the group is told why).
 - Greetings can also DM the welcome text to the new member
   (best-effort; requires the member to be reachable by the bot).
+
+## Stage 5 — member cards, reactions and styled buttons
+
+- `/whois` (reply or ID) shows a member card — name, ID, chat status,
+  warn count — with Warn/Mute/Kick/Ban buttons for admins. Buttons
+  re-check admin rights and admin immunity before acting.
+- Successful moderation actions add a small reaction (⚠️/🔨/🤐/👢) to
+  the command message, best-effort so it can never fail the action.
+- Settings toggles use Bot API colored button styles (green/red) when
+  the client supports them, with a plain-button fallback.

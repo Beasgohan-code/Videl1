@@ -31,6 +31,16 @@ def _esc(text) -> str:
     return html.escape(str(text or ""), quote=False)
 
 
+def _btn(text: str, data: str, style: str | None = None) -> InlineKeyboardButton:
+    """Inline button with Bot API button styling when the client supports it."""
+    if style:
+        try:
+            return InlineKeyboardButton(text, callback_data=data, style=style)
+        except TypeError:
+            pass
+    return InlineKeyboardButton(text, callback_data=data)
+
+
 def _bar(title: str) -> str:
     return f"<b>━━━━━━━━━━━━━━━━━━━\n{title}\n━━━━━━━━━━━━━━━━━━━</b>"
 
@@ -71,7 +81,8 @@ class _BotHandlers:
     def _settings_markup(self, page: str, s: dict) -> InlineKeyboardMarkup:
         bot = self.bot_id
         def tog(on, label, data):
-            return InlineKeyboardButton(f"{'✅' if on else '▫️'} {label}", callback_data=data)
+            return _btn(f"{'✅' if on else '▫️'} {label}", data,
+                        style="success" if on else "danger")
         if page == "shield":
             kinds = set(s.get("guard_kinds") or [])
             rows = [[tog(kind in kinds, kind.title(), f"gw:{bot}:kind:{kind}")]
@@ -258,6 +269,12 @@ class _BotHandlers:
             return await message.reply_text(
                 f"❌ <b>Telegram refused that.</b>\n{_esc(str(exc)[:120])}",
                 parse_mode=enums.ParseMode.HTML)
+        try:
+            await client.send_reaction(message.chat.id, message.id,
+                                       {"warn": "⚠️", "ban": "🔨", "tban": "🔨", "sban": "🔨",
+                                        "kick": "👢", "mute": "🤐", "tmute": "🤐"}.get(base, "✅"))
+        except Exception:
+            pass  # reactions are decoration; never fail the action over them
         await self._notify_owner(client, message, base, target_id, label, reason)
         if silent:
             try:
@@ -328,6 +345,7 @@ class _BotHandlers:
                 "/report — (reply) send a report to admins by DM\n"
                 "/save /get /notes /clear — saved notes (#trigger works too)\n"
                 "/setwelcome /setgoodbye — greeting texts\n"
+                "/whois — member card (admins get action buttons)\n"
                 "/settings — group settings (buttons)\n\n"
                 "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
                 parse_mode=enums.ParseMode.HTML)
@@ -372,6 +390,39 @@ class _BotHandlers:
                 return await q.answer("Verified ✅")
             if action == "keep":
                 return await q.answer("Kept. ✅")
+            if action == "act":
+                # data: gw:{bot}:act:{chat}:{user}:{verb}
+                try:
+                    target_chat, target_user, verb = int(parts[3]), int(parts[4]), parts[5]
+                except Exception:
+                    return await q.answer("Bad action.", show_alert=True)
+                if not await _is_admin(c, target_chat, q.from_user.id):
+                    return await q.answer("Admins only.", show_alert=True)
+                if await _status(c, target_chat, target_user) in _ADMIN_STATUSES:
+                    return await q.answer("That member is an admin.", show_alert=True)
+                try:
+                    if verb == "warn":
+                        s = await store.get_settings(bot_id, target_chat)
+                        count, reached = await store.add_warn(bot_id, target_chat, target_user,
+                                                               s.get("warn_limit", 3))
+                        if reached:
+                            verb = s.get("warn_action", "mute")
+                        else:
+                            await q.answer(f"Warned ({count}/{s.get('warn_limit', 3)}) ⚠️")
+                            return
+                    if verb == "mute":
+                        await c.restrict_chat_member(target_chat, target_user, ChatPermissions())
+                    elif verb == "kick":
+                        await c.ban_chat_member(target_chat, target_user)
+                        await c.unban_chat_member(target_chat, target_user)
+                    elif verb == "ban":
+                        await c.ban_chat_member(target_chat, target_user)
+                    else:
+                        return await q.answer("Unknown action.", show_alert=True)
+                except Exception as exc:
+                    return await q.answer(f"Failed: {str(exc)[:60]}", show_alert=True)
+                await q.answer("Done ✅")
+                return
             if action in ("undo", "rep"):
                 # data: gw:{bot}:undo:{chat}:{user}:{undo} / gw:{bot}:rep:{chat}:{msg}:{user}:{verb}
                 try:
@@ -543,6 +594,29 @@ class _BotHandlers:
             notes.pop(args[0].lower())
             await store.update_settings(bot_id, m.chat.id, {"notes": notes})
             await m.reply_text("🗑 Note deleted.", parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command(["whois", "info"]))
+        async def _whois(c, m: Message):
+            target_id, label, _rest = _resolve(m)
+            if target_id is None:
+                target_id, label = m.from_user.id, m.from_user.first_name or str(m.from_user.id)
+            status = await _status(c, m.chat.id, target_id)
+            warns = await store.warn_count(bot_id, m.chat.id, target_id)
+            s = await store.get_settings(bot_id, m.chat.id)
+            markup = None
+            if await _is_admin(c, m.chat.id, m.from_user.id) and status not in _ADMIN_STATUSES:
+                markup = InlineKeyboardMarkup([[
+                    _btn("⚠️ Warn", f"gw:{bot_id}:act:{m.chat.id}:{target_id}:warn", style="primary"),
+                    _btn("🤐 Mute", f"gw:{bot_id}:act:{m.chat.id}:{target_id}:mute", style="primary"),
+                    _btn("👢 Kick", f"gw:{bot_id}:act:{m.chat.id}:{target_id}:kick", style="danger"),
+                    _btn("🔨 Ban", f"gw:{bot_id}:act:{m.chat.id}:{target_id}:ban", style="danger"),
+                ]])
+            await m.reply_text(
+                f"{_bar('👤 MEMBER')}\n\n"
+                f"Name: <b>{_esc(label)}</b>\nID: <code>{target_id}</code>\n"
+                f"Status: <b>{_esc(getattr(status, 'value', status) or 'unknown')}</b>\n"
+                f"Warnings: <b>{warns}</b>/{s.get('warn_limit', 3)}",
+                parse_mode=enums.ParseMode.HTML, reply_markup=markup)
 
         @app.on_message(filters.group & filters.command(["rules", "setrules"]))
         async def _rules(c, m: Message):
@@ -780,4 +854,5 @@ GROUP_WORKER_COMMANDS = [
     ("get", "Open a note: /get faq"),
     ("notes", "List saved notes"),
     ("clear", "Delete a note (admins)"),
+    ("whois", "Member card with admin actions"),
 ]

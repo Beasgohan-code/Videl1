@@ -99,7 +99,7 @@ def test_group_worker_uses_normal_rose_style_commands_and_settings_ui():
     for expected in ("settings", "ban", "tban", "sban", "unban", "kick", "mute",
                      "tmute", "unmute", "warn", "unwarn", "purge", "pin", "unpin",
                      "rules", "setrules", "filter", "stop", "filters", "report",
-                     "setwelcome", "setgoodbye", "save", "get", "notes", "clear"):
+                     "setwelcome", "setgoodbye", "save", "get", "notes", "clear", "whois"):
         assert expected in names
 
     handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
@@ -175,3 +175,17 @@ def test_group_worker_join_watch_and_security_settings_ui():
     assert "gw:7:tog:captcha_on" in callbacks and "gw:7:tog:raid_on" in callbacks
     text = handlers._settings_text("security", settings, "G")
     assert "CAPTCHA" in text and "Anti-raid" in text
+
+
+def test_group_worker_whois_card_buttons_and_styled_toggles():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS, _BotHandlers, _btn
+    from group_worker.logic import default_settings
+
+    assert "whois" in [name for name, _ in GROUP_WORKER_COMMANDS]
+    button = _btn("Test", "gw:1:close", style="success")
+    assert button.text == "Test" and button.callback_data == "gw:1:close"
+
+    handlers = _BotHandlers(bot_id=7, owner_id=1, store=None)
+    main = handlers._settings_markup("main", default_settings())
+    shield_btn = main.inline_keyboard[0][0]
+    assert shield_btn.callback_data == "gw:7:page:shield"
