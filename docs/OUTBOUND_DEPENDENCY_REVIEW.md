@@ -61,3 +61,16 @@ tests the built public site; CI still depends on registry and browser downloads.
 Review major-version changes and real deployment routing before approving any
 cutover. This change does not upgrade, deploy or attest the legacy production
 front door or its dependencies.
+
+## MTProto client choice: WzGram vs cbgram (reviewed)
+
+Compared `abhiadi23/wzgram` / upstream WzGram with `abhiadi23/cbgram`.
+Both are the same WzGram (LGPL) lineage with a Rust crypto core.
+Decision: keep upstream **WzGram** (bumped 3.1.6 → 3.1.7, full test
+suite passing). Rationale: WzGram is published on PyPI with versioned
+releases and is already integrated and covered by this repo's tests;
+cbgram is a single-maintainer fork distributed only from git, whose
+mandatory `cbcrypto` core also installs from a git repository — faster
+file-transfer claims are unverified, and git-only dependencies are a
+supply-chain and reproducibility risk for this project. Revisit if
+cbgram ships versioned PyPI releases with published benchmarks.

@@ -1,5 +1,5 @@
 # ── Telegram (WzGram Layer 232 + Richgram + Bot API 10.3 bridge) ──
-wzgram==3.1.6
+wzgram==3.1.7
 WarpCrypto==2.1.0
 richgram==0.2.0                 # Note: pip uninstall kurigram & force-reinstall wzgram after install (see Dockerfile)
 aiogram==3.31.0                 # Bot API 10.3 bridge (outgoing – see core/botapi.py)
