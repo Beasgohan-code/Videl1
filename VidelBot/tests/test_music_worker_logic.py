@@ -394,3 +394,31 @@ def test_music_stage5_playlists_and_commands():
         assert await store.get_playlist(5, 77, "chill") is None
 
     _run(scenario())
+
+
+def test_music_player_panel_markup_and_text():
+    from music_worker.handlers import _BotHandlers
+
+    handlers = _BotHandlers(bot_id=42, owner_id=1, store=None, player=object())
+    assert "Nothing playing" in handlers._panel_text(-5)
+
+    handlers.queue.enqueue(-5, {"title": "First Song", "duration": 200,
+                                "requested_by": "Ana", "source": "x"})
+    handlers.queue.enqueue(-5, {"title": "Second", "duration": 90,
+                                "requested_by": "Ben", "source": "y"})
+    handlers._pos_set(-5, handlers.queue.now_playing(-5), playing=False)  # paused
+    text = handlers._panel_text(-5)
+    assert "NOW PLAYING" in text and "First Song" in text and "Second" in text
+    assert "<pre>" in text
+
+    markup = handlers._panel_markup(-5)
+    datas = [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
+    assert "mw:42:ctl:-5:resume" in datas      # paused → resume toggle
+    assert "mw:42:ctl:-5:skip" in datas
+    assert "mw:42:ctl:-5:stop" in datas
+    assert "mw:42:ctl:-5:queue" in datas
+
+    handlers._pos_set(-5, handlers.queue.now_playing(-5), playing=True)
+    datas = [b.callback_data for row in handlers._panel_markup(-5).inline_keyboard
+             for b in row if b.callback_data]
+    assert "mw:42:ctl:-5:pause" in datas       # playing → pause toggle

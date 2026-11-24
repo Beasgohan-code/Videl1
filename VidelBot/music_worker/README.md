@@ -74,3 +74,11 @@ against a linked channel's voice chat. Unresolved playlist/queue
 titles are resolved lazily when their turn to play arrives.
 Seek/speed act through ffmpeg parameters on stream (re)starts —
 their audible effect, like joining a call, is live-proof pending.
+
+## Stage 6 — player control panel
+
+When a track starts, the bot posts a 🎵 NOW PLAYING panel (title,
+duration, live position, requester, up-next table) with colored
+control buttons — Pause/Resume toggle, Skip, Stop, Queue view and
+back-to-Panel. Buttons honour DJ mode, work for channel play too
+(the target chat is encoded in the callback), and refresh in place.

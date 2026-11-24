@@ -197,6 +197,37 @@ class _BotHandlers:
         ])
         return f"{_bar('⚙️ MUSIC SETTINGS')}\n\n{table}"
 
+    def _panel_text(self, chat_id: int) -> str:
+        current = self.queue.now_playing(chat_id)
+        if current is None:
+            return f"{_bar('🎵 PLAYER')}\n\n⏹ <b>Nothing playing.</b>"
+        upcoming = self.queue.upcoming(chat_id, limit=3)
+        table = _table([
+            ("🎵 Title", str(current["title"])[:48]),
+            ("⏱ Duration", format_duration(current.get("duration"))),
+            ("▶️ Position", format_duration(int(self._pos_now(chat_id)))),
+            ("🙋 Requested by", current.get("requested_by") or "—"),
+            ("🎶 Up next", f"{self.queue.size(chat_id) - 1} track(s)"),
+        ])
+        more = ""
+        if upcoming:
+            more = "\n" + _table([(f"{i}.", f"{t['title'][:40]} · {format_duration(t.get('duration'))}")
+                                   for i, t in enumerate(upcoming, start=1)])
+        return f"{_bar('🎵 NOW PLAYING')}\n\n{table}{more}"
+
+    def _panel_markup(self, target: int) -> InlineKeyboardMarkup:
+        bot = self.bot_id
+        rec = self._pos.get(int(target)) or {}
+        paused = rec.get("start") is None and bool(rec)
+        toggle = ("▶️ Resume", "resume") if paused else ("⏸ Pause", "pause")
+        return InlineKeyboardMarkup([
+            [_btn(toggle[0], f"mw:{bot}:ctl:{target}:{toggle[1]}", style="primary"),
+             _btn("⏭ Skip", f"mw:{bot}:ctl:{target}:skip", style="primary"),
+             _btn("⏹ Stop", f"mw:{bot}:ctl:{target}:stop", style="danger")],
+            [_btn("🎶 Queue", f"mw:{bot}:ctl:{target}:queue"),
+             _btn("🎛 Panel", f"mw:{bot}:ctl:{target}:panel")],
+        ])
+
     async def _allowed(self, client: Client, message: Message) -> bool:
         s = await self.store.get_settings(self.bot_id, message.chat.id)
         if not s.get("dj_mode"):
@@ -291,8 +322,13 @@ class _BotHandlers:
                     note = ("\n\n<i>⚠️ Couldn't start playback — is a voice chat active? "
                             "The track stays queued.</i>")
             if position == 0:
-                await m.reply_text(f"{where}▶️ <b>Now playing:</b> {_esc(title)} · {format_duration(duration)}{note}",
-                                   parse_mode=enums.ParseMode.HTML)
+                if note:
+                    await m.reply_text(f"{where}▶️ <b>Now playing:</b> {_esc(title)} · {format_duration(duration)}{note}",
+                                       parse_mode=enums.ParseMode.HTML)
+                else:
+                    await m.reply_text(self._panel_text(target),
+                                       reply_markup=self._panel_markup(target),
+                                       parse_mode=enums.ParseMode.HTML)
             else:
                 await m.reply_text(f"{where}🎶 <b>Queued #{position}:</b> {_esc(title)} · {format_duration(duration)}{note}",
                                    parse_mode=enums.ParseMode.HTML)
@@ -309,6 +345,7 @@ class _BotHandlers:
             for i, track in enumerate(self.queue.upcoming(m.chat.id), start=1):
                 lines.append(f"{i}. {_esc(track['title'])} · {format_duration(track.get('duration'))}")
             await m.reply_text(f"{_bar('🎶 QUEUE')}\n\n" + "\n".join(lines),
+                               reply_markup=self._panel_markup(m.chat.id),
                                parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command(
@@ -581,7 +618,95 @@ class _BotHandlers:
 
         @app.on_callback_query(filters.regex(rf"^mw:{bot_id}:"))
         async def _settings_cb(c, q: CallbackQuery):
-            action = (q.data or "").split(":")[2] if len((q.data or "").split(":")) > 2 else ""
+            parts_cb = (q.data or "").split(":")
+            action = parts_cb[2] if len(parts_cb) > 2 else ""
+            if action == "ctl":
+                if len(parts_cb) < 5:
+                    return await q.answer("Bad control.", show_alert=True)
+                try:
+                    target = int(parts_cb[3])
+                except ValueError:
+                    return await q.answer("Bad control.", show_alert=True)
+                sub = parts_cb[4]
+                gate = await store.get_settings(bot_id, q.message.chat.id)
+                if gate.get("dj_mode") and not await _is_admin(c, q.message.chat.id, q.from_user.id):
+                    return await q.answer("🎧 DJ mode: admins only.", show_alert=True)
+                await self._ensure_loaded(target)
+                if sub == "queue":
+                    current = self.queue.now_playing(target)
+                    if current is None:
+                        return await q.answer("Queue is empty.")
+                    lines = [f"▶️ <b>{_esc(current['title'])}</b> · {format_duration(current.get('duration'))}"]
+                    upcoming = self.queue.upcoming(target)
+                    if upcoming:
+                        lines.append(_table([(f"{i}.", f"{t['title'][:40]} · {format_duration(t.get('duration'))}")
+                                             for i, t in enumerate(upcoming, start=1)]))
+                    await q.message.edit_text(f"{_bar('🎶 QUEUE')}\n\n" + "\n".join(lines),
+                                              reply_markup=self._panel_markup(target),
+                                              parse_mode=enums.ParseMode.HTML)
+                    return await q.answer()
+                if sub == "panel":
+                    await q.message.edit_text(self._panel_text(target),
+                                              reply_markup=self._panel_markup(target),
+                                              parse_mode=enums.ParseMode.HTML)
+                    return await q.answer()
+                if not self._player_ready():
+                    return await q.answer("Streaming isn't active for this clone yet.", show_alert=True)
+                label = "Done"
+                if sub in ("pause", "resume"):
+                    try:
+                        ok = await (self.player.pause(target) if sub == "pause"
+                                    else self.player.resume(target))
+                    except Exception:
+                        ok = False
+                    if ok:
+                        rec = self._pos.get(int(target))
+                        if rec:
+                            if sub == "pause":
+                                rec["base"] = self._pos_now(target)
+                                rec["start"] = None
+                            else:
+                                rec["start"] = time.monotonic()
+                    label = "⏸ Paused" if sub == "pause" else "▶️ Resumed"
+                elif sub == "skip":
+                    nxt = self.queue.skip(target)
+                    await self._persist(target)
+                    self._note_manual(target)
+                    if nxt and not nxt.get("source"):
+                        from .resolver import resolve_title
+                        resolved = await resolve_title(nxt["title"], video=bool(nxt.get("video")))
+                        if resolved:
+                            nxt.update(resolved)
+                            await self._persist(target)
+                    try:
+                        if nxt and nxt.get("source"):
+                            await self._play_track(target, nxt)
+                        else:
+                            self._pos.pop(int(target), None)
+                            await self.player.stop(target)
+                    except Exception:
+                        pass
+                    label = "⏭ Skipped"
+                elif sub == "stop":
+                    self.queue.clear(target)
+                    await self._persist(target)
+                    self._note_manual(target)
+                    self._pos.pop(int(target), None)
+                    try:
+                        await self.player.stop(target)
+                    except Exception:
+                        pass
+                    label = "⏹ Stopped"
+                else:
+                    return await q.answer("Unknown control.", show_alert=True)
+                if self.queue.now_playing(target) is None:
+                    await q.message.edit_text(self._panel_text(target), reply_markup=None,
+                                              parse_mode=enums.ParseMode.HTML)
+                else:
+                    await q.message.edit_text(self._panel_text(target),
+                                              reply_markup=self._panel_markup(target),
+                                              parse_mode=enums.ParseMode.HTML)
+                return await q.answer(label)
             if action == "close":
                 return await q.message.delete()
             if not await _is_admin(c, q.message.chat.id, q.from_user.id):
