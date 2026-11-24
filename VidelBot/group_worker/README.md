@@ -177,3 +177,15 @@ onto the shield: locking a type (links, media, stickers, forwards,
 bots, all) enables the shield for it; unlocking `all`, or one type
 out of an `all` lock, expands correctly. Lock changes are recorded
 in the moderation log.
+
+## Stage 17 — rich UI and full-management extras
+
+- Rich UI kit: heading bars plus aligned monospace `<pre>` tables.
+  Settings home, /chatinfo, /whois, /locks, /stats and the start
+  Help/About pages now render as clean tables under bold headings.
+- `/disable <command>` / `/enable <command>` / `/disabled`: per-group
+  command disabling for members (a group -1 gate deletes the message
+  and stops propagation; admins always bypass). Core commands
+  (start/help/settings/disable/enable/disabled) can never be disabled.
+- `/adminlist` shows the owner/admin/bot roster with tap-to-mention
+  links; `/stats` shows members, logged actions and worker state.

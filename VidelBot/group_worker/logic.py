@@ -32,6 +32,22 @@ def lock_kind(name: str) -> str:
     return kind if kind in GUARD_KINDS else ""
 
 
+# Commands that keep a group manageable; they can never be disabled.
+NEVER_DISABLE = frozenset({"start", "help", "settings", "disable", "enable", "disabled"})
+
+
+def normalize_cmd(name: str) -> str:
+    return (name or "").strip().lower().lstrip("/").split("@")[0]
+
+
+def command_blocked(settings: dict, name: str) -> bool:
+    """True when a command is disabled in this chat (admins bypass at call site)."""
+    cmd = normalize_cmd(name)
+    if not cmd or cmd in NEVER_DISABLE:
+        return False
+    return cmd in {normalize_cmd(c) for c in (settings or {}).get("disabled_cmds") or []}
+
+
 def parse_duration(token: str) -> timedelta | None:
     """Parse ``30m`` / ``12h`` / ``7d`` / ``2w`` into a timedelta."""
     m = _DURATION_RE.match((token or "").strip())

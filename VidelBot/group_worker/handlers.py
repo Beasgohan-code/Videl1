@@ -21,7 +21,7 @@ from pyrogram.types import (
     Message,
 )
 
-from .logic import GUARD_KINDS, LANGUAGES, FloodWatch, JoinWatch, content_violation, default_settings, in_quiet_hours, is_approved, lock_kind, match_reply, parse_duration, render_greeting, sanitize_settings_import, sticker_blocked, tr
+from .logic import GUARD_KINDS, LANGUAGES, NEVER_DISABLE, FloodWatch, JoinWatch, command_blocked, content_violation, default_settings, in_quiet_hours, is_approved, lock_kind, match_reply, normalize_cmd, parse_duration, render_greeting, sanitize_settings_import, sticker_blocked, tr
 
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
@@ -46,6 +46,20 @@ def _btn(text: str, data: str, style: str | None = None, url: bool = False) -> I
 
 def _bar(title: str) -> str:
     return f"<b>━━━━━━━━━━━━━━━━━━━\n{title}\n━━━━━━━━━━━━━━━━━━━</b>"
+
+
+def _table(rows) -> str:
+    """Aligned two-column monospace table (Telegram <pre> block)."""
+    rows = [(str(label), str(value)) for label, value in rows if value is not None]
+    if not rows:
+        return ""
+    width = max(len(label) for label, _ in rows)
+    body = "\n".join(f"{label.ljust(width)}  {value}" for label, value in rows)
+    return f"<pre>{_esc(body)}</pre>"
+
+
+def _onoff(flag) -> str:
+    return "✅ on" if flag else "▫️ off"
 
 
 async def _status(client: Client, chat_id: int, user_id: int):
@@ -199,62 +213,93 @@ class _BotHandlers:
         kinds = ", ".join(s.get("guard_kinds") or []) or "none"
         flood = (f"{s['flood_limit']}/{s['flood_window']:g}s → {s['flood_action']}"
                  if s.get("flood_limit") else "off")
-        return (
-            f"{head}\n\n<blockquote>"
-            f"🛡 <b>Shield</b> — {'on' if s.get('shield') else 'off'} · {_esc(kinds)}\n"
-            f"👋 <b>Greetings</b> — {'on' if s.get('greetings') else 'off'}\n"
-            f"⚠️ <b>Warnings</b> — {s.get('warn_limit', 3)} → {s.get('warn_action', 'mute')}\n"
-            f"🌊 <b>Flood watch</b> — {_esc(flood)}\n"
-            f"📜 <b>Rules</b> — {'set' if s.get('rules') else 'not set'} · "
-            f"💬 <b>Auto-replies</b> — {len(s.get('replies') or {})}\n"
-            f"📩 <b>DM alerts</b> — {'on' if s.get('dm_alerts') else 'off'} · "
-            f"🌙 <b>Night</b> — {'on' if s.get('night_on') else 'off'} · "
-            f"🤝 <b>Approved</b> — {len(s.get('approved') or {})} · "
-            f"🤖 <b>CAPTCHA</b> — {'on' if s.get('captcha_on') else 'off'} · "
-            f"🚨 <b>Anti-raid</b> — {'on' if s.get('raid_on') else 'off'} · "
-            f"📝 <b>Notes</b> — {len(s.get('notes') or {})} · "
-            f"📋 <b>Log chat</b> — {'set' if s.get('log_chat') else 'off'} · "
-            f"🧹 <b>Clean service</b> — {'on' if s.get('clean_service') else 'off'} · "
-            f"🌐 <b>Language</b> — {s.get('lang', 'en')}</blockquote>\n\n"
-            f"<i>{tr(s, 'admins_only')}</i>"
-        )
+        table = _table([
+            ("🛡 Shield", f"{_onoff(s.get('shield'))} · {kinds}"),
+            ("👋 Greetings", _onoff(s.get("greetings"))),
+            ("⚠️ Warnings", f"{s.get('warn_limit', 3)} → {s.get('warn_action', 'mute')}"),
+            ("🌊 Flood watch", flood),
+            ("🌙 Night mode", _onoff(s.get("night_on"))),
+            ("🤖 CAPTCHA", _onoff(s.get("captcha_on"))),
+            ("🚨 Anti-raid", _onoff(s.get("raid_on"))),
+            ("📜 Rules", "✅ set" if s.get("rules") else "▫️ not set"),
+            ("💬 Auto-replies", len(s.get("replies") or {})),
+            ("📝 Notes", len(s.get("notes") or {})),
+            ("🤝 Approved", len(s.get("approved") or {})),
+            ("🚫 Disabled", ", ".join(s.get("disabled_cmds") or []) or "none"),
+            ("📋 Log chat", "✅ set" if s.get("log_chat") else "▫️ off"),
+            ("🧹 Clean service", _onoff(s.get("clean_service"))),
+            ("📩 DM alerts", _onoff(s.get("dm_alerts"))),
+            ("🌐 Language", s.get("lang", "en")),
+        ])
+        return f"{head}\n\n{table}\n<i>{tr(s, 'admins_only')} Tap a button below to change things.</i>"
 
     # ── rich start pages ─────────────────────────────────────────
     def _start_text(self, page: str = "home") -> str:
         if page == "help":
             return (
                 f"{_bar('📖 HELP — SHORT & EASY')}\n\n"
-                "<b>🛡 Moderation</b> — reply to a member:\n"
-                "/warn /mute /tmute 12h /kick /ban /tban 7d /sban /unban /unmute\n\n"
-                "<b>👑 Admin tools</b>\n"
-                "/promote /demote /title /chatinfo\n"
-                "/lock links · /unlock media · /locks — block content types\n\n"
-                "<b>⚙️ Group care</b>\n"
-                "/settings — buttons for shield, greetings, flood, night & more\n"
-                "/rules /filter /save — rules, auto-replies, notes (#trigger)\n\n"
-                "<b>🤝 Trusted & safety</b>\n"
-                "/approve — exempt a member from automation\n"
-                "/report — (reply) alert admins by DM · /fedban — ban across your groups\n\n"
-                "<b>✨ Extras</b>\n"
-                "/afk /whois /purge /pin /modlog /welcome\n\n"
-                "<i>Admins only for actions. Times look like 30m, 12h, 7d.</i>"
+                "<blockquote>Most things are buttons: open /settings in your group. "
+                "Commands below are for admins unless noted.</blockquote>\n\n"
+                "<b>🛡 MODERATION</b> — reply to a member\n"
+                + _table([
+                    ("/warn · /unwarn", "warn, auto-punish at the limit"),
+                    ("/mute · /tmute 12h", "silence, timed or not"),
+                    ("/kick · /ban · /tban 7d", "remove or ban (timed too)"),
+                    ("/sban · /unban · /unmute", "silent ban & undos"),
+                    ("/purge · /pin · /unpin", "clean up, pin messages"),
+                ]) + "\n"
+                "<b>👑 ADMIN TOOLS</b>\n"
+                + _table([
+                    ("/promote · /demote", "grant or remove admin"),
+                    ("/title · /chatinfo", "rename group · group card"),
+                    ("/lock links · /unlock media", "block content types (/locks)"),
+                    ("/adminlist · /stats", "admin roster · group numbers"),
+                    ("/disable · /disabled", "turn commands off here"),
+                ]) + "\n"
+                "<b>⚙️ GROUP CARE</b>\n"
+                + _table([
+                    ("/settings", "buttons for shield, greetings, flood, night & more"),
+                    ("/rules · /setrules", "show or set group rules"),
+                    ("/filter · /stop · /filters", "keyword auto-replies"),
+                    ("/save · /get · #trigger", "saved notes"),
+                    ("/welcome · /setwelcome", "greetings, preview & media"),
+                ]) + "\n"
+                "<b>🤝 TRUSTED & SAFETY</b>\n"
+                + _table([
+                    ("/approve · /approved", "exempt trusted members"),
+                    ("/report", "reply: alert admins by DM"),
+                    ("/fedban · /fedinfo", "federation bans across groups"),
+                    ("/modlog · /setlog", "action log, here or in a log chat"),
+                ]) + "\n"
+                "<b>✨ EXTRAS</b> — /afk · /whois · /export · /import · /language\n\n"
+                "<i>Times look like 30m, 12h, 7d, 2w.</i>"
             )
         if page == "about":
             return (
                 f"{_bar('ℹ️ ABOUT')}\n\n"
-                "I'm a <b>Group Management clone</b> — I guard this bot's groups with "
-                "moderation, greetings, anti-spam shields, CAPTCHA, anti-raid, "
-                "federations and DM alerts for admins.\n\n"
-                "Open /settings inside a group to switch everything with buttons. "
-                "No typing long commands needed. 💪"
+                "I'm a <b>Group Management clone</b> — a full guard for your groups:\n\n"
+                + _table([
+                    ("🛡 Shield & locks", "links, media, bots, forwards"),
+                    ("⚠️ Warnings", "auto mute/kick/ban at the limit"),
+                    ("🌊 Flood & night", "anti-spam + quiet hours"),
+                    ("🤖 CAPTCHA · 🚨 raid", "join checks & burst shield"),
+                    ("👋 Greetings", "text/media welcomes, DM too"),
+                    ("📝 Notes & filters", "#trigger notes, auto-replies"),
+                    ("🌐 Federations", "shared bans across groups"),
+                    ("📩 DM alerts", "admins notified, with Undo"),
+                ]) + "\n"
+                "<i>Open /settings inside a group — everything is buttons. 💪</i>"
             )
         return (
             f"{_bar('🛡️ ' + tr({}, 'welcome_title'))}\n\n"
             "👋 <b>Hey! I keep groups safe & friendly.</b>\n\n"
-            "➕ Add me to a group and make me admin\n"
-            "⚙️ Open /settings there — everything is buttons\n"
-            "🛡 I handle spam, floods, raids & bad members\n\n"
-            "<i>Tap Help for the short command list.</i>"
+            + _table([
+                ("➕ Step 1", "Add me to a group & make me admin"),
+                ("⭐ Step 2", "Make me admin"),
+                ("⚙️ Step 3", "Open /settings — everything is buttons"),
+            ]) + "\n"
+            "🛡 <i>I handle spam, floods, raids & bad members — quietly, 24×7.</i>\n"
+            "<i>Tap 📖 Help for the short command list.</i>"
         )
 
     def _start_markup(self, bot_username: str) -> InlineKeyboardMarkup:
@@ -842,11 +887,15 @@ class _BotHandlers:
                     _btn("👢 Kick", f"gw:{bot_id}:act:{m.chat.id}:{target_id}:kick", style="danger"),
                     _btn("🔨 Ban", f"gw:{bot_id}:act:{m.chat.id}:{target_id}:ban", style="danger"),
                 ]])
+            card = _table([
+                ("👤 Name", label),
+                ("🆔 User ID", target_id),
+                ("🎖 Status", getattr(status, "value", status) or "unknown"),
+                ("⚠️ Warnings", f"{warns}/{s.get('warn_limit', 3)}"),
+                ("🤝 Approved", "yes" if str(target_id) in (s.get("approved") or {}) else "no"),
+            ])
             await m.reply_text(
-                f"{_bar('👤 MEMBER')}\n\n"
-                f"Name: <b>{_esc(label)}</b>\nID: <code>{target_id}</code>\n"
-                f"Status: <b>{_esc(getattr(status, 'value', status) or 'unknown')}</b>\n"
-                f"Warnings: <b>{warns}</b>/{s.get('warn_limit', 3)}",
+                f"{_bar('👤 MEMBER')}\n\n{card}",
                 parse_mode=enums.ParseMode.HTML, reply_markup=markup)
 
         @app.on_message(filters.group & filters.command("modlog"))
@@ -1054,11 +1103,14 @@ class _BotHandlers:
             s = await store.get_settings(bot_id, m.chat.id)
             kinds = set(s.get("guard_kinds") or [])
             if cmd == "locks":
-                lines = [f"{'🔒' if (k in kinds or 'all' in kinds) else '🔓'} {k}" for k in GUARD_KINDS if k != "all"]
-                state = "on" if s.get("shield") else "off"
+                table = _table([
+                    (f"{'🔒' if (k in kinds or 'all' in kinds) else '🔓'} {k}",
+                     "locked" if (k in kinds or "all" in kinds) else "open")
+                    for k in GUARD_KINDS if k != "all"
+                ] + [("🛡 Shield", _onoff(s.get("shield")))])
                 return await m.reply_text(
-                    f"🔐 <b>Locks</b> — shield {state}\n\n" + "\n".join(lines)
-                    + "\n\n<i>/lock links · /unlock media · types: links, media, stickers, forwards, bots, all</i>",
+                    f"{_bar('🔐 LOCKS')}\n\n{table}\n"
+                    "<i>/lock links · /unlock media · types: links, media, stickers, forwards, bots, all</i>",
                     parse_mode=enums.ParseMode.HTML)
             args = (m.command or [])[1:]
             kind = lock_kind(args[0]) if args else ""
@@ -1134,6 +1186,109 @@ class _BotHandlers:
                 "In each group that should join, an admin runs "
                 f"<code>/joinfed {fed_id}</code>. Bans with /fedban then apply in every joined group.",
                 parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command([n for n, _ in GROUP_WORKER_COMMANDS]), group=-1)
+        async def _disabled_gate(c, m: Message):
+            """Disabled commands are swallowed for non-admins (group -1 runs first)."""
+            cmd = (m.command or [""])[0].lower() if m.command else ""
+            if not cmd:
+                return
+            s = await store.get_settings(bot_id, m.chat.id)
+            if not command_blocked(s, cmd):
+                return
+            if await _is_admin(c, m.chat.id, m.from_user.id):
+                return  # admins always bypass
+            try:
+                await m.delete()
+            except Exception:
+                pass
+            raise StopPropagation
+
+        @app.on_message(filters.group & filters.command(["disable", "enable", "disabled"]))
+        async def _disable(c, m: Message):
+            cmd = (m.command or ["disabled"])[0].lower()
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            s = await store.get_settings(bot_id, m.chat.id)
+            current = {normalize_cmd(x) for x in s.get("disabled_cmds") or []}
+            if cmd == "disabled":
+                listing = ", ".join(sorted(current)) or "none"
+                return await m.reply_text(
+                    f"{_bar('🚫 DISABLED COMMANDS')}\n\n{_table([('🚫 Off here', listing)])}\n"
+                    "<i>Admins can always use every command. /enable &lt;command&gt; restores one.</i>",
+                    parse_mode=enums.ParseMode.HTML)
+            args = (m.command or [])[1:]
+            target = normalize_cmd(args[0]) if args else ""
+            known = {n for n, _ in GROUP_WORKER_COMMANDS}
+            if target in NEVER_DISABLE:
+                return await m.reply_text(f"🛡 <code>/{target}</code> can never be disabled — it keeps the group manageable.",
+                                          parse_mode=enums.ParseMode.HTML)
+            if target not in known:
+                return await m.reply_text("Usage: <code>/disable &lt;command&gt;</code> — see /help for command names.",
+                                          parse_mode=enums.ParseMode.HTML)
+            if cmd == "disable":
+                current.add(target)
+                text = f"🚫 <code>/{target}</code> is now <b>off</b> for members here. Admins can still use it."
+            else:
+                current.discard(target)
+                text = f"✅ <code>/{target}</code> is <b>back on</b> for everyone."
+            await store.update_settings(bot_id, m.chat.id, {"disabled_cmds": sorted(current)})
+            try:
+                await store.log_action(bot_id, m.chat.id, cmd, 0, m.from_user.id, target)
+            except Exception:
+                pass
+            await m.reply_text(text, parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command("adminlist"))
+        async def _adminlist(c, m: Message):
+            try:
+                members = [x async for x in c.get_chat_administrators(m.chat.id)]
+            except Exception:
+                return await m.reply_text("Couldn't fetch the admin list — am I admin here?",
+                                          parse_mode=enums.ParseMode.HTML)
+            owners, admins, bots = [], [], []
+            for member in members:
+                user = getattr(member, "user", None)
+                if user is None:
+                    continue
+                name = _esc(user.first_name or str(user.id))
+                entry = f'<a href="tg://user?id={user.id}">{name}</a>'
+                status = getattr(member, "status", None)
+                if getattr(user, "is_bot", False):
+                    bots.append(f"🤖 {entry}")
+                elif status == enums.ChatMemberStatus.OWNER:
+                    owners.append(f"👑 {entry}")
+                else:
+                    admins.append(f"⭐ {entry}")
+            lines = owners + admins + bots
+            await m.reply_text(
+                f"{_bar('👑 ADMIN TEAM')}\n\n" + ("\n".join(lines) if lines else "No admins found."),
+                parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command("stats"))
+        async def _stats(c, m: Message):
+            s = await store.get_settings(bot_id, m.chat.id)
+            try:
+                members = await c.get_chat_members_count(m.chat.id)
+            except Exception:
+                members = "?"
+            try:
+                actions = len(await store.recent_actions(bot_id, m.chat.id, limit=200))
+            except Exception:
+                actions = "?"
+            table = _table([
+                ("👥 Members", members),
+                ("📋 Logged actions", f"{actions} (recent)"),
+                ("🤝 Approved members", len(s.get("approved") or {})),
+                ("📝 Notes", len(s.get("notes") or {})),
+                ("💬 Auto-replies", len(s.get("replies") or {})),
+                ("🚫 Blocked stickers", len(s.get("blocked_stickers") or [])),
+                ("⛔ Disabled commands", len(s.get("disabled_cmds") or [])),
+                ("🛡 Shield", _onoff(s.get("shield"))),
+                ("🌐 Federation", s.get("fed_id") or "none"),
+            ])
+            await m.reply_text(f"{_bar('📊 GROUP STATS')}\n\n{table}",
+                               parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command(["joinfed", "leavefed", "fedinfo"]))
         async def _joinfed(c, m: Message):
@@ -1573,6 +1728,11 @@ GROUP_WORKER_COMMANDS = [
     ("lock", "Block a content type: /lock links (admins)"),
     ("unlock", "Allow a content type: /unlock links (admins)"),
     ("locks", "Show locked content types (admins)"),
+    ("disable", "Turn a command off here: /disable afk (admins)"),
+    ("enable", "Turn a command back on: /enable afk (admins)"),
+    ("disabled", "List disabled commands (admins)"),
+    ("adminlist", "Show the group's admin team"),
+    ("stats", "Group numbers & worker status"),
     ("createfed", "Create a federation (clone owner)"),
     ("joinfed", "Join this group to a federation (admins)"),
     ("leavefed", "Remove this group from its federation"),

@@ -265,7 +265,7 @@ def test_group_worker_language_and_clean_service():
     callbacks = [b.callback_data for row in main.inline_keyboard for b in row]
     assert "gw:7:lang" in callbacks and "gw:7:tog:clean_service" in callbacks
     text = handlers._settings_text("main", {**settings, "lang": "es"}, "G")
-    assert "AJUSTES" in text and "<blockquote>" in text
+    assert "AJUSTES" in text and "<pre>" in text  # rich table layout
 
 
 class _FakeCursor:
@@ -523,3 +523,37 @@ def test_group_worker_locks_registered():
     for cmd in ("lock", "unlock", "locks"):
         assert cmd in names
     assert "/lock links" in _BotHandlers(bot_id=42, owner_id=1, store=None)._start_text("help")
+
+
+def test_group_worker_disabled_commands_logic():
+    from group_worker.logic import NEVER_DISABLE, command_blocked, normalize_cmd
+
+    settings = {"disabled_cmds": ["afk", "whois"]}
+    assert command_blocked(settings, "afk") is True
+    assert command_blocked(settings, "/AFK@MyBot") is True
+    assert command_blocked(settings, "notes") is False
+    for protected in NEVER_DISABLE:
+        assert command_blocked({"disabled_cmds": list(NEVER_DISABLE)}, protected) is False
+    assert normalize_cmd("/Warn@Bot") == "warn"
+    assert command_blocked({}, "afk") is False
+
+
+def test_group_worker_rich_ui_tables_and_new_commands():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS, _BotHandlers, _table
+    from group_worker.logic import default_settings
+
+    table = _table([("Alpha", "1"), ("Longer label", "✅ on")])
+    assert table.startswith("<pre>") and table.endswith("</pre>")
+    assert "Alpha         1" in table
+
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    for cmd in ("disable", "enable", "disabled", "adminlist", "stats"):
+        assert cmd in names
+
+    handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
+    main = handlers._settings_text("main", default_settings(), "G")
+    assert "<pre>" in main and "Shield" in main and "Language" in main
+    help_text = handlers._start_text("help")
+    assert "/disable" in help_text and "/adminlist" in help_text and "<pre>" in help_text
+    about = handlers._start_text("about")
+    assert "Federations" in about and "<pre>" in about

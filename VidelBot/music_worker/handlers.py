@@ -33,6 +33,16 @@ def _bar(title: str) -> str:
     return f"<b>━━━━━━━━━━━━━━━━━━━\n{title}\n━━━━━━━━━━━━━━━━━━━</b>"
 
 
+def _table(rows) -> str:
+    """Aligned two-column monospace table (Telegram <pre> block)."""
+    rows = [(str(label), str(value)) for label, value in rows if value is not None]
+    if not rows:
+        return ""
+    width = max(len(label) for label, _ in rows)
+    body = "\n".join(f"{label.ljust(width)}  {value}" for label, value in rows)
+    return f"<pre>{_esc(body)}</pre>"
+
+
 def _btn(text: str, data: str, style: str | None = None, url: bool = False) -> InlineKeyboardButton:
     kwargs = {"url": data} if url else {"callback_data": data}
     if style:
@@ -116,13 +126,12 @@ class _BotHandlers:
                 pass
 
     def _settings_text(self, s: dict) -> str:
-        return (
-            f"{_bar('⚙️ MUSIC SETTINGS')}\n\n<blockquote>"
-            f"🎧 DJ mode: {'on' if s.get('dj_mode') else 'off'}\n"
-            f"🔊 Volume: {s.get('volume', 100)}%\n"
-            f"🎶 Streaming engine: {'ready' if self._player_ready() else 'not set up yet'}"
-            "</blockquote>"
-        )
+        table = _table([
+            ("🎧 DJ mode", "✅ on" if s.get("dj_mode") else "▫️ off"),
+            ("🔊 Volume", f"{s.get('volume', 100)}%"),
+            ("🎶 Streaming", "✅ ready" if self._player_ready() else "▫️ not set up yet"),
+        ])
+        return f"{_bar('⚙️ MUSIC SETTINGS')}\n\n{table}"
 
     async def _allowed(self, client: Client, message: Message) -> bool:
         s = await self.store.get_settings(self.bot_id, message.chat.id)
