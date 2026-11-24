@@ -446,3 +446,23 @@ def test_group_worker_federation_store_flow():
         assert await store.get_fed_ban(1, "fed-test1", 7) is None
 
     run(scenario())
+
+
+def test_group_worker_rich_start_pages_and_buttons():
+    from group_worker.handlers import _BotHandlers
+
+    handlers = _BotHandlers(bot_id=42, owner_id=777, store=None)
+    home = handlers._start_text("home")
+    help_text = handlers._start_text("help")
+    about = handlers._start_text("about")
+    assert "Add me to a group" in home and "Help" in home
+    assert "/settings" in help_text and "/warn" in help_text
+    assert "Group Management clone" in about
+
+    markup = handlers._start_markup("MyGroupBot")
+    rows = markup.inline_keyboard
+    assert rows[0][0].url == "https://t.me/MyGroupBot?startgroup=true"
+    callbacks = [b.callback_data for row in rows for b in row if b.callback_data]
+    assert "gw:42:nav:help" in callbacks and "gw:42:nav:about" in callbacks
+    urls = [b.url for row in rows for b in row if b.url]
+    assert "tg://user?id=777" in urls

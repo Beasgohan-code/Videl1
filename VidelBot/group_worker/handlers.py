@@ -33,14 +33,15 @@ def _esc(text) -> str:
     return html.escape(str(text or ""), quote=False)
 
 
-def _btn(text: str, data: str, style: str | None = None) -> InlineKeyboardButton:
+def _btn(text: str, data: str, style: str | None = None, url: bool = False) -> InlineKeyboardButton:
     """Inline button with Bot API button styling when the client supports it."""
+    kwargs = {"url": data} if url else {"callback_data": data}
     if style:
         try:
-            return InlineKeyboardButton(text, callback_data=data, style=style)
+            return InlineKeyboardButton(text, style=style, **kwargs)
         except TypeError:
             pass
-    return InlineKeyboardButton(text, callback_data=data)
+    return InlineKeyboardButton(text, **kwargs)
 
 
 def _bar(title: str) -> str:
@@ -218,6 +219,51 @@ class _BotHandlers:
             f"<i>{tr(s, 'admins_only')}</i>"
         )
 
+    # ── rich start pages ─────────────────────────────────────────
+    def _start_text(self, page: str = "home") -> str:
+        if page == "help":
+            return (
+                f"{_bar('📖 HELP — SHORT & EASY')}\n\n"
+                "<b>🛡 Moderation</b> — reply to a member:\n"
+                "/warn /mute /tmute 12h /kick /ban /tban 7d /sban /unban /unmute\n\n"
+                "<b>⚙️ Group care</b>\n"
+                "/settings — buttons for shield, greetings, flood, night & more\n"
+                "/rules /filter /save — rules, auto-replies, notes (#trigger)\n\n"
+                "<b>🤝 Trusted & safety</b>\n"
+                "/approve — exempt a member from automation\n"
+                "/report — (reply) alert admins by DM · /fedban — ban across your groups\n\n"
+                "<b>✨ Extras</b>\n"
+                "/afk /whois /purge /pin /modlog /welcome\n\n"
+                "<i>Admins only for actions. Times look like 30m, 12h, 7d.</i>"
+            )
+        if page == "about":
+            return (
+                f"{_bar('ℹ️ ABOUT')}\n\n"
+                "I'm a <b>Group Management clone</b> — I guard this bot's groups with "
+                "moderation, greetings, anti-spam shields, CAPTCHA, anti-raid, "
+                "federations and DM alerts for admins.\n\n"
+                "Open /settings inside a group to switch everything with buttons. "
+                "No typing long commands needed. 💪"
+            )
+        return (
+            f"{_bar('🛡️ ' + tr({}, 'welcome_title'))}\n\n"
+            "👋 <b>Hey! I keep groups safe & friendly.</b>\n\n"
+            "➕ Add me to a group and make me admin\n"
+            "⚙️ Open /settings there — everything is buttons\n"
+            "🛡 I handle spam, floods, raids & bad members\n\n"
+            "<i>Tap Help for the short command list.</i>"
+        )
+
+    def _start_markup(self, bot_username: str) -> InlineKeyboardMarkup:
+        add_url = f"https://t.me/{bot_username}?startgroup=true" if bot_username else "https://t.me"
+        return InlineKeyboardMarkup([
+            [_btn("➕ Add me to your group", add_url, style="success", url=True)],
+            [_btn("📖 Help", f"gw:{self.bot_id}:nav:help", style="primary"),
+             _btn("ℹ️ About", f"gw:{self.bot_id}:nav:about", style="primary")],
+            [_btn("👤 Owner", f"tg://user?id={self.owner_id}", url=True),
+             _btn("🏠 Home", f"gw:{self.bot_id}:nav:home")],
+        ])
+
     # ── moderation core ────────────────────────────────────────────
     async def _act(self, client: Client, message: Message, action: str):
         silent = action.startswith("s")
@@ -360,11 +406,20 @@ class _BotHandlers:
         store = self.store
 
         @app.on_message(filters.private & filters.command("start"))
-        async def _start(_c, m: Message):
-            await m.reply_text(
-                f"{_bar('🛡️ ' + tr({}, 'welcome_title'))}\n\n{tr({}, 'start_body')}\n\n"
-                "<i>Change my language per-group in /settings (🌐 button).</i>",
-                parse_mode=enums.ParseMode.HTML)
+        async def _start(c, m: Message):
+            me = getattr(c, "me", None)
+            username = getattr(me, "username", "") or ""
+            await m.reply_text(self._start_text("home"),
+                               reply_markup=self._start_markup(username),
+                               parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.private & filters.command("help"))
+        async def _dm_help(c, m: Message):
+            me = getattr(c, "me", None)
+            username = getattr(me, "username", "") or ""
+            await m.reply_text(self._start_text("help"),
+                               reply_markup=self._start_markup(username),
+                               parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.private & filters.command(["connect", "disconnect", "connection"]))
         async def _connect(c, m: Message):
@@ -455,6 +510,17 @@ class _BotHandlers:
         async def _settings_cb(c, q: CallbackQuery):
             parts = (q.data or "").split(":")
             action = parts[2] if len(parts) > 2 else ""
+            if action == "nav":
+                page = parts[3] if len(parts) > 3 else "home"
+                me = getattr(c, "me", None)
+                username = getattr(me, "username", "") or ""
+                try:
+                    await q.message.edit_text(self._start_text(page),
+                                              reply_markup=self._start_markup(username),
+                                              parse_mode=enums.ParseMode.HTML)
+                except Exception:
+                    pass
+                return await q.answer()
             if action == "close":
                 return await q.message.delete()
             if not await _is_admin(c, q.message.chat.id, q.from_user.id):
