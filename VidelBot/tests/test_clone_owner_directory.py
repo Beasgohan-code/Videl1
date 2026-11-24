@@ -66,10 +66,10 @@ def test_stats_break_down_registry_modes_without_claiming_live_state(monkeypatch
     values=rows(capture[-1]);assert values['👥 Registered users']=='9'
     assert values['🤖 Non-deleted clone records']=='4'
     assert values['📁 File Store records']=='1' and values['🛡 Group Management records']=='1'
-    assert values['🎵 Music records (unsupported)']=='1' and values['❔ Unknown profiles']=='1'
+    assert values['🎵 Music records']=='1' and values['❔ Unknown profiles']=='1'
     assert values['⚠️ Invalid records excluded']=='2' and values['👷 Local clients found']=='2'
     output=capture[-1].classic();assert 'SECRET-TOKEN' not in output and 'not runtime health' in output
-    assert 'Music playback is unavailable' in output and docs==original
+    assert 'Music playback has not been live-verified' in output and docs==original
 
 
 def test_stats_unavailable_data_never_shows_false_zero_or_secrets(monkeypatch, capture):
@@ -99,7 +99,7 @@ def test_directory_safe_unknown_values_and_music_never_claims_playback(monkeypat
     run(commands.list_all_bots(FakeClient(),FakeMsg('/bots',uid=111)))
     output=capture[-1].classic(); assert token not in output and '<script>' not in output
     assert 'Unknown / unsupported' in output and 'State unknown' in output and 'Unavailable' in output
-    assert 'Music (unsupported)' in output and 'Music playback is unavailable' in output
+    assert 'Music' in output and 'Music playback has not been live-verified' in output
 
 
 def test_directory_empty_does_not_claim_bad_records_absent(monkeypatch,capture):
@@ -192,8 +192,8 @@ def test_worst_case_page_remains_bounded_and_complete(monkeypatch,capture):
            'clone_profile':'music','is_active':None} for n in range(15)]
     setup(monkeypatch,docs,workers='fail');run(commands.list_all_bots(FakeClient(),FakeMsg('/bots',uid=111)))
     doc=capture[-1];output=doc.classic()
-    assert len(output)<4096 and output.count('Music (unsupported)')==15
-    assert 'Music playback is unavailable' in output
+    assert len(output)<4096 and output.count('Music')==16
+    assert 'Music playback has not been live-verified' in output
 
 
 @pytest.mark.parametrize('callback,text', [(commands.platform_stats, '/clonestats'),

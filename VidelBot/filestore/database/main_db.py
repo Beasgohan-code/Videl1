@@ -92,22 +92,29 @@ class MainDB:
         restore_deleted: bool = False,
         expected_old_token: str | None = None,
         initial_profile: str | None = None,
+        initial_active: bool = True,
+        music_setup_pending: bool = False,
         expected_old_profile=_PROFILE_NOT_CHECKED,
     ) -> dict:
         """Insert a clone, or explicitly restore an owner's soft-deleted record.
 
-        MongoDB's unique _id prevents check-then-write races. Restoration uses
-        a single conditional update and leaves other stored data unchanged.
+        Music onboarding may create a paused File Store-default record marked
+        ``music_setup_pending``; it must not save the Music profile until an
+        encrypted assistant session is available. MongoDB's unique _id prevents
+        check-then-write races. Restoration uses a conditional update.
         """
-        if initial_profile not in (None, "filestore", "group") or (restore_deleted and initial_profile is not None):
-            raise ValueError("Invalid initial clone profile")
+        if (initial_profile not in (None, "filestore", "group")
+                or (restore_deleted and (initial_profile is not None or music_setup_pending))
+                or type(initial_active) is not bool
+                or (music_setup_pending and (initial_active or initial_profile not in (None, "filestore")))):
+            raise ValueError("Invalid initial clone profile or state")
         doc = {
             "_id": bot_id,
             "owner_id": owner_id,
             "bot_token_encrypted": bot_token_encrypted,
             "bot_username": bot_username,
             "log_channel_id": log_channel_id,
-            "is_active": True,
+            "is_active": initial_active,
             "is_deleted": False,
             "managed": bool(managed),
             "created_at": datetime.now(timezone.utc),
@@ -128,6 +135,8 @@ class MainDB:
         }
         if initial_profile is not None:
             doc["clone_profile"] = initial_profile
+        if music_setup_pending:
+            doc["music_setup_pending"] = True
         if restore_deleted:
             if not isinstance(expected_old_token, str):
                 raise BotRegistrationConflict

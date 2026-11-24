@@ -61,6 +61,17 @@ def test_prompt_offers_paste_and_create():
     run(go())
 
 
+def test_music_profile_cannot_be_selected_before_encrypted_session_exists():
+    async def go():
+        db = await _bot()
+        result = await music_session.select_music_profile(4242, 5)
+        doc = await db.get_bot(4242)
+        assert result == "no_session"
+        assert doc.get("clone_profile", "filestore") == "filestore"
+        assert doc["is_active"] is False
+    run(go())
+
+
 def test_paste_flow_saves_encrypted_session_and_selects_music():
     async def go():
         db = await _bot()
@@ -74,13 +85,15 @@ def test_paste_flow_saves_encrypted_session_and_selects_music():
         await music_session.music_session_message(FakeClient(), msg)
         doc = await db.get_bot(4242)
         assert doc["clone_profile"] == "music"
+        assert doc["is_active"] is True
+        assert "music_setup_pending" not in doc
         assert doc["music_session_encrypted"].startswith("enc:")
         assert session not in doc["music_session_encrypted"]
         assert 5 not in music_session.PENDING
         return msg
 
     msg = run(go())
-    assert any("Music mode is on" in t for t in msg.replies)
+    assert any("Music mode is ready" in t for t in msg.replies)
 
 
 def test_guided_login_flow_with_fake_client(monkeypatch):
@@ -123,9 +136,11 @@ def test_guided_login_flow_with_fake_client(monkeypatch):
         await music_session.music_session_message(FakeClient(), m2)
         doc = await db.get_bot(4242)
         assert doc["clone_profile"] == "music"
+        assert doc["is_active"] is True
+        assert "music_setup_pending" not in doc
         assert doc["music_session_encrypted"].startswith("enc:")
         assert login.disconnected is True
-        assert any("Music mode is on" in t for t in m2.replies)
+        assert any("Music mode is ready" in t for t in m2.replies)
 
     run(go())
 

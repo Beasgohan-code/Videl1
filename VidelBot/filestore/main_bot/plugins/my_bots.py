@@ -183,15 +183,30 @@ async def _mode_dashboard(query, bot, mode):
             buttons.append([InlineKeyboardButton("🔴 sᴛᴏᴘ" if local == "Present" else "🟢 sᴛᴀʀᴛ",
                                                  callback_data=f"toggle_bot_{bot_id}")])
     else:
-        label = "Music (unsupported)" if mode == "music" else "Unknown / unsupported"
-        text = ("<b>🧩 ᴄʟᴏɴᴇ ᴘʀᴏꜰɪʟᴇ</b>\n\n"
-                f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
-                f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
-                f"<b>Saved profile:</b> {label} · <b>Saved state:</b> {state}\n\n"
-                "This profile cannot be started here. Music voice-chat playback is unavailable. "
-                "Your existing File Store data has not been removed. "
-                "Contact the operator before attempting recovery; this view does not check other workers.")
-        buttons = [[InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")]]
+        label = "Music" if mode == "music" else "Unknown / unsupported"
+        if mode == "music":
+            text = ("<b>🎵 ᴍᴜsɪᴄ</b>\n\n"
+                    f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
+                    f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
+                    f"<b>Saved profile:</b> {label} · <b>Saved state:</b> {state}\n\n"
+                    "<b>Get started</b>\n"
+                    "① Set up the assistant account (paste a session string or create one here with a guided login).\n"
+                    "② Add this bot to your group and start a voice chat.\n"
+                    "③ Use <code>/play &lt;song&gt;</code> in the group; the assistant joins and plays.\n\n"
+                    "Music clones run under the standalone music program, not this worker; restart that program after setup to load this clone. "
+                    "Live Telegram voice-chat playback is not verified by this dashboard. "
+                    "Your existing File Store data has not been removed.")
+            buttons = [[InlineKeyboardButton("🎵 Set up assistant session", callback_data=f"clmusic_{bot_id}")],
+                       [InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")]]
+        else:
+            text = ("<b>🧩 ᴄʟᴏɴᴇ ᴘʀᴏꜰɪʟᴇ</b>\n\n"
+                    f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
+                    f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
+                    f"<b>Saved profile:</b> {label} · <b>Saved state:</b> {state}\n\n"
+                    "This profile cannot be started here. "
+                    "Your existing File Store data has not been removed. "
+                    "Contact the operator before attempting recovery; this view does not check other workers.")
+            buttons = [[InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")]]
     buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍʏ ʙᴏᴛs", callback_data="my_bots")])
     await smart_edit(query.message, text, InlineKeyboardMarkup(buttons))
     try:
@@ -226,6 +241,27 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
             or not valid_registry_id(bot.get("owner_id")) or bot["owner_id"] != user_id
             or bot.get("is_deleted", False) is not False):
         await query.answer("❌ Bot not found or access denied!", show_alert=True)
+        return
+
+    if bot.get("music_setup_pending") is True:
+        name = bot.get("bot_username")
+        safe_name = (name if isinstance(name, str)
+                     and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", name, flags=re.ASCII)
+                     else None)
+        text = ("<b>🎵 Music setup pending</b>\n\n"
+                f"<b>Bot:</b> {('@' + safe_name) if safe_name else 'Username unavailable'}\n"
+                f"<b>Bot ID:</b> <code>{bot_id}</code>\n\n"
+                "This clone is safely paused until an assistant account session is saved. "
+                "Its Music profile will only be selected after encrypted session storage succeeds. "
+                "Then restart the standalone music program to load it.")
+        buttons = [[InlineKeyboardButton("🎵 Set up assistant session", callback_data=f"clmusic_{bot_id}")],
+                   [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍʏ ʙᴏᴛs", callback_data="my_bots")]]
+        from core.ui import smart_edit
+        await smart_edit(query.message, text, InlineKeyboardMarkup(buttons))
+        try:
+            await query.answer()
+        except Exception:
+            pass
         return
 
     mode = bot.get("clone_profile", "filestore")

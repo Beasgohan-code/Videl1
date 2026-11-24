@@ -31,7 +31,7 @@ ambiguity remain separate issues. An update is not correlated to the specific
 creation link, so the user must check the bot displayed before confirming. Do
 not treat these safeguards as proof of real Telegram or MongoDB behavior,
 complete secret handling, or safe overlapping workers. Group mode remains
-default-off and Music remains unavailable.
+default-off. Music creation registers a paused setup-pending clone; the profile changes to Music only after encrypted assistant-session storage succeeds, and the separate worker must be restarted to load it.
 
 ## Creation controls
 

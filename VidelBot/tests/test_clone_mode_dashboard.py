@@ -72,16 +72,40 @@ def test_failed_worker_observation_hides_toggle_and_error(monkeypatch):
     run(go())
 
 
-@pytest.mark.parametrize('profile',['music',None,'unknown-mode',{'secret':'sensitive-token'}])
+def test_pending_music_dashboard_only_offers_safe_session_onboarding(monkeypatch):
+    async def go():
+        monkeypatch.setattr(engine,'worker_engine',Worker(present=True));edits=capture_edits(monkeypatch)
+        await add(clone_profile='filestore',music_setup_pending=True,is_active=False)
+        q=FakeQuery('dashboard_42',uid=5);await my_bots.dashboard_callback(FakeClient(),q)
+        text,markup=edits[-1];data=[b.callback_data for b in buttons(markup)]
+        assert 'Music setup pending' in text and 'safely paused' in text
+        assert data==['clmusic_42','my_bots']
+        assert 'toggle_bot_42' not in data and 'secret-token' not in text
+    run(go())
+
+
+@pytest.mark.parametrize('profile',[None,'unknown-mode',{'secret':'sensitive-token'}])
 def test_unsupported_modes_never_imply_running_or_expose_fields(monkeypatch,profile):
     async def go():
         monkeypatch.setattr(engine,'worker_engine',Worker(present=True));edits=capture_edits(monkeypatch)
         await add(clone_profile=profile);q=FakeQuery('dashboard_42',uid=5)
         await my_bots.dashboard_callback(FakeClient(),q)
         text,markup=edits[-1];data=[b.callback_data for b in buttons(markup)]
-        assert 'This profile cannot be started here' in text and 'Music voice-chat playback is unavailable' in text
+        assert 'This profile cannot be started here' in text
         assert 'secret-token' not in text and 'sensitive-token' not in text
         assert data==['clprofile_42','my_bots']
+    run(go())
+
+
+def test_music_dashboard_offers_session_setup_without_file_store_worker_controls(monkeypatch):
+    async def go():
+        monkeypatch.setattr(engine,'worker_engine',Worker(present=True));edits=capture_edits(monkeypatch)
+        await add(clone_profile='music');q=FakeQuery('dashboard_42',uid=5)
+        await my_bots.dashboard_callback(FakeClient(),q)
+        text,markup=edits[-1];data=[b.callback_data for b in buttons(markup)]
+        assert 'Music' in text and 'standalone music program' in text
+        assert 'clmusic_42' in data and 'toggle_bot_42' not in data
+        assert 'sensitive-token' not in text
     run(go())
 
 

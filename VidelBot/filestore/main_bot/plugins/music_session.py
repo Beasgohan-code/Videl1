@@ -62,29 +62,32 @@ async def _drop_login_client(state: dict) -> None:
 
 
 async def select_music_profile(bot_id: int, owner_id: int) -> str:
-    """CAS profile switch to music (mirrors the worker engine's rules)."""
+    """CAS-select Music only after an assistant session exists; activate its desired state."""
     if not config.CLONE_PROFILES_SINGLE_INSTANCE:
         return "disabled"
     bot = await main_db.get_bot(bot_id)
     if not bot or bot.get("owner_id") != owner_id or bot.get("is_deleted"):
         return "denied"
+    if not isinstance(bot.get("music_session_encrypted"), str) or not bot["music_session_encrypted"].startswith("enc:"):
+        return "no_session"
+    mode = bot.get("clone_profile", "filestore")
+    if mode == "music" and bot.get("is_active") is True:
+        return "unchanged"
     if bot.get("is_active") is not False:
         return "stop_first"
-    if bot.get("clone_profile", "filestore") == "music":
-        return "unchanged"
     if "clone_profile" in bot:
-        if bot["clone_profile"] not in ("filestore", "group", "music"):
+        if mode not in ("filestore", "group", "music"):
             return "unsupported"
-        match = bot["clone_profile"]
+        match = mode
     else:
         match = {"$exists": False}
     result = await main_db.bots.update_one(
         {"_id": bot_id, "owner_id": owner_id, "is_deleted": {"$ne": True},
          "is_active": False, "clone_profile": match},
-        {"$set": {"clone_profile": "music"}},
+        {"$set": {"clone_profile": "music", "is_active": True},
+         "$unset": {"music_setup_pending": ""}},
     )
     return "saved" if result.matched_count else "changed"
-
 
 async def save_session_and_select(bot_id: int, owner_id: int, session: str) -> str:
     """Encrypt + store the assistant session, then flip the profile."""
@@ -95,14 +98,16 @@ async def save_session_and_select(bot_id: int, owner_id: int, session: str) -> s
 
 
 _RESULT_TEXT = {
-    "saved": "✅ <b>Music mode is on for this clone.</b>\n\nStart it with the standalone "
-             "music program — it will join voice chats as the assistant account.",
-    "unchanged": "✅ This clone is already in Music mode; the session was updated.",
+    "saved": "✅ <b>Music mode is ready for this clone.</b>\n\nRestart the standalone "
+             "music program so it loads this clone; it will join voice chats as the assistant account.",
+    "unchanged": "✅ This clone is already active in Music mode; the session was updated. "
+                 "Restart the standalone music program if it is already running.",
     "stop_first": "⏸ Session saved, but the clone is running. Stop it first, then pick Music again.",
     "disabled": "⚠️ Profile switching is disabled by the operator right now. The session was saved.",
     "denied": "❌ Bot not found or access denied!",
     "changed": "⚠️ The clone changed while we worked. Reopen the panel and review it.",
     "unsupported": "⚠️ This clone's profile is unsupported. Ask the operator for help.",
+    "no_session": "Set up and securely save an assistant session before selecting Music mode.",
     "no_encryption": "🔒 <b>Can't store the session safely:</b> the operator hasn't configured a "
                      "valid ENCRYPTION_KEY, and sessions are never stored in plain text.",
 }

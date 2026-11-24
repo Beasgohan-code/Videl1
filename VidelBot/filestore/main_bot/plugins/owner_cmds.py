@@ -59,7 +59,7 @@ def _profile(bot):
 
 def _profile_label(bot):
     return {'filestore': 'File Store', 'group': 'Group Management',
-            'music': 'Music (unsupported)', 'unknown': 'Unknown / unsupported'}[_profile(bot)]
+            'music': 'Music', 'unknown': 'Unknown / unsupported'}[_profile(bot)]
 
 
 def _local_client(worker_engine, bot_id):
@@ -105,14 +105,14 @@ async def platform_stats(client: Client, message: Message):
         ('🤖 Non-deleted clone records', f"{profiles['total']:,}"),
         ('📁 File Store records', f"{profiles['filestore']:,}"),
         ('🛡 Group Management records', f"{profiles['group']:,}"),
-        ('🎵 Music records (unsupported)', f"{profiles['music']:,}"),
+        ('🎵 Music records', f"{profiles['music']:,}"),
         ('❔ Unknown profiles', f"{profiles['unknown']:,}"),
         ('⚠️ Invalid records excluded', f'{invalid:,}'),
         ('👷 Local clients found', local_count),
         ('🔢 Max bots per user', str(MAX_BOTS_PER_USER)),
         ('💤 Auto-off', f'{HIBERNATION_HOURS} hours' if HIBERNATION_HOURS else 'Off'),
     ], key_header='Metric', val_header='Value')
-    doc.footer('Stored modes are not runtime health. Local clients do not prove availability or exclusive ownership. Music playback is unavailable.')
+    doc.footer('Stored modes are not runtime health. Local clients do not prove availability or exclusive ownership. Music playback has not been live-verified.')
     await rich.reply(message, doc)
 
 
@@ -162,7 +162,7 @@ async def list_all_bots(client: Client, message: Message):
     adjusted = f' Requested page {requested} was adjusted.' if requested != page else ''
     page_limit = ' Pages after 1000 are not available here.' if pages > _CLONE_MAX_PAGE else ''
     doc.footer(f'{total} valid non-deleted records; {invalid} invalid excluded.{adjusted}{page_limit} '
-               'Use /bots [page]. Pages can shift; local client presence is not health. Music playback is unavailable.')
+               'Use /bots [page]. Pages can shift; local client presence is not health. Music playback has not been live-verified.')
     await rich.reply(message, doc)
 
 

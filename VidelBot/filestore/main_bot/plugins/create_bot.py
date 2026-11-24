@@ -223,7 +223,7 @@ async def _show_creation_profiles(status_msg, user_id: int, state: dict):
     saved = state["data"].get("restore_expected_profile")
     present = state["data"].get("restore_profile_present", False)
     if restored:
-        label = {"filestore": "File Store", "group": "Group Management"}.get(saved if present else "filestore", "Unsupported")
+        label = {"filestore": "File Store", "group": "Group Management", "music": "Music"}.get(saved if present else "filestore", "Unsupported")
         intro = (f"Restoring a clone with saved mode: <b>{label}</b>. "
                  "Its mode and data will be kept. To change mode later, stop it in the dashboard.\n\n")
         buttons = [[InlineKeyboardButton(f"♻️ Keep saved mode · {label}", callback_data=f"clone_mode_{nonce}_keep")]]
@@ -231,13 +231,13 @@ async def _show_creation_profiles(status_msg, user_id: int, state: dict):
         intro = "Choose one mode for this clone. You can change it later from its dashboard after stopping it.\n\n"
         buttons = [[InlineKeyboardButton("📁 File Store", callback_data=f"clone_mode_{nonce}_filestore")],
                    [InlineKeyboardButton("🛡 Group Management" + ("" if config.CLONE_PROFILES_SINGLE_INSTANCE else " · disabled"), callback_data=f"clone_mode_{nonce}_group")]]
-    buttons += [[InlineKeyboardButton("🎵 Music · unavailable", callback_data=f"clone_mode_{nonce}_music")],
+    buttons += [[InlineKeyboardButton("🎵 Music", callback_data=f"clone_mode_{nonce}_music")],
                 *_creation_cancel_kb(state, "profile").inline_keyboard]
     await status_msg.edit_text(
         "<b>🧩 Step 3/3: Choose a bot mode</b>\n\n" + intro
         + "<b>File Store:</b> file links and delivery.\n"
           "<b>Group Management:</b> moderation, rules and welcomes; add the bot as a group admin.\n"
-          "<b>Music:</b> voice-chat playback is not implemented.\n\n"
+          "<b>Music:</b> voice-chat playback via an assistant account; you will set up the assistant session right after registering.\n\n"
         + ("<i>Group mode is experimental and assumes one current worker.</i>" if config.CLONE_PROFILES_SINGLE_INSTANCE else
            "<i>Group mode is disabled until the operator verifies a single current worker.</i>")
         + "\n<i>This selection expires in 5 minutes.</i>",
@@ -260,15 +260,13 @@ async def creation_profile_callback(client: Client, query: CallbackQuery):
         _expire_profile_selection(user.id, match.group(1))
         return await query.answer("This selection has expired. Start setup again.", show_alert=True)
     mode = match.group(2)
-    if mode == "music":
-        return await query.answer("Music voice-chat playback is not available yet.", show_alert=True)
     restored = bool(state["data"].get("restore_deleted"))
     if (mode == "keep") != restored:
         return await query.answer("This choice is not available for this setup.", show_alert=True)
     saved = state["data"].get("restore_expected_profile")
     present = state["data"].get("restore_profile_present", False)
     if restored:
-        if present and saved not in ("filestore", "group"):
+        if present and saved not in ("filestore", "group", "music"):
             return await query.answer("The saved mode is unsupported. Contact the operator.", show_alert=True)
         mode = saved if present else "filestore"
     if mode == "group" and not config.CLONE_PROFILES_SINGLE_INSTANCE:
@@ -329,6 +327,10 @@ async def _finish_creation(client, query, state, mode):
                           restore_deleted=bool(data.get("restore_deleted")), expected_old_token=data.get("restore_expected_token"))
             if data.get("restore_deleted"):
                 kwargs["expected_old_profile"] = data.get("restore_expected_profile") if data.get("restore_profile_present") else None
+            elif mode == "music":
+                kwargs["initial_profile"] = "filestore"  # temporary safe profile; no File Store client starts
+                kwargs["initial_active"] = False
+                kwargs["music_setup_pending"] = True
             else:
                 kwargs["initial_profile"] = mode
             await main_db.add_bot(**kwargs)
@@ -357,8 +359,13 @@ async def _finish_creation(client, query, state, mode):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]))
     try:
         bot_doc = await main_db.get_bot(bot_id)
-        await worker_engine.start_worker(bot_doc)
-        worker_started = worker_engine.get_worker(bot_id) is not None
+        if mode == "music":
+            # Music clones are served by the standalone music program,
+            # never by this process's File Store/Group worker engine.
+            worker_started = False
+        else:
+            await worker_engine.start_worker(bot_doc)
+            worker_started = worker_engine.get_worker(bot_id) is not None
         try:
             from core import botlog
             user_bots = await main_db.bots.count_documents({"owner_id": user_id, "is_deleted": {"$ne": True}})
@@ -376,19 +383,29 @@ async def _finish_creation(client, query, state, mode):
     except Exception:
         log.error("Clone worker start could not be confirmed.")
         worker_started = False
-    icon = "🟢" if worker_started else "🟡"
-    status = "Observed running in this process" if worker_started else "Not observed running in this process"
+    if mode == "music":
+        icon = "🎵"
+        status = "Music mode — set up the assistant session, then start it with the standalone music program"
+    else:
+        icon = "🟢" if worker_started else "🟡"
+        status = "Observed running in this process" if worker_started else "Not observed running in this process"
     title = "Clone restored" if data.get("restore_deleted") else "Clone registered"
-    label = {"filestore": "File Store", "group": "Group Management"}[mode]
+    label = {"filestore": "File Store", "group": "Group Management", "music": "Music"}[mode]
+    extra = ""
+    buttons = [[InlineKeyboardButton("⚙️ Bot Dashboard", callback_data=f"dashboard_{bot_id}")]]
+    if mode == "music":
+        extra = ("\n\n<b>🎵 Next step:</b> set up the assistant account that will join voice chats. "
+                 "Paste a session string or create one here with a guided login — it is stored encrypted and never shown again.")
+        buttons.append([InlineKeyboardButton("🎵 Set up assistant session", callback_data=f"clmusic_{bot_id}")])
+    buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")])
     await status_msg.edit_text(
         f"<b>✅ {title}</b>\n\n<blockquote>"
         f"<b>Bot:</b> @{html.escape(str(bot_username))}\n"
         f"<b>Channel:</b> <code>{channel_id}</code>\n"
         f"<b>Mode:</b> {label}\n<b>Status:</b> {icon} {status}\n\n"
         "The registration is saved. Use the dashboard to configure it; "
-        "a saved record alone does not guarantee a running worker or confirm which token a running worker uses.</blockquote>",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Bot Dashboard", callback_data=f"dashboard_{bot_id}")],
-                                          [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]))
+        "a saved record alone does not guarantee a running worker or confirm which token a running worker uses.</blockquote>" + extra,
+        reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # =============================================================================

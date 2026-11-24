@@ -54,7 +54,7 @@ def test_channel_verification_asks_for_mode_without_registration_or_start(monkey
     assert state['step']=='awaiting_profile' and 'token' not in state['data']
     assert 'Choose a bot mode' in msg.sent[-1].text
     assert 'File Store' in msg.sent[-1].text and 'Group Management' in msg.sent[-1].text
-    assert 'voice-chat playback is not implemented' in msg.sent[-1].text
+    assert 'assistant session' in msg.sent[-1].text and 'Music' in msg.sent[-1].text
     assert run(MainDB().get_bot(42020)) is None and worker.started==[]
     assert 'synthetic:token-secret' not in msg.sent[-1].text
 
@@ -74,16 +74,35 @@ def test_selected_mode_is_atomically_saved_before_worker_start(monkeypatch, mode
     assert len(worker.started)==1 and 'expired' in q.answers[-1][0]
 
 
-def test_unavailable_modes_do_not_register_or_change_the_choice(monkeypatch):
+def test_disabled_group_does_not_register_or_change_the_choice(monkeypatch):
     worker=FakeEngine();monkeypatch.setattr(engine_module,'worker_engine',worker)
     msg,state=setup_mode()
-    for choice,expected in [('music','not available'),('group','disabled')]:
-        q=query_for(msg,state,choice)
-        run(create_bot.creation_profile_callback(FakeClient(),q))
-        assert expected in q.answers[-1][0] and state['step']=='awaiting_profile'
-        assert run(MainDB().get_bot(42020)) is None and not worker.started
+    q=query_for(msg,state,'group')
+    run(create_bot.creation_profile_callback(FakeClient(),q))
+    assert 'disabled' in q.answers[-1][0] and state['step']=='awaiting_profile'
+    assert run(MainDB().get_bot(42020)) is None and not worker.started
     q=query_for(msg,state,'filestore');run(create_bot.creation_profile_callback(FakeClient(),q))
     assert run(MainDB().get_bot(42020))['clone_profile']=='filestore'
+
+
+def test_music_selection_registers_paused_pending_clone_without_starting_filestore_worker(monkeypatch):
+    worker=FakeEngine();monkeypatch.setattr(engine_module,'worker_engine',worker)
+    captured=[]
+    original=FakeMsg.edit_text
+    async def capture_markup(self,text,*args,**kwargs):
+        captured.append(kwargs.get('reply_markup'))
+        return await original(self,text,*args,**kwargs)
+    monkeypatch.setattr(FakeMsg,'edit_text',capture_markup)
+    msg,state=setup_mode();q=query_for(msg,state,'music')
+    run(create_bot.creation_profile_callback(FakeClient(),q))
+    row=run(MainDB().get_bot(42020))
+    assert row['clone_profile']=='filestore' and row['is_active'] is False
+    assert row['music_setup_pending'] is True
+    assert worker.started==[] and worker.get_worker(42020) is None
+    assert 'Music' in msg.sent[-1].text and 'assistant session' in msg.sent[-1].text
+    assert any(button.callback_data=='clmusic_42020'
+               for markup in captured if markup
+               for line in markup.inline_keyboard for button in line)
 
 
 def test_callbacks_require_matching_private_owner_and_unique_nonce(monkeypatch):
@@ -228,12 +247,21 @@ def test_cancel_while_verifying_does_not_show_profile_or_register(monkeypatch):
     run(go())
 
 
-def test_add_bot_rejects_invalid_or_restore_mode_override():
+def test_add_bot_validates_pending_music_setup_and_restore_mode():
     async def go():
         db=MainDB()
         with pytest.raises(ValueError):await db.add_bot(42027,10,'enc','bot',-100,initial_profile='music')
-        with pytest.raises(ValueError):await db.add_bot(42027,10,'enc','bot',-100,restore_deleted=True,initial_profile='group')
-        assert await db.get_bot(42027) is None
+        with pytest.raises(ValueError):await db.add_bot(42027,10,'enc','bot',-100,
+                                                           music_setup_pending=True,initial_active=True)
+        with pytest.raises(ValueError):await db.add_bot(42027,10,'enc','bot',-100,
+                                                           restore_deleted=True,music_setup_pending=True)
+        await db.add_bot(42027,10,'enc','bot',-100,initial_profile='filestore',
+                         initial_active=False,music_setup_pending=True)
+        row=await db.get_bot(42027)
+        assert row['music_setup_pending'] is True and row['is_active'] is False
+        assert row['clone_profile']=='filestore'
+        with pytest.raises(ValueError):await db.add_bot(42028,10,'enc','bot',-100,
+                                                           restore_deleted=True,initial_profile='group')
     run(go())
 
 
@@ -314,7 +342,7 @@ def test_mode_keyboard_exposes_choices_without_credentials_and_with_unique_nonce
         await create_bot._show_creation_profiles(msg,10,state)
         rows=msg.markup.inline_keyboard
         buttons=[button for row in rows for button in row]
-        assert [b.text for b in buttons]==['📁 File Store','🛡 Group Management · disabled','🎵 Music · unavailable','❌ Cancel']
+        assert [b.text for b in buttons]==['📁 File Store','🛡 Group Management · disabled','🎵 Music','❌ Cancel']
         assert all('synthetic:token-secret' not in (b.callback_data or '') for b in buttons)
         assert all(len((b.callback_data or '').encode())<=64 for b in buttons)
         assert all(state['profile_nonce'] in b.callback_data for b in buttons[:3])

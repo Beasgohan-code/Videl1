@@ -249,6 +249,7 @@ async def reactivate_cb(client: Client, query: CallbackQuery):
     if (not valid_registry_id(bot_id) or bot_id != requested_id
             or not valid_registry_id(bot.get("owner_id")) or bot["owner_id"] != uid
             or bot.get("is_active") is not False
+            or bot.get("music_setup_pending") is True
             or bot.get("is_deleted", False) is not False
             or not isinstance(bot.get("bot_token_encrypted"), str)
             or not bot["bot_token_encrypted"]

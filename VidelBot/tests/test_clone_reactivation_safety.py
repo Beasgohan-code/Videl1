@@ -75,7 +75,7 @@ def test_only_private_human_owner_and_non_deleted_record_can_attempt(monkeypatch
 
 
 @pytest.mark.parametrize('changes', [{'is_active': True}, {'is_active': None}, {'is_deleted':None},
-                                    {'clone_profile':'music'}, {'clone_profile':None},
+                                    {'clone_profile':'music'}, {'clone_profile':None}, {'music_setup_pending':True},
                                     {'bot_token_encrypted':''}, {'bot_token_encrypted':{'bad':'secret'}}])
 def test_stale_and_malformed_records_do_not_start(monkeypatch, changes):
     async def go():

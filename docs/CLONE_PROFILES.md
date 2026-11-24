@@ -260,14 +260,25 @@ install that forced combination. PyTgCalls also brings native `ntgcalls` and LGP
 obligations. See [PyTgCalls](https://github.com/pytgcalls/pytgcalls) and
 [the 3.0.0 package](https://pypi.org/project/py-tgcalls/3.0.0/).
 
-Music remains unavailable and the picker does **not** request a session string.
-A session is an account credential, not a playback setup detail to collect for a
-placeholder. Before enabling it, build and test a per-clone assistant and voice
-runtime, compatible streaming/queue and group permissions, fail-closed encrypted
-credential lifecycle and deletion, ownership isolation and revocation, resource
-limits, restart/shutdown cleanup, and single-instance/distributed coordination.
-Real Telegram voice-chat and native-runtime tests are still required. Do not
-paste a session string into the current picker.
+Music selection is now available in clone creation, but the bot is **not** marked
+as a Music profile before its assistant session has been safely stored. Choosing
+Music registers a paused clone with `music_setup_pending`; it does not start the
+File Store worker. The owner is then offered the encrypted assistant-session
+setup flow (paste or guided phone/OTP/optional-2FA login). A successful save
+atomically changes the stopped clone to the Music profile and active desired
+state. If setup is abandoned, the clone remains paused and can be resumed from
+its dashboard.
+
+Music clones are served only by the separate `VidelBot/music_worker/` program;
+they are not wired into `run.py` or the File Store worker. After completing
+setup, restart the standalone Music program so it loads the new clone. The
+assistant session is a full account credential: it is stored Fernet-encrypted,
+never logged, and storage is refused when `ENCRYPTION_KEY` is missing or invalid.
+Use an assistant account you trust and can revoke. Queue and voice playback are
+implemented in the standalone package, but real Telegram voice-chat behavior,
+native dependency behavior, multi-process coordination, and production recovery
+remain unverified; the automated tests use simulated Telegram and MongoDB. Do
+not treat successful onboarding as proof of live playback or deployment health.
 
 ### Requested Group Management folder separation
 
@@ -308,7 +319,7 @@ routing, correct cancellation and stop recovery, preserved records and settings,
 File Store parity, old/new worker incompatibilities, and real Telegram/Mongo
 behavior in a disposable environment. Keep the default-off gate and require a
 coordinated non-overlapping rollout. No such controller migration, deployment or
-data migration has been performed. Music remains unavailable.
+data migration has been performed. The separate Music worker remains outside this group migration.
 
 ## Separate Group Management worker (new)
 
