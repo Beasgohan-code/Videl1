@@ -466,3 +466,13 @@ def test_group_worker_rich_start_pages_and_buttons():
     assert "gw:42:nav:help" in callbacks and "gw:42:nav:about" in callbacks
     urls = [b.url for row in rows for b in row if b.url]
     assert "tg://user?id=777" in urls
+
+
+def test_group_worker_admin_tools_registered():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS, _BotHandlers
+
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    for cmd in ("promote", "demote", "title", "chatinfo"):
+        assert cmd in names
+    handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
+    assert "/promote" in handlers._start_text("help")

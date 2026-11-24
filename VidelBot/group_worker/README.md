@@ -147,3 +147,12 @@ copied, so no foreign credits or license encumbrance):
   `/fedbans` lists them. Federation-banned users are also re-banned on
   join and on their next message. Federations are scoped per clone —
   one clone's federation can never affect another clone's groups.
+
+## Stage 15 — admin tools and welcome rules button
+
+- `/promote` grants moderation admin rights (no promote-others, no
+  change-info), `/demote` removes them (owner is protected), `/title`
+  renames the group, and `/chatinfo` shows title, ID, member count and
+  feature state. Promotions are recorded in the moderation log.
+- Welcome messages now carry a 📜 Read the rules button when rules are
+  set; anyone can tap it to have the rules posted.

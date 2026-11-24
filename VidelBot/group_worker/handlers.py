@@ -226,6 +226,8 @@ class _BotHandlers:
                 f"{_bar('📖 HELP — SHORT & EASY')}\n\n"
                 "<b>🛡 Moderation</b> — reply to a member:\n"
                 "/warn /mute /tmute 12h /kick /ban /tban 7d /sban /unban /unmute\n\n"
+                "<b>👑 Admin tools</b>\n"
+                "/promote /demote /title /chatinfo\n\n"
                 "<b>⚙️ Group care</b>\n"
                 "/settings — buttons for shield, greetings, flood, night & more\n"
                 "/rules /filter /save — rules, auto-replies, notes (#trigger)\n\n"
@@ -521,6 +523,20 @@ class _BotHandlers:
                 except Exception:
                     pass
                 return await q.answer()
+            if action == "rules":
+                try:
+                    target_chat = int(parts[3])
+                except Exception:
+                    return await q.answer("Bad button.", show_alert=True)
+                s = await store.get_settings(bot_id, target_chat)
+                if not s.get("rules"):
+                    return await q.answer("No rules set yet.", show_alert=True)
+                try:
+                    await c.send_message(target_chat, f"{_bar('📜 GROUP RULES')}\n\n{_esc(s['rules'])}",
+                                         parse_mode=enums.ParseMode.HTML)
+                except Exception:
+                    pass
+                return await q.answer("Rules posted 📜")
             if action == "close":
                 return await q.message.delete()
             if not await _is_admin(c, q.message.chat.id, q.from_user.id):
@@ -996,6 +1012,69 @@ class _BotHandlers:
             await m.reply_text(f"✅ <b>Imported {len(updates)} settings.</b> Open /settings to review.",
                                parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message(filters.group & filters.command(["promote", "demote"]))
+        async def _promote(c, m: Message):
+            cmd = (m.command or ["promote"])[0].lower()
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            target_id, label, _rest = _resolve(m)
+            if target_id is None:
+                return await m.reply_text("Reply to a member or give a user ID.", parse_mode=enums.ParseMode.HTML)
+            from pyrogram.types import ChatPrivileges
+            try:
+                if cmd == "promote":
+                    await c.promote_chat_member(
+                        m.chat.id, target_id,
+                        privileges=ChatPrivileges(
+                            can_manage_chat=True, can_delete_messages=True,
+                            can_restrict_members=True, can_invite_users=True,
+                            can_pin_messages=True, can_change_info=False,
+                            can_promote_members=False))
+                    text = f"⭐ <b>{_esc(label)}</b> is now an admin (moderation rights, no promoting others)."
+                else:
+                    if await _status(c, m.chat.id, target_id) == enums.ChatMemberStatus.OWNER:
+                        return await m.reply_text("🛡 The group owner can't be demoted.", parse_mode=enums.ParseMode.HTML)
+                    await c.promote_chat_member(m.chat.id, target_id, privileges=ChatPrivileges())
+                    text = f"✅ <b>{_esc(label)}</b> is back to a regular member."
+            except Exception as exc:
+                return await m.reply_text(f"❌ <b>Telegram refused that.</b>\n{_esc(str(exc)[:120])}",
+                                          parse_mode=enums.ParseMode.HTML)
+            try:
+                await store.log_action(bot_id, m.chat.id, cmd, target_id, m.from_user.id, "")
+            except Exception:
+                pass
+            await m.reply_text(text, parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command("title"))
+        async def _title(c, m: Message):
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            parts = (m.text or "").split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                return await m.reply_text("Usage: <code>/title New Group Name</code>", parse_mode=enums.ParseMode.HTML)
+            try:
+                await c.set_chat_title(m.chat.id, parts[1].strip()[:128])
+            except Exception as exc:
+                return await m.reply_text(f"❌ <b>Telegram refused that.</b>\n{_esc(str(exc)[:120])}",
+                                          parse_mode=enums.ParseMode.HTML)
+            await m.reply_text("✅ <b>Group title updated.</b>", parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command("chatinfo"))
+        async def _chatinfo(c, m: Message):
+            try:
+                count = await c.get_chat_members_count(m.chat.id)
+            except Exception:
+                count = "?"
+            s = await store.get_settings(bot_id, m.chat.id)
+            await m.reply_text(
+                f"{_bar('💬 CHAT INFO')}\n\n"
+                f"Title: <b>{_esc(m.chat.title or '—')}</b>\n"
+                f"ID: <code>{m.chat.id}</code>\n"
+                f"Members: <b>{count}</b>\n"
+                f"Shield: {'on' if s.get('shield') else 'off'} · Greetings: {'on' if s.get('greetings') else 'off'} · "
+                f"Federation: {s.get('fed_id') or 'none'}",
+                parse_mode=enums.ParseMode.HTML)
+
         @app.on_message((filters.group | filters.private) & filters.command("createfed"))
         async def _createfed(c, m: Message):
             if m.from_user.id != self.owner_id:
@@ -1271,7 +1350,12 @@ class _BotHandlers:
                     elif media and s.get("greet_media_type") == "sticker":
                         sent = await c.send_sticker(m.chat.id, media)
                     else:
-                        sent = await c.send_message(m.chat.id, text, parse_mode=enums.ParseMode.HTML)
+                        welcome_markup = None
+                        if s.get("rules"):
+                            welcome_markup = InlineKeyboardMarkup([[
+                                _btn("📜 Read the rules", f"gw:{bot_id}:rules:{m.chat.id}", style="primary")]])
+                        sent = await c.send_message(m.chat.id, text, parse_mode=enums.ParseMode.HTML,
+                                                    reply_markup=welcome_markup)
                 except Exception:
                     sent = None
                 if sent is not None and getattr(sent, "id", None):
@@ -1437,6 +1521,10 @@ GROUP_WORKER_COMMANDS = [
     ("clear", "Delete a note (admins)"),
     ("whois", "Member card with admin actions"),
     ("language", "Show or set my language"),
+    ("promote", "Promote a member to admin (admins)"),
+    ("demote", "Demote an admin to member (admins)"),
+    ("title", "Set the group title (admins)"),
+    ("chatinfo", "Group info & status"),
     ("createfed", "Create a federation (clone owner)"),
     ("joinfed", "Join this group to a federation (admins)"),
     ("leavefed", "Remove this group from its federation"),
