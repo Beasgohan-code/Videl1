@@ -52,9 +52,9 @@ def test_channel_verification_asks_for_mode_without_registration_or_start(monkey
     worker=FakeEngine();monkeypatch.setattr(engine_module,'worker_engine',worker)
     msg,state=setup_mode()
     assert state['step']=='awaiting_profile' and 'token' not in state['data']
-    assert 'Choose a bot mode' in msg.sent[-1].text
-    assert 'File Store' in msg.sent[-1].text and 'Group Management' in msg.sent[-1].text
-    assert 'assistant session' in msg.sent[-1].text and 'Music' in msg.sent[-1].text
+    assert 'selection expires in 5 minutes' in msg.sent[-1].text
+    assert 'File links, storage and delivery' in msg.sent[-1].text and 'assistant account' in msg.sent[-1].text
+    assert 'encrypted session' in msg.sent[-1].text
     assert run(MainDB().get_bot(42020)) is None and worker.started==[]
     assert 'synthetic:token-secret' not in msg.sent[-1].text
 
@@ -181,7 +181,7 @@ def test_restore_keeps_mode_settings_and_detects_stale_profile(monkeypatch):
         await create_bot.accept_token(FakeClient(),10,'synthetic:token-secret',FakeMsg('status'))
         msg=FakeMsg('-100001',uid=10);await create_bot.handle_creation_input(FakeClient(),msg)
         return msg,create_bot._creation_state[10]
-    msg,state=run(setup());assert 'saved mode: <b>Group Management' in msg.sent[-1].text
+    msg,state=run(setup());assert 'Restoring saved profile' in msg.sent[-1].text and 'ɢʀᴏᴜᴘ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ' in msg.sent[-1].text
     invalid=query_for(msg,state,'filestore');run(create_bot.creation_profile_callback(FakeClient(),invalid))
     assert 'not available' in invalid.answers[-1][0]
     q=query_for(msg,state,'keep');run(create_bot.creation_profile_callback(FakeClient(),q))
@@ -333,21 +333,24 @@ def test_cancelled_channel_validation_stops_client_and_clears_credentials(monkey
     run(go())
 
 
-def test_mode_keyboard_exposes_choices_without_credentials_and_with_unique_nonce():
-    class Status:
-        async def edit_text(self,text,reply_markup=None):self.text=text;self.markup=reply_markup
+def test_mode_keyboard_exposes_choices_without_credentials_and_with_unique_nonce(monkeypatch):
+    from core import rich
+    captured={}
+    async def capture(message,doc,reply_markup=None):captured.update(doc=doc,markup=reply_markup)
+    monkeypatch.setattr(rich,'edit',capture)
     async def go():
         state={'step':'verifying_channel','data':{'registration_token':'synthetic:token-secret'}}
-        create_bot._creation_state[10]=state;msg=Status()
+        create_bot._creation_state[10]=state;msg=FakeMsg(uid=10)
         await create_bot._show_creation_profiles(msg,10,state)
-        rows=msg.markup.inline_keyboard
+        rows=captured['markup'].inline_keyboard
         buttons=[button for row in rows for button in row]
-        assert [b.text for b in buttons]==['📁 File Store','🛡 Group Management · disabled','🎵 Music','❌ Cancel']
+        assert captured['doc'].title=='Choose a bot mode'
+        assert [b.text for b in buttons]==['📁 File Store','🛡 Group Management · disabled','🎵 Music','❌ Cancel setup']
         assert all('synthetic:token-secret' not in (b.callback_data or '') for b in buttons)
         assert all(len((b.callback_data or '').encode())<=64 for b in buttons)
         assert all(state['profile_nonce'] in b.callback_data for b in buttons[:3])
+        assert rich.markup_ok(captured['markup'])
     run(go())
-
 
 def test_native_channel_picker_also_leads_to_mode_choice(monkeypatch):
     worker=FakeEngine();monkeypatch.setattr(engine_module,'worker_engine',worker)
@@ -357,7 +360,7 @@ def test_native_channel_picker_also_leads_to_mode_choice(monkeypatch):
     run(create_bot.handle_creation_input(FakeClient(),msg))
     assert create_bot._creation_state[10]['step']=='awaiting_profile'
     assert create_bot._creation_state[10]['data']['channel_id']==-100111
-    assert 'Choose a bot mode' in msg.sent[-1].text and run(MainDB().get_bot(42032)) is None
+    assert 'selection expires in 5 minutes' in msg.sent[-1].text and run(MainDB().get_bot(42032)) is None
 
 
 def test_cancel_while_status_message_sends_does_not_start_client(monkeypatch):

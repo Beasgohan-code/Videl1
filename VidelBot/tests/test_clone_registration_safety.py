@@ -231,6 +231,6 @@ def test_wizard_restores_saved_settings_and_reports_process_local_status(monkeyp
     row=run(db.get_bot(42014))
     assert row['is_deleted'] is False and row['settings']['custom_caption']=='retained'
     assert row['shortener']['api_key_encrypted']=='secret'
-    assert 'Clone restored' in m.sent[-1].text and 'Observed running in this process' in m.sent[-1].text
+    assert '𝗖𝗟𝗢𝗡𝗘 𝗥𝗘𝗦𝗧𝗢𝗥𝗘𝗗' in m.sent[-1].text and 'Observed running in this process' in m.sent[-1].text
     assert 'which token a running worker uses' in m.sent[-1].text and 'synthetic:token-secret' not in m.sent[-1].text
     assert 10 not in create_bot._creation_state

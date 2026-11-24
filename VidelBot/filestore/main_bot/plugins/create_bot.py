@@ -56,8 +56,10 @@ def _stage_nonce(state, stage):
 
 
 def _creation_cancel_kb(state, stage):
+    from core.ui import styled_button
     nonce = _stage_nonce(state, stage)
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"clone_setup_{nonce}_cancel")]])
+    return InlineKeyboardMarkup([[styled_button("❌ Cancel setup", style="danger",
+                                                callback_data=f"clone_setup_{nonce}_cancel")]])
 
 
 def channel_picker_kb() -> ReplyKeyboardMarkup:
@@ -223,26 +225,32 @@ async def _show_creation_profiles(status_msg, user_id: int, state: dict):
     saved = state["data"].get("restore_expected_profile")
     present = state["data"].get("restore_profile_present", False)
     if restored:
-        label = {"filestore": "File Store", "group": "Group Management", "music": "Music"}.get(saved if present else "filestore", "Unsupported")
-        intro = (f"Restoring a clone with saved mode: <b>{label}</b>. "
-                 "Its mode and data will be kept. To change mode later, stop it in the dashboard.\n\n")
-        buttons = [[InlineKeyboardButton(f"♻️ Keep saved mode · {label}", callback_data=f"clone_mode_{nonce}_keep")]]
+        label = {"filestore": "File Store", "group": "Group Management", "music": "Music"}.get(
+            saved if present else "filestore", "Unsupported")
+    from core import rich
+    from core.ui import styled_button
+    if restored:
+        mode_buttons = [[styled_button(f"♻️ Keep saved mode · {label}", style="success",
+                                       callback_data=f"clone_mode_{nonce}_keep")]]
     else:
-        intro = "Choose one mode for this clone. You can change it later from its dashboard after stopping it.\n\n"
-        buttons = [[InlineKeyboardButton("📁 File Store", callback_data=f"clone_mode_{nonce}_filestore")],
-                   [InlineKeyboardButton("🛡 Group Management" + ("" if config.CLONE_PROFILES_SINGLE_INSTANCE else " · disabled"), callback_data=f"clone_mode_{nonce}_group")]]
-    buttons += [[InlineKeyboardButton("🎵 Music", callback_data=f"clone_mode_{nonce}_music")],
-                *_creation_cancel_kb(state, "profile").inline_keyboard]
-    await status_msg.edit_text(
-        "<b>🧩 Step 3/3: Choose a bot mode</b>\n\n" + intro
-        + "<b>File Store:</b> file links and delivery.\n"
-          "<b>Group Management:</b> moderation, rules and welcomes; add the bot as a group admin.\n"
-          "<b>Music:</b> voice-chat playback via an assistant account; you will set up the assistant session right after registering.\n\n"
-        + ("<i>Group mode is experimental and assumes one current worker.</i>" if config.CLONE_PROFILES_SINGLE_INSTANCE else
-           "<i>Group mode is disabled until the operator verifies a single current worker.</i>")
-        + "\n<i>This selection expires in 5 minutes.</i>",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+        mode_buttons = [
+            [styled_button("📁 File Store", style="primary", callback_data=f"clone_mode_{nonce}_filestore")],
+            [styled_button("🛡 Group Management" + ("" if config.CLONE_PROFILES_SINGLE_INSTANCE else " · disabled"),
+                           style="primary", callback_data=f"clone_mode_{nonce}_group")],
+            [styled_button("🎵 Music", style="success", callback_data=f"clone_mode_{nonce}_music")],
+        ]
+    mode_buttons.extend(_creation_cancel_kb(state, "profile").inline_keyboard)
+    doc = rich.Doc("🧩", "Choose a bot mode", "Step 3 of 3 · expires in 5 minutes")
+    if restored:
+        doc.status("info", "Restoring saved profile", label)
+    (doc.status("info", "One mode per clone", "You can change it later from the dashboard after stopping the bot")
+        .h("📁", "File Store").text("File links, storage and delivery.")
+        .h("🛡", "Group Management").text("Moderation, rules and welcomes; add the bot as a group admin.")
+        .h("🎵", "Music").text("Voice-chat playback through an assistant account. You will set up its encrypted session after registering.")
+        .status("warning" if not config.CLONE_PROFILES_SINGLE_INSTANCE else "info",
+                "Group mode", "Disabled until the operator verifies one current worker" if not config.CLONE_PROFILES_SINGLE_INSTANCE else "Experimental · one current worker")
+        .footer("This selection expires in 5 minutes."))
+    await rich.edit(status_msg, doc, reply_markup=InlineKeyboardMarkup(mode_buttons))
 
 
 @Client.on_callback_query(filters.regex(r"^clone_mode_([A-Za-z0-9_-]{1,32})_(filestore|group|music|keep)$"))
@@ -391,21 +399,25 @@ async def _finish_creation(client, query, state, mode):
         status = "Observed running in this process" if worker_started else "Not observed running in this process"
     title = "Clone restored" if data.get("restore_deleted") else "Clone registered"
     label = {"filestore": "File Store", "group": "Group Management", "music": "Music"}[mode]
-    extra = ""
-    buttons = [[InlineKeyboardButton("⚙️ Bot Dashboard", callback_data=f"dashboard_{bot_id}")]]
+    from core import rich
+    from core.ui import styled_button
+    buttons = [[styled_button("⚙️ Bot dashboard", style="primary", callback_data=f"dashboard_{bot_id}")]]
     if mode == "music":
-        extra = ("\n\n<b>🎵 Next step:</b> set up the assistant account that will join voice chats. "
-                 "Paste a session string or create one here with a guided login — it is stored encrypted and never shown again.")
-        buttons.append([InlineKeyboardButton("🎵 Set up assistant session", callback_data=f"clmusic_{bot_id}")])
-    buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")])
-    await status_msg.edit_text(
-        f"<b>✅ {title}</b>\n\n<blockquote>"
-        f"<b>Bot:</b> @{html.escape(str(bot_username))}\n"
-        f"<b>Channel:</b> <code>{channel_id}</code>\n"
-        f"<b>Mode:</b> {label}\n<b>Status:</b> {icon} {status}\n\n"
-        "The registration is saved. Use the dashboard to configure it; "
-        "a saved record alone does not guarantee a running worker or confirm which token a running worker uses.</blockquote>" + extra,
-        reply_markup=InlineKeyboardMarkup(buttons))
+        buttons.append([styled_button("🎵 Set up assistant session", style="success",
+                                      callback_data=f"clmusic_{bot_id}")])
+    buttons.append([styled_button("🔙 Back to menu", callback_data="back_menu")])
+    doc = (rich.Doc("✅", title, "Clone creation complete")
+           .status("success" if worker_started or mode == "music" else "warning", status)
+           .kv_table([
+               ("Bot", rich.code("@" + str(bot_username))),
+               ("Channel", rich.code(channel_id)),
+               ("Mode", label),
+           ])
+           .text("Registration is saved. A saved record does not guarantee a running worker or prove which token a running worker uses."))
+    if mode == "music":
+        doc.h("🎵", "Next step")
+        doc.text("Set up the assistant account that will join voice chats. Its session is encrypted before storage.")
+    await rich.edit(status_msg, doc, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # =============================================================================
@@ -494,16 +506,22 @@ async def _begin_creation(client: Client, query: CallbackQuery, *, manual: bool 
         state["step"] = "awaiting_token"
         nonce = _stage_nonce(state, "choice")
         render_nonce = nonce
-        kb = [[InlineKeyboardButton("🤖 Create a bot with Telegram", callback_data=f"clone_setup_{nonce}_telegram")]] if enabled else []
-        kb.append([InlineKeyboardButton("🔑 Paste a token", callback_data=f"clone_setup_{nonce}_manual")])
+        from core import rich
+        from core.ui import styled_button
+        kb = []
+        if enabled:
+            kb.append([styled_button("🤖 Create a bot with Telegram", style="success",
+                                     callback_data=f"clone_setup_{nonce}_telegram")])
+        kb.append([styled_button("🔑 Paste a token", style="primary",
+                                 callback_data=f"clone_setup_{nonce}_manual")])
         kb.extend(_creation_cancel_kb(state, "choice").inline_keyboard)
-        extra = (" Telegram will ask you to confirm creation." if enabled else
-                 " Telegram creation is unavailable right now; you can still use a token.")
-        await query.message.edit_text(
-            "<b>🤖 Create your bot</b>\n\n"
-            "<blockquote>Choose how to connect your bot." + extra + "\n\n"
-            "Keep your token private and only send it in this chat.</blockquote>",
-            reply_markup=InlineKeyboardMarkup(kb))
+        doc = (rich.Doc("🤖", "Create your bot", "Step 1 · choose a secure connection method")
+               .status("info", "Choose how to connect")
+               .status("success" if enabled else "warning", "Telegram creation",
+                       "Available · you will confirm the bot details" if enabled else "Temporarily unavailable · token setup still works")
+               .h("🔑", "Use a token").text("Paste a BotFather token in this private chat. It will be stored encrypted.")
+               .footer("Never share your bot token in a group or with another person."))
+        await rich.edit(query.message, doc, reply_markup=InlineKeyboardMarkup(kb))
         try:
             await query.answer()
         except Exception:
@@ -529,11 +547,11 @@ async def _show_manual_token_prompt(query, state):
     """Switch the same setup to private token input; invalidate choice controls."""
     kb = _creation_cancel_kb(state, "token")
     try:
-        await query.message.edit_text(
-            "<b>🤖 Connect a bot</b>\n\n"
-            "<blockquote><b>Step 1/3:</b> Send your bot token in this private chat.\n\n"
-            "Get a token from @BotFather. Keep it private and never share it with other users.</blockquote>",
-            reply_markup=kb)
+        from core import rich
+        doc = (rich.Doc("🔑", "Connect a bot", "Step 1 of 3 · private token entry")
+               .text("Send your bot token from @BotFather in this private chat.")
+               .status("warning", "Keep it secret", "Never share the token in a group or with anyone else"))
+        await rich.edit(query.message, doc, reply_markup=kb)
     except Exception:
         try:
             await query.answer("You can paste your token in this private chat, or use /cancel.", show_alert=True)
@@ -598,11 +616,14 @@ async def _cancel_current_creation(client: Client, query: CallbackQuery, expecte
     if old.get("picker"):
         await remove_channel_picker(client, user_id, old, "❌ Cancelled.")
 
-    await query.message.edit_text(
-        text="<b>❌ Bot creation cancelled.</b>",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")],
-        ]),
+    from core import rich
+    from core.ui import styled_button
+    await rich.edit(
+        query.message,
+        rich.Doc("❌", "Bot creation cancelled", "No registration was completed."),
+        reply_markup=InlineKeyboardMarkup([[
+            styled_button("🔙 Back to menu", style="primary", callback_data="back_menu")
+        ]]),
     )
     await query.answer()
 

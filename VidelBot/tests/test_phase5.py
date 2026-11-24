@@ -208,6 +208,10 @@ def _kb_datas(markup):
 def test_create_bot_offers_one_tap_only_with_bot_management(monkeypatch):
     from aiogram import types as at
     from filestore.main_bot.plugins import create_bot
+    from core import rich
+    async def edit_rich(message, doc, reply_markup=None):
+        return await message.edit_text(doc.classic(), reply_markup=reply_markup)
+    monkeypatch.setattr(rich, "edit", edit_rich)
     seen = {}
 
     async def edit_text(text=None, reply_markup=None, **k):

@@ -10,7 +10,11 @@ from tests.test_clone_creation_profiles import setup_mode
 
 
 @pytest.fixture(autouse=True)
-def reset():
+def reset(monkeypatch):
+    from core import rich
+    async def edit_rich(message, doc, reply_markup=None):
+        return await message.edit_text(doc.classic(), reply_markup=reply_markup)
+    monkeypatch.setattr(rich, "edit", edit_rich)
     run(reset_db()); no_botapi(); create_bot._creation_state.clear()
     yield
     for state in create_bot._creation_state.values():

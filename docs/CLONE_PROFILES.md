@@ -280,6 +280,13 @@ native dependency behavior, multi-process coordination, and production recovery
 remain unverified; the automated tests use simulated Telegram and MongoDB. Do
 not treat successful onboarding as proof of live playback or deployment health.
 
+The clone connection/mode pickers, creation receipt and cancellation screen use
+the shared Richgram `Doc` renderer. The owner's **Welcome experience** screen,
+edit prompts and save confirmations do
+as well; saved text/image values are escaped in previews. Buttons request native
+primary/success/danger styles where Bot API/WzGram supports them (controlled by
+`COLORED_BUTTONS`) and retain the classic HTML/keyboard fallback elsewhere.
+
 ### Requested Group Management folder separation
 
 The current single `WorkerEngine` is under `filestore/worker_bot/engine.py` and

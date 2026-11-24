@@ -60,7 +60,10 @@ SAFE_CALLBACKS = re.compile(
     r"plg_mgr:(list|(info|tog|rel):[\w_-]+)|plg_stg:(ok|no):[\w_-]+|plg_imdb:(pick|back):[\w:_-]+|"
     r"plg_ani:v:\w+:\d+:\w+:\d+|plg_mdl:(pick|back):[\w:/._-]+|"
     r"plg_sess:(export|cancel)|plg_gmod:[\w:_-]+|chk_(tog|all|del):[\w:_-]+|spd_rerun|"
-    r"adm_st:(main|runtime|health)|bkr:(dedupe_ok|encrypt_ok))$"
+    r"adm_st:(main|runtime|health)|bkr:(dedupe_ok|encrypt_ok)|"
+    r"clone_mode_[A-Za-z0-9_-]{11}_(filestore|group|music|keep)|"
+    r"clone_setup_[A-Za-z0-9_-]{11}_(cancel|telegram|manual)|"
+    r"(clmusic|startcfg|set_startmsg|set_startpic|set_botphoto|dashboard)_[0-9]+)$"
 )
 
 

@@ -788,41 +788,46 @@ async def stats_callback(client: Client, query: CallbackQuery):
 
 @Client.on_callback_query(filters.regex(r"^startcfg_(\d+)$"))
 async def startcfg_callback(client: Client, query: CallbackQuery):
-    """Show start configuration options."""
+    """Show the Richgram welcome-message, image and profile-photo editor."""
     bot_id = _extract_bot_id(r"^startcfg_(\d+)$", query.data)
     bot = await _verify_ownership(query, bot_id)
     if not bot:
         return
 
     _get_state().pop(query.from_user.id, None)
+    settings = bot.get("settings")
+    if not isinstance(settings, dict):
+        settings = {}
+    start_msg = str(settings.get("start_message") or "").strip()
+    start_pic = str(settings.get("start_pic") or "").strip()
+    msg_preview = start_msg.replace("\n", " ")
+    if len(msg_preview) > 120:
+        msg_preview = msg_preview[:117] + "…"
+    pic_preview = start_pic if start_pic else "No custom image"
+    if len(pic_preview) > 100:
+        pic_preview = pic_preview[:97] + "…"
 
-    settings = bot.get("settings", {})
-    start_msg = settings.get("start_message", "ᴅᴇꜰᴀᴜʟᴛ")
-    start_pic = settings.get("start_pic", "ɴᴏɴᴇ")
-
-    if start_msg and len(start_msg) > 50:
-        start_msg = start_msg[:47] + "..."
-    if not start_msg:
-        start_msg = "ᴅᴇꜰᴀᴜʟᴛ"
-    if not start_pic:
-        start_pic = "ɴᴏɴᴇ"
-
-    await query.message.edit_text(
-        f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📩 𝗦𝗧𝗔𝗥𝗧 𝗖𝗢𝗡𝗙𝗜𝗚\n"
-        f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-        f"<blockquote>◈ <b>ᴍᴇssᴀɢᴇ:</b>\n{start_msg}\n\n"
-        f"◈ <b>ᴘʜᴏᴛᴏ:</b> {start_pic}</blockquote>\n\n"
-        f"<i>sᴇʟᴇᴄᴛ ᴡʜᴀᴛ ᴛᴏ ᴄʜᴀɴɢᴇ:</i>",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("📝 ᴍᴇssᴀɢᴇ", callback_data=f"set_startmsg_{bot_id}"),
-                InlineKeyboardButton("🖼 ᴘʜᴏᴛᴏ", callback_data=f"set_startpic_{bot_id}"),
-            ],
-            [InlineKeyboardButton("🤖 ʙᴏᴛ ᴘʀᴏꜰɪʟᴇ ᴘʜᴏᴛᴏ", callback_data=f"set_botphoto_{bot_id}")],
-            [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data=f"dashboard_{bot_id}")],
-        ]),
-    )
+    from core import rich
+    from core.ui import styled_button
+    doc = (rich.Doc("📩", "Welcome experience", "Customize what users see when they open this clone")
+           .status("success" if start_msg else "info", "Welcome message",
+                   "Custom message saved" if start_msg else "Using the default welcome")
+           .kv_table([
+               ("Saved message HTML", rich.code(msg_preview if start_msg else "Default welcome")),
+               ("Start image", rich.code(pic_preview)),
+               ("Bot avatar", "Set the bot's Telegram profile photo"),
+           ])
+           .h("💡", "Tips")
+           .text("Saved HTML is shown escaped here; the clone renders Telegram formatting on /start.<br>"
+                 "Send <code>0</code> while editing to clear a custom value.<br>"
+                 "The start image is separate from the bot's profile photo."))
+    markup = InlineKeyboardMarkup([
+        [styled_button("📝 Edit welcome message", style="primary", callback_data=f"set_startmsg_{bot_id}"),
+         styled_button("🖼 Edit start image", style="primary", callback_data=f"set_startpic_{bot_id}")],
+        [styled_button("🤖 Bot profile photo", style="primary", callback_data=f"set_botphoto_{bot_id}")],
+        [styled_button("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")],
+    ])
+    await rich.edit(query.message, doc, reply_markup=markup)
     await query.answer()
 
 @Client.on_callback_query(filters.regex(r"^set_startmsg_(\d+)$"))
@@ -835,11 +840,15 @@ async def set_startmsg_callback(client: Client, query: CallbackQuery):
     state = _get_state()
     state[user_id] = {"step": "settings", "action": "set_startmsg", "data": {"bot_id": bot_id}}
     
-    await query.message.edit_text(
-        "<b>📝 Send the new Start Message (HTML supported):</b>\n\n"
-        "<i>Or click Cancel to abort.</i>",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"startcfg_{bot_id}")]])
-    )
+    from core import rich
+    from core.ui import styled_button
+    doc = (rich.Doc("📝", "Edit welcome message", "Personalize the clone's /start reply")
+           .text("Send the new text now. Telegram HTML formatting is supported.")
+           .h("⌨️", "Quick actions")
+           .text("Send <code>0</code> to restore the default welcome.<br>"
+                 "Send /cancel or tap Cancel to leave it unchanged."))
+    await rich.edit(query.message, doc, reply_markup=InlineKeyboardMarkup([[
+        styled_button("❌ Cancel", style="danger", callback_data=f"startcfg_{bot_id}")]]))
     await query.answer()
 
 @Client.on_callback_query(filters.regex(r"^set_startpic_(\d+)$"))
@@ -852,11 +861,15 @@ async def set_startpic_callback(client: Client, query: CallbackQuery):
     state = _get_state()
     state[user_id] = {"step": "settings", "action": "set_startpic", "data": {"bot_id": bot_id}}
     
-    await query.message.edit_text(
-        "<b>🖼 Send the new Start Photo (as an image or telegraph link text):</b>\n\n"
-        "<i>Or click Cancel to abort.</i>",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"startcfg_{bot_id}")]])
-    )
+    from core import rich
+    from core.ui import styled_button
+    doc = (rich.Doc("🖼", "Edit start image", "Choose the large image shown with the welcome")
+           .text("Send a photo or a direct/Telegraph image link.")
+           .text("Send <code>0</code> to remove the custom image.<br>"
+                 "This does not change the bot's Telegram profile photo.<br>"
+                 "Send /cancel or tap Cancel to leave it unchanged."))
+    await rich.edit(query.message, doc, reply_markup=InlineKeyboardMarkup([[
+        styled_button("❌ Cancel", style="danger", callback_data=f"startcfg_{bot_id}")]]))
     await query.answer()
 
 @Client.on_callback_query(filters.regex(r"^set_botphoto_(\d+)$"))
@@ -874,13 +887,13 @@ async def set_botphoto_callback(client: Client, query: CallbackQuery):
     state = _get_state()
     state[user_id] = {"step": "settings", "action": "set_botphoto", "data": {"bot_id": bot_id}}
 
-    await query.message.edit_text(
-        f"<b>🤖 Bot profile photo · @{bot.get('bot_username', '')}</b>\n\n"
-        "<blockquote>Send a <b>photo</b> to use it as your bot's avatar.\n"
-        "Send <code>0</code> to remove the current avatar.</blockquote>\n\n"
-        "<i>No @BotFather needed. Or click Cancel to abort.</i>",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"startcfg_{bot_id}")]])
-    )
+    from core import rich
+    from core.ui import styled_button
+    doc = (rich.Doc("🤖", "Bot profile photo", "Update the avatar users see in Telegram")
+           .text("Send a photo to set the avatar, or send <code>0</code> to remove it.")
+           .status("info", "No @BotFather needed", "The change is applied through the running clone"))
+    await rich.edit(query.message, doc, reply_markup=InlineKeyboardMarkup([[
+        styled_button("❌ Cancel", style="danger", callback_data=f"startcfg_{bot_id}")]]))
     await query.answer()
 
 
@@ -941,14 +954,15 @@ async def captioncfg_callback(client: Client, query: CallbackQuery):
     state = _get_state()
     state[user_id] = {"step": "settings", "action": "set_custom_caption", "data": {"bot_id": bot_id}}
     
-    await query.message.edit_text(
-        "<b>📝 Set Custom Caption:</b>\n\n"
-        "<blockquote>This text will be appended below the existing file caption.\n"
-        "You can use placeholders like <code>{size}</code>, <code>{name}</code>, <code>{language}</code>, etc.\n\n"
-        "Send <code>0</code> to remove the custom caption.</blockquote>\n\n"
-        "<i>Or click Cancel to abort.</i>",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"dashboard_{bot_id}")]])
-    )
+    from core import rich
+    from core.ui import styled_button
+    doc = (rich.Doc("📝", "Custom file caption", "Add a personal line below delivered files")
+           .text("This text is appended below the existing file caption.")
+           .h("🔤", "Placeholders")
+           .text("Use values such as <code>{size}</code>, <code>{name}</code> and <code>{language}</code>.")
+           .footer("Send 0 to remove the custom caption."))
+    await rich.edit(query.message, doc, reply_markup=InlineKeyboardMarkup([[
+        styled_button("❌ Cancel", style="danger", callback_data=f"dashboard_{bot_id}")]]))
     await query.answer()
 
 async def handle_startcfg_input(client: Client, message: Message, state: dict):
@@ -971,7 +985,11 @@ async def handle_startcfg_input(client: Client, message: Message, state: dict):
             new_text = ""
             
         await main_db.update_setting(bot_id, "start_message", new_text)
-        await message.reply("<b>✅ Start message updated!</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"startcfg_{bot_id}")]]))
+        from core import rich
+        from core.ui import styled_button
+        doc = rich.Doc("✅", "Welcome message saved", "The clone will use this on its next /start")
+        await rich.reply(message, doc, reply_markup=InlineKeyboardMarkup([[
+            styled_button("🔙 Welcome settings", style="primary", callback_data=f"startcfg_{bot_id}")]]))
         
     elif action == "set_startpic":
         pic_url = ""
@@ -989,7 +1007,11 @@ async def handle_startcfg_input(client: Client, message: Message, state: dict):
             return
         
         await main_db.update_setting(bot_id, "start_pic", pic_url)
-        await message.reply("<b>✅ Start photo updated!</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"startcfg_{bot_id}")]]))
+        from core import rich
+        from core.ui import styled_button
+        doc = rich.Doc("✅", "Start image saved", "The new welcome image is ready")
+        await rich.reply(message, doc, reply_markup=InlineKeyboardMarkup([[
+            styled_button("🔙 Welcome settings", style="primary", callback_data=f"startcfg_{bot_id}")]]))
 
     elif action == "set_custom_caption":
         new_text = message.text.html if message.text else ""
@@ -1001,7 +1023,11 @@ async def handle_startcfg_input(client: Client, message: Message, state: dict):
             new_text = ""
             
         await main_db.update_setting(bot_id, "custom_caption", new_text)
-        await message.reply("<b>✅ Custom caption updated!</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"dashboard_{bot_id}")]]))
+        from core import rich
+        from core.ui import styled_button
+        doc = rich.Doc("✅", "Custom caption saved", "The new caption will be appended to delivered files")
+        await rich.reply(message, doc, reply_markup=InlineKeyboardMarkup([[
+            styled_button("🔙 Bot dashboard", style="primary", callback_data=f"dashboard_{bot_id}")]]))
 
     # Stop and restart worker bot to apply changes
     try:

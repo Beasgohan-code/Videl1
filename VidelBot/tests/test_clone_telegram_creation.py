@@ -12,7 +12,11 @@ import config
 
 
 @pytest.fixture(autouse=True)
-def clean():
+def clean(monkeypatch):
+    from core import rich
+    async def edit_rich(message, doc, reply_markup=None):
+        return await message.edit_text(doc.classic(), reply_markup=reply_markup)
+    monkeypatch.setattr(rich, "edit", edit_rich)
     run(reset_db()); no_botapi(); create_bot._creation_state.clear()
     yield
     no_botapi(); create_bot._creation_state.clear()
