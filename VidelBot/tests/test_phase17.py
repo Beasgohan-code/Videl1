@@ -510,3 +510,47 @@ def test_lease_is_scoped_per_bot_token(monkeypatch):
     # …while a second copy of THAT bot still has to wait.
     monkeypatch.setattr(instance, "ME", "C")
     assert run(instance.try_acquire(col)) is False
+
+
+def test_start_with_retry_backs_off_on_telegram_500(monkeypatch):
+    import asyncio as _asyncio
+    import run as run_module
+    from pyrogram.errors import AuthKeyUnregistered, RpcCallFail
+
+    waits = []
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
+
+    class FlakyApp:
+        def __init__(self, failures):
+            self.calls = 0
+            self._failures = failures
+
+        async def start(self):
+            self.calls += 1
+            if self._failures:
+                self._failures -= 1
+                raise RpcCallFail("telegram internal")
+
+    async def scenario():
+        app = FlakyApp(2)
+        await run_module.start_with_retry(app)
+        assert app.calls == 3
+        dead = FlakyApp(0)
+
+        async def dead_start():
+            raise AuthKeyUnregistered("revoked")
+
+        dead.start = dead_start
+        try:
+            await run_module.start_with_retry(dead)
+        except AuthKeyUnregistered:
+            pass
+        else:
+            raise AssertionError("401 must stay fatal")
+
+    run(scenario())
+    assert waits == [30, 60]  # growing backoff, no crash-loop

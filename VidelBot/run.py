@@ -83,8 +83,16 @@ def load_plugins(app) -> int:
 
 
 async def start_with_retry(app):
-    """Start the client; survive FloodWait / transient network errors at login (from the SRC bot)."""
-    from pyrogram.errors import FloodWait
+    """Start the client; survive FloodWait / transient network errors at login (from the SRC bot).
+
+    Telegram also answers bot logins with 500 RPC_CALL_FAIL when it's
+    having internal trouble *or* when the same token has been hammering
+    auth (crash-loops, many copies logging in at once). Crashing on it
+    makes Render restart us into another auth storm, so 5xx RPC errors
+    retry here with a growing backoff instead. A 401 means the token
+    itself is dead (revoked/rotated) — that stays fatal and says so.
+    """
+    from pyrogram.errors import FloodWait, RPCError
     attempt = 0
     while True:
         attempt += 1
@@ -95,6 +103,18 @@ async def start_with_retry(app):
             wait = int(e.value) + 10
             log.warning(f"FloodWait during login – sleeping {wait}s")
             await asyncio.sleep(wait)
+        except RPCError as e:
+            code = int(getattr(e, "CODE", 0) or 0)
+            if 500 <= code < 600:
+                wait = min(30 * attempt, 300)
+                log.error(f"Telegram refused login with {code} ({type(e).__name__}) – "
+                          f"backing off {wait}s instead of crash-looping (attempt {attempt})")
+                await asyncio.sleep(wait)
+                continue
+            if code == 401:
+                log.error("🔑 Telegram rejected BOT_TOKEN (401) — it was revoked or rotated. "
+                          "Get the current token from @BotFather and update BOT_TOKEN.")
+            raise
         except (ConnectionError, OSError, asyncio.TimeoutError) as e:
             wait = min(15 * attempt, 120)
             log.error(f"network error during start ({e}) – retrying in {wait}s")
