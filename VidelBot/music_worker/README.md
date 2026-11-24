@@ -41,6 +41,11 @@ program — pytgcalls stays out of the main bot's requirements.
   own requirements): search phrases and supported links become direct
   audio streams; a failed lookup replies honestly instead of queueing
   a phantom track. Stream URLs can expire mid-queue on long waits.
+- Queues are persisted per (clone, chat) in `music_worker_queues`
+  and restored on first use after a restart, so a redeploy doesn't
+  lose the night's playlist. Downloaded-file sources may vanish with
+  the old container and stream URLs can expire; those tracks simply
+  fail honestly when played.
 - Clone profile selection for `music` in the main bot and runtime
   wiring remain separate approved steps; `run.py` does not import
   this package.

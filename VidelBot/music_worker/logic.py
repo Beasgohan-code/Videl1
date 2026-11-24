@@ -38,6 +38,16 @@ class PlayQueue:
         self._queues.move_to_end(int(chat_id))
         return len(queue) - 1  # position (0 = now playing)
 
+    def snapshot(self, chat_id: int) -> list[dict]:
+        return [dict(t) for t in self._queues.get(int(chat_id)) or []]
+
+    def restore(self, chat_id: int, tracks: list[dict]) -> None:
+        clean = [dict(t) for t in (tracks or []) if isinstance(t, dict)][-self._max:]
+        if clean:
+            self._queues[int(chat_id)] = clean
+        else:
+            self._queues.pop(int(chat_id), None)
+
     def now_playing(self, chat_id: int) -> dict | None:
         queue = self._queues.get(int(chat_id)) or []
         return queue[0] if queue else None

@@ -69,6 +69,27 @@ class _BotHandlers:
         self.queue = PlayQueue()
         self.player = player  # VoicePlayer or None (queue-only mode)
         self._suppress_until: dict[int, float] = {}
+        self._loaded_chats: set[int] = set()
+
+    async def _ensure_loaded(self, chat_id: int) -> None:
+        """Restore this chat's persisted queue once per process run."""
+        if self.store is None or int(chat_id) in self._loaded_chats:
+            return
+        self._loaded_chats.add(int(chat_id))
+        try:
+            tracks = await self.store.load_queue(self.bot_id, chat_id)
+            if tracks and not self.queue.snapshot(chat_id):
+                self.queue.restore(chat_id, tracks)
+        except Exception:
+            pass
+
+    async def _persist(self, chat_id: int) -> None:
+        if self.store is None:
+            return
+        try:
+            await self.store.save_queue(self.bot_id, chat_id, self.queue.snapshot(chat_id))
+        except Exception:
+            pass
 
     # ── rich pages ─────────────────────────────────────────────────
     def _home_text(self) -> str:
@@ -112,6 +133,7 @@ class _BotHandlers:
         if time.monotonic() < self._suppress_until.get(int(chat_id), 0.0):
             return
         nxt = self.queue.skip(chat_id)
+        await self._persist(chat_id)
         if nxt is None:
             if self._player_ready():
                 try:
@@ -161,6 +183,7 @@ class _BotHandlers:
         async def _play(c, m: Message):
             if not await self._allowed(c, m):
                 return
+            await self._ensure_loaded(m.chat.id)
             parts = (m.text or "").split(maxsplit=1)
             title = ""
             duration = None
@@ -197,6 +220,7 @@ class _BotHandlers:
                             "or reply /play to an audio file.",
                             parse_mode=enums.ParseMode.HTML)
             position = self.queue.enqueue(m.chat.id, track)
+            await self._persist(m.chat.id)
             note = ""
             if not self._player_ready():
                 note = ("\n\n<i>🎧 Streaming engine isn't set up for this clone yet — "
@@ -218,6 +242,7 @@ class _BotHandlers:
 
         @app.on_message(filters.group & filters.command(["queue", "np", "nowplaying"]))
         async def _queue(c, m: Message):
+            await self._ensure_loaded(m.chat.id)
             current = self.queue.now_playing(m.chat.id)
             if current is None:
                 return await m.reply_text("🎶 Nothing is queued. Try /play &lt;song&gt;.",
@@ -233,6 +258,7 @@ class _BotHandlers:
         async def _control(c, m: Message):
             if not await self._allowed(c, m):
                 return
+            await self._ensure_loaded(m.chat.id)
             cmd = (m.command or ["skip"])[0].lower()
             if cmd in ("pause", "resume"):
                 if not self._player_ready():
@@ -249,6 +275,7 @@ class _BotHandlers:
                     parse_mode=enums.ParseMode.HTML)
             if cmd == "stop":
                 cleared = self.queue.clear(m.chat.id)
+                await self._persist(m.chat.id)
                 if self._player_ready():
                     try:
                         await self.player.stop(m.chat.id)
@@ -262,10 +289,12 @@ class _BotHandlers:
                     return await m.reply_text("Usage: <code>/remove &lt;position&gt;</code>",
                                               parse_mode=enums.ParseMode.HTML)
                 removed = self.queue.remove(m.chat.id, int(args[0]))
+                await self._persist(m.chat.id)
                 return await m.reply_text(
                     f"🗑 Removed <b>{_esc(removed['title'])}</b>." if removed else "That position doesn't exist.",
                     parse_mode=enums.ParseMode.HTML)
             nxt = self.queue.skip(m.chat.id)
+            await self._persist(m.chat.id)
             self._note_manual(m.chat.id)
             if self._player_ready():
                 try:

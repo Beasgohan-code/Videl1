@@ -33,7 +33,8 @@ def test_music_worker_store_scoping_and_commands():
         assert cmd in names
 
     async def scenario():
-        store = MusicWorkerStore({"music_worker_settings": _FakeCollection()})
+        store = MusicWorkerStore({"music_worker_settings": _FakeCollection(),
+                                  "music_worker_queues": _FakeCollection()})
         await store.update_settings(1, -5, {"dj_mode": True, "bogus": 1})
         mine = await store.get_settings(1, -5)
         other = await store.get_settings(2, -5)
@@ -251,5 +252,42 @@ def test_music_player_binds_stream_end_events():
 
         await registered["handler"](None, Update())
         assert seen == [-777]
+
+    _run(scenario())
+
+
+def test_music_queue_persistence_roundtrip():
+    from tests.harness import run as _run
+    from music_worker.logic import PlayQueue
+    from music_worker.store import MusicWorkerStore
+    from tests.test_group_worker_logic import _FakeCollection
+
+    queue = PlayQueue(max_tracks=2)
+    queue.enqueue(-1, {"title": "A"})
+    queue.enqueue(-1, {"title": "B"})
+    queue.enqueue(-1, {"title": "C"})
+    snap = queue.snapshot(-1)
+    assert [t["title"] for t in snap] == ["A", "C"]  # cap keeps current + newest
+    fresh = PlayQueue()
+    fresh.restore(-1, snap)
+    assert [t["title"] for t in fresh.snapshot(-1)] == ["A", "C"]
+    fresh.restore(-1, [])
+    assert fresh.snapshot(-1) == []
+
+    async def scenario():
+        store = MusicWorkerStore({
+            "music_worker_settings": _FakeCollection(),
+            "music_worker_queues": _FakeCollection(),
+        })
+        await store.save_queue(9, -3, [
+            {"title": "Song", "duration": 200, "requested_by": "Ana",
+             "source": "https://x/y", "junk": 1}])
+        loaded = await store.load_queue(9, -3)
+        assert loaded == [{"title": "Song", "duration": 200,
+                           "requested_by": "Ana", "source": "https://x/y"}]
+        assert await store.load_queue(9, -4) == []     # other chat
+        assert await store.load_queue(8, -3) == []     # other clone
+        await store.save_queue(9, -3, [])
+        assert await store.load_queue(9, -3) == []     # cleared deletes the doc
 
     _run(scenario())
