@@ -19,6 +19,18 @@ _LINK_RE = re.compile(r"(https?://|t\.me/|telegram\.me/|www\.)", re.IGNORECASE)
 # Guard kinds the clone worker can police on its own.
 GUARD_KINDS = ("links", "media", "stickers", "forwards", "bots", "all")
 
+_LOCK_ALIASES = {
+    "link": "links", "url": "links", "urls": "links",
+    "sticker": "stickers", "forward": "forwards", "fwd": "forwards",
+    "bot": "bots", "everything": "all",
+}
+
+
+def lock_kind(name: str) -> str:
+    """Normalize a /lock argument to a GUARD_KINDS member ('' if unknown)."""
+    kind = _LOCK_ALIASES.get((name or "").strip().lower(), (name or "").strip().lower())
+    return kind if kind in GUARD_KINDS else ""
+
 
 def parse_duration(token: str) -> timedelta | None:
     """Parse ``30m`` / ``12h`` / ``7d`` / ``2w`` into a timedelta."""

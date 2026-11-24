@@ -501,3 +501,25 @@ def test_group_worker_engine_stop_all_stops_every_clone():
         assert await engine.stop_all() == 0
 
     run(scenario())
+
+
+def test_group_worker_lock_kind_aliases():
+    from group_worker.logic import lock_kind
+
+    assert lock_kind("links") == "links"
+    assert lock_kind("LINK") == "links"
+    assert lock_kind("url") == "links"
+    assert lock_kind("Sticker") == "stickers"
+    assert lock_kind("fwd") == "forwards"
+    assert lock_kind("everything") == "all"
+    assert lock_kind("commands") == ""
+    assert lock_kind("") == ""
+
+
+def test_group_worker_locks_registered():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS, _BotHandlers
+
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    for cmd in ("lock", "unlock", "locks"):
+        assert cmd in names
+    assert "/lock links" in _BotHandlers(bot_id=42, owner_id=1, store=None)._start_text("help")

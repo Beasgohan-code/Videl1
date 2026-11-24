@@ -21,7 +21,7 @@ from pyrogram.types import (
     Message,
 )
 
-from .logic import GUARD_KINDS, LANGUAGES, FloodWatch, JoinWatch, content_violation, default_settings, in_quiet_hours, is_approved, match_reply, parse_duration, render_greeting, sanitize_settings_import, sticker_blocked, tr
+from .logic import GUARD_KINDS, LANGUAGES, FloodWatch, JoinWatch, content_violation, default_settings, in_quiet_hours, is_approved, lock_kind, match_reply, parse_duration, render_greeting, sanitize_settings_import, sticker_blocked, tr
 
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
@@ -227,7 +227,8 @@ class _BotHandlers:
                 "<b>🛡 Moderation</b> — reply to a member:\n"
                 "/warn /mute /tmute 12h /kick /ban /tban 7d /sban /unban /unmute\n\n"
                 "<b>👑 Admin tools</b>\n"
-                "/promote /demote /title /chatinfo\n\n"
+                "/promote /demote /title /chatinfo\n"
+                "/lock links · /unlock media · /locks — block content types\n\n"
                 "<b>⚙️ Group care</b>\n"
                 "/settings — buttons for shield, greetings, flood, night & more\n"
                 "/rules /filter /save — rules, auto-replies, notes (#trigger)\n\n"
@@ -1045,6 +1046,50 @@ class _BotHandlers:
                 pass
             await m.reply_text(text, parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message(filters.group & filters.command(["lock", "unlock", "locks"]))
+        async def _locks(c, m: Message):
+            cmd = (m.command or ["locks"])[0].lower()
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            s = await store.get_settings(bot_id, m.chat.id)
+            kinds = set(s.get("guard_kinds") or [])
+            if cmd == "locks":
+                lines = [f"{'🔒' if (k in kinds or 'all' in kinds) else '🔓'} {k}" for k in GUARD_KINDS if k != "all"]
+                state = "on" if s.get("shield") else "off"
+                return await m.reply_text(
+                    f"🔐 <b>Locks</b> — shield {state}\n\n" + "\n".join(lines)
+                    + "\n\n<i>/lock links · /unlock media · types: links, media, stickers, forwards, bots, all</i>",
+                    parse_mode=enums.ParseMode.HTML)
+            args = (m.command or [])[1:]
+            kind = lock_kind(args[0]) if args else ""
+            if not kind:
+                return await m.reply_text(
+                    "Usage: <code>/lock links|media|stickers|forwards|bots|all</code>",
+                    parse_mode=enums.ParseMode.HTML)
+            if cmd == "lock":
+                if kind == "all":
+                    kinds = {"all"}
+                elif "all" not in kinds:
+                    kinds.add(kind)
+                updates = {"guard_kinds": sorted(kinds), "shield": True}
+                text = f"🔒 <b>{kind} locked.</b> Non-admin {kind} will be removed."
+            else:
+                if kind == "all":
+                    kinds = set()
+                    updates = {"guard_kinds": [], "shield": False}
+                else:
+                    if "all" in kinds:  # expand: everything except this kind stays locked
+                        kinds = set(GUARD_KINDS) - {"all", kind}
+                    kinds.discard(kind)
+                    updates = {"guard_kinds": sorted(kinds)}
+                text = f"🔓 <b>{kind} unlocked.</b>"
+            s = await store.update_settings(bot_id, m.chat.id, updates)
+            try:
+                await store.log_action(bot_id, m.chat.id, cmd, 0, m.from_user.id, kind)
+            except Exception:
+                pass
+            await m.reply_text(text, parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.command("title"))
         async def _title(c, m: Message):
             if not await _is_admin(c, m.chat.id, m.from_user.id):
@@ -1525,6 +1570,9 @@ GROUP_WORKER_COMMANDS = [
     ("demote", "Demote an admin to member (admins)"),
     ("title", "Set the group title (admins)"),
     ("chatinfo", "Group info & status"),
+    ("lock", "Block a content type: /lock links (admins)"),
+    ("unlock", "Allow a content type: /unlock links (admins)"),
+    ("locks", "Show locked content types (admins)"),
     ("createfed", "Create a federation (clone owner)"),
     ("joinfed", "Join this group to a federation (admins)"),
     ("leavefed", "Remove this group from its federation"),

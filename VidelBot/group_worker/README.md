@@ -169,3 +169,11 @@ fail-closed guard: the main bot (`run.py`) also serves group clones
 today, and two processes serving the same clone answer every update
 twice. Only run this standalone once the main process no longer
 serves group clones. `run.py` does not import this package.
+
+## Stage 16 — content locks
+
+Standard `/lock <type>`, `/unlock <type>` and `/locks` commands map
+onto the shield: locking a type (links, media, stickers, forwards,
+bots, all) enables the shield for it; unlocking `all`, or one type
+out of an `all` lock, expands correctly. Lock changes are recorded
+in the moderation log.
