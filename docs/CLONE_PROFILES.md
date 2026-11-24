@@ -368,3 +368,17 @@ they are aliased to WzGram's `GroupCallInvalid` at player setup
 (probe-verified: import, construction and call API all succeed).
 Real voice-chat joining still needs live-Telegram proof with a real
 clone, and `music` profile selection stays gated until then.
+
+## Music profile setup (assistant session)
+
+Picking **Music** for a clone opens an assistant-session step in the
+main bot (owner DM): the owner can **paste** a Pyrogram session
+string or **create one here** via a guided phone → OTP (→ 2FA)
+login. Sessions are stored only Fernet-encrypted
+(`music_session_encrypted`; storage is refused without a valid
+ENCRYPTION_KEY), the pasted message is deleted, and the profile
+flips to `music` only after a session is saved — with the same
+stopped/owner CAS rules as other switches. The music worker then
+runs playback (PyTgCalls) on that assistant user account while the
+clone bot takes commands; without a session it falls back to the
+bot client, and a dead session degrades to queue-only mode.

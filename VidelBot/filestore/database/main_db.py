@@ -305,6 +305,13 @@ class MainDB:
             {"$set": {"owner_id": new_owner, "transferred_at": datetime.now(timezone.utc)}},
         )
 
+    async def set_music_session(self, bot_id: int, session_encrypted: str):
+        """Store a Music clone's assistant session (caller encrypts it first)."""
+        await self.bots.update_one(
+            {"_id": bot_id},
+            {"$set": {"music_session_encrypted": session_encrypted}},
+        )
+
     async def set_bot_active(self, bot_id: int, active: bool):
         """Enable or disable a bot. Turning it on also restarts the inactivity clock – otherwise a clone
         woken after a long sleep would be switched off again by the very next sweep."""

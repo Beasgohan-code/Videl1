@@ -39,6 +39,7 @@ class MusicWorkerEngine:
 
     def __init__(self, store: MusicWorkerStore | None = None):
         self.workers: dict[int, Client] = {}
+        self._assistants: dict[int, Client] = {}
         self._lock = asyncio.Lock()
         self._operation_locks = weakref.WeakValueDictionary()
         self._uncertain_stops: dict[int, Client] = {}
@@ -95,13 +96,40 @@ class MusicWorkerEngine:
             workers=4,
         )
         from .player import build_player
-        player = build_player(app)
+        # Playback runs on the assistant user account when the clone has
+        # one (collected by the main bot's Music setup); the clone bot
+        # itself only takes commands. Without a session we fall back to
+        # the bot client (queue-only or bot-joined playback).
+        assistant = None
+        encrypted = bot_doc.get("music_session_encrypted")
+        if encrypted:
+            try:
+                session = decrypt_token(encrypted)
+                assistant = Client(
+                    name=f"music_asst_{bot_id}",
+                    api_id=API_ID,
+                    api_hash=API_HASH,
+                    session_string=session,
+                    in_memory=True,
+                )
+                self._assistants[bot_id] = assistant
+            except Exception:
+                log.warning("music clone %s: assistant session unusable; bot-client playback", bot_id)
+                assistant = None
+        player = build_player(assistant or app)
         attach_music_handlers(app, bot_id=bot_id,
                               owner_id=int(bot_doc["owner_id"]), store=self.store,
                               player=player)
         try:
             await app.start()
-            if player is not None:
+            if assistant is not None:
+                try:
+                    await assistant.start()
+                except Exception:
+                    log.warning("music clone %s: assistant login failed; queue-only mode", bot_id)
+                    self._assistants.pop(bot_id, None)
+                    assistant = None
+            if player is not None and (assistant is not None or bot_doc.get("music_session_encrypted") is None):
                 await player.start()  # failure degrades to queue-only mode
             app.set_parse_mode(ParseMode.HTML)
             commands = [BotCommand(name, desc) for name, desc in MUSIC_WORKER_COMMANDS]
@@ -129,6 +157,12 @@ class MusicWorkerEngine:
                 app = self.workers.pop(bot_id, None)
             if app is None:
                 return bot_id not in self._uncertain_stops
+            assistant = self._assistants.pop(bot_id, None)
+            if assistant is not None:
+                try:
+                    await asyncio.wait_for(assistant.stop(block=True), timeout=5.0)
+                except Exception:
+                    pass
             try:
                 await asyncio.wait_for(app.stop(block=True), timeout=5.0)
             except Exception:

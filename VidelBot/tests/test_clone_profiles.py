@@ -50,7 +50,7 @@ def test_select_is_opt_in_stopped_owner_only_and_preserves_data(monkeypatch):
     run(go())
 
 
-def test_profile_callback_requires_private_actual_owner_and_never_enables_music():
+def test_profile_callback_requires_private_actual_owner_and_music_needs_session_first():
     async def go():
         db=MainDB();await bot();await db.set_bot_active(4242,False)
         async def invoke(uid, mode, group=False):
@@ -62,8 +62,8 @@ def test_profile_callback_requires_private_actual_owner_and_never_enables_music(
         for uid,group in [(6,False),(111,False),(5,True)]:
             q=await invoke(uid,'group',group)
             assert any('denied' in (text or '').lower() for text,_ in q.answers)
-        q=await invoke(5,'music');assert 'not available' in q.answers[0][0]
-        assert 'clone_profile' not in await db.get_bot(4242)
+        q=await invoke(5,'music');assert 'session' in q.answers[0][0].lower()
+        assert 'clone_profile' not in await db.get_bot(4242)  # session first, profile later
     run(go())
 
 

@@ -8,7 +8,7 @@ from filestore.database.main_db import MainDB
 from filestore.worker_bot.engine import worker_engine
 
 main_db = MainDB()
-LABELS = {"filestore": "File Store", "group": "Group Management"}
+LABELS = {"filestore": "File Store", "group": "Group Management", "music": "Music"}
 
 
 async def _owned(query, bot_id):
@@ -40,13 +40,14 @@ async def profile_panel(client, query):
             "<b>File Store</b> serves files and links.\n"
             "<b>Group Management</b> offers moderation, group rules and welcome messages; "
             "see /help in the group. Telegram admin rights are required.\n"
-            "<b>Music</b> is planned; voice-chat playback is not implemented.\n\n"
+            "<b>Music</b> plays in voice chats via an assistant account — picking it "
+            "asks for a session string (paste one, or create it here with a guided login).\n\n"
             + ("<i>Experimental: single current worker instance only.</i>" if ready else
                "<i>Switching is disabled until the operator verifies a single current worker instance.</i>"))
     buttons = Kb([
         [Btn("📁 File Store", callback_data=f"clprofile_set_{bot_id}_filestore"),
          Btn("🛡 Group Management", callback_data=f"clprofile_set_{bot_id}_group")],
-        [Btn("🎵 Music · not available", callback_data=f"clprofile_set_{bot_id}_music")],
+        [Btn("🎵 Music · set up assistant ›", callback_data=f"clmusic_{bot_id}")],
         [Btn("🛡 Group clone settings", callback_data=f"clgset_{bot_id}")],
         [Btn("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")],
     ])
@@ -61,6 +62,10 @@ async def profile_select(client, query):
     if not bot:
         return
     mode = query.matches[0].group(2)
+    if mode == "music":
+        return await query.answer(
+            "🎵 Music needs an assistant session — tap the Music button to set it up.",
+            show_alert=True)
     if mode not in LABELS:
         return await query.answer("Music voice-chat playback is not available yet.", show_alert=True)
     try:
