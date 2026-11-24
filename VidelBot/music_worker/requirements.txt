@@ -1,0 +1,5 @@
+# Standalone Music worker program dependencies.
+# pytgcalls/ntgcalls are ONLY needed here (voice-chat streaming) and are
+# deliberately not in the main bot's requirements.txt.
+wzgram==3.1.7
+py-tgcalls==3.0.1

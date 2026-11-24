@@ -13,15 +13,32 @@ worker (`group_worker/`), sharing no code with either.
 - Per-(clone, chat) settings in `music_worker_settings`; bounded
   in-memory queues (current track is never dropped by the cap).
 
+## Stage 2 — streaming (implemented, live-proof pending)
+
+`player.py` wraps PyTgCalls: with a ready player, `/play` on a
+replied audio file downloads and streams it into the voice chat;
+`/pause`, `/resume`, `/skip` (advances to a downloaded next track),
+`/stop` (leaves the call) and the volume setting control playback.
+
+Compatibility was probed live (Nov 2026): PyTgCalls 3.0.1 +
+WzGram 3.1.7 failed only on two legacy error names
+(`GroupcallForbidden`/`GroupcallInvalid` vs WzGram's
+`GroupCallInvalid`); `player.ensure_compat()` aliases them, after
+which PyTgCalls imports, constructs, and exposes the full call API.
+Install this package's own `requirements.txt` for the standalone
+program — pytgcalls stays out of the main bot's requirements.
+
 ## Honest limits
 
-Voice-chat **streaming is not enabled yet**: `/play` queues honestly
-and says the streaming engine isn't set up, rather than faking
-playback. Streaming needs (1) a PyTgCalls version verified compatible
-with WzGram 3.1.7 (earlier probes failed), (2) a per-clone assistant
-(userbot) session with a safe lifecycle, and (3) clone profile
-selection for `music` plus exclusive runtime wiring. Those are
-separate approved steps; this engine is not imported by `run.py`.
+- Actual joining of a real voice chat is only proven against real
+  Telegram with a real clone; unit tests cover the wrapper with a
+  fake calls object, and failures (e.g. no voice chat started) are
+  reported honestly while the track stays queued.
+- `/play <title>` text search has no resolver yet — replying to an
+  audio file is the streaming path.
+- Clone profile selection for `music` in the main bot and runtime
+  wiring remain separate approved steps; `run.py` does not import
+  this package.
 
 ## Running standalone
 

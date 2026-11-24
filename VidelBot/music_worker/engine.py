@@ -94,10 +94,15 @@ class MusicWorkerEngine:
             in_memory=True,
             workers=4,
         )
+        from .player import build_player
+        player = build_player(app)
         attach_music_handlers(app, bot_id=bot_id,
-                              owner_id=int(bot_doc["owner_id"]), store=self.store)
+                              owner_id=int(bot_doc["owner_id"]), store=self.store,
+                              player=player)
         try:
             await app.start()
+            if player is not None:
+                await player.start()  # failure degrades to queue-only mode
             app.set_parse_mode(ParseMode.HTML)
             commands = [BotCommand(name, desc) for name, desc in MUSIC_WORKER_COMMANDS]
             await app.set_bot_commands(commands)

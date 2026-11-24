@@ -360,3 +360,11 @@ Each clone profile worker is a separate program:
 never run a standalone worker while the main process serves the same
 clones. Neither is wired into `run.py`; switching a profile's runtime
 to its standalone worker is an operator step.
+
+Music streaming (stage 2): `music_worker/player.py` wraps
+PyTgCalls 3.0.1 on WzGram 3.1.7. The earlier "missing
+GroupcallForbidden" blocker was two legacy Pyrogram error names;
+they are aliased to WzGram's `GroupCallInvalid` at player setup
+(probe-verified: import, construction and call API all succeed).
+Real voice-chat joining still needs live-Telegram proof with a real
+clone, and `music` profile selection stays gated until then.

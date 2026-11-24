@@ -1,9 +1,11 @@
 """Telegram handlers for one clone running the Music worker.
 
-Stage 1: queue management, settings and rich UI. Playback into voice
-chats starts only when a verified streaming engine is attached; until
-then /play queues the track and says streaming is not set up yet —
-it never fakes playback.
+Queue management, settings and rich UI, plus stage-2 streaming: with
+a ready player (see player.py), /play on a replied audio file
+downloads and streams it into the voice chat, /pause /resume /skip
+/stop control playback, and the volume setting applies live. Without
+a player it queues honestly and says streaming is not set up — it
+never fakes playback. Text-title streaming still needs a resolver.
 """
 from __future__ import annotations
 
@@ -83,12 +85,15 @@ class _BotHandlers:
             [_btn("❌ Close", f"mw:{bot}:close")],
         ])
 
+    def _player_ready(self) -> bool:
+        return self.player is not None and getattr(self.player, "ready", True)
+
     def _settings_text(self, s: dict) -> str:
         return (
             f"{_bar('⚙️ MUSIC SETTINGS')}\n\n<blockquote>"
             f"🎧 DJ mode: {'on' if s.get('dj_mode') else 'off'}\n"
             f"🔊 Volume: {s.get('volume', 100)}%\n"
-            f"🎶 Streaming engine: {'ready' if self.player else 'not set up yet'}"
+            f"🎶 Streaming engine: {'ready' if self._player_ready() else 'not set up yet'}"
             "</blockquote>"
         )
 
@@ -134,12 +139,26 @@ class _BotHandlers:
                                           parse_mode=enums.ParseMode.HTML)
             track = {"title": title, "duration": duration,
                      "requested_by": m.from_user.first_name or str(m.from_user.id)}
+            # With a live player, a replied audio file can actually stream:
+            # download it now so /skip can advance to it later.
+            if replied is not None and self._player_ready():
+                try:
+                    track["source"] = str(await c.download_media(replied))
+                except Exception:
+                    track["source"] = None
             position = self.queue.enqueue(m.chat.id, track)
-            if self.player is None:
+            note = ""
+            if not self._player_ready():
                 note = ("\n\n<i>🎧 Streaming engine isn't set up for this clone yet — "
                         "the track is queued and will play once it's enabled.</i>")
-            else:
-                note = ""
+            elif position == 0 and track.get("source"):
+                try:
+                    await self.player.play(m.chat.id, track["source"])
+                except Exception:
+                    note = "\n\n<i>⚠️ Couldn't join the voice chat — is one started? The track stays queued.</i>"
+            elif position == 0:
+                note = ("\n\n<i>🎧 Text search streaming isn't wired yet — "
+                        "reply /play to an audio file to stream it.</i>")
             if position == 0:
                 await m.reply_text(f"▶️ <b>Now playing:</b> {_esc(title)} · {format_duration(duration)}{note}",
                                    parse_mode=enums.ParseMode.HTML)
@@ -160,13 +179,31 @@ class _BotHandlers:
             await m.reply_text(f"{_bar('🎶 QUEUE')}\n\n" + "\n".join(lines),
                                parse_mode=enums.ParseMode.HTML)
 
-        @app.on_message(filters.group & filters.command(["skip", "stop", "remove"]))
+        @app.on_message(filters.group & filters.command(["skip", "stop", "remove", "pause", "resume"]))
         async def _control(c, m: Message):
             if not await self._allowed(c, m):
                 return
             cmd = (m.command or ["skip"])[0].lower()
+            if cmd in ("pause", "resume"):
+                if not self._player_ready():
+                    return await m.reply_text("🎧 Streaming isn't active for this clone yet.",
+                                              parse_mode=enums.ParseMode.HTML)
+                try:
+                    ok = await (self.player.pause(m.chat.id) if cmd == "pause"
+                                else self.player.resume(m.chat.id))
+                except Exception:
+                    ok = False
+                return await m.reply_text(
+                    ("⏸ <b>Paused.</b>" if cmd == "pause" else "▶️ <b>Resumed.</b>") if ok
+                    else "Nothing is playing right now.",
+                    parse_mode=enums.ParseMode.HTML)
             if cmd == "stop":
                 cleared = self.queue.clear(m.chat.id)
+                if self._player_ready():
+                    try:
+                        await self.player.stop(m.chat.id)
+                    except Exception:
+                        pass
                 return await m.reply_text(f"⏹ <b>Stopped.</b> Cleared {cleared} track(s).",
                                           parse_mode=enums.ParseMode.HTML)
             if cmd == "remove":
@@ -224,6 +261,8 @@ MUSIC_WORKER_COMMANDS = [
     ("play", "Queue a song: /play <name> or reply to audio"),
     ("queue", "Show the current queue"),
     ("skip", "Skip the current track"),
+    ("pause", "Pause playback"),
+    ("resume", "Resume playback"),
     ("remove", "Remove a queue position: /remove 2"),
     ("stop", "Stop and clear the queue"),
     ("settings", "Music settings (admins)"),

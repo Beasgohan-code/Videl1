@@ -66,3 +66,71 @@ def test_music_worker_engine_stop_all_stops_every_clone():
         assert all(a.stopped for a in apps.values())
 
     _run(scenario())
+
+
+def test_music_player_compat_shim_and_controls():
+    from tests.harness import run as _run
+    from music_worker.player import VoicePlayer, ensure_compat
+
+    assert ensure_compat() is True
+    import pyrogram.errors as errors
+    assert errors.GroupcallForbidden is errors.GroupCallInvalid
+    assert errors.GroupcallInvalid is errors.GroupCallInvalid
+    assert ensure_compat() is True  # idempotent
+
+    calls_made = []
+
+    class FakeCalls:
+        async def start(self):
+            calls_made.append(("start",))
+
+        async def play(self, chat_id, stream):
+            calls_made.append(("play", chat_id, stream))
+
+        async def pause(self, chat_id):
+            calls_made.append(("pause", chat_id))
+            return True
+
+        async def resume(self, chat_id):
+            calls_made.append(("resume", chat_id))
+            return False
+
+        async def leave_call(self, chat_id):
+            calls_made.append(("leave", chat_id))
+
+        async def change_volume_call(self, chat_id, volume):
+            calls_made.append(("volume", chat_id, volume))
+
+    async def scenario():
+        player = VoicePlayer(FakeCalls(), stream_factory=lambda s: ("stream", s))
+        assert await player.start() is True and player.ready is True
+        await player.play(-100, "/tmp/a.ogg")
+        assert await player.pause(-100) is True
+        assert await player.resume(-100) is False
+        await player.set_volume(-100, 150)
+        await player.stop(-100)
+        assert calls_made == [
+            ("start",), ("play", -100, ("stream", "/tmp/a.ogg")), ("pause", -100),
+            ("resume", -100), ("volume", -100, 150), ("leave", -100)]
+
+        class DeadCalls(FakeCalls):
+            async def start(self):
+                raise RuntimeError("no calls")
+
+        dead = VoicePlayer(DeadCalls(), stream_factory=lambda s: s)
+        assert await dead.start() is False and dead.ready is False
+
+    _run(scenario())
+
+
+def test_music_handlers_report_ready_player_and_pause_commands():
+    from music_worker.handlers import MUSIC_WORKER_COMMANDS, _BotHandlers
+
+    names = [n for n, _ in MUSIC_WORKER_COMMANDS]
+    assert "pause" in names and "resume" in names
+    handlers = _BotHandlers(bot_id=42, owner_id=1, store=None, player=object())
+    assert handlers._player_ready() is True
+    assert "ready" in handlers._settings_text({"dj_mode": False, "volume": 100})
+    idle = _BotHandlers(bot_id=42, owner_id=1, store=None, player=None)
+    assert idle._player_ready() is False
+    assert "not set up yet" in idle._settings_text({"dj_mode": False, "volume": 100})
