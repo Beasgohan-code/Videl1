@@ -137,5 +137,12 @@ class GroupWorkerEngine:
             self._uncertain_stops.pop(bot_id, None)
             return True
 
+    async def stop_all(self) -> int:
+        """Stop every running clone; returns how many were running."""
+        bot_ids = list(self.workers) + [b for b in self._uncertain_stops if b not in self.workers]
+        for bot_id in bot_ids:
+            await self.stop_worker(bot_id)
+        return len(bot_ids)
+
 
 group_worker_engine = GroupWorkerEngine()

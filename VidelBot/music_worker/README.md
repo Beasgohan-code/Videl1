@@ -22,3 +22,12 @@ with WzGram 3.1.7 (earlier probes failed), (2) a per-clone assistant
 (userbot) session with a safe lifecycle, and (3) clone profile
 selection for `music` plus exclusive runtime wiring. Those are
 separate approved steps; this engine is not imported by `run.py`.
+
+## Running standalone
+
+    cd VidelBot && MUSIC_WORKER_STANDALONE=1 python -m music_worker
+
+Starts every `music`-profile clone and stops them cleanly on
+SIGINT/SIGTERM. The env opt-in is a fail-closed guard against two
+processes serving the same clone. `run.py` does not import this
+package.

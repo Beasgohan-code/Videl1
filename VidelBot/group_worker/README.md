@@ -156,3 +156,16 @@ copied, so no foreign credits or license encumbrance):
   feature state. Promotions are recorded in the moderation log.
 - Welcome messages now carry a 📜 Read the rules button when rules are
   set; anyone can tap it to have the rules posted.
+
+## Running standalone
+
+This worker is its own program:
+
+    cd VidelBot && GROUP_WORKER_STANDALONE=1 python -m group_worker
+
+It starts every clone whose profile is `group`, and stops them all
+cleanly on SIGINT/SIGTERM. The `GROUP_WORKER_STANDALONE=1` opt-in is a
+fail-closed guard: the main bot (`run.py`) also serves group clones
+today, and two processes serving the same clone answer every update
+twice. Only run this standalone once the main process no longer
+serves group clones. `run.py` does not import this package.

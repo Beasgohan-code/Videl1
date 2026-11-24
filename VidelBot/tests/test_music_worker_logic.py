@@ -41,3 +41,28 @@ def test_music_worker_store_scoping_and_commands():
         assert other["dj_mode"] is False
 
     run(scenario())
+
+
+def test_music_worker_engine_stop_all_stops_every_clone():
+    from tests.harness import run as _run
+    from music_worker.engine import MusicWorkerEngine
+
+    class FakeApp:
+        is_connected = False
+        is_initialized = False
+
+        def __init__(self):
+            self.stopped = False
+
+        async def stop(self, block=True):
+            self.stopped = True
+
+    async def scenario():
+        engine = MusicWorkerEngine(store=object())
+        apps = {7: FakeApp(), 8: FakeApp()}
+        engine.workers.update(apps)
+        assert await engine.stop_all() == 2
+        assert engine.active_count == 0
+        assert all(a.stopped for a in apps.values())
+
+    _run(scenario())

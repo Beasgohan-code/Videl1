@@ -476,3 +476,28 @@ def test_group_worker_admin_tools_registered():
         assert cmd in names
     handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
     assert "/promote" in handlers._start_text("help")
+
+
+def test_group_worker_engine_stop_all_stops_every_clone():
+    from group_worker.engine import GroupWorkerEngine
+
+    class FakeApp:
+        is_connected = False
+        is_initialized = False
+
+        def __init__(self):
+            self.stopped = False
+
+        async def stop(self, block=True):
+            self.stopped = True
+
+    async def scenario():
+        engine = GroupWorkerEngine(store=object())
+        apps = {1: FakeApp(), 2: FakeApp()}
+        engine.workers.update(apps)
+        assert await engine.stop_all() == 2
+        assert engine.active_count == 0
+        assert all(a.stopped for a in apps.values())
+        assert await engine.stop_all() == 0
+
+    run(scenario())

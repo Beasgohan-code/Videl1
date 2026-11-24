@@ -350,3 +350,13 @@ queues. Voice-chat streaming is deliberately not faked: it needs a
 verified PyTgCalls/WzGram stack, a per-clone assistant session
 lifecycle, `music` profile selection, and exclusive runtime wiring —
 all separate approved steps. The engine is not imported by `run.py`.
+
+## Standalone worker programs
+
+Each clone profile worker is a separate program:
+`GROUP_WORKER_STANDALONE=1 python -m group_worker` and
+`MUSIC_WORKER_STANDALONE=1 python -m music_worker` (run from
+`VidelBot/`). The env opt-in is a fail-closed exclusivity guard —
+never run a standalone worker while the main process serves the same
+clones. Neither is wired into `run.py`; switching a profile's runtime
+to its standalone worker is an operator step.
