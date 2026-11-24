@@ -33,6 +33,9 @@ BEAT = 15                  # renewal interval
 STALE = 35                 # no heartbeat for this long ⇒ owner is frozen/dead
                            # (e.g. a hibernated old deploy) → takeover is allowed
                            # even before the lease's `until` expires
+STARTUP_GRACE = 120        # but never stale-steal from a copy that took over
+                           # <2 min ago: slow free-tier startups block the event
+                           # loop (plugin imports), pausing its heartbeat
 POLL = 5                   # how often a waiting copy re-checks
 MAX_DB_ERRORS = 5          # consecutive DB errors before acquire() fails closed
 ENV = "VIDEL_INSTANCE_ID"  # survives os.exec* → a /restart keeps its own lease
@@ -94,13 +97,17 @@ async def try_acquire(col=None) -> bool:
         "host": socket.gethostname(),
         "pid": os.getpid(),
         "beat": now,
+        "since": now,
     }
     stale_before = now - timedelta(seconds=STALE)
+    grace_before = now - timedelta(seconds=STARTUP_GRACE)
     res = await col.update_one(
         {"_id": LOCK_ID, "$or": [
             {"until": {"$lt": now}},                    # expired
             {"owner": ME},                              # already ours
-            {"beat": {"$lt": stale_before}},            # owner frozen/dead
+            {"beat": {"$lt": stale_before},             # owner frozen/dead…
+             "$or": [{"since": {"$lt": grace_before}},  # …and not a fresh starter
+                     {"since": {"$exists": False}}]},
             {"beat": {"$exists": False}},               # legacy lease doc
         ]},
         {"$set": lease},

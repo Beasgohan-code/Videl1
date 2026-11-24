@@ -472,3 +472,22 @@ def test_stale_heartbeat_allows_takeover_before_expiry(monkeypatch):
                        {"$set": {"owner": "alive", "beat": datetime.utcnow()}}))
     monkeypatch.setattr(instance, "ME", "other")
     assert run(instance.try_acquire(col)) is False
+
+
+def test_startup_grace_protects_a_slow_starting_owner(monkeypatch):
+    from datetime import datetime, timedelta
+    col = _col()
+    now = datetime.utcnow()
+    # Owner took over 30s ago, then its event loop froze importing plugins:
+    # heartbeat is stale, but it is inside the startup grace window.
+    run(col.insert_one({"_id": instance.LOCK_ID, "owner": "starting",
+                        "until": now + timedelta(seconds=300),
+                        "beat": now - timedelta(seconds=instance.STALE + 10),
+                        "since": now - timedelta(seconds=30)}))
+    monkeypatch.setattr(instance, "ME", "rival")
+    assert run(instance.try_acquire(col)) is False
+
+    # Same stale heartbeat, but the owner took over long ago → frozen/dead.
+    run(col.update_one({"_id": instance.LOCK_ID},
+                       {"$set": {"since": now - timedelta(seconds=instance.STARTUP_GRACE + 60)}}))
+    assert run(instance.try_acquire(col)) is True

@@ -222,6 +222,10 @@ async def main():
     # #BotStarted → log channel + every owner's DM
     await botlog.boot_report(app, me, handlers=n, boot_seconds=time.time() - t0)
 
+    try:
+        await instance.renew()   # startup blocked the loop a while — prove we're alive
+    except Exception:
+        pass
     await idle()
 
     log.info("stopping…")
