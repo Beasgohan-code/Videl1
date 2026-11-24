@@ -61,6 +61,7 @@ def default_settings() -> dict:
         "clean_welcome": False,   # delete the previous welcome when a new one posts
         "clean_service": False,   # delete Telegram service messages (joins, pins…)
         "blocked_stickers": [],   # sticker file_unique_ids blocked individually
+        "fed_id": "",             # federation this group belongs to ("" = none)
         "lang": "en",             # UI language: en | hi | es
     }
 

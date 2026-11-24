@@ -15,6 +15,8 @@ class GroupWorkerStore:
         self._warns = db["group_worker_warns"]
         self._modlog = db["group_worker_modlog"]
         self._afk = db["group_worker_afk"]
+        self._feds = db["group_worker_feds"]
+        self._fedbans = db["group_worker_fed_bans"]
 
     @staticmethod
     def _key(bot_id: int, chat_id: int) -> dict:
@@ -94,3 +96,37 @@ class GroupWorkerStore:
             await self._afk.delete_one(
                 {**self._key(bot_id, chat_id), "user_id": int(user_id)})
         return doc
+
+
+    # ── federations (shared bans across one clone's groups) ─────────
+    async def create_fed(self, bot_id: int, owner_id: int, name: str, fed_id: str) -> dict:
+        doc = {"bot_id": int(bot_id), "fed_id": fed_id, "owner_id": int(owner_id),
+               "name": (name or "Federation")[:60], "chats": []}
+        await self._feds.insert_one(doc)
+        return doc
+
+    async def get_fed(self, bot_id: int, fed_id: str) -> dict | None:
+        return await self._feds.find_one({"bot_id": int(bot_id), "fed_id": fed_id})
+
+    async def set_fed_chats(self, bot_id: int, fed_id: str, chats: list[int]) -> None:
+        await self._feds.update_one({"bot_id": int(bot_id), "fed_id": fed_id},
+                                    {"$set": {"chats": [int(c) for c in chats]}})
+
+    async def fed_ban(self, bot_id: int, fed_id: str, user_id: int, reason: str = "") -> None:
+        await self._fedbans.update_one(
+            {"bot_id": int(bot_id), "fed_id": fed_id, "user_id": int(user_id)},
+            {"$set": {"reason": (reason or "")[:200]}}, upsert=True)
+
+    async def fed_unban(self, bot_id: int, fed_id: str, user_id: int) -> None:
+        await self._fedbans.delete_one(
+            {"bot_id": int(bot_id), "fed_id": fed_id, "user_id": int(user_id)})
+
+    async def get_fed_ban(self, bot_id: int, fed_id: str, user_id: int) -> dict | None:
+        if not fed_id:
+            return None
+        return await self._fedbans.find_one(
+            {"bot_id": int(bot_id), "fed_id": fed_id, "user_id": int(user_id)})
+
+    async def fed_bans(self, bot_id: int, fed_id: str) -> list[dict]:
+        cursor = self._fedbans.find({"bot_id": int(bot_id), "fed_id": fed_id})
+        return [doc async for doc in cursor]

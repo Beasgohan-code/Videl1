@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from pyrogram import Client, enums, filters
@@ -929,6 +930,113 @@ class _BotHandlers:
             await m.reply_text(f"✅ <b>Imported {len(updates)} settings.</b> Open /settings to review.",
                                parse_mode=enums.ParseMode.HTML)
 
+        @app.on_message((filters.group | filters.private) & filters.command("createfed"))
+        async def _createfed(c, m: Message):
+            if m.from_user.id != self.owner_id:
+                return await m.reply_text("🔒 Only this clone's owner can create a federation.",
+                                          parse_mode=enums.ParseMode.HTML)
+            parts = (m.text or "").split(maxsplit=1)
+            name = parts[1].strip() if len(parts) > 1 else "My Federation"
+            fed_id = "fed-" + secrets.token_hex(4)
+            await store.create_fed(bot_id, self.owner_id, name, fed_id)
+            await m.reply_text(
+                f"🌐 <b>Federation created:</b> {_esc(name)}\nID: <code>{fed_id}</code>\n\n"
+                "In each group that should join, an admin runs "
+                f"<code>/joinfed {fed_id}</code>. Bans with /fedban then apply in every joined group.",
+                parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command(["joinfed", "leavefed", "fedinfo"]))
+        async def _joinfed(c, m: Message):
+            cmd = (m.command or ["fedinfo"])[0].lower()
+            s = await store.get_settings(bot_id, m.chat.id)
+            if cmd == "fedinfo":
+                if not s.get("fed_id"):
+                    return await m.reply_text("🌐 This group isn't in a federation.",
+                                              parse_mode=enums.ParseMode.HTML)
+                fed = await store.get_fed(bot_id, s["fed_id"])
+                if not fed:
+                    return await m.reply_text("🌐 Federation record not found.", parse_mode=enums.ParseMode.HTML)
+                bans = await store.fed_bans(bot_id, s["fed_id"])
+                return await m.reply_text(
+                    f"🌐 <b>{_esc(fed.get('name'))}</b> (<code>{s['fed_id']}</code>)\n"
+                    f"Groups: {len(fed.get('chats') or [])} · Federation bans: {len(bans)}",
+                    parse_mode=enums.ParseMode.HTML)
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            if cmd == "leavefed":
+                if s.get("fed_id"):
+                    fed = await store.get_fed(bot_id, s["fed_id"])
+                    if fed:
+                        chats = [x for x in (fed.get("chats") or []) if int(x) != m.chat.id]
+                        await store.set_fed_chats(bot_id, s["fed_id"], chats)
+                    await store.update_settings(bot_id, m.chat.id, {"fed_id": ""})
+                return await m.reply_text("🌐 This group left its federation.", parse_mode=enums.ParseMode.HTML)
+            args = (m.command or [])[1:]
+            if len(args) != 1:
+                return await m.reply_text("Usage: <code>/joinfed &lt;federation_id&gt;</code>",
+                                          parse_mode=enums.ParseMode.HTML)
+            fed = await store.get_fed(bot_id, args[0])
+            if not fed:
+                return await m.reply_text("❌ No such federation for this clone.", parse_mode=enums.ParseMode.HTML)
+            if s.get("fed_id") == args[0]:
+                return await m.reply_text("Already in that federation.", parse_mode=enums.ParseMode.HTML)
+            chats = [int(x) for x in (fed.get("chats") or [])]
+            if m.chat.id not in chats:
+                chats.append(m.chat.id)
+                await store.set_fed_chats(bot_id, args[0], chats)
+            await store.update_settings(bot_id, m.chat.id, {"fed_id": args[0]})
+            await m.reply_text(f"🌐 Joined federation <b>{_esc(fed.get('name'))}</b>.",
+                               parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command(["fedban", "fedunban", "fedbans"]))
+        async def _fedban(c, m: Message):
+            cmd = (m.command or ["fedbans"])[0].lower()
+            s = await store.get_settings(bot_id, m.chat.id)
+            if not s.get("fed_id"):
+                return await m.reply_text("🌐 This group isn't in a federation. See /joinfed.",
+                                          parse_mode=enums.ParseMode.HTML)
+            fed = await store.get_fed(bot_id, s["fed_id"])
+            if cmd == "fedbans":
+                bans = await store.fed_bans(bot_id, s["fed_id"])
+                if not bans:
+                    return await m.reply_text("🌐 No federation bans.", parse_mode=enums.ParseMode.HTML)
+                lines = "\n".join(f"• <code>{b['user_id']}</code>" + (f" — {_esc(b.get('reason'))}" if b.get("reason") else "")
+                                   for b in bans[:30])
+                return await m.reply_text(f"{_bar('🌐 FEDERATION BANS')}\n\n{lines}",
+                                          parse_mode=enums.ParseMode.HTML)
+            if not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            target_id, label, rest = _resolve(m)
+            if target_id is None:
+                return await m.reply_text("Reply to a member or give a user ID.", parse_mode=enums.ParseMode.HTML)
+            if cmd == "fedunban":
+                await store.fed_unban(bot_id, s["fed_id"], target_id)
+                done = 0
+                for chat_id in (fed.get("chats") or []):
+                    try:
+                        await c.unban_chat_member(int(chat_id), target_id)
+                        done += 1
+                    except Exception:
+                        pass
+                return await m.reply_text(f"✅ Federation unban for <b>{_esc(label)}</b> (lifted in {done} group(s)).",
+                                          parse_mode=enums.ParseMode.HTML)
+            reason = " ".join(rest)[:200]
+            await store.fed_ban(bot_id, s["fed_id"], target_id, reason)
+            done = 0
+            for chat_id in (fed.get("chats") or []):
+                try:
+                    await c.ban_chat_member(int(chat_id), target_id)
+                    done += 1
+                except Exception:
+                    pass
+            try:
+                await store.log_action(bot_id, m.chat.id, "fedban", target_id, m.from_user.id, reason)
+            except Exception:
+                pass
+            await m.reply_text(
+                f"🌐🔨 <b>Federation ban:</b> {_esc(label)} banned in {done}/{len(fed.get('chats') or [])} group(s).",
+                parse_mode=enums.ParseMode.HTML)
+
         @app.on_message(filters.group & filters.command("language"))
         async def _language(c, m: Message):
             s = await store.get_settings(bot_id, m.chat.id)
@@ -1052,6 +1160,13 @@ class _BotHandlers:
                                              parse_mode=enums.ParseMode.HTML)
                     except Exception:
                         pass
+                fed_ban = await store.get_fed_ban(bot_id, s.get("fed_id") or "", user.id)
+                if fed_ban:
+                    try:
+                        await c.ban_chat_member(m.chat.id, user.id)
+                    except Exception:
+                        pass
+                    continue
                 if s.get("raid_on") and self.joins.record(m.chat.id):
                     try:
                         until = datetime.now(timezone.utc) + timedelta(minutes=15)
@@ -1176,6 +1291,12 @@ class _BotHandlers:
                     except Exception:
                         pass
                 return
+            if await store.get_fed_ban(bot_id, s.get("fed_id") or "", m.from_user.id):
+                try:
+                    await c.ban_chat_member(m.chat.id, m.from_user.id)
+                except Exception:
+                    pass
+                return
             if is_approved(s, m.from_user.id):
                 return  # approved members are exempt from automated actions
             if await _status(c, m.chat.id, m.from_user.id) != enums.ChatMemberStatus.MEMBER:
@@ -1250,6 +1371,13 @@ GROUP_WORKER_COMMANDS = [
     ("clear", "Delete a note (admins)"),
     ("whois", "Member card with admin actions"),
     ("language", "Show or set my language"),
+    ("createfed", "Create a federation (clone owner)"),
+    ("joinfed", "Join this group to a federation (admins)"),
+    ("leavefed", "Remove this group from its federation"),
+    ("fedinfo", "Federation info for this group"),
+    ("fedban", "Ban a member in every federation group"),
+    ("fedunban", "Lift a federation ban"),
+    ("fedbans", "List federation bans"),
     ("afk", "Mark yourself AFK: /afk reason"),
     ("blocksticker", "Block the replied sticker (admins)"),
     ("unblocksticker", "Unblock the replied sticker (admins)"),

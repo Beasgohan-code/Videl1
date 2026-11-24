@@ -71,7 +71,7 @@ def test_group_worker_store_is_scoped_per_clone_and_chat():
     from group_worker.store import GroupWorkerStore
 
     async def scenario():
-        db = {"group_worker_settings": _FakeCollection(), "group_worker_warns": _FakeCollection(), "group_worker_modlog": _FakeCollection(), "group_worker_afk": _FakeCollection()}
+        db = {"group_worker_settings": _FakeCollection(), "group_worker_warns": _FakeCollection(), "group_worker_modlog": _FakeCollection(), "group_worker_afk": _FakeCollection(), "group_worker_feds": _FakeCollection(), "group_worker_fed_bans": _FakeCollection()}
         store = GroupWorkerStore(db)
         await store.update_settings(111, -5, {"shield": True, "not_a_setting": 1})
         mine = await store.get_settings(111, -5)
@@ -326,7 +326,7 @@ def test_group_worker_modlog_records_and_scopes_actions():
     async def scenario():
         db = {"group_worker_settings": _FakeCollection(),
               "group_worker_warns": _FakeCollection(),
-              "group_worker_modlog": _FakeLogCollection(), "group_worker_afk": _FakeLogCollection()}
+              "group_worker_modlog": _FakeLogCollection(), "group_worker_afk": _FakeLogCollection(), "group_worker_feds": _FakeLogCollection(), "group_worker_fed_bans": _FakeLogCollection()}
         store = GroupWorkerStore(db)
         await store.log_action(1, -5, "ban", 9, 2, "spam")
         await store.log_action(1, -5, "warn", 8, 2, "")
@@ -356,7 +356,7 @@ def test_group_worker_afk_store_and_import_sanitizer():
         db = {"group_worker_settings": _FakeCollection(),
               "group_worker_warns": _FakeCollection(),
               "group_worker_modlog": _FakeLogCollection(),
-              "group_worker_afk": _FakeLogCollection()}
+              "group_worker_afk": _FakeLogCollection(), "group_worker_feds": _FakeLogCollection(), "group_worker_fed_bans": _FakeLogCollection()}
         store = GroupWorkerStore(db)
         await store.set_afk(1, -5, 9, "Ada", "lunch")
         doc = await store.get_afk(1, -5, 9)
@@ -389,3 +389,60 @@ def test_group_worker_sticker_blocklist_logic():
     names = [n for n, _ in GROUP_WORKER_COMMANDS]
     for cmd in ("blocksticker", "unblocksticker", "blockedstickers"):
         assert cmd in names
+
+
+class _FakeFedCollection(_FakeLogCollection):
+    async def find_one(self, key):
+        for row in self.rows:
+            if all(row.get(k) == v for k, v in key.items()):
+                return dict(row)
+        return None
+
+    async def insert_one(self, doc):
+        self.rows.append(dict(doc))
+
+    async def update_one(self, key, update, upsert=False):
+        for row in self.rows:
+            if all(row.get(k) == v for k, v in key.items()):
+                row.update(update.get("$set", {}))
+                return
+        if upsert:
+            doc = dict(key)
+            doc.update(update.get("$set", {}))
+            self.rows.append(doc)
+
+    async def delete_one(self, key):
+        self.rows = [r for r in self.rows
+                     if not all(r.get(k) == v for k, v in key.items())]
+
+
+def test_group_worker_federation_store_flow():
+    from group_worker.handlers import GROUP_WORKER_COMMANDS
+    from group_worker.store import GroupWorkerStore
+
+    names = [n for n, _ in GROUP_WORKER_COMMANDS]
+    for cmd in ("createfed", "joinfed", "leavefed", "fedinfo", "fedban", "fedunban", "fedbans"):
+        assert cmd in names
+
+    async def scenario():
+        db = {"group_worker_settings": _FakeCollection(),
+              "group_worker_warns": _FakeCollection(),
+              "group_worker_modlog": _FakeLogCollection(),
+              "group_worker_afk": _FakeLogCollection(),
+              "group_worker_feds": _FakeFedCollection(),
+              "group_worker_fed_bans": _FakeFedCollection()}
+        store = GroupWorkerStore(db)
+        fed = await store.create_fed(1, 99, "Safe Groups", "fed-test1")
+        assert fed["chats"] == []
+        await store.set_fed_chats(1, "fed-test1", [-1, -2])
+        assert (await store.get_fed(1, "fed-test1"))["chats"] == [-1, -2]
+        assert await store.get_fed(2, "fed-test1") is None  # other clone isolated
+
+        await store.fed_ban(1, "fed-test1", 7, "spam")
+        assert (await store.get_fed_ban(1, "fed-test1", 7))["reason"] == "spam"
+        assert await store.get_fed_ban(1, "fed-test1", 8) is None
+        assert await store.get_fed_ban(1, "", 7) is None
+        await store.fed_unban(1, "fed-test1", 7)
+        assert await store.get_fed_ban(1, "fed-test1", 7) is None
+
+    run(scenario())

@@ -137,3 +137,13 @@ copied, so no foreign credits or license encumbrance):
   reverses it and `/blockedstickers` shows the count. Blocked stickers
   are deleted even when the broader shield is off; admins and approved
   members keep their existing exemptions.
+
+## Stage 14 — federations
+
+- The clone owner creates a federation with `/createfed` (DM or group);
+  group admins join with `/joinfed <id>`, leave with `/leavefed`, and
+  inspect with `/fedinfo`. `/fedban` bans a member in every joined
+  group (reporting how many succeeded), `/fedunban` lifts it, and
+  `/fedbans` lists them. Federation-banned users are also re-banned on
+  join and on their next message. Federations are scoped per clone —
+  one clone's federation can never affect another clone's groups.
