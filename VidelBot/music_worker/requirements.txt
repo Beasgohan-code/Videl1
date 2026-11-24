@@ -3,3 +3,4 @@
 # deliberately not in the main bot's requirements.txt.
 wzgram==3.1.7
 py-tgcalls==3.0.1
+yt-dlp

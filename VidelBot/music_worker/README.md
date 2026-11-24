@@ -34,8 +34,10 @@ program — pytgcalls stays out of the main bot's requirements.
   Telegram with a real clone; unit tests cover the wrapper with a
   fake calls object, and failures (e.g. no voice chat started) are
   reported honestly while the track stays queued.
-- `/play <title>` text search has no resolver yet — replying to an
-  audio file is the streaming path.
+- `/play <title>` resolves via yt-dlp (`resolver.py`, this package's
+  own requirements): search phrases and supported links become direct
+  audio streams; a failed lookup replies honestly instead of queueing
+  a phantom track. Stream URLs can expire mid-queue on long waits.
 - Clone profile selection for `music` in the main bot and runtime
   wiring remain separate approved steps; `run.py` does not import
   this package.

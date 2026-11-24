@@ -139,13 +139,25 @@ class _BotHandlers:
                                           parse_mode=enums.ParseMode.HTML)
             track = {"title": title, "duration": duration,
                      "requested_by": m.from_user.first_name or str(m.from_user.id)}
-            # With a live player, a replied audio file can actually stream:
-            # download it now so /skip can advance to it later.
-            if replied is not None and self._player_ready():
-                try:
-                    track["source"] = str(await c.download_media(replied))
-                except Exception:
-                    track["source"] = None
+            # With a live player, get a streamable source: download a
+            # replied audio file, or resolve a title/link via yt-dlp.
+            if self._player_ready():
+                if replied is not None:
+                    try:
+                        track["source"] = str(await c.download_media(replied))
+                    except Exception:
+                        track["source"] = None
+                elif title:
+                    from .resolver import resolve_title
+                    resolved = await resolve_title(title)
+                    if resolved:
+                        track.update(resolved)
+                        title, duration = resolved["title"], resolved["duration"]
+                    else:
+                        return await m.reply_text(
+                            "🔎 <b>Couldn't find that track.</b> Try another title, a link, "
+                            "or reply /play to an audio file.",
+                            parse_mode=enums.ParseMode.HTML)
             position = self.queue.enqueue(m.chat.id, track)
             note = ""
             if not self._player_ready():
@@ -157,7 +169,7 @@ class _BotHandlers:
                 except Exception:
                     note = "\n\n<i>⚠️ Couldn't join the voice chat — is one started? The track stays queued.</i>"
             elif position == 0:
-                note = ("\n\n<i>🎧 Text search streaming isn't wired yet — "
+                note = ("\n\n<i>🎧 No streamable source for this one — "
                         "reply /play to an audio file to stream it.</i>")
             if position == 0:
                 await m.reply_text(f"▶️ <b>Now playing:</b> {_esc(title)} · {format_duration(duration)}{note}",

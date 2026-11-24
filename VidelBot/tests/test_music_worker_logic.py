@@ -134,3 +134,46 @@ def test_music_handlers_report_ready_player_and_pause_commands():
     idle = _BotHandlers(bot_id=42, owner_id=1, store=None, player=None)
     assert idle._player_ready() is False
     assert "not set up yet" in idle._settings_text({"dj_mode": False, "volume": 100})
+
+
+def test_music_resolver_search_and_direct_link():
+    from tests.harness import run as _run
+    from music_worker.resolver import resolve_title
+
+    seen = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            seen["opts"] = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, target, download=False):
+            seen["target"] = target
+            if target.startswith("ytsearch1:"):
+                return {"entries": [{"title": "Found Song", "duration": 187,
+                                     "url": "https://stream.example/audio"}]}
+            return {"title": "Direct", "duration": 60, "formats": [
+                {"url": "https://stream.example/low", "vcodec": "none"},
+                {"url": "https://stream.example/high", "vcodec": "none"}]}
+
+    async def scenario():
+        hit = await resolve_title("some song", extractor_factory=FakeYDL)
+        assert hit == {"title": "Found Song", "duration": 187,
+                       "source": "https://stream.example/audio"}
+        assert seen["target"] == "ytsearch1:some song"
+        direct = await resolve_title("https://youtu.be/xyz", extractor_factory=FakeYDL)
+        assert direct["source"] == "https://stream.example/high"  # best audio-only
+        assert await resolve_title("   ", extractor_factory=FakeYDL) is None
+
+        class DeadYDL(FakeYDL):
+            def extract_info(self, target, download=False):
+                raise RuntimeError("network down")
+
+        assert await resolve_title("anything", extractor_factory=DeadYDL) is None
+
+    _run(scenario())
