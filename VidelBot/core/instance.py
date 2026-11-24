@@ -19,6 +19,7 @@ A lease in MongoDB (`runtime.instance_lock`) fixes it:
 SINGLE_INSTANCE=False disables all of this.
 """
 import asyncio
+import hashlib
 import logging
 import os
 import socket
@@ -28,6 +29,23 @@ from datetime import datetime, timedelta
 log = logging.getLogger("videl.instance")
 
 LOCK_ID = "instance_lock"
+
+
+def _lock_id() -> str:
+    """Lease document id, scoped to this bot.
+
+    Two *different* bots (different tokens) sharing one MongoDB must
+    never block each other — only copies of the SAME bot fight over a
+    lease. Keyed by a hash of the bot token, never the token itself.
+    """
+    try:
+        import config
+        token = str(getattr(config, "BOT_TOKEN", "") or "")
+    except Exception:
+        token = ""
+    if not token:
+        return LOCK_ID
+    return f"{LOCK_ID}:{hashlib.sha256(token.encode()).hexdigest()[:16]}"
 TTL = 60                   # seconds a lease stays valid without renewal
 BEAT = 15                  # renewal interval
 STALE = 35                 # no heartbeat for this long ⇒ owner is frozen/dead
@@ -102,7 +120,7 @@ async def try_acquire(col=None) -> bool:
     stale_before = now - timedelta(seconds=STALE)
     grace_before = now - timedelta(seconds=STARTUP_GRACE)
     res = await col.update_one(
-        {"_id": LOCK_ID, "$or": [
+        {"_id": _lock_id(), "$or": [
             {"until": {"$lt": now}},                    # expired
             {"owner": ME},                              # already ours
             {"beat": {"$lt": stale_before},             # owner frozen/dead…
@@ -117,7 +135,7 @@ async def try_acquire(col=None) -> bool:
         STATE["last_error"] = None
         return True
     try:                                        # no lease document yet
-        await col.insert_one({"_id": LOCK_ID, **lease})
+        await col.insert_one({"_id": _lock_id(), **lease})
         STATE["held"] = True
         STATE["last_error"] = None
         return True
@@ -126,7 +144,7 @@ async def try_acquire(col=None) -> bool:
             STATE["held"] = False
             STATE["last_error"] = str(exc)
             raise
-        doc = await col.find_one({"_id": LOCK_ID}) or {}
+        doc = await col.find_one({"_id": _lock_id()}) or {}
         STATE["held"] = False
         STATE["other"] = {k: doc.get(k) for k in ("owner", "host", "until")}
         return False
@@ -200,7 +218,7 @@ async def renew(col=None) -> bool:
     col = col if col is not None else _col()
     now = _now()
     res = await col.update_one(
-        {"_id": LOCK_ID, "owner": ME},
+        {"_id": _lock_id(), "owner": ME},
         {"$set": {"until": now + timedelta(seconds=TTL), "beat": now}},
     )
     STATE["held"] = bool(res.matched_count)
@@ -214,7 +232,7 @@ async def release(col=None):
         return
     try:
         col = col if col is not None else _col()
-        await col.delete_one({"_id": LOCK_ID, "owner": ME})
+        await col.delete_one({"_id": _lock_id(), "owner": ME})
         STATE["held"] = False
     except Exception as e:
         log.debug(f"instance release: {e}")
