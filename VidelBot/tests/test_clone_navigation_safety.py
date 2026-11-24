@@ -39,7 +39,7 @@ def test_cancel_then_navigation_works():
     assert 5 not in create_bot._creation_state and 'Cancelled' in msg.replies[-1]
     q = FakeQuery('my_bots', uid=5)
     run(my_bots.my_bots_callback(FakeClient(), q))
-    assert q.message.edits and "ʏᴏᴜ ʜᴀᴠᴇɴ'ᴛ" in q.message.text
+    assert q.message.edits and "No bots yet" in q.message.text
 
 
 def test_my_bots_is_available_but_dashboard_is_blocked_during_registration():

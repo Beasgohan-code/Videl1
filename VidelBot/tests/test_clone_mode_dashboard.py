@@ -159,6 +159,9 @@ def test_legacy_filestore_dashboard_keeps_existing_layout(monkeypatch):
         await my_bots.dashboard_callback(FakeClient(),q)
         text,markup=edits[-1];data=[b.callback_data for b in buttons(markup)]
         assert '𝗕𝗢𝗧 𝗗𝗔𝗦𝗛𝗕𝗢𝗔𝗥𝗗' in text and {'auto_delete_42','shortener_42','clprofile_42'} <= set(data)
+        from core import rich
+        assert rich.markup_ok(markup)
+        assert 'Local client status is an observation' in text
         assert '/gcheck' not in text
     run(go())
 
