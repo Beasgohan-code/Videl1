@@ -58,3 +58,19 @@ Starts every `music`-profile clone and stops them cleanly on
 SIGINT/SIGTERM. The env opt-in is a fail-closed guard against two
 processes serving the same clone. `run.py` does not import this
 package.
+
+## Stage 5 — full VC-bot feature set
+
+Modelled on the public feature lists of classic Telegram VC music
+bots (implemented fresh in this codebase): `/vplay` video mode,
+`/playforce` (play now, keep the queue), `/clear` (upcoming only),
+`/seek`/`/seekback` (restart-from-position with tracked playback
+position), `/speed` (0.25–4.0× via ffmpeg atempo, kept per group),
+`/autoplay` (extra search hits queue after a title), personal
+playlists (`/pcreate /padd /premove /pview /pplay /pdelete`, stored
+per clone+user in `music_worker_playlists`), and channel play
+(`/addchannel /delchannel /cplay /cskip /cpause /cresume /cstop`)
+against a linked channel's voice chat. Unresolved playlist/queue
+titles are resolved lazily when their turn to play arrives.
+Seek/speed act through ffmpeg parameters on stream (re)starts —
+their audible effect, like joining a call, is live-proof pending.

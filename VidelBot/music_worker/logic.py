@@ -8,8 +8,20 @@ def default_settings() -> dict:
     return {
         "dj_mode": False,      # only admins may queue/skip/stop
         "volume": 100,         # 10..200
-        "autoplay": False,     # keep playing related tracks (future)
+        "autoplay": False,     # queue extra search hits after a /play title
+        "speed": 1.0,          # playback speed 0.25..4.0 (ffmpeg atempo)
+        "linked_channel": 0,   # channel chat_id for /cplay (0 = none)
     }
+
+
+def ffmpeg_params(seek: float = 0, speed: float = 1.0) -> str | None:
+    """ffmpeg parameters for seek/speed, or None for a plain stream."""
+    parts = []
+    if seek and float(seek) > 0:
+        parts.append(f"-ss {int(float(seek))}")
+    if speed and abs(float(speed) - 1.0) > 1e-6:
+        parts.append(f"-filter:a atempo={float(speed):g}")
+    return " ".join(parts) or None
 
 
 def format_duration(seconds: int | float | None) -> str:
@@ -55,6 +67,23 @@ class PlayQueue:
     def upcoming(self, chat_id: int, limit: int = 10) -> list[dict]:
         queue = self._queues.get(int(chat_id)) or []
         return list(queue[1:1 + limit])
+
+    def play_now(self, chat_id: int, track: dict) -> int:
+        """Insert a track as the current one (queue keeps its order after it)."""
+        queue = self._queues.setdefault(int(chat_id), [])
+        queue.insert(0, dict(track))
+        if len(queue) > self._max:
+            del queue[self._max:]
+        self._queues.move_to_end(chat_id)
+        return 0
+
+    def clear_upcoming(self, chat_id: int) -> int:
+        """Drop everything except the current track; returns drop count."""
+        queue = self._queues.get(int(chat_id)) or []
+        dropped = max(0, len(queue) - 1)
+        if dropped:
+            del queue[1:]
+        return dropped
 
     def skip(self, chat_id: int) -> dict | None:
         queue = self._queues.get(int(chat_id)) or []

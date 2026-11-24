@@ -95,14 +95,20 @@ class VoicePlayer:
         self._register_advance()
         return True
 
-    def _stream(self, source: str):
+    def _stream(self, source: str, ffmpeg_parameters: str | None = None):
         if self._stream_factory is not None:
-            return self._stream_factory(source)
+            try:
+                return self._stream_factory(source, ffmpeg_parameters)
+            except TypeError:
+                return self._stream_factory(source)
         from pytgcalls.types import MediaStream
+        if ffmpeg_parameters:
+            return MediaStream(source, ffmpeg_parameters=ffmpeg_parameters)
         return MediaStream(source)
 
-    async def play(self, chat_id: int, source: str) -> None:
-        await self._calls.play(int(chat_id), self._stream(source))
+    async def play(self, chat_id: int, source: str,
+                   ffmpeg_parameters: str | None = None) -> None:
+        await self._calls.play(int(chat_id), self._stream(source, ffmpeg_parameters))
 
     async def pause(self, chat_id: int) -> bool:
         return bool(await self._calls.pause(int(chat_id)))

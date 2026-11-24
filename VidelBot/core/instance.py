@@ -30,6 +30,9 @@ log = logging.getLogger("videl.instance")
 LOCK_ID = "instance_lock"
 TTL = 60                   # seconds a lease stays valid without renewal
 BEAT = 15                  # renewal interval
+STALE = 35                 # no heartbeat for this long ⇒ owner is frozen/dead
+                           # (e.g. a hibernated old deploy) → takeover is allowed
+                           # even before the lease's `until` expires
 POLL = 5                   # how often a waiting copy re-checks
 MAX_DB_ERRORS = 5          # consecutive DB errors before acquire() fails closed
 ENV = "VIDEL_INSTANCE_ID"  # survives os.exec* → a /restart keeps its own lease
@@ -92,8 +95,14 @@ async def try_acquire(col=None) -> bool:
         "pid": os.getpid(),
         "beat": now,
     }
+    stale_before = now - timedelta(seconds=STALE)
     res = await col.update_one(
-        {"_id": LOCK_ID, "$or": [{"until": {"$lt": now}}, {"owner": ME}]},
+        {"_id": LOCK_ID, "$or": [
+            {"until": {"$lt": now}},                    # expired
+            {"owner": ME},                              # already ours
+            {"beat": {"$lt": stale_before}},            # owner frozen/dead
+            {"beat": {"$exists": False}},               # legacy lease doc
+        ]},
         {"$set": lease},
     )
     if res.matched_count:

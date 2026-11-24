@@ -34,7 +34,8 @@ def test_music_worker_store_scoping_and_commands():
 
     async def scenario():
         store = MusicWorkerStore({"music_worker_settings": _FakeCollection(),
-                                  "music_worker_queues": _FakeCollection()})
+                                  "music_worker_queues": _FakeCollection(),
+                                  "music_worker_playlists": _FakeCollection()})
         await store.update_settings(1, -5, {"dj_mode": True, "bogus": 1})
         mine = await store.get_settings(1, -5)
         other = await store.get_settings(2, -5)
@@ -189,7 +190,7 @@ def test_music_auto_advance_and_manual_suppression():
     class FakePlayer:
         ready = True
 
-        async def play(self, chat_id, source):
+        async def play(self, chat_id, source, ffmpeg_parameters=None):
             played.append((chat_id, source))
 
         async def stop(self, chat_id):
@@ -278,6 +279,7 @@ def test_music_queue_persistence_roundtrip():
         store = MusicWorkerStore({
             "music_worker_settings": _FakeCollection(),
             "music_worker_queues": _FakeCollection(),
+            "music_worker_playlists": _FakeCollection(),
         })
         await store.save_queue(9, -3, [
             {"title": "Song", "duration": 200, "requested_by": "Ana",
@@ -289,5 +291,106 @@ def test_music_queue_persistence_roundtrip():
         assert await store.load_queue(8, -3) == []     # other clone
         await store.save_queue(9, -3, [])
         assert await store.load_queue(9, -3) == []     # cleared deletes the doc
+
+    _run(scenario())
+
+
+def test_music_stage5_queue_ops_and_ffmpeg_params():
+    from music_worker.logic import PlayQueue, ffmpeg_params
+
+    q = PlayQueue()
+    q.enqueue(-1, {"title": "A"})
+    q.enqueue(-1, {"title": "B"})
+    q.play_now(-1, {"title": "FORCE"})
+    assert [t["title"] for t in q.snapshot(-1)] == ["FORCE", "A", "B"]
+    assert q.clear_upcoming(-1) == 2
+    assert [t["title"] for t in q.snapshot(-1)] == ["FORCE"]
+
+    assert ffmpeg_params() is None
+    assert ffmpeg_params(seek=65) == "-ss 65"
+    assert ffmpeg_params(speed=1.5) == "-filter:a atempo=1.5"
+    assert ffmpeg_params(seek=10, speed=0.5) == "-ss 10 -filter:a atempo=0.5"
+
+
+def test_music_stage5_resolver_many_and_video():
+    from tests.harness import run as _run
+    from music_worker.resolver import resolve_many, resolve_title
+
+    captured = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured["format"] = opts.get("format")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, target, download=False):
+            captured["target"] = target
+            return {"entries": [{"title": "One", "duration": 11},
+                                {"title": "Two", "duration": 22}, None]}
+
+    async def scenario():
+        hits = await resolve_many("lofi beats", 3, extractor_factory=FakeYDL)
+        assert captured["target"] == "ytsearch3:lofi beats"
+        assert [h["title"] for h in hits] == ["One", "Two"]
+        assert all(h["source"] is None for h in hits)  # resolved lazily at play
+        await resolve_title("x", extractor_factory=FakeYDL, video=True)
+        assert captured["format"] == "best"  # video mode keeps video formats
+
+    _run(scenario())
+
+
+def test_music_stage5_playlists_and_commands():
+    from tests.harness import run as _run
+    from music_worker.handlers import MUSIC_WORKER_COMMANDS, _BotHandlers
+    from music_worker.store import MusicWorkerStore
+    from tests.test_group_worker_logic import _FakeCollection
+
+    names = [n for n, _ in MUSIC_WORKER_COMMANDS]
+    for cmd in ("vplay", "playforce", "seek", "speed", "autoplay", "clear",
+                "pcreate", "padd", "premove", "pview", "pplay", "pdelete",
+                "addchannel", "delchannel", "cplay", "cskip", "cstop"):
+        assert cmd in names
+
+    handlers = _BotHandlers(bot_id=42, owner_id=1, store=None, player=None)
+    text = handlers._settings_text({"dj_mode": False, "volume": 100, "autoplay": True,
+                                    "speed": 1.5, "linked_channel": -100})
+    assert "Autoplay" in text and "1.5×" in text and "Channel" in text
+
+    class Cursor:
+        def __init__(self, docs):
+            self._docs = docs
+
+        def __aiter__(self):
+            async def gen():
+                for d in self._docs:
+                    yield d
+            return gen()
+
+    class PlaylistCollection(_FakeCollection):
+        def find(self, query):
+            docs = [dict(d) for d in self.docs.values()
+                    if all(d.get(k) == v for k, v in query.items())]
+            return Cursor(docs)
+
+    async def scenario():
+        store = MusicWorkerStore({
+            "music_worker_settings": _FakeCollection(),
+            "music_worker_queues": _FakeCollection(),
+            "music_worker_playlists": PlaylistCollection(),
+        })
+        await store.create_playlist(5, 77, "Chill")
+        await store.set_playlist_tracks(5, 77, "chill", [{"title": "A"}, {"title": "B"}])
+        mine = await store.get_playlist(5, 77, "CHILL")
+        assert [t["title"] for t in mine["tracks"]] == ["A", "B"]
+        listing = await store.list_playlists(5, 77)
+        assert [p["name"] for p in listing] == ["chill"]
+        assert await store.list_playlists(5, 78) == []     # other user
+        assert await store.delete_playlist(5, 77, "chill") is True
+        assert await store.get_playlist(5, 77, "chill") is None
 
     _run(scenario())

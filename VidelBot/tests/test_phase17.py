@@ -453,3 +453,22 @@ def test_new_settings_are_documented():
     for key in ("SINGLE_INSTANCE=", "SOURCE_CACHE_MIN=", "SOURCE_CACHE_GB="):
         assert key in sample
     assert ffcmd.DEFAULTS["size_guard"] is True
+
+
+def test_stale_heartbeat_allows_takeover_before_expiry(monkeypatch):
+    from datetime import datetime, timedelta
+    col = _col()
+    now = datetime.utcnow()
+    # Frozen old copy: lease still "valid" for minutes, but no heartbeat.
+    run(col.insert_one({"_id": instance.LOCK_ID, "owner": "frozen",
+                        "until": now + timedelta(seconds=300),
+                        "beat": now - timedelta(seconds=instance.STALE + 5)}))
+    monkeypatch.setattr(instance, "ME", "new")
+    assert run(instance.try_acquire(col)) is True
+    assert run(col.find_one({"_id": instance.LOCK_ID}))["owner"] == "new"
+
+    # Live owner (fresh heartbeat) cannot be taken over early.
+    run(col.update_one({"_id": instance.LOCK_ID},
+                       {"$set": {"owner": "alive", "beat": datetime.utcnow()}}))
+    monkeypatch.setattr(instance, "ME", "other")
+    assert run(instance.try_acquire(col)) is False

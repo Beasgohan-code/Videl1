@@ -30,14 +30,17 @@ def resolver_available() -> bool:
         return False
 
 
-def _extract(query: str, extractor_factory=None) -> dict | None:
+def _extract(query: str, extractor_factory=None, video: bool = False) -> dict | None:
     """Blocking yt-dlp extraction; returns {title, duration, source}."""
     if extractor_factory is None:
         from yt_dlp import YoutubeDL
         extractor_factory = YoutubeDL
+    opts = dict(_YDL_OPTS)
+    if video:
+        opts["format"] = "best"
     target = query if "://" in query else f"ytsearch1:{query}"
     try:
-        with extractor_factory(dict(_YDL_OPTS)) as ydl:
+        with extractor_factory(opts) as ydl:
             info = ydl.extract_info(target, download=False)
     except Exception:
         log.warning("track resolution failed", exc_info=True)
@@ -62,11 +65,40 @@ def _extract(query: str, extractor_factory=None) -> dict | None:
     }
 
 
-async def resolve_title(query: str, extractor_factory=None) -> dict | None:
+async def resolve_title(query: str, extractor_factory=None, video: bool = False) -> dict | None:
     """Resolve a song title or URL to a streamable track, or None."""
     query = (query or "").strip()
     if not query:
         return None
     if extractor_factory is None and not resolver_available():
         return None
-    return await asyncio.to_thread(_extract, query, extractor_factory)
+    return await asyncio.to_thread(_extract, query, extractor_factory, video)
+
+
+def _search_entries(query: str, limit: int, extractor_factory=None) -> list[dict]:
+    """Blocking search: up to `limit` lightweight tracks (source resolved lazily)."""
+    if extractor_factory is None:
+        from yt_dlp import YoutubeDL
+        extractor_factory = YoutubeDL
+    try:
+        with extractor_factory(dict(_YDL_OPTS)) as ydl:
+            info = ydl.extract_info(f"ytsearch{int(limit)}:{query}", download=False)
+    except Exception:
+        log.warning("search failed", exc_info=True)
+        return []
+    out = []
+    for entry in (info or {}).get("entries") or []:
+        if entry and entry.get("title"):
+            out.append({"title": str(entry["title"])[:120],
+                        "duration": entry.get("duration"), "source": None})
+    return out
+
+
+async def resolve_many(query: str, limit: int = 3, extractor_factory=None) -> list[dict]:
+    """Search results as queueable tracks (used by autoplay prefetch)."""
+    query = (query or "").strip()
+    if not query or "://" in query:
+        return []
+    if extractor_factory is None and not resolver_available():
+        return []
+    return await asyncio.to_thread(_search_entries, query, limit, extractor_factory)
