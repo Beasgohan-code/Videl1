@@ -19,6 +19,9 @@ worker (`group_worker/`), sharing no code with either.
 replied audio file downloads and streams it into the voice chat;
 `/pause`, `/resume`, `/skip` (advances to a downloaded next track),
 `/stop` (leaves the call) and the volume setting control playback.
+When a track ends naturally, the queue auto-advances via PyTgCalls
+stream-end events; manual controls suppress the stale end event for
+a few seconds so the queue never advances twice.
 
 Compatibility was probed live (Nov 2026): PyTgCalls 3.0.1 +
 WzGram 3.1.7 failed only on two legacy error names

@@ -177,3 +177,79 @@ def test_music_resolver_search_and_direct_link():
         assert await resolve_title("anything", extractor_factory=DeadYDL) is None
 
     _run(scenario())
+
+
+def test_music_auto_advance_and_manual_suppression():
+    from tests.harness import run as _run
+    from music_worker.handlers import _BotHandlers
+
+    played = []
+
+    class FakePlayer:
+        ready = True
+
+        async def play(self, chat_id, source):
+            played.append((chat_id, source))
+
+        async def stop(self, chat_id):
+            played.append((chat_id, "STOP"))
+
+    async def scenario():
+        handlers = _BotHandlers(bot_id=42, owner_id=1, store=None, player=FakePlayer())
+        handlers.queue.enqueue(-5, {"title": "A", "source": "a"})
+        handlers.queue.enqueue(-5, {"title": "B", "source": "b"})
+        handlers.queue.enqueue(-5, {"title": "C", "source": "c"})
+
+        await handlers._advance(-5)  # A ended naturally → B plays
+        assert played == [(-5, "b")]
+        assert handlers.queue.now_playing(-5)["title"] == "B"
+
+        handlers._note_manual(-5)    # user pressed /skip; stale end event…
+        await handlers._advance(-5)  # …must not advance a second time
+        assert handlers.queue.now_playing(-5)["title"] == "B"
+        assert played == [(-5, "b")]
+
+        handlers._suppress_until.clear()
+        await handlers._advance(-5)  # B ended → C plays
+        assert handlers.queue.now_playing(-5)["title"] == "C"
+        await handlers._advance(-5)  # C ended → queue empty, player stops
+        assert played[-1] == (-5, "STOP")
+        assert handlers.queue.now_playing(-5) is None
+
+    _run(scenario())
+
+
+def test_music_player_binds_stream_end_events():
+    from tests.harness import run as _run
+    from music_worker.player import VoicePlayer
+
+    registered = {}
+
+    class FakeCalls:
+        def on_update(self, filters=None):
+            def deco(fn):
+                registered["handler"] = fn
+                return fn
+            return deco
+
+        async def start(self):
+            pass
+
+    async def scenario():
+        seen = []
+
+        async def on_end(chat_id):
+            seen.append(chat_id)
+
+        player = VoicePlayer(FakeCalls(), stream_factory=lambda s: s)
+        player.bind_auto_advance(on_end)
+        assert await player.start() is True
+        assert "handler" in registered
+
+        class Update:
+            chat_id = -777
+
+        await registered["handler"](None, Update())
+        assert seen == [-777]
+
+    _run(scenario())

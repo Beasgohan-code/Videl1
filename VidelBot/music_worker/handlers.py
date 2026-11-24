@@ -10,6 +10,7 @@ never fakes playback. Text-title streaming still needs a resolver.
 from __future__ import annotations
 
 import html
+import time
 
 from pyrogram import Client, enums, filters
 from pyrogram.types import (
@@ -56,7 +57,8 @@ class _BotHandlers:
         self.owner_id = int(owner_id)
         self.store = store
         self.queue = PlayQueue()
-        self.player = player  # future voice-chat engine; None in stage 1
+        self.player = player  # VoicePlayer or None (queue-only mode)
+        self._suppress_until: dict[int, float] = {}
 
     # ── rich pages ─────────────────────────────────────────────────
     def _home_text(self) -> str:
@@ -88,6 +90,31 @@ class _BotHandlers:
     def _player_ready(self) -> bool:
         return self.player is not None and getattr(self.player, "ready", True)
 
+    # Manual controls (skip/stop/play) make the old stream end too; its
+    # StreamEnded event must not advance the queue a second time.
+    _SUPPRESS_SECONDS = 5.0
+
+    def _note_manual(self, chat_id: int) -> None:
+        self._suppress_until[int(chat_id)] = time.monotonic() + self._SUPPRESS_SECONDS
+
+    async def _advance(self, chat_id: int) -> None:
+        """A track ended naturally: play the next queued track, if any."""
+        if time.monotonic() < self._suppress_until.get(int(chat_id), 0.0):
+            return
+        nxt = self.queue.skip(chat_id)
+        if nxt is None:
+            if self._player_ready():
+                try:
+                    await self.player.stop(chat_id)
+                except Exception:
+                    pass
+            return
+        if nxt.get("source") and self._player_ready():
+            try:
+                await self.player.play(chat_id, nxt["source"])
+            except Exception:
+                pass
+
     def _settings_text(self, s: dict) -> str:
         return (
             f"{_bar('⚙️ MUSIC SETTINGS')}\n\n<blockquote>"
@@ -111,6 +138,8 @@ class _BotHandlers:
     def attach(self, app: Client) -> None:
         bot_id = self.bot_id
         store = self.store
+        if self.player is not None and hasattr(self.player, "bind_auto_advance"):
+            self.player.bind_auto_advance(self._advance)
 
         @app.on_message(filters.private & filters.command("start"))
         async def _start(c, m: Message):
@@ -228,6 +257,15 @@ class _BotHandlers:
                     f"🗑 Removed <b>{_esc(removed['title'])}</b>." if removed else "That position doesn't exist.",
                     parse_mode=enums.ParseMode.HTML)
             nxt = self.queue.skip(m.chat.id)
+            self._note_manual(m.chat.id)
+            if self._player_ready():
+                try:
+                    if nxt and nxt.get("source"):
+                        await self.player.play(m.chat.id, nxt["source"])
+                    else:
+                        await self.player.stop(m.chat.id)
+                except Exception:
+                    pass
             await m.reply_text(
                 f"⏭ Skipped. Next: <b>{_esc(nxt['title'])}</b>" if nxt else "⏭ Skipped. Queue is empty.",
                 parse_mode=enums.ParseMode.HTML)

@@ -54,6 +54,35 @@ class VoicePlayer:
         self._calls = calls
         self._stream_factory = stream_factory
         self.ready = False
+        self._advance_callback = None
+        self._advance_bound = False
+
+    def bind_auto_advance(self, callback) -> None:
+        """Register an async callback(chat_id) fired when a stream ends."""
+        self._advance_callback = callback
+        if self.ready:
+            self._register_advance()
+
+    def _register_advance(self) -> None:
+        if self._advance_bound or self._advance_callback is None:
+            return
+        try:
+            try:
+                from pytgcalls import filters as call_filters
+                end_filter = call_filters.stream_end
+            except Exception:
+                end_filter = None
+
+            @self._calls.on_update(end_filter)
+            async def _on_stream_end(_, update):
+                try:
+                    await self._advance_callback(int(update.chat_id))
+                except Exception:
+                    log.warning("auto-advance failed", exc_info=True)
+
+            self._advance_bound = True
+        except Exception:
+            log.warning("could not bind stream-end events; no auto-advance", exc_info=True)
 
     async def start(self) -> bool:
         try:
@@ -62,7 +91,9 @@ class VoicePlayer:
         except Exception:
             log.warning("voice player failed to start; queue-only mode", exc_info=True)
             self.ready = False
-        return self.ready
+            return False
+        self._register_advance()
+        return True
 
     def _stream(self, source: str):
         if self._stream_factory is not None:
