@@ -16,8 +16,26 @@ from filestore.fs_config import LOGGER, ENCRYPTION_KEY
 log = LOGGER(__name__)
 
 _PREFIX = "enc:"
+
+
+def _normalize_key(raw) -> str:
+    """Tolerate common paste mistakes in dashboard env editors.
+
+    Handles a pasted ``ENCRYPTION_KEY=...`` assignment, surrounding
+    quotes, trailing comments/whitespace, and stripped base64 padding.
+    A genuinely different/truncated key still fails validation below —
+    it can never be (and must never be) guessed or regenerated.
+    """
+    key = str(raw or "").strip().strip('"').strip("'").strip()
+    if "=" in key and key.split("=", 1)[0].strip().upper() == "ENCRYPTION_KEY":
+        key = key.split("=", 1)[1].strip().strip('"').strip("'").strip()
+    key = key.split()[0] if key.split() else ""
+    key += "=" * (-len(key) % 4)  # restore stripped base64 padding
+    return key
+
+
 _fernet = None
-_fernet_key_raw = (os.environ.get("ENCRYPTION_KEY") or ENCRYPTION_KEY or "").strip()
+_fernet_key_raw = _normalize_key(os.environ.get("ENCRYPTION_KEY") or ENCRYPTION_KEY)
 
 if _fernet_key_raw:
     try:
@@ -25,7 +43,9 @@ if _fernet_key_raw:
 
         _fernet = Fernet(_fernet_key_raw.encode())
     except Exception as e:  # bad key or cryptography missing
-        log.error(f"ENCRYPTION_KEY is invalid – secrets will be stored unencrypted: {e}")
+        log.error(
+            "ENCRYPTION_KEY is invalid (a Fernet key is 44 characters and must be "
+            f"the ORIGINAL key the stored secrets were encrypted with): {e}")
         _fernet = None
 else:
     log.warning("ENCRYPTION_KEY not set – clone bot tokens & user sessions are stored unencrypted in MongoDB.")
@@ -34,7 +54,7 @@ else:
 def _get_fernet():
     """Return active Fernet instance (honors both monkeypatched `_fernet` and env changes)."""
     global _fernet, _fernet_key_raw
-    key = (os.environ.get("ENCRYPTION_KEY") or ENCRYPTION_KEY or "").strip()
+    key = _normalize_key(os.environ.get("ENCRYPTION_KEY") or ENCRYPTION_KEY)
     if key == _fernet_key_raw:
         return _fernet
     _fernet_key_raw = key
@@ -47,7 +67,9 @@ def _get_fernet():
         _fernet = Fernet(key.encode())
         return _fernet
     except Exception as e:
-        log.error(f"ENCRYPTION_KEY is invalid – secrets will be stored unencrypted: {e}")
+        log.error(
+            "ENCRYPTION_KEY is invalid (a Fernet key is 44 characters and must be "
+            f"the ORIGINAL key the stored secrets were encrypted with): {e}")
         _fernet = None
         return None
 
