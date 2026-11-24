@@ -339,3 +339,14 @@ CAPTCHA and night mode per group, stored in the group worker's own
 `group_worker_settings`. These toggles take effect wherever the group
 worker serves the clone; groups appear after the clone has been added
 to them and /settings has been used there.
+
+## Music worker (stage 1)
+
+`VidelBot/music_worker/` is the separate worker program for Music
+clones, following the same pattern as the group worker: own commands
+(`/play`, `/queue`, `/skip`, `/remove`, `/stop`), rich start, DJ-mode
+and volume settings in `music_worker_settings`, bounded per-chat
+queues. Voice-chat streaming is deliberately not faked: it needs a
+verified PyTgCalls/WzGram stack, a per-clone assistant session
+lifecycle, `music` profile selection, and exclusive runtime wiring —
+all separate approved steps. The engine is not imported by `run.py`.
