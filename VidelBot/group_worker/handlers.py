@@ -335,14 +335,26 @@ class _BotHandlers:
                     ], header=("Feature", "Summary"))
                     .text("All settings are scoped to this clone and group. Enforcement depends on Telegram admin permissions.")
                     .footer("Music voice-chat playback is not part of the Group worker. Use /commands for every command."))
-        command_match = re.fullmatch(r"commands_(\d+)", page or "")
+        if page == "commands":
+            categories = _command_help_categories()
+            return (Doc("📚", "Command directory",
+                        f"{len(GROUP_WORKER_COMMANDS)} commands · {len(categories)} categories")
+                    .text("Pick a category to explore. Each list is built from the commands registered by this worker.")
+                    .table([(title, f"{len(commands)} commands")
+                            for _, title, commands in categories], header=("Category", "Available"))
+                    .footer("Use /commands anytime to return to this directory."))
+        command_match = re.fullmatch(r"commands_([a-z_]+)", page or "")
         if command_match:
-            pages = _command_help_pages()
-            index = max(0, min(int(command_match.group(1)) - 1, len(pages) - 1))
-            rows = [(f"/{name}", description) for name, description in pages[index]]
-            return (Doc("📚", "All commands", f"Page {index + 1} of {len(pages)} · {len(GROUP_WORKER_COMMANDS)} total")
-                    .table(rows, header=("Command", "What it does"))
-                    .footer("Times use 30m, 12h, 7d or 2w. Commands marked admins/owner require that role."))
+            categories = _command_help_categories()
+            index = next((i for i, (slug, _, _) in enumerate(categories)
+                          if slug == command_match.group(1)), None)
+            if index is not None:
+                slug, title, commands = categories[index]
+                rows = [(f"/{name}", description) for name, description in commands]
+                return (Doc("📚", title,
+                            f"Category {index + 1} of {len(categories)} · {len(commands)} commands")
+                        .table(rows, header=("Command", "What it does"))
+                        .footer("Times use 30m, 12h, 7d or 2w. Check each command's access note before using it."))
         if page == "about":
             return (Doc("ℹ️", "About this Group Management clone", "A practical group safety assistant")
                     .text("A full group safety toolkit you can configure from buttons.")
@@ -477,18 +489,18 @@ class _BotHandlers:
                     _btn("✨ Features", f"gw:{self.bot_id}:nav:features", style="primary"),
                 ],
                 [
-                    _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
+                    _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands", style="success"),
                     _btn("ℹ️ About", f"gw:{self.bot_id}:nav:about", style="primary"),
                 ],
             ])
         elif page == "help":
             rows.append([
-                _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
+                _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands", style="success"),
                 _btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary"),
             ])
         elif page == "features":
             rows.append([
-                _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
+                _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands", style="success"),
                 _btn("📖 Help overview", f"gw:{self.bot_id}:nav:help", style="primary"),
             ])
         elif page == "about":
@@ -496,24 +508,33 @@ class _BotHandlers:
                 _btn("📖 Help", f"gw:{self.bot_id}:nav:help", style="primary"),
                 _btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary"),
             ])
+        elif page == "commands":
+            categories = _command_help_categories()
+            for offset in range(0, len(categories), 2):
+                rows.append([_btn(title, f"gw:{self.bot_id}:nav:commands_{slug}", style="primary")
+                             for slug, title, _ in categories[offset:offset + 2]])
+            rows.append([
+                _btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary"),
+                _btn("📖 Help overview", f"gw:{self.bot_id}:nav:help", style="primary"),
+            ])
         else:
-            match = re.fullmatch(r"commands_(\d+)", page or "")
-            if match:
-                page_count = len(_command_help_pages())
-                page_number = max(1, min(int(match.group(1)), page_count))
+            match = re.fullmatch(r"commands_([a-z_]+)", page or "")
+            categories = _command_help_categories()
+            index = next((i for i, (slug, _, _) in enumerate(categories)
+                          if match and slug == match.group(1)), None)
+            if index is not None:
                 nav = []
-                if page_number > 1:
-                    nav.append(_btn("⬅️ Previous", f"gw:{self.bot_id}:nav:commands_{page_number - 1}",
+                if index > 0:
+                    nav.append(_btn("⬅️ Previous category",
+                                    f"gw:{self.bot_id}:nav:commands_{categories[index - 1][0]}",
                                     style="primary"))
-                if page_number < page_count:
-                    nav.append(_btn("Next ➡️", f"gw:{self.bot_id}:nav:commands_{page_number + 1}",
+                if index + 1 < len(categories):
+                    nav.append(_btn("Next category ➡️",
+                                    f"gw:{self.bot_id}:nav:commands_{categories[index + 1][0]}",
                                     style="success"))
                 if nav:
                     rows.append(nav)
-                rows.append([
-                    _btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary"),
-                    _btn("📖 Help overview", f"gw:{self.bot_id}:nav:help", style="primary"),
-                ])
+                rows.append([_btn("📚 All categories", f"gw:{self.bot_id}:nav:commands", style="primary")])
         footer_actions = [_btn("👤 Owner", f"tg://user?id={self.owner_id}", url=True)]
         if page != "home":
             footer_actions.append(_btn("🏠 Home", f"gw:{self.bot_id}:nav:home"))
@@ -748,7 +769,7 @@ class _BotHandlers:
         async def _commands(c, m: Message):
             me = getattr(c, "me", None)
             username = getattr(me, "username", "") or ""
-            page = "commands_1"
+            page = "commands"
             from core import rich
             await rich.reply(m, self._start_doc(page),
                              reply_markup=self._start_markup(username, page))
@@ -2350,11 +2371,39 @@ GROUP_WORKER_COMMANDS = [
 ]
 
 
-HELP_COMMAND_PAGE_SIZE = 18
+GROUP_WORKER_COMMAND_CATEGORIES = (
+    ("start", "🚀 Getting started", ("start", "help", "commands")),
+    ("anilist", "✨ AniList", ("anime", "manga", "character", "gettags", "browse", "anisettings",
+                               "airing", "topanime")),
+    ("safety", "🛡 Safety & settings", ("settings", "antichannel", "cleaner", "blacklist", "addblacklist",
+                                        "unblacklist", "blacklistmode", "blsticker", "addblsticker",
+                                        "unblsticker", "lock", "unlock", "locks", "disable", "enable",
+                                        "disabled", "blocksticker", "unblocksticker", "blockedstickers")),
+    ("moderation", "⚖️ Moderation", ("warn", "unwarn", "mute", "tmute", "unmute", "kick", "ban", "tban",
+                                     "sban", "unban", "purge", "pin", "unpin", "report", "whois", "afk", "id")),
+    ("automation", "⚙️ Rules & automation", ("rules", "setrules", "filter", "mfilter", "stop", "filters",
+                                               "stopall", "welcome", "resetwelcome", "resetgoodbye", "setwelcome",
+                                               "setgoodbye", "save", "get", "notes", "clear")),
+    ("trust", "🤝 Member trust", ("approve", "unapprove", "approval", "approved", "unapproveall")),
+    ("admin", "👑 Group admin", ("language", "promote", "demote", "title", "chatinfo", "adminlist", "stats")),
+    ("federation", "🌐 Federations", ("createfed", "joinfed", "leavefed", "fedinfo", "fedban", "fedunban", "fedbans")),
+    ("logs", "📋 Logs & backups", ("modlog", "setlog", "logchannel", "unsetlog", "export", "import")),
+    ("private", "🔌 Private tools", ("connect", "disconnect", "connection")),
+)
 
 
-def _command_help_pages() -> list[list[tuple[str, str]]]:
-    """Paginate the exact command registry so Help cannot silently omit commands."""
-    commands = list(GROUP_WORKER_COMMANDS)
-    size = HELP_COMMAND_PAGE_SIZE
-    return [commands[offset:offset + size] for offset in range(0, len(commands), size)] or [[]]
+def _command_help_categories() -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Build the browsable command sections from the registered descriptions."""
+    commands = dict(GROUP_WORKER_COMMANDS)
+    categories = []
+    categorized = set()
+    for slug, title, names in GROUP_WORKER_COMMAND_CATEGORIES:
+        rows = [(name, commands[name]) for name in names if name in commands]
+        categorized.update(name for name, _ in rows)
+        categories.append((slug, title, rows))
+    # Keep newly registered commands discoverable even before they get curated into a section.
+    leftovers = [(name, description) for name, description in GROUP_WORKER_COMMANDS
+                 if name not in categorized]
+    if leftovers:
+        categories.append(("other", "🧰 Other commands", leftovers))
+    return categories

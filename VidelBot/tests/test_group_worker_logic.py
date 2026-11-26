@@ -489,7 +489,7 @@ def test_group_worker_rich_start_pages_and_buttons(monkeypatch):
     assert rows[0][0].url == "https://t.me/MyGroupBot?startgroup=true"
     callbacks = [b.callback_data for row in rows for b in row if b.callback_data]
     assert {"gw:42:nav:help", "gw:42:nav:about", "gw:42:nav:features",
-            "gw:42:nav:commands_1"}.issubset(set(callbacks))
+            "gw:42:nav:commands"}.issubset(set(callbacks))
     assert not any(button.callback_data == "gw:42:nav:home"
                    for row in rows for button in row)
     help_markup = handlers._start_markup("MyGroupBot", "help")
@@ -550,10 +550,9 @@ def test_group_worker_admin_tools_registered():
     for cmd in ("promote", "demote", "title", "chatinfo"):
         assert cmd in names
     handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
-    from group_worker.handlers import _command_help_pages
-    pages = _command_help_pages()
-    command_docs = "".join(handlers._start_doc(f"commands_{i + 1}").rich()
-                            for i in range(len(pages)))
+    from group_worker.handlers import _command_help_categories
+    command_docs = "".join(handlers._start_doc(f"commands_{slug}").rich()
+                            for slug, _, _ in _command_help_categories())
     assert "<td>/promote</td>" in command_docs
 
 
@@ -601,11 +600,10 @@ def test_group_worker_locks_registered():
     names = [n for n, _ in GROUP_WORKER_COMMANDS]
     for cmd in ("lock", "unlock", "locks"):
         assert cmd in names
-    from group_worker.handlers import _command_help_pages
-    pages = _command_help_pages()
+    from group_worker.handlers import _command_help_categories
     docs = [_BotHandlers(bot_id=42, owner_id=1, store=None)
-            ._start_doc(f"commands_{index + 1}").rich()
-            for index in range(len(pages))]
+            ._start_doc(f"commands_{slug}").rich()
+            for slug, _, _ in _command_help_categories()]
     assert any("<td>/lock</td>" in doc for doc in docs)
 
 
@@ -639,17 +637,27 @@ def test_group_worker_rich_ui_tables_and_new_commands():
     assert "<table bordered striped>" in main and "Shield" in main and "Language" in main
     help_doc = handlers._start_doc("help")
     assert "<table bordered striped>" in help_doc.rich()
-    from group_worker.handlers import _command_help_pages
-    command_docs = [handlers._start_doc(f"commands_{index + 1}").rich()
-                    for index in range(len(_command_help_pages()))]
+    from group_worker.handlers import _command_help_categories
+    categories = _command_help_categories()
+    categorized_names = [name for _, _, commands in categories for name, _ in commands]
+    registered_names = [name for name, _ in GROUP_WORKER_COMMANDS]
+    assert sorted(categorized_names) == sorted(registered_names)
+    assert len(categorized_names) == len(set(categorized_names))
+    assert "91 commands" in handlers._start_doc("commands").sub
+    command_docs = [handlers._start_doc(f"commands_{slug}").rich()
+                    for slug, _, _ in categories]
     all_commands = "".join(command_docs)
     assert all(f"<td>/{name}</td>" in all_commands for name, _ in GROUP_WORKER_COMMANDS)
-    assert len(command_docs) > 1
-    page_two = handlers._start_markup("MyGroupBot", "commands_2")
-    page_two_callbacks = [button.callback_data for row in page_two.inline_keyboard
+    assert len(categories) > 1
+    category_links = [button.callback_data for row in handlers._start_markup("MyGroupBot", "commands").inline_keyboard
+                      for button in row if button.callback_data]
+    assert all(f"gw:42:nav:commands_{slug}" in category_links for slug, _, _ in categories)
+    second_slug = categories[1][0]
+    category_markup = handlers._start_markup("MyGroupBot", f"commands_{second_slug}")
+    category_callbacks = [button.callback_data for row in category_markup.inline_keyboard
                           for button in row if button.callback_data]
-    assert "gw:42:nav:commands_1" in page_two_callbacks
-    assert "gw:42:nav:commands_3" in page_two_callbacks
+    assert f"gw:42:nav:commands_{categories[0][0]}" in category_callbacks
+    assert f"gw:42:nav:commands_{categories[2][0]}" in category_callbacks
     feature_doc = handlers._start_doc("features").rich()
     assert "<table bordered striped>" in feature_doc and "Content shield" in feature_doc
     about = handlers._start_doc("about")
