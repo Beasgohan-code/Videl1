@@ -488,7 +488,10 @@ def test_group_worker_rich_start_pages_and_buttons(monkeypatch):
     rows = markup.inline_keyboard
     assert rows[0][0].url == "https://t.me/MyGroupBot?startgroup=true"
     callbacks = [b.callback_data for row in rows for b in row if b.callback_data]
-    assert "gw:42:nav:help" in callbacks and "gw:42:nav:about" in callbacks
+    assert {"gw:42:nav:help", "gw:42:nav:about", "gw:42:nav:features",
+            "gw:42:nav:commands_1"}.issubset(set(callbacks))
+    assert not any(button.callback_data == "gw:42:nav:home"
+                   for row in rows for button in row)
     help_markup = handlers._start_markup("MyGroupBot", "help")
     help_callbacks = [b.callback_data for row in help_markup.inline_keyboard
                       for b in row if b.callback_data]

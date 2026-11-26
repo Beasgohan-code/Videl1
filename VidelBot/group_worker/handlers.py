@@ -470,19 +470,31 @@ class _BotHandlers:
             rows.append([_btn("➕ Add me to your group",
                               f"https://t.me/{username}?startgroup=true",
                               style="success", url=True)])
-        rows.append([
-            _btn("📖 Help", f"gw:{self.bot_id}:nav:help", style="primary"),
-            _btn("ℹ️ About", f"gw:{self.bot_id}:nav:about", style="primary"),
-        ])
-        if page == "help":
+        if page == "home":
+            rows.extend([
+                [
+                    _btn("📖 Help", f"gw:{self.bot_id}:nav:help", style="primary"),
+                    _btn("✨ Features", f"gw:{self.bot_id}:nav:features", style="primary"),
+                ],
+                [
+                    _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
+                    _btn("ℹ️ About", f"gw:{self.bot_id}:nav:about", style="primary"),
+                ],
+            ])
+        elif page == "help":
             rows.append([
-                _btn("📚 Browse all commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
+                _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
                 _btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary"),
             ])
         elif page == "features":
             rows.append([
-                _btn("📚 Browse all commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
+                _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
                 _btn("📖 Help overview", f"gw:{self.bot_id}:nav:help", style="primary"),
+            ])
+        elif page == "about":
+            rows.append([
+                _btn("📖 Help", f"gw:{self.bot_id}:nav:help", style="primary"),
+                _btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary"),
             ])
         else:
             match = re.fullmatch(r"commands_(\d+)", page or "")
@@ -498,11 +510,14 @@ class _BotHandlers:
                                     style="success"))
                 if nav:
                     rows.append(nav)
-                rows.append([_btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary")])
-        rows.append([
-            _btn("👤 Owner", f"tg://user?id={self.owner_id}", url=True),
-            _btn("🏠 Home", f"gw:{self.bot_id}:nav:home"),
-        ])
+                rows.append([
+                    _btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary"),
+                    _btn("📖 Help overview", f"gw:{self.bot_id}:nav:help", style="primary"),
+                ])
+        footer_actions = [_btn("👤 Owner", f"tg://user?id={self.owner_id}", url=True)]
+        if page != "home":
+            footer_actions.append(_btn("🏠 Home", f"gw:{self.bot_id}:nav:home"))
+        rows.append(footer_actions)
         support_url = (self._public_start_link(getattr(config, "SUPPORT_URL", ""))
                        or self._public_start_link(getattr(config, "CONTACT_URL", "")))
         if support_url:
