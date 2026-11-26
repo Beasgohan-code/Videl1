@@ -610,8 +610,10 @@ def test_group_worker_locks_registered():
 def test_group_worker_disabled_commands_logic():
     from group_worker.logic import NEVER_DISABLE, command_blocked, normalize_cmd
 
-    settings = {"disabled_cmds": ["afk", "whois"]}
+    settings = {"disabled_cmds": ["afk", "whois", "commands"]}
     assert command_blocked(settings, "afk") is True
+    assert "commands" in NEVER_DISABLE
+    assert command_blocked(settings, "/commands") is False
     assert command_blocked(settings, "/AFK@MyBot") is True
     assert command_blocked(settings, "notes") is False
     for protected in NEVER_DISABLE:
@@ -644,6 +646,13 @@ def test_group_worker_rich_ui_tables_and_new_commands():
     assert sorted(categorized_names) == sorted(registered_names)
     assert len(categorized_names) == len(set(categorized_names))
     assert "91 commands" in handlers._start_doc("commands").sub
+    from group_worker.handlers import _command_search_results
+    search_matches = _command_search_results("/ban timed")
+    assert any(name == "tban" for name, _, _ in search_matches)
+    assert not _command_search_results("no-such-command-xyz")
+    assert "gw:42:nav:commands" in [button.callback_data
+                                    for row in handlers._start_markup("MyGroupBot", "commands_search").inline_keyboard
+                                    for button in row if button.callback_data]
     command_docs = [handlers._start_doc(f"commands_{slug}").rich()
                     for slug, _, _ in categories]
     all_commands = "".join(command_docs)

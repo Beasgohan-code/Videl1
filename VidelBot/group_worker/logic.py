@@ -50,7 +50,7 @@ def lock_kind(name: str) -> str:
 
 
 # Commands that keep a group manageable; they can never be disabled.
-NEVER_DISABLE = frozenset({"start", "help", "settings", "disable", "enable", "disabled"})
+NEVER_DISABLE = frozenset({"start", "help", "commands", "settings", "disable", "enable", "disabled"})
 
 
 def normalize_cmd(name: str) -> str:

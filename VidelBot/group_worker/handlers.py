@@ -339,7 +339,8 @@ class _BotHandlers:
             categories = _command_help_categories()
             return (Doc("📚", "Command directory",
                         f"{len(GROUP_WORKER_COMMANDS)} commands · {len(categories)} categories")
-                    .text("Pick a category to explore. Each list is built from the commands registered by this worker.")
+                    .text("Pick a category to explore, or search with <code>/commands ban</code>. "
+                          "Each list is built from the commands registered by this worker.")
                     .table([(title, f"{len(commands)} commands")
                             for _, title, commands in categories], header=("Category", "Available"))
                     .footer("Use /commands anytime to return to this directory."))
@@ -502,6 +503,11 @@ class _BotHandlers:
             rows.append([
                 _btn("📚 Browse commands", f"gw:{self.bot_id}:nav:commands", style="success"),
                 _btn("📖 Help overview", f"gw:{self.bot_id}:nav:help", style="primary"),
+            ])
+        elif page == "commands_search":
+            rows.append([
+                _btn("📚 All categories", f"gw:{self.bot_id}:nav:commands", style="primary"),
+                _btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary"),
             ])
         elif page == "about":
             rows.append([
@@ -769,6 +775,25 @@ class _BotHandlers:
         async def _commands(c, m: Message):
             me = getattr(c, "me", None)
             username = getattr(me, "username", "") or ""
+            query = " ".join((m.command or [])[1:]).strip()
+            if query:
+                results = _command_search_results(query)
+                from core.rich import Doc
+                from core import rich
+                shown = results[:15]
+                doc = Doc("🔎", "Command search", f"{len(results)} matches for {query[:60]}")
+                if shown:
+                    doc.table([(f"/{name}", f"{category} · {description}")
+                               for name, category, description in shown],
+                              header=("Command", "Category · what it does"))
+                    if len(results) > len(shown):
+                        doc.text(f"Showing the first {len(shown)} matches. Add another word to narrow the search.")
+                else:
+                    doc.text("No commands matched. Try a feature name such as <code>ban</code>, "
+                             "<code>welcome</code> or <code>anime</code>.")
+                doc.footer("Use /commands to browse every category.")
+                return await rich.reply(m, doc,
+                                        reply_markup=self._start_markup(username, "commands_search"))
             page = "commands"
             from core import rich
             await rich.reply(m, self._start_doc(page),
@@ -2407,3 +2432,18 @@ def _command_help_categories() -> list[tuple[str, str, list[tuple[str, str]]]]:
     if leftovers:
         categories.append(("other", "🧰 Other commands", leftovers))
     return categories
+
+
+def _command_search_results(query: str) -> list[tuple[str, str, str]]:
+    """Search command names, descriptions and category labels using all query words."""
+    query = str(query or "").strip()[:80].casefold().lstrip("/")
+    terms = [term for term in query.split() if term]
+    if not terms:
+        return []
+    results = []
+    for _, title, commands in _command_help_categories():
+        for name, description in commands:
+            haystack = f"{name} {description} {title}".casefold()
+            if all(term in haystack for term in terms):
+                results.append((name, title, description))
+    return results
