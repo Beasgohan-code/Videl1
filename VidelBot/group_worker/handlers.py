@@ -296,80 +296,8 @@ class _BotHandlers:
         ])
 
     def _settings_text(self, page: str, s: dict, chat_title: str = "") -> str:
-        head = _bar(f"⚙️ {tr(s, 'settings')}") + (f"\n<i>{_esc(chat_title)}</i>" if chat_title else "")
-        if page == "security":
-            return (f"{head}\n\n🤖 <b>Security</b>\n"
-                    f"CAPTCHA: {'on' if s.get('captcha_on') else 'off'} · "
-                    f"Anti-raid: {'on' if s.get('raid_on') else 'off'} · "
-                    f"Anti-channel: {'on' if s.get('anti_channel') else 'off'}\n"
-                    "<i>With CAPTCHA, new members stay muted until they tap the verify button. "
-                    "The anti-raid shield temporarily bans joiners during join bursts. "
-                    "Anti-channel removes external channel-profile posts; anonymous group admins are exempt.</i>")
-        if page == "greet":
-            return (f"{head}\n\n👋 <b>Greetings</b> — {'on' if s.get('greetings') else 'off'}\n"
-                    "<i>Set texts with /setwelcome and /setgoodbye (reply to a photo/sticker "
-                    "to use it as the welcome). Placeholders: {name} {chat} {id}. "
-                    "Preview with /welcome.</i>")
-        if page == "night":
-            state = (f"{s.get('night_start', 23):02d}:00–{s.get('night_end', 7):02d}:00 UTC"
-                     if s.get("night_on") else "off")
-            return (f"{head}\n\n🌙 <b>Night mode</b> — {_esc(state)}\n"
-                    "<i>During night hours, members' messages are quietly deleted. Admins are exempt.</i>")
-        if page == "shield":
-            kinds = ", ".join(s.get("guard_kinds") or []) or "none"
-            return (f"{head}\n\n🛡 <b>Shield</b> — {'on' if s.get('shield') else 'off'}\n"
-                    f"Blocking: {_esc(kinds)}\n\n<i>Tap a type to toggle it. Turning a type on enables the shield.</i>")
-        if page == "greet":
-            return InlineKeyboardMarkup([
-                [tog(bool(s.get("greetings")), "Greetings enabled", f"gw:{bot}:tog:greetings")],
-                [tog(bool(s.get("greet_dm")), "Also DM the welcome", f"gw:{bot}:tog:greet_dm")],
-                [tog(bool(s.get("clean_welcome")), "Clean old welcomes", f"gw:{bot}:tog:clean_welcome")],
-                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
-            ])
-        if page == "security":
-            return InlineKeyboardMarkup([
-                [tog(bool(s.get("captcha_on")), "Join CAPTCHA (verify button)", f"gw:{bot}:tog:captcha_on")],
-                [tog(bool(s.get("raid_on")), "Anti-raid join shield", f"gw:{bot}:tog:raid_on")],
-                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
-            ])
-        if page == "night":
-            return InlineKeyboardMarkup([
-                [tog(bool(s.get("night_on")), "Night mode enabled", f"gw:{bot}:tog:night_on")],
-                [_button(f"🌙 From {s.get('night_start', 23):02d}:00 UTC", callback_data=f"gw:{bot}:nightstart"),
-                 _button(f"☀️ To {s.get('night_end', 7):02d}:00 UTC", callback_data=f"gw:{bot}:nightend")],
-                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
-            ])
-        if page == "warn":
-            return (f"{head}\n\n⚠️ <b>Warnings</b>\n"
-                    f"Members are {s.get('warn_action', 'mute')}d after <b>{s.get('warn_limit', 3)}</b> warns.\n"
-                    "<i>Tap the counter to change the limit (2–10), or the action to cycle mute → kick → ban.</i>")
-        if page == "flood":
-            state = (f"{s['flood_limit']} messages in {s['flood_window']:g}s → {s['flood_action']}"
-                     if s.get("flood_limit") else "off")
-            return (f"{head}\n\n🌊 <b>Flood watch</b> — {_esc(state)}\n"
-                    "<i>Members (never admins) who flood are acted on automatically.</i>")
-        kinds = ", ".join(s.get("guard_kinds") or []) or "none"
-        flood = (f"{s['flood_limit']}/{s['flood_window']:g}s → {s['flood_action']}"
-                 if s.get("flood_limit") else "off")
-        table = _table([
-            ("🛡 Shield", f"{_onoff(s.get('shield'))} · {kinds}"),
-            ("👋 Greetings", _onoff(s.get("greetings"))),
-            ("⚠️ Warnings", f"{s.get('warn_limit', 3)} → {s.get('warn_action', 'mute')}"),
-            ("🌊 Flood watch", flood),
-            ("🌙 Night mode", _onoff(s.get("night_on"))),
-            ("🤖 CAPTCHA", _onoff(s.get("captcha_on"))),
-            ("🚨 Anti-raid", _onoff(s.get("raid_on"))),
-            ("📜 Rules", "✅ set" if s.get("rules") else "▫️ not set"),
-            ("💬 Auto-replies", len(s.get("replies") or {})),
-            ("📝 Notes", len(s.get("notes") or {})),
-            ("🤝 Approved", len(s.get("approved") or {})),
-            ("🚫 Disabled", ", ".join(s.get("disabled_cmds") or []) or "none"),
-            ("📋 Log chat", "✅ set" if s.get("log_chat") else "▫️ off"),
-            ("🧹 Clean service", _onoff(s.get("clean_service"))),
-            ("📩 DM alerts", _onoff(s.get("dm_alerts"))),
-            ("🌐 Language", s.get("lang", "en")),
-        ])
-        return f"{head}\n\n{table}\n<i>{tr(s, 'admins_only')} Tap a button below to change things.</i>"
+        """Classic HTML compatibility view; Rich Doc is the single source."""
+        return self._settings_doc(page, s, chat_title).classic()
 
     # ── rich start pages ─────────────────────────────────────────
     def _start_text(self, page: str = "home") -> str:
@@ -380,53 +308,41 @@ class _BotHandlers:
         from core.rich import Doc
 
         if page == "help":
-            return (Doc("📖", "Group Management · Help", "Fast command reference")
-                    .text("Most settings are managed from <code>/settings</code> in your group. "
-                          "Commands shown here are for admins unless noted.")
-                    .h("🛡", "Moderation")
+            return (Doc("📖", "Help center", f"{len(GROUP_WORKER_COMMANDS)} registered commands")
+                    .text("Browse the complete command directory or get a quick feature tour. "
+                          "The directory is generated from the worker's registered commands, so it stays in sync.")
                     .table([
-                        ("/warn · /unwarn", "Warn or clear warnings"),
-                        ("/mute · /tmute · /unmute", "Mute members, optionally timed"),
-                        ("/kick · /ban · /tban", "Remove or ban members"),
-                        ("/sban · /unban", "Silent ban and unban"),
-                        ("/purge · /pin · /unpin", "Clean messages and manage pins"),
-                    ], header=("Command", "What it does"))
-                    .h("👑", "Admin tools")
+                        ("🛡 Moderation", "Warnings, timed actions, cleanup, pins and admin tools"),
+                        ("⚙️ Group care", "Settings, shields, rules, welcomes and command controls"),
+                        ("📝 Automation", "Notes, text/media filters, approvals and moderation logs"),
+                        ("🌐 Federations", "Shared bans and membership across groups"),
+                        ("✨ AniList", "Anime, manga, characters, airing and browse tools"),
+                        ("🔌 Private tools", "Connect to a group and run approved admin commands by ID"),
+                    ], header=("Area", "What you can do"))
+                    .text("Use /commands for the full, paginated command list. Most group controls require admin rights.")
+                    .footer("Add the bot to your group, grant required permissions, then open /settings."))
+        if page == "features":
+            return (Doc("✨", "Feature guide", "Group protection, moderation and automation")
                     .table([
-                        ("/promote · /demote", "Manage admins"),
-                        ("/title · /chatinfo", "Group title and information"),
-                        ("/lock links · /unlock media · /locks", "Control links, media and other content"),
-                        ("/adminlist · /stats", "Roster and group stats"),
-                        ("/disable · /disabled", "Manage command availability"),
-                    ], header=("Command", "What it does"))
-                    .h("⚙️", "Group care")
-                    .table([
-                        ("/settings", "Buttons for shield, welcomes, flood, night mode and more"),
-                        ("/rules · /setrules", "Read or update group rules"),
-                        ("/filter · /mfilter · /stop · /filters", "Text and media auto-replies"),
-                        ("/stopall", "Remove all auto-replies (clone owner only)"),
-                        ("/save · /get · #trigger", "Saved notes"),
-                        ("/welcome · /setwelcome", "Welcome messages and media"),
-                    ], header=("Command", "What it does"))
-                    .h("🤝", "Trust & safety")
-                    .table([
-                        ("/approve · /approved", "Manage trusted members"),
-                        ("/report", "Reply to report a message to admins"),
-                        ("/fedban · /fedinfo", "Shared federation bans"),
-                        ("/modlog · /setlog", "Moderation log and destination"),
-                        ("/afk · /whois · /id", "Away status, member cards and IDs"),
-                        ("/export · /import", "Back up and restore group settings"),
-                    ], header=("Command", "What it does"))
-                    .h("✨", "Filters & discovery")
-                    .table([
-                        ("/blacklist · /addblacklist · /unblacklist", "Manage blocked words"),
-                        ("/blsticker · /addblsticker · /unblsticker", "Manage blocked stickers"),
-                        ("/antichannel · /cleaner", "Channel-post and cleanup controls"),
-                        ("/anime · /manga · /character", "Search AniList titles and people"),
-                        ("/browse · /airing · /topanime", "Explore AniList releases and ratings"),
-                        ("/gettags · /anisettings", "AniList genres and lookup help"),
-                    ], header=("Command", "What it does"))
-                    .footer("Times: 30m · 12h · 7d · 2w. Open /settings in a group to manage controls."))
+                        ("Content shield", "Block links, media, stickers, forwards and bots; admins and approved members are exempt."),
+                        ("Moderation", "Warns with escalation, mute/kick/ban, timed actions, purge and pin controls."),
+                        ("Join safety", "Optional verification CAPTCHA and anti-raid join-burst response."),
+                        ("Group care", "Rules, welcome/goodbye messages, night hours, flood watch and service cleanup."),
+                        ("Automation", "Bounded word/sticker blacklists, text and media replies, saved notes and trusted members."),
+                        ("Admin tools", "Locks, command controls, member cards, stats, logs, settings backup and import."),
+                        ("Federations", "Coordinate bans across groups that join the same federation."),
+                        ("AniList", "Read-only anime/manga search and browse cards using the public AniList API."),
+                    ], header=("Feature", "Summary"))
+                    .text("All settings are scoped to this clone and group. Enforcement depends on Telegram admin permissions.")
+                    .footer("Music voice-chat playback is not part of the Group worker. Use /commands for every command."))
+        command_match = re.fullmatch(r"commands_(\d+)", page or "")
+        if command_match:
+            pages = _command_help_pages()
+            index = max(0, min(int(command_match.group(1)) - 1, len(pages) - 1))
+            rows = [(f"/{name}", description) for name, description in pages[index]]
+            return (Doc("📚", "All commands", f"Page {index + 1} of {len(pages)} · {len(GROUP_WORKER_COMMANDS)} total")
+                    .table(rows, header=("Command", "What it does"))
+                    .footer("Times use 30m, 12h, 7d or 2w. Commands marked admins/owner require that role."))
         if page == "about":
             return (Doc("ℹ️", "About this Group Management clone", "A practical group safety assistant")
                     .text("A full group safety toolkit you can configure from buttons.")
@@ -441,7 +357,8 @@ class _BotHandlers:
                         ("📩 DM alerts", "Admin notifications with moderation actions"),
                     ], header=("Feature", "Overview"))
                     .footer("Open /settings in your group to configure the bot."))
-        return (Doc("🛡️", "Group Management", "A safer, friendlier group — managed from one place")
+        return (Doc("🛡️", "Group Management",
+                    f"A safer, friendlier group · {len(GROUP_WORKER_COMMANDS)} commands · per-group settings")
                 .text("👋 <b>Hey! I help keep your groups safe and welcoming.</b>")
                 .table([
                     ("1 · Add", "Add me to a group"),
@@ -449,7 +366,7 @@ class _BotHandlers:
                     ("3 · Configure", "Open /settings in the group"),
                 ], header=("Step", "Get started"), caption="Quick setup")
                 .text("🛡 Spam, floods, raids and bad members are easier to manage with the right permissions.")
-                .footer("Tap Help for commands, or Support if you need a hand."))
+                .footer("Tap Help for a feature tour, /commands for the full command list, or Support for assistance."))
 
     def _settings_doc(self, page: str, s: dict, chat_title: str = ""):
         from core.rich import Doc
@@ -542,7 +459,7 @@ class _BotHandlers:
         except (TypeError, ValueError):
             return ""
 
-    def _start_markup(self, bot_username: str) -> InlineKeyboardMarkup:
+    def _start_markup(self, bot_username: str, page: str = "home") -> InlineKeyboardMarkup:
         import config
 
         username = (bot_username.strip().lstrip("@") if isinstance(bot_username, str) else "")
@@ -557,6 +474,31 @@ class _BotHandlers:
             _btn("📖 Help", f"gw:{self.bot_id}:nav:help", style="primary"),
             _btn("ℹ️ About", f"gw:{self.bot_id}:nav:about", style="primary"),
         ])
+        if page == "help":
+            rows.append([
+                _btn("📚 Browse all commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
+                _btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary"),
+            ])
+        elif page == "features":
+            rows.append([
+                _btn("📚 Browse all commands", f"gw:{self.bot_id}:nav:commands_1", style="success"),
+                _btn("📖 Help overview", f"gw:{self.bot_id}:nav:help", style="primary"),
+            ])
+        else:
+            match = re.fullmatch(r"commands_(\d+)", page or "")
+            if match:
+                page_count = len(_command_help_pages())
+                page_number = max(1, min(int(match.group(1)), page_count))
+                nav = []
+                if page_number > 1:
+                    nav.append(_btn("⬅️ Previous", f"gw:{self.bot_id}:nav:commands_{page_number - 1}",
+                                    style="primary"))
+                if page_number < page_count:
+                    nav.append(_btn("Next ➡️", f"gw:{self.bot_id}:nav:commands_{page_number + 1}",
+                                    style="success"))
+                if nav:
+                    rows.append(nav)
+                rows.append([_btn("✨ Feature guide", f"gw:{self.bot_id}:nav:features", style="primary")])
         rows.append([
             _btn("👤 Owner", f"tg://user?id={self.owner_id}", url=True),
             _btn("🏠 Home", f"gw:{self.bot_id}:nav:home"),
@@ -721,7 +663,7 @@ class _BotHandlers:
             username = getattr(me, "username", "") or ""
             from core import rich
             await rich.reply(m, self._start_doc("home"),
-                             reply_markup=self._start_markup(username))
+                             reply_markup=self._start_markup(username, "home"))
 
         @app.on_message(filters.private & filters.command("help"))
         async def _dm_help(c, m: Message):
@@ -729,7 +671,7 @@ class _BotHandlers:
             username = getattr(me, "username", "") or ""
             from core import rich
             await rich.reply(m, self._start_doc("help"),
-                             reply_markup=self._start_markup(username))
+                             reply_markup=self._start_markup(username, "help"))
 
         @app.on_message(filters.private & filters.command(["connect", "disconnect", "connection"]))
         async def _connect(c, m: Message):
@@ -785,7 +727,16 @@ class _BotHandlers:
             username = getattr(me, "username", "") or ""
             from core import rich
             await rich.reply(m, self._start_doc("help"),
-                             reply_markup=self._start_markup(username))
+                             reply_markup=self._start_markup(username, "help"))
+
+        @app.on_message((filters.private | filters.group) & filters.command("commands"))
+        async def _commands(c, m: Message):
+            me = getattr(c, "me", None)
+            username = getattr(me, "username", "") or ""
+            page = "commands_1"
+            from core import rich
+            await rich.reply(m, self._start_doc(page),
+                             reply_markup=self._start_markup(username, page))
 
         @app.on_message(filters.group & filters.command("antichannel"))
         async def _antichannel(c, m: Message):
@@ -825,7 +776,7 @@ class _BotHandlers:
                 try:
                     from core import rich
                     await rich.edit(q.message, self._start_doc(page),
-                                    reply_markup=self._start_markup(username))
+                                    reply_markup=self._start_markup(username, page))
                 except Exception:
                     pass
                 return await q.answer()
@@ -2291,7 +2242,8 @@ def attach_group_handlers(app: Client, *, bot_id: int, owner_id: int, store) -> 
 # Clone-worker command list (kept separate from every other bot surface).
 GROUP_WORKER_COMMANDS = [
     ("start", "About this group-management clone"),
-    ("help", "List group commands"),
+    ("help", "Browse commands and features"),
+    ("commands", "Browse every command (paginated)"),
     ("anime", "Search AniList for anime"),
     ("manga", "Search AniList for manga"),
     ("character", "Search AniList for a character"),
@@ -2381,3 +2333,13 @@ GROUP_WORKER_COMMANDS = [
     ("logchannel", "Show the moderation log chat"),
     ("unsetlog", "Remove the moderation log chat (admins)"),
 ]
+
+
+HELP_COMMAND_PAGE_SIZE = 18
+
+
+def _command_help_pages() -> list[list[tuple[str, str]]]:
+    """Paginate the exact command registry so Help cannot silently omit commands."""
+    commands = list(GROUP_WORKER_COMMANDS)
+    size = HELP_COMMAND_PAGE_SIZE
+    return [commands[offset:offset + size] for offset in range(0, len(commands), size)] or [[]]

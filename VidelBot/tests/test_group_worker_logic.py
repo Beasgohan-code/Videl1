@@ -119,7 +119,7 @@ def test_group_worker_uses_standard_commands_and_settings_ui():
     assert any("Back" in label for label in shield_labels)
 
     text = handlers._settings_text("main", settings, "Dev <Hub>")
-    assert "SETTINGS" in text and "admins" in text and "<Hub>" not in text
+    assert text.startswith("<b>") and "group admins" in text.lower() and "<Hub>" not in text
 
 
 def test_group_worker_reply_matching_and_new_defaults():
@@ -282,8 +282,8 @@ def test_group_worker_language_and_clean_service():
     main = handlers._settings_markup("main", settings)
     callbacks = [b.callback_data for row in main.inline_keyboard for b in row]
     assert "gw:7:lang" in callbacks and "gw:7:tog:clean_service" in callbacks
-    text = handlers._settings_text("main", {**settings, "lang": "es"}, "G")
-    assert "AJUSTES" in text and "<pre>" in text  # rich table layout
+    doc = handlers._settings_doc("main", {**settings, "lang": "es"}, "G")
+    assert "AJUSTES" in doc.rich() and "<table bordered striped>" in doc.rich()
 
 
 class _FakeCursor:
@@ -480,7 +480,8 @@ def test_group_worker_rich_start_pages_and_buttons(monkeypatch):
     help_doc = handlers._start_doc("help")
     about = handlers._start_doc("about")
     assert "Add me to a group" in home.classic() and "Tap Help" in home.classic()
-    assert "/settings" in help_doc.rich() and "/warn" in help_doc.rich()
+    assert "registered commands" in help_doc.sub
+    assert "/commands" in help_doc.rich()
     assert "Group Management clone" in about.title
 
     markup = handlers._start_markup("MyGroupBot")
@@ -488,6 +489,13 @@ def test_group_worker_rich_start_pages_and_buttons(monkeypatch):
     assert rows[0][0].url == "https://t.me/MyGroupBot?startgroup=true"
     callbacks = [b.callback_data for row in rows for b in row if b.callback_data]
     assert "gw:42:nav:help" in callbacks and "gw:42:nav:about" in callbacks
+    help_markup = handlers._start_markup("MyGroupBot", "help")
+    help_callbacks = [b.callback_data for row in help_markup.inline_keyboard
+                      for b in row if b.callback_data]
+    assert "gw:42:nav:features" in help_callbacks
+    assert any("commands" in button.text.lower()
+               for row in help_markup.inline_keyboard for button in row)
+    assert "/commands" in handlers._start_doc("help").rich()
     urls = [b.url for row in rows for b in row if b.url]
     assert "tg://user?id=777" in urls
     assert "https://t.me/videl_support" in urls
@@ -539,7 +547,11 @@ def test_group_worker_admin_tools_registered():
     for cmd in ("promote", "demote", "title", "chatinfo"):
         assert cmd in names
     handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
-    assert "/promote" in handlers._start_text("help")
+    from group_worker.handlers import _command_help_pages
+    pages = _command_help_pages()
+    command_docs = "".join(handlers._start_doc(f"commands_{i + 1}").rich()
+                            for i in range(len(pages)))
+    assert "<td>/promote</td>" in command_docs
 
 
 def test_group_worker_engine_stop_all_stops_every_clone():
@@ -586,8 +598,12 @@ def test_group_worker_locks_registered():
     names = [n for n, _ in GROUP_WORKER_COMMANDS]
     for cmd in ("lock", "unlock", "locks"):
         assert cmd in names
-    help_doc = _BotHandlers(bot_id=42, owner_id=1, store=None)._start_doc("help")
-    assert "/lock links" in help_doc.rich()
+    from group_worker.handlers import _command_help_pages
+    pages = _command_help_pages()
+    docs = [_BotHandlers(bot_id=42, owner_id=1, store=None)
+            ._start_doc(f"commands_{index + 1}").rich()
+            for index in range(len(pages))]
+    assert any("<td>/lock</td>" in doc for doc in docs)
 
 
 def test_group_worker_disabled_commands_logic():
@@ -616,11 +632,23 @@ def test_group_worker_rich_ui_tables_and_new_commands():
         assert cmd in names
 
     handlers = _BotHandlers(bot_id=42, owner_id=1, store=None)
-    main = handlers._settings_text("main", default_settings(), "G")
-    assert "<pre>" in main and "Shield" in main and "Language" in main
+    main = handlers._settings_doc("main", default_settings(), "G").rich()
+    assert "<table bordered striped>" in main and "Shield" in main and "Language" in main
     help_doc = handlers._start_doc("help")
-    assert ("/disable" in help_doc.rich() and "/adminlist" in help_doc.rich()
-            and "<table bordered striped>" in help_doc.rich())
+    assert "<table bordered striped>" in help_doc.rich()
+    from group_worker.handlers import _command_help_pages
+    command_docs = [handlers._start_doc(f"commands_{index + 1}").rich()
+                    for index in range(len(_command_help_pages()))]
+    all_commands = "".join(command_docs)
+    assert all(f"<td>/{name}</td>" in all_commands for name, _ in GROUP_WORKER_COMMANDS)
+    assert len(command_docs) > 1
+    page_two = handlers._start_markup("MyGroupBot", "commands_2")
+    page_two_callbacks = [button.callback_data for row in page_two.inline_keyboard
+                          for button in row if button.callback_data]
+    assert "gw:42:nav:commands_1" in page_two_callbacks
+    assert "gw:42:nav:commands_3" in page_two_callbacks
+    feature_doc = handlers._start_doc("features").rich()
+    assert "<table bordered striped>" in feature_doc and "Content shield" in feature_doc
     about = handlers._start_doc("about")
     assert "Federations" in about.rich() and "<table bordered striped>" in about.rich()
 
@@ -671,8 +699,9 @@ def test_group_worker_antichannel_match_exempts_anonymous_group_sender():
     page = handlers._settings_markup("security", {**default_settings(), "anti_channel": True})
     buttons = [button for row in page.inline_keyboard for button in row]
     assert any(button.callback_data == "gw:12:tog:anti_channel" for button in buttons)
-    text = handlers._settings_text("security", {**default_settings(), "anti_channel": True})
-    assert "Anti-channel: on" in text and "anonymous group admins are exempt" in text
+    security = handlers._settings_doc("security", {**default_settings(), "anti_channel": True}).rich()
+    assert "Anti-channel" in security and "✅ on" in security
+    assert "anonymous group admins are exempt" in security
 
 
 def test_group_worker_filter_import_bounds_and_validates_media_file_ids():
