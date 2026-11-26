@@ -1,5 +1,5 @@
 {
-  "name": "Videl Music Worker",
+  "name": "videl-music-worker",
   "description": "Telegram voice-chat music and group-management bot powered by PyTgCalls and MongoDB.",
   "branch": "main",
   "start_command": "PYTHONPATH=.. MUSIC_WORKER_STANDALONE=1 python3 -m music_worker",
