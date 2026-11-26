@@ -1,16 +1,18 @@
-"""Process-side engine for Music clones (stage 1: queue & UI).
+"""Process-side engine for active Music clones.
 
 Starts only clones whose saved profile is ``music``, using this
-package's own handlers/store. It is not imported by ``run.py`` yet:
-profile selection for music, the assistant-session lifecycle, and the
-voice-chat streaming engine are separate approved steps. Starting both
-this engine and another worker for the same clone would double-handle
-it, so wiring must be exclusive.
+package's own handlers/store and assistant-session playback. It is not
+imported by ``run.py``: run it as a separate, sole Music worker so the
+same bot token cannot be consumed by competing clients. The player
+engine is stopped before the assistant and bot clients; uncertain
+resources remain fenced and can be retried.
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import time
 import weakref
 
 from pyrogram import Client
@@ -27,6 +29,7 @@ from .store import MusicWorkerStore
 
 log = logging.getLogger(__name__)
 main_db = MainDB()
+_PLAYER_STOP_TIMEOUT = 5.0
 
 
 def _client_still_running(app) -> bool:
@@ -40,9 +43,19 @@ class MusicWorkerEngine:
     def __init__(self, store: MusicWorkerStore | None = None):
         self.workers: dict[int, Client] = {}
         self._assistants: dict[int, Client] = {}
+        self._players: dict[int, object] = {}
+        self._uncertain_players: dict[int, object] = {}
         self._lock = asyncio.Lock()
+        self._reconcile_lock = asyncio.Lock()
         self._operation_locks = weakref.WeakValueDictionary()
-        self._uncertain_stops: dict[int, Client] = {}
+        # A Music clone can own two Telegram clients (bot + assistant). Keep
+        # every client whose stop could not be confirmed so later shutdowns
+        # can retry and startup remains fenced until all are down.
+        self._uncertain_stops: dict[int, tuple[Client, ...]] = {}
+        # Fingerprints let the sole runtime refresh changed bot/assistant
+        # credentials without retaining the secret strings in another map.
+        self._loaded_configs: dict[int, str] = {}
+        self._start_failures: dict[int, tuple[int, float]] = {}
         self.store = store or MusicWorkerStore(get_db())
 
     @property
@@ -56,15 +69,20 @@ class MusicWorkerEngine:
             self._operation_locks[bot_id] = lock
         return lock
 
+    @staticmethod
+    def _config_fingerprint(bot_doc: dict) -> str:
+        """Non-reversible change detector for credentials and command ownership."""
+        bot_token = bot_doc.get("bot_token_encrypted")
+        session = bot_doc.get("music_session_encrypted")
+        owner_id = str(bot_doc.get("owner_id", ""))
+        material = "\\x1f".join(value if isinstance(value, str) else ""
+                                  for value in (bot_token, session, owner_id))
+        return hashlib.sha256(material.encode("utf-8", errors="replace")).hexdigest()
+
     async def start_all(self) -> None:
-        bots = [b for b in await main_db.get_all_active_bots()
-                if b.get("clone_profile", "filestore") == "music"]
-        log.info("Starting %d music clones...", len(bots))
-        for bot_doc in bots:
-            try:
-                await self.start_worker(bot_doc)
-            except Exception:
-                log.error("Failed to start music clone %s.", bot_doc.get("_id", "?"))
+        result = await self.reconcile()
+        log.info("Music worker reconciliation: %d started, %d stopped, %d failed",
+                 len(result["started"]), len(result["stopped"]), len(result["failed"]))
 
     async def start_worker(self, bot_doc: dict) -> None:
         bot_id = int(bot_doc["_id"])
@@ -72,11 +90,95 @@ class MusicWorkerEngine:
             current = await main_db.get_bot(bot_id)
             if not current or current.get("is_deleted"):
                 raise RuntimeError("Clone record is unavailable")
+            if current.get("is_active") is not True:
+                raise RuntimeError("Music clone is no longer desired active")
             if current.get("clone_profile", "filestore") != "music":
                 raise RuntimeError("Clone is not a Music clone")
-            if bot_id in self._uncertain_stops:
-                raise RuntimeError("Previous clone stop could not be confirmed")
-            await self._start_locked(current)
+            if bot_id in self.workers:
+                if self._loaded_configs.get(bot_id) == self._config_fingerprint(current):
+                    await self._publish_runtime_state(bot_id, "running")
+                    return
+                raise RuntimeError("Clone credentials changed; reconciliation must stop it before refresh")
+            if (bot_id in self._uncertain_stops or bot_id in self._uncertain_players
+                    or bot_id in self._assistants or bot_id in self._players):
+                raise RuntimeError("Previous Music resources require cleanup")
+            await self._publish_runtime_state(bot_id, "starting")
+            try:
+                await self._start_locked(current)
+            except BaseException:
+                uncertain = bot_id in self._uncertain_stops or bot_id in self._uncertain_players
+                await self._publish_runtime_state(bot_id, "uncertain" if uncertain else "stopped")
+                raise
+            self._loaded_configs[bot_id] = self._config_fingerprint(current)
+            await self._publish_runtime_state(bot_id, "running")
+
+    async def _publish_runtime_state(self, bot_id: int, state: str) -> None:
+        try:
+            await main_db.set_music_runtime_state(int(bot_id), state)
+        except Exception:
+            log.warning("Could not publish Music runtime state for clone %s.", bot_id)
+
+    async def reconcile(self) -> dict[str, list[int]]:
+        """Serialize one reconciliation pass inside this process only."""
+        async with self._reconcile_lock:
+            return await self._reconcile_once()
+
+    async def _reconcile_once(self) -> dict[str, list[int]]:
+        """Converge local clients to the active Music-profile records.
+
+        The registry is desired state, not a distributed lease: run exactly one
+        standalone Music worker and never overlap it with another token client.
+        """
+        desired = await main_db.get_active_bots_for_profile("music")
+        desired_by_id = {int(doc["_id"]): doc for doc in desired}
+        # A stop request cancels any pending startup backoff; a later owner
+        # restart is a new desired-state transition and should retry promptly.
+        for bot_id in list(self._start_failures):
+            if bot_id not in desired_by_id:
+                self._start_failures.pop(bot_id, None)
+        running_ids = (set(self.workers) | set(self._assistants) | set(self._players)
+                       | set(self._uncertain_stops) | set(self._uncertain_players))
+        stopped, started, failed = [], [], []
+        for bot_id in sorted(running_ids - set(desired_by_id)):
+            if await self.stop_worker(bot_id):
+                stopped.append(bot_id)
+            else:
+                failed.append(bot_id)
+        now = time.monotonic()
+        for bot_id, doc in desired_by_id.items():
+            orphaned_resources = (bot_id not in self.workers
+                                  and (bot_id in self._assistants or bot_id in self._players))
+            if (bot_id in self._uncertain_stops or bot_id in self._uncertain_players
+                    or orphaned_resources):
+                if not await self.stop_worker(bot_id):
+                    failed.append(bot_id)
+                    continue
+                stopped.append(bot_id)
+            if bot_id in self.workers:
+                if self._loaded_configs.get(bot_id) == self._config_fingerprint(doc):
+                    await self._publish_runtime_state(bot_id, "running")
+                    self._start_failures.pop(bot_id, None)
+                    continue
+                # Owner changed a bot token or assistant session. Recycle only
+                # inside this sole process, and never start until stop is sure.
+                if not await self.stop_worker(bot_id):
+                    failed.append(bot_id)
+                    continue
+                stopped.append(bot_id)
+            attempts, retry_at = self._start_failures.get(bot_id, (0, 0.0))
+            if retry_at > now:
+                continue
+            try:
+                await self.start_worker(doc)
+                self._start_failures.pop(bot_id, None)
+                started.append(bot_id)
+            except Exception:
+                attempts += 1
+                self._start_failures[bot_id] = (attempts, now + min(300.0, 5.0 * (2 ** min(attempts - 1, 6))))
+                failed.append(bot_id)
+                log.warning("Music profile reconciliation failed for clone %s (attempt %d).",
+                            bot_id, attempts)
+        return {"started": started, "stopped": stopped, "failed": failed}
 
     async def _start_locked(self, bot_doc: dict) -> None:
         bot_id = int(bot_doc["_id"])
@@ -128,9 +230,13 @@ class MusicWorkerEngine:
                 except Exception:
                     log.warning("music clone %s: assistant login failed; queue-only mode", bot_id)
                     self._assistants.pop(bot_id, None)
+                    if not await self._stop_client(assistant, timeout=3.0):
+                        raise RuntimeError("Assistant client stop could not be confirmed")
                     assistant = None
             if player is not None and (assistant is not None or bot_doc.get("music_session_encrypted") is None):
                 await player.start()  # failure degrades to queue-only mode
+                if player.ready:
+                    self._players[bot_id] = player
             app.set_parse_mode(ParseMode.HTML)
             commands = [BotCommand(name, desc) for name, desc in MUSIC_WORKER_COMMANDS]
             await app.set_bot_commands(commands)
@@ -140,42 +246,110 @@ class MusicWorkerEngine:
                 log.warning("Group-scope commands unavailable for clone %s.", bot_id)
             async with self._lock:
                 self.workers[bot_id] = app
+        except asyncio.CancelledError:
+            self._assistants.pop(bot_id, None)
+            self._players.pop(bot_id, None)
+            if player is not None and not await self._shutdown_player(player):
+                self._uncertain_players[bot_id] = player
+            uncertain = []
+            for resource in (assistant, app):
+                if resource is not None and not await self._stop_client(resource, timeout=3.0):
+                    uncertain.append(resource)
+            if uncertain:
+                self._uncertain_stops[bot_id] = tuple(uncertain)
+            raise
         except Exception:
-            if _client_still_running(app):
-                try:
-                    await asyncio.wait_for(app.stop(block=True), timeout=3.0)
-                except Exception:
-                    self._uncertain_stops[bot_id] = app
-                if _client_still_running(app):
-                    self._uncertain_stops[bot_id] = app
+            self._assistants.pop(bot_id, None)
+            self._players.pop(bot_id, None)
+            if player is not None and not await self._shutdown_player(player):
+                self._uncertain_players[bot_id] = player
+            uncertain = []
+            # Stop the assistant first when both clients partially started.
+            for resource in (assistant, app):
+                if resource is not None and not await self._stop_client(resource, timeout=3.0):
+                    uncertain.append(resource)
+            if uncertain:
+                self._uncertain_stops[bot_id] = tuple(uncertain)
             raise
 
+    async def _shutdown_player(self, player) -> bool:
+        """Stop the voice-call engine before its Telegram client dependencies."""
+        if player is None:
+            return True
+        try:
+            result = await asyncio.wait_for(player.shutdown(), timeout=_PLAYER_STOP_TIMEOUT)
+        except Exception:
+            log.warning("music player stop failed", exc_info=True)
+            return False
+        return result is not False and not getattr(player, "ready", False)
+
+    async def _stop_client(self, app, *, timeout: float = 5.0) -> bool:
+        """Stop a Telegram client and verify its local lifecycle flags cleared."""
+        try:
+            await asyncio.wait_for(app.stop(block=True), timeout=timeout)
+        except Exception:
+            pass
+        return not _client_still_running(app)
+
     async def stop_worker(self, bot_id: int) -> bool:
+        """Stop player, assistant and bot; retry any uncertain resource later."""
         bot_id = int(bot_id)
         async with self._operation_lock(bot_id):
             async with self._lock:
                 app = self.workers.pop(bot_id, None)
-            if app is None:
-                return bot_id not in self._uncertain_stops
             assistant = self._assistants.pop(bot_id, None)
-            if assistant is not None:
-                try:
-                    await asyncio.wait_for(assistant.stop(block=True), timeout=5.0)
-                except Exception:
-                    pass
+            player = self._players.pop(bot_id, None)
+            if player is None:
+                player = self._uncertain_players.get(bot_id)
+            candidates = []
+            for resource in (assistant, app, *self._uncertain_stops.get(bot_id, ())):
+                if resource is not None and all(resource is not old for old in candidates):
+                    candidates.append(resource)
+            if player is None and not candidates:
+                self._start_failures.pop(bot_id, None)
+                self._loaded_configs.pop(bot_id, None)
+                await self._publish_runtime_state(bot_id, "stopped")
+                return True
+
+            player_stopped = True
+            uncertain = []
+            await self._publish_runtime_state(bot_id, "stopping")
             try:
-                await asyncio.wait_for(app.stop(block=True), timeout=5.0)
-            except Exception:
-                pass
-            if _client_still_running(app):
-                self._uncertain_stops[bot_id] = app
-                return False
-            self._uncertain_stops.pop(bot_id, None)
-            return True
+                # PyTgCalls owns voice-call tasks and must stop before its clients.
+                if player is not None:
+                    player_stopped = await self._shutdown_player(player)
+                for resource in candidates:
+                    if not await self._stop_client(resource):
+                        uncertain.append(resource)
+            except asyncio.CancelledError:
+                # Cancellation makes even completed remote stops ambiguous.
+                if player is not None:
+                    self._uncertain_players[bot_id] = player
+                if candidates:
+                    self._uncertain_stops[bot_id] = tuple(candidates)
+                await self._publish_runtime_state(bot_id, "uncertain")
+                raise
+            if not player_stopped:
+                self._uncertain_players[bot_id] = player
+            else:
+                self._uncertain_players.pop(bot_id, None)
+            if uncertain:
+                self._uncertain_stops[bot_id] = tuple(uncertain)
+            else:
+                self._uncertain_stops.pop(bot_id, None)
+            confirmed = player_stopped and not uncertain
+            if confirmed:
+                self._start_failures.pop(bot_id, None)
+                self._loaded_configs.pop(bot_id, None)
+            await self._publish_runtime_state(bot_id, "stopped" if confirmed else "uncertain")
+            return confirmed
 
     async def stop_all(self) -> int:
         """Stop every running clone; returns how many were running."""
-        bot_ids = list(self.workers) + [b for b in self._uncertain_stops if b not in self.workers]
+        bot_ids = list(dict.fromkeys(
+            [*self.workers, *self._assistants, *self._players,
+             *self._uncertain_stops, *self._uncertain_players]
+        ))
         for bot_id in bot_ids:
             await self.stop_worker(bot_id)
         return len(bot_ids)

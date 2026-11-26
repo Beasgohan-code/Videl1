@@ -18,6 +18,7 @@ bot's requirements. Without it, the worker runs in queue-only mode.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 log = logging.getLogger(__name__)
@@ -88,11 +89,28 @@ class VoicePlayer:
         try:
             await self._calls.start()
             self.ready = True
+        except asyncio.CancelledError:
+            # The remote/library start may have succeeded before cancellation.
+            # Mark it uncertain so engine cleanup still attempts a real stop.
+            self.ready = True
+            raise
         except Exception:
             log.warning("voice player failed to start; queue-only mode", exc_info=True)
             self.ready = False
             return False
         self._register_advance()
+        return True
+
+    async def shutdown(self) -> bool:
+        """Stop the PyTgCalls process; report uncertainty instead of hiding it."""
+        if not self.ready:
+            return True
+        try:
+            await self._calls.stop()
+        except Exception:
+            log.warning("voice player shutdown is uncertain", exc_info=True)
+            return False
+        self.ready = False
         return True
 
     def _stream(self, source: str, ffmpeg_parameters: str | None = None):

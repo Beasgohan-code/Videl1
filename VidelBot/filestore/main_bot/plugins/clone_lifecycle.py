@@ -15,7 +15,7 @@ from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb
 
 import config
-from filestore.database.main_db import MainDB
+from filestore.database.main_db import MainDB, music_runtime_report_is_fresh
 from filestore.fs_config import LOGGER
 from filestore.utils.registry_ids import valid_registry_id
 
@@ -245,6 +245,31 @@ async def reactivate_cb(client: Client, query: CallbackQuery):
     from filestore.worker_bot.engine import worker_engine
     from core.ui import smart_edit
     bot_id = bot.get("_id")
+    if bot.get("clone_profile") == "music":
+        if (bot.get("is_active") is not False
+                or not isinstance(bot.get("music_session_encrypted"), str)
+                or not bot["music_session_encrypted"].startswith("enc:")):
+            return await query.answer("Music clone isn't in a startable state; open its dashboard.", show_alert=True)
+        if music_runtime_report_is_fresh(bot):
+            return await query.answer("Music worker recently reported active. Use its dashboard controls.",
+                                      show_alert=True)
+        try:
+            changed = await main_db.set_profile_active(bot_id, uid, "music", True)
+        except Exception:
+            return await smart_edit(query.message,
+                                    "<b>⚠️ Music start request wasn't confirmed.</b>\n"
+                                    "Reopen the Music dashboard before retrying.", _dash_kb(bot_id))
+        if not changed:
+            return await query.answer("Clone state changed. Reopen its dashboard.", show_alert=True)
+        await query.answer("Music start requested; the standalone Music worker will reconcile it.")
+        stale_note = ("The last worker report was stale; this does not prove a separate process has stopped. "
+                      if bot.get("music_runtime_state") in ("starting", "running", "stopping", "uncertain")
+                      else "")
+        return await smart_edit(
+            query.message,
+            "<b>🎵 Music start requested.</b>\n"
+            f"{stale_note}The standalone Music worker must be running to apply it; this is a desired-state update, not a live-client confirmation.",
+            _dash_kb(bot_id))
     # Old buttons must not start or reset an already-active or malformed record.
     if (not valid_registry_id(bot_id) or bot_id != requested_id
             or not valid_registry_id(bot.get("owner_id")) or bot["owner_id"] != uid

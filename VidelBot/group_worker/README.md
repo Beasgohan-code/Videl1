@@ -9,30 +9,44 @@ codebase:
   plugin, and it does not modify the File Store worker in any way.
 - Standard group commands: `/settings` (worker-style settings with toggles and sub-pages),
   `/warn`, `/unwarn`, `/mute`, `/tmute`, `/unmute`, `/kick`, `/ban`,
-  `/tban`, `/sban`, `/unban`, `/purge`, with greetings, a content shield
-  (links/media/stickers/forwards/bots), warns with automatic
-  mute/kick/ban, and a flood watch.
+  `/tban`, `/sban`, `/unban`, `/purge`, and `/antichannel`, with greetings,
+  a content shield (links/media/stickers/forwards/bots), warns with automatic
+  mute/kick/ban, and a configurable flood watch.
+- Read-only AniList lookups: `/anime`, `/manga`, `/character`, `/gettags`,
+  `/browse`, `/airing`, `/topanime`, and `/anisettings`. These use a bounded,
+  throttled public API client and escaped, spoiler-aware result cards.
 - Settings and warns live in `group_worker_settings` /
   `group_worker_warns`, scoped by (clone bot, chat), so clones are
   isolated from each other and from File Store data.
+- Private `/start` and `/help`, group `/help`, interactive `/settings`, and
+  list/report screens (`/notes`, `/approved`, `/blacklist`, `/blsticker`,
+  `/whois`, `/locks`, `/chatinfo`, `/adminlist`, `/stats`, `/modlog`,
+  `/disabled`) use structured Rich UI with a classic HTML fallback. Buttons
+  use consistent success/primary/danger styles when supported. Start pages
+  provide Add me, Help, Owner, Support, and Updates buttons. Support uses `SUPPORT_URL`
+  then `CONTACT_URL`, with the clone owner as a fallback; Updates uses
+  `UPDATES_URL` or the project's GitHub releases page. Configured links are
+  accepted only as HTTPS URLs.
 
 ## Status
 
-Stage 1 (core + group care) is implemented and unit-tested. The engine
-can start/stop group-profile clones, but it is **not wired into
-`run.py` yet**: today group-profile clones are still served by the
-existing in-worker profile, and running both would double-handle the
-same bots. Choosing the production runtime — and retiring the old path
-without touching File Store behavior — is a separate approved step.
+Stages 1–23 are implemented and covered by offline tests. This package
+owns its Group Management handlers, store, client lifecycle, moderation
+suite, and Rich UI; it does not import or modify the File Store worker.
+The standalone engine can start and stop group-profile clones, including
+retrying a client whose previous stop could not be confirmed.
 
-A Music worker will follow the same pattern as its own folder
-(`music_worker/`) once the voice-chat dependency stack is verified;
-it is not a mode flag inside this worker.
+Production cutover is still deliberately separate: `run.py` currently
+serves Group profiles through the existing in-process profile. Do not run
+both programs for the same clone; a single-controller migration and
+non-overlapping rollout are still required. This standalone package is
+not imported into `run.py`.
 
 ## Stage 2 — rules, auto-replies, reports and DM alerts
 
-- `/rules` / `/setrules` for group rules; `/filter`, `/stop`, `/filters`
-  for keyword auto-replies (whole-word matching, commands ignored).
+- `/rules` / `/setrules` for group rules; `/filter`, `/mfilter`, `/stop`,
+  `/filters` and owner-only `/stopall` for whole-word text/media auto-replies.
+  Text replies support Markdown and safe user/chat placeholders.
 - `/pin` / `/unpin`, plus member `/report` (reply to a message): admins
   receive a DM with **Delete** / **Ban** / **Ignore** buttons.
 - Moderation actions DM the clone owner (toggleable in `/settings`)
@@ -109,7 +123,9 @@ it is not a mode flag inside this worker.
   (English, हिन्दी, Español) with a matching 🌐 button in settings;
   core UI strings are localized with a safe English fallback.
 - Clean service messages toggle deletes Telegram service posts
-  (join/leave/pin notices) while greetings keep working.
+  (join/leave/pin notices) while greetings keep working. `/cleaner [on|off]`
+  toggles both service-message and slash-command cleanup; command messages
+  are removed after registered command handlers have processed them.
 - Settings home now uses a blockquote status card for a cleaner read.
 
 ## Stage 11 — moderation log
@@ -132,11 +148,11 @@ copied, so no foreign credits or license encumbrance):
 
 ## Stage 13 — individual sticker blocklist
 
-- Reply to any sticker with `/blocksticker` to block just that sticker
-  (matched by Telegram's stable file_unique_id); `/unblocksticker`
-  reverses it and `/blockedstickers` shows the count. Blocked stickers
-  are deleted even when the broader shield is off; admins and approved
-  members keep their existing exemptions.
+- Reply to any sticker with `/blocksticker` (or `/addblsticker`) to block
+  just that sticker by Telegram's stable `file_unique_id`; `/unblocksticker`
+  (or `/unblsticker`) reverses it and `/blockedstickers` (or `/blsticker`)
+  lists the saved IDs. Matching stickers use the configured blacklist mode;
+  admins and approved members are exempt.
 
 ## Stage 14 — federations
 
@@ -189,3 +205,79 @@ in the moderation log.
   (start/help/settings/disable/enable/disabled) can never be disabled.
 - `/adminlist` shows the owner/admin/bot roster with tap-to-mention
   links; `/stats` shows members, logged actions and worker state.
+
+
+## Stage 18 — bounded flood controls
+
+The Flood watch settings page now lets group admins cycle the message
+threshold (3–20 messages) and detection window (3–60 seconds), as well as
+the existing automatic action. Each control has a fixed, validated option
+set; these settings remain scoped to the clone and group.
+
+
+## Stage 19 — AniList lookups and channel-profile guard
+
+The worker offers read-only `/anime`, `/manga`, `/character`, `/gettags`,
+`/browse`, `/airing`, `/topanime` and `/anisettings` commands. AniList requests
+use a fixed GraphQL endpoint, bounded search inputs, a short process-local
+cache, per-clone request throttling and timeouts. Result text is escaped,
+anime/manga searches request the non-adult filter, spoiler-marked tags are
+omitted, and browse buttons link only to validated AniList item URLs.
+External API availability and live Telegram rendering still require
+live validation.
+
+Group admins can toggle `/antichannel` or use the Security settings page.
+When enabled, posts sent under an external channel profile are deleted;
+anonymous posts sent as the group itself are deliberately exempt. This only
+attempts deletion (no channel ban), and Telegram bot delete permissions still
+apply.
+
+
+## Stage 20 — per-group word and sticker blacklists
+
+- `/blacklist`, `/addblacklist`, `/unblacklist` list, add and remove up to
+  100 blocked terms. Matches are case-insensitive whole words/phrases; quote
+  phrases in commands (for example `/addblacklist "red flag"`) or reply to a
+  message to add/remove its text as one term. Each clone and group has separate
+  lists.
+- `/blacklistmode off|del|warn|ban|kick|mute|tban|tmute [duration]` selects
+  the action for both word and sticker matches. New groups default to `del`;
+  timed modes accept 1 minute–365 days (for example `tban 1h`). `warn` uses
+  the existing warning limit/action escalation. Approved members and group
+  admins are exempt. The guard only acts on member messages; Telegram bot
+  delete/restrict/ban permissions are required for corresponding actions.
+- Lists are bounded to 100 terms/sticker IDs; each term is capped to 64
+  characters and matching is offline-tested. Live Telegram permissions and
+  moderation outcomes still need validation.
+
+
+## Stage 21 — combined cleaner toggle
+
+Group admins can use `/cleaner [on|off]` to control service-message cleanup
+and deletion of incoming messages beginning with `/` after handlers have
+processed commands. The toggle updates both settings together; the existing
+service-message setting remains visible in Settings. Deletion requires bot
+permissions and is best-effort.
+
+
+## Stage 22 — Markdown and media filters
+
+- Admins can add text replies with `/filter <trigger> <Markdown reply>`; quote
+  multiword triggers. Supports `{first}`, `{last}`, `{fullname}`, `{username}`,
+  `{id}`, `{chatname}`, `{chatid}` and `{mention}`. Dynamic values are escaped
+  before Markdown parsing, and matching is case-insensitive whole-word/phrase.
+- Reply to a photo, video, animation, document, audio, voice or sticker with
+  `/mfilter <trigger>` to save a media reply. Captions use the same placeholders;
+  `/stop <trigger>` removes either kind and `/filters` lists both.
+- `/stopall` clears all text and media replies and is restricted to the clone
+  owner (not merely a group administrator). Each list is bounded, validated on
+  import, and stored per clone/group.
+
+
+## Stage 23 — message and forward IDs
+
+`/id` works in groups and private chats. It shows the current user's ID and
+username, chat ID, and message ID; when replying, it reports the replied sender
+instead. Forwarded user/chat origins are shown when Telegram supplies them,
+including hidden-sender labels without inventing an ID. Usernames, titles and
+forward metadata are HTML-escaped.

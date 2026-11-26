@@ -129,9 +129,10 @@ class _BotHandlers:
             f"{_bar('🎵 MUSIC')}\n\n"
             "👋 <b>Hey! I play music in group voice chats.</b>\n\n"
             "▶️ /play &lt;song&gt; · 🎬 /vplay · ⚡ /playforce\n"
-            "⏯ /pause /resume · ⏭ /skip · ⏩ /seek 30 · 🎚 /speed\n"
+            "⏯ /pause /resume · ⏭ /skip · 🔁 /loop · 🔀 /shuffle\n"
+            "⏩ /seek 30 · 🎚 /speed\n"
             "📂 /pview playlists · 📡 /cplay channel play\n"
-            "🎶 /queue · ⏹ /stop · ⚙️ /settings\n\n"
+            "🎶 /queue /remove /move /clear · ⏹ /stop · ⚙️ /settings\n\n"
             "<i>Short, button-first, no spam.</i>"
         )
 
@@ -150,6 +151,7 @@ class _BotHandlers:
             [_btn(f"🔊 Volume: {s.get('volume', 100)}%", f"mw:{bot}:volume", style="primary")],
             [_btn(f"{'✅' if s.get('autoplay') else '▫️'} Autoplay (queue search hits)",
                   f"mw:{bot}:auto", style="success" if s.get("autoplay") else "danger")],
+            [_btn(f"🔁 Repeat: {s.get('loop_mode', 'off')}", f"mw:{bot}:loop", style="primary")],
             [_btn(f"🎚 Speed: {float(s.get('speed', 1.0)):g}×", f"mw:{bot}:speed", style="primary")],
             [_btn("❌ Close", f"mw:{bot}:close")],
         ])
@@ -168,7 +170,16 @@ class _BotHandlers:
         """A track ended naturally: play the next queued track, if any."""
         if time.monotonic() < self._suppress_until.get(int(chat_id), 0.0):
             return
-        nxt = self.queue.skip(chat_id)
+        settings = {}
+        if self.store is not None:
+            try:
+                settings = await self.store.get_settings(self.bot_id, chat_id)
+            except Exception:
+                pass
+        loop_mode = settings.get("loop_mode", "off")
+        if loop_mode not in ("off", "one", "all"):
+            loop_mode = "off"
+        nxt = self.queue.advance(chat_id, loop_mode)
         await self._persist(chat_id)
         if nxt is None:
             self._pos.pop(int(chat_id), None)
@@ -192,6 +203,7 @@ class _BotHandlers:
             ("🔊 Volume", f"{s.get('volume', 100)}%"),
             ("🎶 Streaming", "✅ ready" if self._player_ready() else "▫️ not set up yet"),
             ("🔁 Autoplay", "✅ on" if s.get("autoplay") else "▫️ off"),
+            ("🔂 Repeat", s.get("loop_mode", "off")),
             ("🎚 Speed", f"{float(s.get('speed', 1.0)):g}×"),
             ("📡 Channel", s.get("linked_channel") or "not linked"),
         ])
@@ -226,6 +238,8 @@ class _BotHandlers:
              _btn("⏹ Stop", f"mw:{bot}:ctl:{target}:stop", style="danger")],
             [_btn("🎶 Queue", f"mw:{bot}:ctl:{target}:queue"),
              _btn("🎛 Panel", f"mw:{bot}:ctl:{target}:panel")],
+            [_btn("🔁 Repeat", f"mw:{bot}:ctl:{target}:loop"),
+             _btn("🔀 Shuffle", f"mw:{bot}:ctl:{target}:shuffle")],
         ])
 
     async def _allowed(self, client: Client, message: Message) -> bool:
@@ -349,8 +363,8 @@ class _BotHandlers:
                                parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command(
-            ["skip", "stop", "remove", "pause", "resume", "clear", "seek", "seekback",
-             "speed", "autoplay", "cskip", "cstop", "cpause", "cresume"]))
+            ["skip", "stop", "remove", "move", "pause", "resume", "clear", "seek", "seekback",
+             "speed", "autoplay", "loop", "shuffle", "cskip", "cstop", "cpause", "cresume"]))
         async def _control(c, m: Message):
             if not await self._allowed(c, m):
                 return
@@ -405,13 +419,34 @@ class _BotHandlers:
             if cmd == "remove":
                 args = (m.command or [])[1:]
                 if len(args) != 1 or not args[0].isdigit():
-                    return await m.reply_text("Usage: <code>/remove &lt;position&gt;</code>",
-                                              parse_mode=enums.ParseMode.HTML)
+                    return await m.reply_text(
+                        "Usage: <code>/remove &lt;upcoming position&gt;</code> (1 is the first upcoming track).",
+                        parse_mode=enums.ParseMode.HTML)
                 removed = self.queue.remove(target, int(args[0]))
+                if removed is None:
+                    return await m.reply_text(
+                        "That upcoming position doesn't exist. The current track is protected; check /queue for positions.",
+                        parse_mode=enums.ParseMode.HTML)
                 await self._persist(target)
-                return await m.reply_text(
-                    f"🗑 Removed <b>{_esc(removed['title'])}</b>." if removed else "That position doesn't exist.",
-                    parse_mode=enums.ParseMode.HTML)
+                return await m.reply_text(f"🗑 Removed <b>{_esc(removed['title'])}</b> from the upcoming queue.",
+                                          parse_mode=enums.ParseMode.HTML)
+            if cmd == "move":
+                args = (m.command or [])[1:]
+                if len(args) != 2 or any(not value.isdigit() for value in args):
+                    return await m.reply_text(
+                        "Usage: <code>/move &lt;from&gt; &lt;to&gt;</code> (upcoming positions start at 1).",
+                        parse_mode=enums.ParseMode.HTML)
+                source, destination = map(int, args)
+                if source == destination:
+                    return await m.reply_text("Choose two different upcoming positions.",
+                                              parse_mode=enums.ParseMode.HTML)
+                if not self.queue.move_upcoming(target, source, destination):
+                    return await m.reply_text(
+                        "Those positions aren't in the upcoming queue. The current track cannot be moved.",
+                        parse_mode=enums.ParseMode.HTML)
+                await self._persist(target)
+                return await m.reply_text(f"↕️ Moved upcoming track #{source} to #{destination}.",
+                                          parse_mode=enums.ParseMode.HTML)
             if cmd in ("seek", "seekback"):
                 args = (m.command or [])[1:]
                 if len(args) != 1 or not args[0].isdigit() or int(args[0]) <= 0:
@@ -462,6 +497,30 @@ class _BotHandlers:
                 return await m.reply_text(
                     f"🔁 <b>Autoplay {'on' if s_now.get('autoplay') else 'off'}.</b> "
                     "When on, extra search hits queue up after a /play title.",
+                    parse_mode=enums.ParseMode.HTML)
+            if cmd == "loop":
+                settings_now = await store.get_settings(bot_id, m.chat.id)
+                modes = ("off", "one", "all")
+                args = (m.command or [])[1:]
+                if len(args) > 1:
+                    return await m.reply_text("Use <code>/loop</code> or <code>/loop off|one|all</code>.",
+                                              parse_mode=enums.ParseMode.HTML)
+                current = settings_now.get("loop_mode", "off")
+                if args:
+                    mode = args[0].lower()
+                    if mode not in modes:
+                        return await m.reply_text("Use <code>/loop off|one|all</code>.",
+                                                  parse_mode=enums.ParseMode.HTML)
+                else:
+                    mode = modes[(modes.index(current) + 1) % len(modes)] if current in modes else "one"
+                await store.update_settings(bot_id, m.chat.id, {"loop_mode": mode})
+                return await m.reply_text(f"🔁 <b>Repeat mode:</b> {_esc(mode)}.",
+                                          parse_mode=enums.ParseMode.HTML)
+            if cmd == "shuffle":
+                count = self.queue.shuffle_upcoming(target)
+                await self._persist(target)
+                return await m.reply_text(
+                    f"🔀 <b>Shuffled {count} upcoming track(s).</b> Current playback was left unchanged.",
                     parse_mode=enums.ParseMode.HTML)
             nxt = self.queue.skip(target)
             await self._persist(target)
@@ -650,6 +709,23 @@ class _BotHandlers:
                                               reply_markup=self._panel_markup(target),
                                               parse_mode=enums.ParseMode.HTML)
                     return await q.answer()
+                if sub == "loop":
+                    settings = await store.get_settings(bot_id, q.message.chat.id)
+                    modes = ("off", "one", "all")
+                    current = settings.get("loop_mode", "off")
+                    mode = modes[(modes.index(current) + 1) % len(modes)] if current in modes else "one"
+                    await store.update_settings(bot_id, q.message.chat.id, {"loop_mode": mode})
+                    await q.message.edit_text(self._panel_text(target),
+                                              reply_markup=self._panel_markup(target),
+                                              parse_mode=enums.ParseMode.HTML)
+                    return await q.answer(f"Repeat: {mode}")
+                if sub == "shuffle":
+                    count = self.queue.shuffle_upcoming(target)
+                    await self._persist(target)
+                    await q.message.edit_text(self._panel_text(target),
+                                              reply_markup=self._panel_markup(target),
+                                              parse_mode=enums.ParseMode.HTML)
+                    return await q.answer(f"Shuffled {count} upcoming track(s).")
                 if not self._player_ready():
                     return await q.answer("Streaming isn't active for this clone yet.", show_alert=True)
                 label = "Done"
@@ -717,6 +793,11 @@ class _BotHandlers:
             elif action == "auto":
                 s = await store.update_settings(bot_id, q.message.chat.id,
                                                 {"autoplay": not s.get("autoplay")})
+            elif action == "loop":
+                modes = ("off", "one", "all")
+                current = s.get("loop_mode", "off")
+                next_mode = modes[(modes.index(current) + 1) % len(modes)] if current in modes else "off"
+                s = await store.update_settings(bot_id, q.message.chat.id, {"loop_mode": next_mode})
             elif action == "speed":
                 steps = [1.0, 1.25, 1.5, 2.0, 0.5]
                 cur = float(s.get("speed", 1.0))
@@ -753,8 +834,11 @@ MUSIC_WORKER_COMMANDS = [
     ("seekback", "Seek backward: /seekback 30"),
     ("speed", "Playback speed: /speed 1.5"),
     ("autoplay", "Auto-queue search hits (toggle)"),
+    ("loop", "Repeat off, current track or full queue"),
+    ("shuffle", "Shuffle upcoming tracks only"),
     ("clear", "Clear upcoming tracks (keeps current)"),
-    ("remove", "Remove a queue position: /remove 2"),
+    ("remove", "Remove an upcoming track: /remove 1"),
+    ("move", "Reorder upcoming tracks: /move 1 3"),
     ("stop", "Stop and clear the queue"),
     ("pcreate", "Create a playlist: /pcreate <name>"),
     ("padd", "Add a song: /padd <name> <song>"),

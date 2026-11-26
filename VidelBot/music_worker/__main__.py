@@ -2,15 +2,14 @@
 
     cd VidelBot && MUSIC_WORKER_STANDALONE=1 python -m music_worker
 
-Runs every clone whose profile is ``music`` using ONLY this package —
-a separate worker program, like the File Store worker, not a plugin of
-the main bot.
+Runs every active clone whose profile is ``music`` using ONLY this
+package — a separate worker program, not a plugin of the main bot.
+Playback uses the saved assistant session when configured and degrades
+honestly to queue-only mode when voice setup is unavailable.
 
-Safety: this process must be the ONLY one serving those clones, so the
-launcher refuses to start unless ``MUSIC_WORKER_STANDALONE=1`` is set.
-``run.py`` does not import this module. Note the stage-1 limit from
-this package's README: voice-chat streaming is not enabled yet, so
-playback commands queue honestly instead of playing.
+Safety: run this as the sole Music worker for these clones. The launcher
+refuses to start unless ``MUSIC_WORKER_STANDALONE=1`` is set. ``run.py``
+does not import this module.
 """
 from __future__ import annotations
 
@@ -52,7 +51,16 @@ async def _main() -> None:
             loop.add_signal_handler(sig, stop_event.set)
         except NotImplementedError:  # Windows / restricted environments
             signal.signal(sig, lambda *_: stop_event.set())
-    await stop_event.wait()
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            try:
+                result = await music_worker_engine.reconcile()
+                if result["failed"]:
+                    log.warning("Music reconciliation has %d failed clone(s).", len(result["failed"]))
+            except Exception:
+                log.warning("Music profile reconciliation could not be completed.", exc_info=True)
 
     log.info("stopping…")
     stopped = await music_worker_engine.stop_all()

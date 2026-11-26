@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import math
+import random
 
 
 def default_settings() -> dict:
@@ -9,9 +11,36 @@ def default_settings() -> dict:
         "dj_mode": False,      # only admins may queue/skip/stop
         "volume": 100,         # 10..200
         "autoplay": False,     # queue extra search hits after a /play title
+        "loop_mode": "off",   # off | one | all
         "speed": 1.0,          # playback speed 0.25..4.0 (ffmpeg atempo)
         "linked_channel": 0,   # channel chat_id for /cplay (0 = none)
     }
+
+
+def normalize_settings(values) -> dict:
+    """Return safe persisted Music settings, falling back to defaults per field."""
+    defaults = default_settings()
+    if not isinstance(values, dict):
+        return defaults
+    out = dict(defaults)
+    for key in ("dj_mode", "autoplay"):
+        if isinstance(values.get(key), bool):
+            out[key] = values[key]
+    volume = values.get("volume")
+    if isinstance(volume, int) and not isinstance(volume, bool):
+        out["volume"] = min(200, max(10, volume))
+    loop_mode = values.get("loop_mode")
+    if loop_mode in ("off", "one", "all"):
+        out["loop_mode"] = loop_mode
+    speed = values.get("speed")
+    if (isinstance(speed, (int, float)) and not isinstance(speed, bool)
+            and math.isfinite(float(speed))):
+        out["speed"] = min(4.0, max(0.25, float(speed)))
+    linked_channel = values.get("linked_channel")
+    if (isinstance(linked_channel, int) and not isinstance(linked_channel, bool)
+            and -(2**63) < linked_channel < 2**63):
+        out["linked_channel"] = linked_channel
+    return out
 
 
 def ffmpeg_params(seek: float = 0, speed: float = 1.0) -> str | None:
@@ -91,13 +120,45 @@ class PlayQueue:
             queue.pop(0)
         return queue[0] if queue else None
 
-    def remove(self, chat_id: int, position: int) -> dict | None:
-        """Remove by 1-based queue position (1 = current)."""
+    def advance(self, chat_id: int, loop_mode: str = "off") -> dict | None:
+        """Apply a natural-end transition while keeping loop mutations bounded."""
         queue = self._queues.get(int(chat_id)) or []
-        index = int(position) - 1
-        if 0 <= index < len(queue):
+        if not queue:
+            return None
+        if loop_mode == "one":
+            return queue[0]
+        current = queue.pop(0)
+        if loop_mode == "all":
+            queue.append(current)
+        return queue[0] if queue else None
+
+    def shuffle_upcoming(self, chat_id: int) -> int:
+        """Shuffle only pending tracks, never changing the current track."""
+        queue = self._queues.get(int(chat_id)) or []
+        pending = queue[1:]
+        random.shuffle(pending)
+        queue[1:] = pending
+        return len(pending)
+
+    def remove(self, chat_id: int, position: int) -> dict | None:
+        """Remove a 1-based upcoming position; the current track is protected."""
+        queue = self._queues.get(int(chat_id)) or []
+        index = int(position)
+        if 1 <= index < len(queue):
             return queue.pop(index)
         return None
+
+    def move_upcoming(self, chat_id: int, source: int, destination: int) -> bool:
+        """Move between 1-based upcoming positions without moving the current track."""
+        queue = self._queues.get(int(chat_id)) or []
+        source, destination = int(source), int(destination)
+        if not (1 <= source < len(queue) and 1 <= destination < len(queue)):
+            return False
+        if source == destination:
+            return True
+        track = queue.pop(source)
+        queue.insert(destination, track)
+        return True
 
     def clear(self, chat_id: int) -> int:
         queue = self._queues.pop(int(chat_id), [])

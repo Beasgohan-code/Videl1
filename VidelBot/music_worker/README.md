@@ -10,8 +10,13 @@ worker (`group_worker/`), sharing no code with either.
   `/skip`, `/remove <n>`, `/stop`.
 - Rich `/start` with Add-me and Owner buttons; `/settings` with DJ
   mode (admins-only control) and volume, using colored buttons.
-- Per-(clone, chat) settings in `music_worker_settings`; bounded
-  in-memory queues (current track is never dropped by the cap).
+- Per-(clone, chat) settings in `music_worker_settings`; owner-editable
+  clone-wide defaults can be changed from the main dashboard while this
+  worker is offline. Per-chat fields override clone-wide defaults; stored
+  settings are type-checked and bounded when read. Owner defaults live on the
+  owner-checked clone registry record; older reserved-chat defaults remain
+  readable for compatibility.
+- Bounded in-memory queues (current track is never dropped by the cap).
 
 ## Stage 2 — streaming (implemented, live-proof pending)
 
@@ -37,6 +42,7 @@ program — pytgcalls stays out of the main bot's requirements.
   Telegram with a real clone; unit tests cover the wrapper with a
   fake calls object, and failures (e.g. no voice chat started) are
   reported honestly while the track stays queued.
+- Shutdown stops the PyTgCalls engine before Telegram clients. If player, bot, or assistant shutdown is uncertain or cancelled, the resource stays fenced and a later stop retries it; a clone is not restarted while an old player/client may still be alive.
 - `/play <title>` resolves via yt-dlp (`resolver.py`, this package's
   own requirements): search phrases and supported links become direct
   audio streams; a failed lookup replies honestly instead of queueing
@@ -46,18 +52,26 @@ program — pytgcalls stays out of the main bot's requirements.
   lose the night's playlist. Downloaded-file sources may vanish with
   the old container and stream URLs can expire; those tracks simply
   fail honestly when played.
-- Clone profile selection for `music` in the main bot and runtime
-  wiring remain separate approved steps; `run.py` does not import
-  this package.
+- Music profile selection is available after encrypted assistant-session
+  setup. The worker remains separate from `run.py`; provision exactly one
+  standalone Music process for these clone tokens. It reconciles the saved
+  desired state every 10 seconds, publishes its local `starting`, `running`,
+  `stopping`, `stopped` or `uncertain` observation, and backs off repeated
+  start failures.
+  These MongoDB observations are not a distributed lease or proof about another
+  process; never run a second Music worker for the same tokens.
 
 ## Running standalone
 
     cd VidelBot && MUSIC_WORKER_STANDALONE=1 python -m music_worker
 
-Starts every `music`-profile clone and stops them cleanly on
-SIGINT/SIGTERM. The env opt-in is a fail-closed guard against two
-processes serving the same clone. `run.py` does not import this
-package.
+Starts active `music`-profile clones, then reconciles start/stop requests
+from the owner dashboard about every 10 seconds. Stops them cleanly on
+SIGINT/SIGTERM. The env opt-in is a fail-closed guard against accidentally
+starting without an explicit operator acknowledgement; it is not a distributed
+lease. `run.py` does not import this package. The File Store runtime now only
+loads File Store-profile records, while this standalone engine queries Music
+records explicitly.
 
 ## Stage 5 — full VC-bot feature set
 
@@ -79,6 +93,26 @@ their audible effect, like joining a call, is live-proof pending.
 
 When a track starts, the bot posts a 🎵 NOW PLAYING panel (title,
 duration, live position, requester, up-next table) with colored
-control buttons — Pause/Resume toggle, Skip, Stop, Queue view and
-back-to-Panel. Buttons honour DJ mode, work for channel play too
-(the target chat is encoded in the callback), and refresh in place.
+control buttons — Pause/Resume, Skip, Stop, Queue view, repeat-mode
+cycle and upcoming-track shuffle. Buttons honour DJ mode, work for
+channel play too (the target chat is encoded in the callback), and refresh
+in place.
+
+
+## Stage 7 — repeat and queue ordering
+
+Group admins can set `/loop off`, `/loop one` or `/loop all` (or cycle the
+mode from Music settings). Natural track-end events repeat only the current
+track or rotate the full queue as selected. `/shuffle` randomizes upcoming
+tracks without moving the current track; the queue mutation is persisted.
+These controls are offline-tested and do not establish live voice-chat
+behavior. The implementation is independent and keeps the current track
+separate from mutations to the upcoming queue.
+
+## Stage 8 — safe upcoming-queue edits
+
+`/remove <position>` and `/move <from> <to>` use 1-based positions in the
+upcoming list, so position 1 is the first song after the current track.
+The current track cannot be removed or moved by either command. The now
+playing panel and queue view keep the same queue numbering; edits persist
+per clone and chat.

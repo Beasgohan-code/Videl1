@@ -1,6 +1,6 @@
 """Offline reactivation safety; fake clients and mongomock, not live Telegram."""
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -180,4 +180,43 @@ def test_malformed_identity_record_fails_closed(monkeypatch):
             q=FakeQuery('cl_on_1' if row['_id'] is True else 'cl_on_42', uid=5 if row['owner_id']==5 else 1)
             await lifecycle.reactivate_cb(FakeClient(),q)
             assert q.answers[-1][1] and not eng.started
+    run(go())
+
+
+def test_music_reactivation_blocks_fresh_report_but_accepts_stale_desired_state(monkeypatch):
+    async def go():
+        eng = Engine()
+        monkeypatch.setattr(engine_module, "worker_engine", eng)
+        await record(clone_profile="music", music_session_encrypted="enc:assistant",
+                     music_runtime_state="running",
+                     music_runtime_updated_at=datetime.now(timezone.utc))
+        fresh = FakeQuery("cl_on_42", uid=5)
+        await lifecycle.reactivate_cb(FakeClient(), fresh)
+        assert fresh.answers[-1][1] is True
+        assert (await MainDB().get_bot(42))["is_active"] is False
+
+        stale_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        await MainDB().bots.update_one({"_id": 42},
+                                       {"$set": {"music_runtime_updated_at": stale_at}})
+        stale = FakeQuery("cl_on_42", uid=5)
+        await lifecycle.reactivate_cb(FakeClient(), stale)
+        assert (await MainDB().get_bot(42))["is_active"] is True
+        assert eng.started == []
+        assert "start requested" in stale.message.edits[-1].lower()
+        assert "last worker report was stale" in stale.message.edits[-1].lower()
+    run(go())
+
+
+def test_music_reactivation_requests_standalone_runtime_not_filestore(monkeypatch):
+    async def go():
+        eng = Engine()
+        monkeypatch.setattr(engine_module, "worker_engine", eng)
+        await record(clone_profile="music", music_session_encrypted="enc:assistant")
+        q = FakeQuery("cl_on_42", uid=5)
+        await lifecycle.reactivate_cb(FakeClient(), q)
+        saved = await MainDB().get_bot(42)
+        assert saved["is_active"] is True
+        assert eng.started == []
+        assert "start requested" in q.message.edits[-1].lower()
+        assert "not a live-client confirmation" in q.message.edits[-1].lower()
     run(go())

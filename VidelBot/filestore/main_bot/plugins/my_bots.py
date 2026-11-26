@@ -9,7 +9,7 @@ from pyrogram.types import (
     InlineKeyboardButton,
 )
 from filestore.fs_config import LOGGER, BACKEND_API_SECRET, BACKEND_API_URL
-from filestore.database.main_db import MainDB
+from filestore.database.main_db import MainDB, music_runtime_report_is_fresh
 from filestore.utils.security import mask_token, decrypt_token
 from filestore.utils.registry_ids import valid_registry_id
 
@@ -184,19 +184,33 @@ async def _mode_dashboard(query, bot, mode):
     else:
         label = "Music" if mode == "music" else "Unknown / unsupported"
         if mode == "music":
+            runtime = bot.get("music_runtime_state", "unknown")
+            if runtime not in ("starting", "running", "stopping", "stopped", "uncertain"):
+                runtime = "unknown"
+            if runtime in ("starting", "running", "stopping", "uncertain") and not music_runtime_report_is_fresh(bot):
+                runtime = "stale"
+            desired_label = "on" if saved is True else "off" if saved is False else "unknown"
             text = ("<b>🎵 ᴍᴜsɪᴄ</b>\n\n"
                     f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
                     f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
-                    f"<b>Saved profile:</b> {label} · <b>Saved state:</b> {state}\n\n"
-                    "<b>Get started</b>\n"
-                    "① Set up the assistant account (paste a session string or create one here with a guided login).\n"
-                    "② Add this bot to your group and start a voice chat.\n"
-                    "③ Use <code>/play &lt;song&gt;</code> in the group; the assistant joins and plays.\n\n"
-                    "Music clones run under the standalone music program, not this worker; restart that program after setup to load this clone. "
-                    "Live Telegram voice-chat playback is not verified by this dashboard. "
-                    "Your existing File Store data has not been removed.")
-            buttons = [[InlineKeyboardButton("🎵 Set up assistant session", callback_data=f"clmusic_{bot_id}")],
+                    f"<b>Desired state:</b> {desired_label} · <b>Music worker report:</b> {runtime}\n\n"
+                    "Use the controls below to request start/stop. A separate standalone Music worker must be deployed; "
+                    "it reconciles these requests about every 10 seconds. The report is only that worker's local observation, "
+                    "not proof about other processes; reports older than two minutes are marked stale, not stopped.\n"
+                    "If you recover to another profile, first confirm no separate Music process still holds this token.\n\n"
+                    "Set up the assistant account (paste a session string or guided login), add the bot to your group, "
+                    "then use <code>/play &lt;song&gt;</code>. Existing File Store data is retained.")
+            state_action = "off" if saved is True else "on"
+            state_label = "⏹ Request Music stop" if state_action == "off" else "▶ Request Music start"
+            buttons = [[InlineKeyboardButton(state_label, callback_data=f"clmusicstate_{bot_id}_{state_action}")],
+                       [InlineKeyboardButton("⚙️ Music defaults", callback_data=f"clmusicsettings_{bot_id}")],
+                       [InlineKeyboardButton("🎵 Set up assistant session", callback_data=f"clmusic_{bot_id}")],
                        [InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")]]
+            if saved is False and runtime in ("stopped", "unknown", "stale"):
+                label = ("🧯 Recover (stale report; confirm)" if runtime == "stale"
+                         else "🧯 Recover to File Store (confirm)")
+                buttons.append([InlineKeyboardButton(label,
+                                                     callback_data=f"clprofile_recover_{bot_id}_filestore")])
         else:
             text = ("<b>🧩 ᴄʟᴏɴᴇ ᴘʀᴏꜰɪʟᴇ</b>\n\n"
                     f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
@@ -213,6 +227,159 @@ async def _mode_dashboard(query, bot, mode):
     except Exception:
         pass
 
+
+
+def _next_music_setting_value(setting: str, settings: dict) -> str:
+    if setting == "dj":
+        return "off" if settings.get("dj_mode") else "on"
+    if setting == "autoplay":
+        return "off" if settings.get("autoplay") else "on"
+    if setting == "loop":
+        return {"off": "one", "one": "all", "all": "off"}.get(settings.get("loop_mode"), "off")
+    if setting == "volume":
+        choices = (50, 75, 100, 125, 150, 200)
+        current = settings.get("volume", 100)
+        return str(next((choice for choice in choices if choice > current), choices[0]))
+    choices = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0)
+    current = settings.get("speed", 1.0)
+    return str(next((choice for choice in choices if choice > current), choices[0]))
+
+
+def _music_owner_settings_markup(bot_id: int, settings: dict) -> InlineKeyboardMarkup:
+    targets = {key: _next_music_setting_value(key, settings)
+               for key in ("dj", "autoplay", "loop", "volume", "speed")}
+    target_dj, target_autoplay = targets["dj"], targets["autoplay"]
+    target_loop, target_volume, target_speed = targets["loop"], targets["volume"], targets["speed"]
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"{'✅' if settings.get('dj_mode') else '▫️'} DJ mode",
+            callback_data=f"clmusicsetting_{bot_id}_dj_{target_dj}")],
+        [InlineKeyboardButton(
+            f"{'✅' if settings.get('autoplay') else '▫️'} Autoplay",
+            callback_data=f"clmusicsetting_{bot_id}_autoplay_{target_autoplay}")],
+        [InlineKeyboardButton(
+            f"🔁 Repeat: {settings.get('loop_mode', 'off')}",
+            callback_data=f"clmusicsetting_{bot_id}_loop_{target_loop}")],
+        [InlineKeyboardButton(
+            f"🔊 Default volume: {settings.get('volume', 100)}%",
+            callback_data=f"clmusicsetting_{bot_id}_volume_{target_volume}")],
+        [InlineKeyboardButton(
+            f"🎚 Default speed: {float(settings.get('speed', 1.0)):g}×",
+            callback_data=f"clmusicsetting_{bot_id}_speed_{target_speed}")],
+        [InlineKeyboardButton("🔙 Music dashboard", callback_data=f"dashboard_{bot_id}")],
+    ])
+
+
+async def _music_owner_settings_data(bot_id: int):
+    from filestore.database.mongo import get_db
+    from music_worker.store import MusicWorkerStore
+    store = MusicWorkerStore(get_db())
+    return store, await store.get_settings(bot_id, 0)
+
+
+async def _render_music_owner_settings(query, bot_id: int, settings: dict):
+    from core.ui import smart_edit
+    text = ("<b>⚙️ Music defaults</b>\n\n"
+            f"DJ mode: <b>{'on' if settings.get('dj_mode') else 'off'}</b>\n"
+            f"Autoplay: <b>{'on' if settings.get('autoplay') else 'off'}</b>\n"
+            f"Repeat: <b>{settings.get('loop_mode', 'off')}</b> · "
+            f"Volume: <b>{settings.get('volume', 100)}%</b> · "
+            f"Speed: <b>{float(settings.get('speed', 1.0)):g}×</b>\n\n"
+            "These defaults are saved directly, even while the Music worker is offline. "
+            "They apply to groups without their own override; existing group settings and linked channels are unchanged. "
+            "The running worker reads them on its next settings lookup.")
+    await smart_edit(query.message, text, _music_owner_settings_markup(bot_id, settings))
+
+
+async def _music_settings_owner(query, bot_id: int):
+    if not _dashboard_identity(query) or type(bot_id) is not int or not 0 < bot_id < 2**63:
+        await query.answer("❌ Bot not found or access denied!", show_alert=True)
+        return None
+    try:
+        bot = await main_db.get_bot(bot_id)
+    except Exception:
+        await query.answer("Clone ownership couldn't be checked. Retry from the dashboard.",
+                           show_alert=True)
+        return None
+    if (not bot or bot.get("owner_id") != query.from_user.id
+            or bot.get("is_deleted", False) is not False
+            or bot.get("clone_profile") != "music"):
+        await query.answer("❌ Bot not found or access denied!", show_alert=True)
+        return None
+    return bot
+
+
+@Client.on_callback_query(filters.regex(r"^clmusicsettings_(\d+)$"))
+async def music_owner_settings_panel(client: Client, query: CallbackQuery):
+    match = re.fullmatch(r"clmusicsettings_(\d+)", query.data or "")
+    if not match:
+        return await query.answer("Invalid settings panel.", show_alert=True)
+    bot_id = int(match.group(1))
+    if not await _music_settings_owner(query, bot_id):
+        return
+    try:
+        _, settings = await _music_owner_settings_data(bot_id)
+    except Exception:
+        return await query.answer("Music defaults couldn't be loaded. Retry from the dashboard.",
+                                  show_alert=True)
+    if not await _music_settings_owner(query, bot_id):
+        return
+    await _render_music_owner_settings(query, bot_id, settings)
+    await query.answer()
+
+
+@Client.on_callback_query(filters.regex(
+    r"^clmusicsetting_(\d+)_(dj|autoplay|loop|volume|speed)(?:_([A-Za-z0-9.]+))?$"))
+async def music_owner_setting_toggle(client: Client, query: CallbackQuery):
+    match = re.fullmatch(
+        r"clmusicsetting_(\d+)_(dj|autoplay|loop|volume|speed)(?:_([A-Za-z0-9.]+))?",
+        query.data or "")
+    if not match:
+        return await query.answer("Invalid Music setting.", show_alert=True)
+    bot_id, setting, requested = int(match.group(1)), match.group(2), match.group(3)
+    if not await _music_settings_owner(query, bot_id):
+        return
+    try:
+        _, settings = await _music_owner_settings_data(bot_id)
+        if requested is None:  # accept older dashboard buttons; new ones are idempotent targets
+            requested = _next_music_setting_value(setting, settings)
+        if setting in ("dj", "autoplay"):
+            if requested not in ("on", "off"):
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            key, value = ("dj_mode" if setting == "dj" else "autoplay", requested == "on")
+        elif setting == "loop":
+            if requested not in ("off", "one", "all"):
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            key, value = "loop_mode", requested
+        elif setting == "volume":
+            try:
+                value = int(requested)
+            except ValueError:
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            if value not in (50, 75, 100, 125, 150, 200):
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            key = "volume"
+        else:
+            try:
+                value = float(requested)
+            except ValueError:
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            if value not in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0):
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            key = "speed"
+        saved = await main_db.update_music_settings_defaults(
+            bot_id, query.from_user.id, {key: value})
+        if not saved:
+            return await query.answer("Clone ownership/profile changed. Refresh before trying again.",
+                                      show_alert=True)
+        if not await _music_settings_owner(query, bot_id):
+            return
+        _, settings = await _music_owner_settings_data(bot_id)
+    except Exception:
+        return await query.answer("Music default couldn't be saved. Refresh before trying again.",
+                                  show_alert=True)
+    await _render_music_owner_settings(query, bot_id, settings)
+    await query.answer("Saved; per-group overrides are unchanged.")
 
 
 @Client.on_callback_query(filters.regex(r"^dashboard_(\d+)$"))
@@ -391,6 +558,29 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
     if not bot or bot["owner_id"] != user_id:
         await query.answer("❌ Access denied!", show_alert=True)
         return
+
+    if bot.get("clone_profile") == "music":
+        if not _dashboard_identity(query):
+            return await query.answer("❌ Bot not found or access denied!", show_alert=True)
+        # Old dashboard buttons can outlive the Music panel. Never try to start
+        # a Music profile through the File Store engine; persist desired state
+        # for the standalone Music reconciler instead.
+        desired = bot.get("is_active") is not True
+        if desired and (not isinstance(bot.get("music_session_encrypted"), str)
+                        or not bot["music_session_encrypted"].startswith("enc:")):
+            return await query.answer("Save an encrypted assistant session before starting Music.",
+                                      show_alert=True)
+        try:
+            await main_db.set_profile_active(bot_id, user_id, "music", desired)
+        except Exception:
+            return await query.answer("Music state request could not be confirmed. Reopen the dashboard.",
+                                      show_alert=True)
+        current = await main_db.get_bot(bot_id)
+        if (not current or current.get("clone_profile") != "music"
+                or current.get("is_active") is not desired):
+            return await query.answer("Music state changed. Reopen the dashboard.", show_alert=True)
+        await query.answer("Music start requested." if desired else "Music stop requested.")
+        return await _mode_dashboard(query, current, "music")
 
     from filestore.worker_bot.engine import worker_engine
     is_live = worker_engine.get_worker(bot_id) is not None

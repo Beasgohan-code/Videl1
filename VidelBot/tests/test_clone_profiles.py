@@ -1,6 +1,7 @@
 """Offline clone profile, owner and group-moderation contracts."""
 import asyncio
 import re
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -307,4 +308,167 @@ def test_decryption_failure_is_reported_without_leaking_error(monkeypatch, caplo
             await eng.start_worker(await MainDB().get_bot(4242))
         assert 'secret' not in str(error.value) and not eng.get_worker(4242)
         assert 'secret credential diagnostic' not in caplog.text
+    run(go())
+
+
+def test_legacy_toggle_button_routes_music_through_desired_state(monkeypatch):
+    from filestore.main_bot.plugins import my_bots
+
+    rendered = []
+    async def render(_query, bot_doc, mode):
+        rendered.append((mode, bot_doc.get("is_active")))
+    monkeypatch.setattr(my_bots, "_mode_dashboard", render)
+
+    async def go():
+        db = MainDB()
+        await bot()
+        await db.bots.update_one(
+            {"_id": 4242},
+            {"$set": {"clone_profile": "music", "is_active": True,
+                      "music_session_encrypted": "enc:session"}},
+        )
+        stop = FakeQuery("toggle_bot_4242", uid=5)
+        await my_bots.toggle_bot_callback(FakeClient(), stop)
+        assert (await db.get_bot(4242))["is_active"] is False
+        assert rendered[-1] == ("music", False)
+
+        start = FakeQuery("toggle_bot_4242", uid=5)
+        await my_bots.toggle_bot_callback(FakeClient(), start)
+        assert (await db.get_bot(4242))["is_active"] is True
+        assert rendered[-1] == ("music", True)
+
+        await db.bots.update_one({"_id": 4242}, {"$set": {"is_active": False},
+                                                  "$unset": {"music_session_encrypted": ""}})
+        blocked = FakeQuery("toggle_bot_4242", uid=5)
+        await my_bots.toggle_bot_callback(FakeClient(), blocked)
+        assert (await db.get_bot(4242))["is_active"] is False
+        assert "assistant session" in blocked.answers[-1][0].lower()
+    run(go())
+
+
+def test_music_stop_request_and_confirmed_fallback_are_owner_scoped(monkeypatch):
+    from filestore.main_bot.plugins import music_session, my_bots
+
+    async def render_music(_query, bot_doc, mode):
+        assert mode == "music"
+        assert bot_doc["is_active"] is False
+
+    monkeypatch.setattr(my_bots, "_mode_dashboard", render_music)
+
+    async def go():
+        db = MainDB()
+        await bot()
+        await db.bots.update_one(
+            {"_id": 4242},
+            {"$set": {"clone_profile": "music", "music_session_encrypted": "enc:session"}},
+        )
+        stop = FakeQuery("clmusicstate_4242_off", uid=5)
+        stop.matches = [re.match(r"^clmusicstate_(\d+)_(on|off)$", stop.data)]
+        await music_session.music_runtime_toggle(FakeClient(), stop)
+        assert (await db.get_bot(4242))["is_active"] is False
+
+        select = FakeQuery("clprofile_set_4242_filestore", uid=5)
+        select.matches = [re.match(r"^clprofile_set_(\d+)_(\w+)$", select.data)]
+        await clone_profiles.profile_select(FakeClient(), select)
+        assert (await db.get_bot(4242))["clone_profile"] == "music"
+        assert any("does not stop a Music process" in str(edit) for edit in select.message.edits)
+        confirm = FakeQuery("clprofile_recover_4242_filestore", uid=5)
+        confirm.matches = [re.match(r"^clprofile_recover_(\d+)_(filestore|group)$", confirm.data)]
+        await clone_profiles.recover_music_profile(FakeClient(), confirm)
+        saved = await db.get_bot(4242)
+        assert saved["clone_profile"] == "filestore" and saved["is_active"] is False
+
+        denied = FakeQuery("clprofile_recover_4242_filestore", uid=6)
+        denied.matches = [re.match(r"^clprofile_recover_(\d+)_(filestore|group)$", denied.data)]
+        await clone_profiles.recover_music_profile(FakeClient(), denied)
+        assert "denied" in denied.answers[0][0].lower()
+    run(go())
+
+
+def test_music_recovery_blocks_a_running_or_uncertain_music_worker():
+    async def go():
+        db = MainDB()
+        await bot()
+        await db.bots.update_one(
+            {"_id": 4242},
+            {"$set": {"clone_profile": "music", "is_active": False,
+                      "music_runtime_state": "uncertain"}},
+        )
+        q = FakeQuery("clprofile_recover_4242_filestore", uid=5)
+        q.matches = [re.match(r"^clprofile_recover_(\d+)_(filestore|group)$", q.data)]
+        await clone_profiles.recover_music_profile(FakeClient(), q)
+        assert (await db.get_bot(4242))["clone_profile"] == "music"
+        assert "recently reported active" in q.answers[0][0].lower()
+    run(go())
+
+
+def test_stale_music_report_requires_owner_confirmation_but_allows_recovery(monkeypatch):
+    from filestore.main_bot.plugins import my_bots
+    import core.ui
+
+    rendered = []
+    async def capture_edit(message, text, reply_markup=None, **kwargs):
+        rendered.append((text, reply_markup))
+    monkeypatch.setattr(core.ui, "smart_edit", capture_edit)
+
+    async def go():
+        db = MainDB()
+        await bot()
+        old = datetime.now(timezone.utc) - timedelta(minutes=5)
+        await db.bots.update_one(
+            {"_id": 4242},
+            {"$set": {"clone_profile": "music", "is_active": False,
+                      "music_runtime_state": "running", "music_runtime_updated_at": old}},
+        )
+        # The dashboard must expose this as stale, not running/confirmed stopped.
+        doc = await db.get_bot(4242)
+        query = FakeQuery("dashboard_4242", uid=5)
+        await my_bots._mode_dashboard(query, doc, "music")
+        assert "worker report:</b> stale" in rendered[-1][0]
+        labels = [button.text for row in rendered[-1][1].inline_keyboard for button in row]
+        assert any("stale report; confirm" in label for label in labels)
+        switch = FakeQuery("clprofile_set_4242_filestore", uid=5)
+        switch.matches = [re.match(r"^clprofile_set_(\d+)_(\w+)$", switch.data)]
+        await clone_profiles.profile_select(FakeClient(), switch)
+        assert "last Music worker report is stale" in rendered[-1][0]
+
+        recover = FakeQuery("clprofile_recover_4242_filestore", uid=5)
+        recover.matches = [re.match(r"^clprofile_recover_(\d+)_(filestore|group)$", recover.data)]
+        await clone_profiles.recover_music_profile(FakeClient(), recover)
+        saved = await db.get_bot(4242)
+        assert saved["clone_profile"] == "filestore" and saved["is_active"] is False
+    run(go())
+
+
+def test_music_owner_defaults_are_editable_while_worker_is_offline():
+    from filestore.database.mongo import get_db
+    from filestore.main_bot.plugins import my_bots
+    from music_worker.store import MusicWorkerStore
+
+    async def go():
+        db = MainDB()
+        await bot()
+        await db.bots.update_one({"_id": 4242},
+                                 {"$set": {"clone_profile": "music", "is_active": False}})
+        store = MusicWorkerStore(get_db())
+        panel = FakeQuery("clmusicsettings_4242", uid=5)
+        await my_bots.music_owner_settings_panel(FakeClient(), panel)
+        assert "Music defaults" in str(panel.message.edits)
+
+        toggle = FakeQuery("clmusicsetting_4242_autoplay_on", uid=5)
+        await my_bots.music_owner_setting_toggle(FakeClient(), toggle)
+        assert (await store.get_settings(4242, 0))["autoplay"] is True
+        assert (await store.get_settings(4242, -1001))["autoplay"] is True
+        # Replaying the same button is idempotent rather than toggling back off.
+        duplicate = FakeQuery("clmusicsetting_4242_autoplay_on", uid=5)
+        await my_bots.music_owner_setting_toggle(FakeClient(), duplicate)
+        assert (await store.get_settings(4242, 0))["autoplay"] is True
+        await store.update_settings(4242, -1001, {"autoplay": False})
+        assert (await store.get_settings(4242, -1001))["autoplay"] is False
+        assert (await store.get_settings(4242, -1002))["autoplay"] is True
+
+        denied = FakeQuery("clmusicsetting_4242_dj", uid=6)
+        await my_bots.music_owner_setting_toggle(FakeClient(), denied)
+        assert denied.answers[-1][1] is True
+        assert (await store.get_settings(4242, 0))["dj_mode"] is False
     run(go())

@@ -5,7 +5,7 @@ Manages the registry of user-created bots and main bot users.
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pymongo import ReturnDocument
 from pymongo.collation import Collation
 from pymongo.errors import DuplicateKeyError
@@ -18,6 +18,29 @@ class BotRegistrationConflict(Exception):
 
 
 _PROFILE_NOT_CHECKED = object()
+MUSIC_RUNTIME_STALE_SECONDS = 120
+_MUSIC_ACTIVE_RUNTIME_STATES = ("starting", "running", "stopping", "uncertain")
+
+
+def music_runtime_report_is_fresh(bot: dict, *, now=None) -> bool:
+    """Whether an active Music observation is recent enough to block recovery.
+
+    A missing/malformed timestamp is treated conservatively as fresh. A stale
+    observation can only permit owner-confirmed recovery; it is not proof that a
+    separate worker has stopped.
+    """
+    if not isinstance(bot, dict) or bot.get("music_runtime_state") not in _MUSIC_ACTIVE_RUNTIME_STATES:
+        return False
+    observed_at = bot.get("music_runtime_updated_at")
+    if not isinstance(observed_at, datetime):
+        return True
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age = (now - observed_at).total_seconds()
+    return age <= MUSIC_RUNTIME_STALE_SECONDS
 
 
 class MainDB:
@@ -267,9 +290,79 @@ class MainDB:
             yield doc["_id"]
 
     async def get_all_active_bots(self) -> list:
-        """Get all active bots for worker engine startup."""
-        cursor = self.bots.find({"is_active": True})
+        """Get active File Store bots for the in-process File Store worker.
+
+        Legacy records without ``clone_profile`` remain File Store clones. Group
+        and Music runtimes are separate processes and must not be started by the
+        File Store engine/watchdog.
+        """
+        cursor = self.bots.find({
+            "is_active": True,
+            "is_deleted": {"$ne": True},
+            "$or": [{"clone_profile": {"$exists": False}},
+                    {"clone_profile": "filestore"}],
+        })
         return await cursor.to_list(length=None)
+
+    async def get_active_bots_for_profile(self, profile: str) -> list:
+        """Get active clones owned by one standalone profile runtime."""
+        if profile not in ("group", "music"):
+            raise ValueError("Unsupported standalone clone profile")
+        cursor = self.bots.find({"is_active": True, "clone_profile": profile,
+                                 "is_deleted": {"$ne": True}})
+        return await cursor.to_list(length=None)
+
+    async def set_profile_active(self, bot_id: int, owner_id: int,
+                                 profile: str, active: bool) -> bool:
+        """Change a standalone clone's desired state using owner/profile CAS."""
+        if profile not in ("group", "music") or type(active) is not bool:
+            return False
+        now = datetime.now(timezone.utc)
+        update = {"$set": {"is_active": active}}
+        if active:
+            update["$set"]["last_active"] = now
+            update["$unset"] = {"deactivated_at": "", "deactivated_reason": "",
+                                "inactive_warned": ""}
+        result = await self.bots.update_one(
+            {"_id": bot_id, "owner_id": owner_id, "is_deleted": {"$ne": True},
+             "clone_profile": profile, "is_active": {"$ne": active}},
+            update,
+        )
+        return result.matched_count == 1
+
+    async def set_music_runtime_state(self, bot_id: int, state: str) -> bool:
+        """Publish standalone Music worker observation; not a distributed lease."""
+        if state not in ("starting", "running", "stopping", "stopped", "uncertain"):
+            return False
+        result = await self.bots.update_one(
+            {"_id": bot_id, "clone_profile": "music", "is_deleted": {"$ne": True}},
+            {"$set": {"music_runtime_state": state,
+                      "music_runtime_updated_at": datetime.now(timezone.utc)}},
+        )
+        return result.matched_count == 1
+
+    async def recover_music_profile(self, bot_id: int, owner_id: int,
+                                    target_profile: str = "filestore") -> bool:
+        """Owner-confirmed fallback when Music is inactive and no fresh active report exists.
+
+        Missing report timestamps fail closed. Stale reports pass only with the
+        owner's explicit confirmation in the calling UI; this is not a lease.
+        """
+        if target_profile not in ("filestore", "group"):
+            return False
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=MUSIC_RUNTIME_STALE_SECONDS)
+        result = await self.bots.update_one(
+            {"_id": bot_id, "owner_id": owner_id, "is_deleted": {"$ne": True},
+             "clone_profile": "music", "is_active": False,
+             "$or": [
+                 {"music_runtime_state": {"$nin": list(_MUSIC_ACTIVE_RUNTIME_STATES)}},
+                 {"music_runtime_state": {"$in": list(_MUSIC_ACTIVE_RUNTIME_STATES)},
+                  "music_runtime_updated_at": {"$lt": cutoff}},
+             ]},
+            {"$set": {"clone_profile": target_profile},
+             "$unset": {"music_runtime_state": "", "music_runtime_updated_at": ""}},
+        )
+        return result.matched_count == 1
 
     async def get_active_clone_sweep_records(self) -> list:
         """Projected active records for the idle sweep (no unrelated fields)."""
@@ -314,12 +407,44 @@ class MainDB:
             {"$set": {"owner_id": new_owner, "transferred_at": datetime.now(timezone.utc)}},
         )
 
-    async def set_music_session(self, bot_id: int, session_encrypted: str):
-        """Store a Music clone's assistant session (caller encrypts it first)."""
-        await self.bots.update_one(
-            {"_id": bot_id},
+    async def update_music_settings_defaults(self, bot_id: int, owner_id: int,
+                                             updates: dict) -> bool:
+        """Owner/profile-checked atomic update for Music-wide defaults."""
+        if not isinstance(updates, dict) or not updates:
+            return False
+        allowed = {"dj_mode", "autoplay", "loop_mode", "volume", "speed"}
+        if not set(updates).issubset(allowed):
+            return False
+        if any(key in updates and type(updates[key]) is not bool
+               for key in ("dj_mode", "autoplay")):
+            return False
+        if "loop_mode" in updates and updates["loop_mode"] not in ("off", "one", "all"):
+            return False
+        if "volume" in updates and (type(updates["volume"]) is not int
+                                     or not 10 <= updates["volume"] <= 200):
+            return False
+        if "speed" in updates:
+            value = updates["speed"]
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not 0.25 <= value <= 4.0):
+                return False
+        result = await self.bots.update_one(
+            {"_id": bot_id, "owner_id": owner_id, "is_deleted": {"$ne": True},
+             "clone_profile": "music"},
+            {"$set": {f"music_settings_defaults.{key}": value
+                      for key, value in updates.items()}},
+        )
+        return result.matched_count == 1
+
+    async def set_music_session(self, bot_id: int, owner_id: int, session_encrypted: str) -> bool:
+        """Store an encrypted assistant session only for its current live owner."""
+        if not isinstance(session_encrypted, str) or not session_encrypted.startswith("enc:"):
+            return False
+        result = await self.bots.update_one(
+            {"_id": bot_id, "owner_id": owner_id, "is_deleted": {"$ne": True}},
             {"$set": {"music_session_encrypted": session_encrypted}},
         )
+        return result.matched_count == 1
 
     async def set_bot_active(self, bot_id: int, active: bool):
         """Enable or disable a bot. Turning it on also restarts the inactivity clock – otherwise a clone

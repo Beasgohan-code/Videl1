@@ -59,8 +59,7 @@ class GroupWorkerEngine:
         return lock
 
     async def start_all(self) -> None:
-        bots = [b for b in await main_db.get_all_active_bots()
-                if b.get("clone_profile", "filestore") == "group"]
+        bots = await main_db.get_active_bots_for_profile("group")
         log.info("Starting %d group-management clones...", len(bots))
         for bot_doc in bots:
             try:
@@ -110,28 +109,41 @@ class GroupWorkerEngine:
                 log.warning("Group-scope commands unavailable for clone %s.", bot_id)
             async with self._lock:
                 self.workers[bot_id] = app
+        except asyncio.CancelledError:
+            if not await self._stop_client(app, timeout=3.0):
+                self._uncertain_stops[bot_id] = app
+            raise
         except Exception:
-            if _client_still_running(app):
-                try:
-                    await asyncio.wait_for(app.stop(block=True), timeout=3.0)
-                except Exception:
-                    self._uncertain_stops[bot_id] = app
-                if _client_still_running(app):
-                    self._uncertain_stops[bot_id] = app
+            if not await self._stop_client(app, timeout=3.0):
+                self._uncertain_stops[bot_id] = app
             raise
 
+    async def _stop_client(self, app, *, timeout: float = 5.0) -> bool:
+        """Stop one clone client and confirm it is no longer initialized/connected."""
+        try:
+            await asyncio.wait_for(app.stop(block=True), timeout=timeout)
+        except Exception:
+            pass
+        return not _client_still_running(app)
+
     async def stop_worker(self, bot_id: int) -> bool:
+        """Stop a clone, retrying previously uncertain stops instead of stranding them."""
         bot_id = int(bot_id)
         async with self._operation_lock(bot_id):
             async with self._lock:
                 app = self.workers.pop(bot_id, None)
+                if app is None:
+                    app = self._uncertain_stops.get(bot_id)
             if app is None:
-                return bot_id not in self._uncertain_stops
+                return True
             try:
-                await asyncio.wait_for(app.stop(block=True), timeout=5.0)
-            except Exception:
-                pass
-            if _client_still_running(app):
+                stopped = await self._stop_client(app)
+            except asyncio.CancelledError:
+                # The stop may have reached Telegram even though our await was
+                # cancelled; retain the handle and fence any subsequent start.
+                self._uncertain_stops[bot_id] = app
+                raise
+            if not stopped:
                 self._uncertain_stops[bot_id] = app
                 return False
             self._uncertain_stops.pop(bot_id, None)

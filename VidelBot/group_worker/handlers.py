@@ -9,20 +9,53 @@ from __future__ import annotations
 
 import html
 import json
+import logging
+import re
 import secrets
+import shlex
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from pyrogram import Client, enums, filters
 from pyrogram.types import (
     CallbackQuery,
     ChatPermissions,
-    InlineKeyboardButton,
+    InlineKeyboardButton as TelegramInlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
 )
 
-from .logic import GUARD_KINDS, LANGUAGES, NEVER_DISABLE, FloodWatch, JoinWatch, command_blocked, content_violation, default_settings, in_quiet_hours, is_approved, lock_kind, match_reply, normalize_cmd, parse_duration, render_greeting, sanitize_settings_import, sticker_blocked, tr
+from .logic import (
+    FLOOD_LIMITS,
+    FLOOD_WINDOWS,
+    BLACKLIST_MODES,
+    GUARD_KINDS,
+    LANGUAGES,
+    NEVER_DISABLE,
+    FloodWatch,
+    JoinWatch,
+    command_blocked,
+    content_violation,
+    default_settings,
+    in_quiet_hours,
+    is_approved,
+    is_external_channel_post,
+    match_blacklisted_word,
+    normalize_blacklist_words,
+    lock_kind,
+    match_reply,
+    next_flood_value,
+    normalize_cmd,
+    parse_duration,
+    parse_filter_command,
+    render_greeting,
+    render_filter_reply,
+    sanitize_settings_import,
+    sticker_blocked,
+    tr,
+)
 
+log = logging.getLogger(__name__)
 _ADMIN_STATUSES = (enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR)
 
 _ON = "🟢"
@@ -33,15 +66,38 @@ def _esc(text) -> str:
     return html.escape(str(text or ""), quote=False)
 
 
-def _btn(text: str, data: str, style: str | None = None, url: bool = False) -> InlineKeyboardButton:
-    """Inline button with Bot API button styling when the client supports it."""
-    kwargs = {"url": data} if url else {"callback_data": data}
-    if style:
-        try:
-            return InlineKeyboardButton(text, style=style, **kwargs)
-        except TypeError:
-            pass
-    return InlineKeyboardButton(text, **kwargs)
+def _bounded_blacklist_duration(value) -> int:
+    """Clamp restored/malformed timed-action settings to Telegram-safe bounds."""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 3600
+    return max(60, min(seconds, 365 * 24 * 60 * 60))
+
+
+def _button_style(text: str) -> str:
+    label = str(text or "").lower()
+    if any(word in label for word in ("🗑", "🔨", "❌", "ban", "delete", "close", "kick")):
+        return "danger"
+    if any(word in label for word in ("✅", "🟢", "add me", "keep", "save")):
+        return "success"
+    return "primary"
+
+
+def _button(text: str, **kwargs) -> TelegramInlineKeyboardButton:
+    """Build a consistently styled WzGram button with a classic-client fallback."""
+    from core.ui import styled_button
+
+    style = kwargs.pop("style", None) or _button_style(text)
+    try:
+        return styled_button(text, style=style, **kwargs)
+    except (TypeError, ValueError):
+        return TelegramInlineKeyboardButton(text, **kwargs)
+
+
+def _btn(text: str, data: str, style: str | None = None, url: bool = False) -> TelegramInlineKeyboardButton:
+    """Shortcut for callback and URL buttons with native color styles."""
+    return _button(text, style=style, **({"url": data} if url else {"callback_data": data}))
 
 
 def _bar(title: str) -> str:
@@ -96,6 +152,83 @@ class _BotHandlers:
         self.connections: dict[int, int] = {}  # admin user_id -> group chat_id (DM mode)
         self._last_welcome: dict[int, int] = {}  # chat_id -> last welcome message_id
 
+    async def _apply_blacklist_action(self, client: Client, message: Message,
+                                     settings: dict, *, item: str) -> None:
+        """Apply one configured action after a member uses blocked content."""
+        mode = str(settings.get("blacklist_mode", "del")).lower()
+        if mode not in BLACKLIST_MODES:
+            mode = "del"
+        if mode == "off":
+            return
+        user = message.from_user
+        if user is None:
+            return
+        chat_id, user_id = int(message.chat.id), int(user.id)
+        label = user.first_name or str(user_id)
+        reason = "blocked sticker" if item == "sticker" else "blacklisted word"
+        try:
+            if mode == "warn":
+                try:
+                    limit = int(settings.get("warn_limit", 3))
+                except (TypeError, ValueError, OverflowError):
+                    limit = 3
+                limit = max(1, min(limit, 10))
+                count, reached = await self.store.add_warn(self.bot_id, chat_id, user_id, limit)
+                if not reached:
+                    await message.reply_text(
+                        f"⚠️ <b>{_esc(label)}</b> warned for blocked content — "
+                        f"{count}/{limit}.", parse_mode=enums.ParseMode.HTML)
+                    try:
+                        await self.store.log_action(self.bot_id, chat_id, "blacklist_warn",
+                                                    user_id, None, reason)
+                    except Exception:
+                        pass
+                    return
+                # Keep blacklist warnings consistent with /warn escalation.
+                mode = str(settings.get("warn_action", "mute")).lower()
+                if mode not in ("mute", "kick", "ban"):
+                    mode = "mute"
+            try:
+                await message.delete()
+            except Exception:
+                if mode == "del":
+                    return  # no delete acknowledgement, so do not claim the action succeeded
+            if mode == "del":
+                action = "del"
+            elif mode in ("ban", "tban"):
+                until = None
+                if mode == "tban":
+                    seconds = _bounded_blacklist_duration(settings.get("blacklist_duration"))
+                    until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+                await client.ban_chat_member(chat_id, user_id, until_date=until)
+                action = mode
+            elif mode == "kick":
+                await client.ban_chat_member(chat_id, user_id)
+                await client.unban_chat_member(chat_id, user_id)
+                action = mode
+            else:  # mute / tmute
+                until = None
+                if mode == "tmute":
+                    seconds = _bounded_blacklist_duration(settings.get("blacklist_duration"))
+                    until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+                await client.restrict_chat_member(
+                    chat_id, user_id, ChatPermissions(), until_date=until)
+                action = mode
+        except Exception as exc:
+            log.warning("blacklist action %s uncertain in chat %s (%s)",
+                        mode, chat_id, type(exc).__name__)
+            return
+        try:
+            await self.store.log_action(self.bot_id, chat_id, f"blacklist_{action}",
+                                        user_id, None, reason)
+        except Exception:
+            pass
+        try:
+            await self._notify_owner(client, message, action, user_id, label,
+                                     reason, chat_id=chat_id)
+        except Exception:
+            pass
+
     # ── settings (worker-style) ────────────────────────────────
     def _settings_markup(self, page: str, s: dict) -> InlineKeyboardMarkup:
         bot = self.bot_id
@@ -107,56 +240,59 @@ class _BotHandlers:
             rows = [[tog(kind in kinds, kind.title(), f"gw:{bot}:kind:{kind}")]
                     for kind in GUARD_KINDS]
             rows.append([tog(bool(s.get("shield")), "Shield enabled", f"gw:{bot}:tog:shield")])
-            rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")])
+            rows.append([_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")])
             return InlineKeyboardMarkup(rows)
         if page == "greet":
             return InlineKeyboardMarkup([
                 [tog(bool(s.get("greetings")), "Greetings enabled", f"gw:{bot}:tog:greetings")],
                 [tog(bool(s.get("greet_dm")), "Also DM the welcome", f"gw:{bot}:tog:greet_dm")],
                 [tog(bool(s.get("clean_welcome")), "Clean old welcomes", f"gw:{bot}:tog:clean_welcome")],
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "security":
             return InlineKeyboardMarkup([
                 [tog(bool(s.get("captcha_on")), "Join CAPTCHA (verify button)", f"gw:{bot}:tog:captcha_on")],
                 [tog(bool(s.get("raid_on")), "Anti-raid join shield", f"gw:{bot}:tog:raid_on")],
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+                [tog(bool(s.get("anti_channel")), "Remove channel posts", f"gw:{bot}:tog:anti_channel")],
+                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "night":
             return InlineKeyboardMarkup([
                 [tog(bool(s.get("night_on")), "Night mode enabled", f"gw:{bot}:tog:night_on")],
-                [InlineKeyboardButton(f"🌙 From {s.get('night_start', 23):02d}:00 UTC", callback_data=f"gw:{bot}:nightstart"),
-                 InlineKeyboardButton(f"☀️ To {s.get('night_end', 7):02d}:00 UTC", callback_data=f"gw:{bot}:nightend")],
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+                [_button(f"🌙 From {s.get('night_start', 23):02d}:00 UTC", callback_data=f"gw:{bot}:nightstart"),
+                 _button(f"☀️ To {s.get('night_end', 7):02d}:00 UTC", callback_data=f"gw:{bot}:nightend")],
+                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "warn":
             return InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"➖ {s.get('warn_limit', 3)} warns ➕", callback_data=f"gw:{bot}:warnlimit")],
-                [InlineKeyboardButton(f"⚠️ On limit: {s.get('warn_action', 'mute')}", callback_data=f"gw:{bot}:warnaction")],
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+                [_button(f"➖ {s.get('warn_limit', 3)} warns ➕", callback_data=f"gw:{bot}:warnlimit")],
+                [_button(f"⚠️ On limit: {s.get('warn_action', 'mute')}", callback_data=f"gw:{bot}:warnaction")],
+                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "flood":
             on = bool(s.get("flood_limit"))
             flood_label = f"Flood watch · {s['flood_limit']} msgs/{s['flood_window']:g}s" if on else "Flood watch"
             return InlineKeyboardMarkup([
                 [tog(on, flood_label, f"gw:{bot}:tog:flood")],
-                [InlineKeyboardButton(f"🌊 On flood: {s.get('flood_action', 'mute')}", callback_data=f"gw:{bot}:floodaction")],
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+                [_button(f"🎚 Limit: {s.get('flood_limit') or 6} msgs", callback_data=f"gw:{bot}:floodlimit"),
+                 _button(f"⏱ Window: {s.get('flood_window', 10):g}s", callback_data=f"gw:{bot}:floodwindow")],
+                [_button(f"🌊 On flood: {s.get('flood_action', 'mute')}", callback_data=f"gw:{bot}:floodaction")],
+                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         return InlineKeyboardMarkup([
             [tog(bool(s.get("shield")), "Shield", f"gw:{bot}:page:shield"),
              tog(bool(s.get("greetings")), "Greetings", f"gw:{bot}:tog:greetings")],
-            [InlineKeyboardButton("🛡 Shield types ›", callback_data=f"gw:{bot}:page:shield"),
-             InlineKeyboardButton("⚠️ Warnings ›", callback_data=f"gw:{bot}:page:warn")],
+            [_button("🛡 Shield types ›", callback_data=f"gw:{bot}:page:shield"),
+             _button("⚠️ Warnings ›", callback_data=f"gw:{bot}:page:warn")],
             [tog(bool(s.get("dm_alerts")), "DM alerts to owner", f"gw:{bot}:tog:dm_alerts"),
              tog(bool(s.get("night_on")), "Night mode", f"gw:{bot}:page:night")],
-            [InlineKeyboardButton("👋 Greetings ›", callback_data=f"gw:{bot}:page:greet"),
-             InlineKeyboardButton("🌙 Night hours ›", callback_data=f"gw:{bot}:page:night")],
-            [InlineKeyboardButton("🤖 Security (CAPTCHA · anti-raid) ›", callback_data=f"gw:{bot}:page:security")],
+            [_button("👋 Greetings ›", callback_data=f"gw:{bot}:page:greet"),
+             _button("🌙 Night hours ›", callback_data=f"gw:{bot}:page:night")],
+            [_button("🤖 Security (CAPTCHA · anti-raid) ›", callback_data=f"gw:{bot}:page:security")],
             [tog(bool(s.get("clean_service")), "Clean service msgs", f"gw:{bot}:tog:clean_service"),
-             InlineKeyboardButton(f"🌐 {str(s.get('lang', 'en')).upper()}", callback_data=f"gw:{bot}:lang")],
-            [InlineKeyboardButton("🌊 Flood watch ›", callback_data=f"gw:{bot}:page:flood"),
-             InlineKeyboardButton("❌ Close", callback_data=f"gw:{bot}:close")],
+             _button(f"🌐 {str(s.get('lang', 'en')).upper()}", callback_data=f"gw:{bot}:lang")],
+            [_button("🌊 Flood watch ›", callback_data=f"gw:{bot}:page:flood"),
+             _button("❌ Close", callback_data=f"gw:{bot}:close")],
         ])
 
     def _settings_text(self, page: str, s: dict, chat_title: str = "") -> str:
@@ -164,9 +300,11 @@ class _BotHandlers:
         if page == "security":
             return (f"{head}\n\n🤖 <b>Security</b>\n"
                     f"CAPTCHA: {'on' if s.get('captcha_on') else 'off'} · "
-                    f"Anti-raid: {'on' if s.get('raid_on') else 'off'}\n"
+                    f"Anti-raid: {'on' if s.get('raid_on') else 'off'} · "
+                    f"Anti-channel: {'on' if s.get('anti_channel') else 'off'}\n"
                     "<i>With CAPTCHA, new members stay muted until they tap the verify button. "
-                    "The anti-raid shield temporarily bans joiners during join bursts.</i>")
+                    "The anti-raid shield temporarily bans joiners during join bursts. "
+                    "Anti-channel removes external channel-profile posts; anonymous group admins are exempt.</i>")
         if page == "greet":
             return (f"{head}\n\n👋 <b>Greetings</b> — {'on' if s.get('greetings') else 'off'}\n"
                     "<i>Set texts with /setwelcome and /setgoodbye (reply to a photo/sticker "
@@ -186,20 +324,20 @@ class _BotHandlers:
                 [tog(bool(s.get("greetings")), "Greetings enabled", f"gw:{bot}:tog:greetings")],
                 [tog(bool(s.get("greet_dm")), "Also DM the welcome", f"gw:{bot}:tog:greet_dm")],
                 [tog(bool(s.get("clean_welcome")), "Clean old welcomes", f"gw:{bot}:tog:clean_welcome")],
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "security":
             return InlineKeyboardMarkup([
                 [tog(bool(s.get("captcha_on")), "Join CAPTCHA (verify button)", f"gw:{bot}:tog:captcha_on")],
                 [tog(bool(s.get("raid_on")), "Anti-raid join shield", f"gw:{bot}:tog:raid_on")],
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "night":
             return InlineKeyboardMarkup([
                 [tog(bool(s.get("night_on")), "Night mode enabled", f"gw:{bot}:tog:night_on")],
-                [InlineKeyboardButton(f"🌙 From {s.get('night_start', 23):02d}:00 UTC", callback_data=f"gw:{bot}:nightstart"),
-                 InlineKeyboardButton(f"☀️ To {s.get('night_end', 7):02d}:00 UTC", callback_data=f"gw:{bot}:nightend")],
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
+                [_button(f"🌙 From {s.get('night_start', 23):02d}:00 UTC", callback_data=f"gw:{bot}:nightstart"),
+                 _button(f"☀️ To {s.get('night_end', 7):02d}:00 UTC", callback_data=f"gw:{bot}:nightend")],
+                [_button("⬅️ Back", callback_data=f"gw:{bot}:page:main")],
             ])
         if page == "warn":
             return (f"{head}\n\n⚠️ <b>Warnings</b>\n"
@@ -235,82 +373,206 @@ class _BotHandlers:
 
     # ── rich start pages ─────────────────────────────────────────
     def _start_text(self, page: str = "home") -> str:
+        """Classic HTML compatibility view; Rich Doc is the single source."""
+        return self._start_doc(page).classic()
+
+    def _start_doc(self, page: str = "home"):
+        from core.rich import Doc
+
         if page == "help":
-            return (
-                f"{_bar('📖 HELP — SHORT & EASY')}\n\n"
-                "<blockquote>Most things are buttons: open /settings in your group. "
-                "Commands below are for admins unless noted.</blockquote>\n\n"
-                "<b>🛡 MODERATION</b> — reply to a member\n"
-                + _table([
-                    ("/warn · /unwarn", "warn, auto-punish at the limit"),
-                    ("/mute · /tmute 12h", "silence, timed or not"),
-                    ("/kick · /ban · /tban 7d", "remove or ban (timed too)"),
-                    ("/sban · /unban · /unmute", "silent ban & undos"),
-                    ("/purge · /pin · /unpin", "clean up, pin messages"),
-                ]) + "\n"
-                "<b>👑 ADMIN TOOLS</b>\n"
-                + _table([
-                    ("/promote · /demote", "grant or remove admin"),
-                    ("/title · /chatinfo", "rename group · group card"),
-                    ("/lock links · /unlock media", "block content types (/locks)"),
-                    ("/adminlist · /stats", "admin roster · group numbers"),
-                    ("/disable · /disabled", "turn commands off here"),
-                ]) + "\n"
-                "<b>⚙️ GROUP CARE</b>\n"
-                + _table([
-                    ("/settings", "buttons for shield, greetings, flood, night & more"),
-                    ("/rules · /setrules", "show or set group rules"),
-                    ("/filter · /stop · /filters", "keyword auto-replies"),
-                    ("/save · /get · #trigger", "saved notes"),
-                    ("/welcome · /setwelcome", "greetings, preview & media"),
-                ]) + "\n"
-                "<b>🤝 TRUSTED & SAFETY</b>\n"
-                + _table([
-                    ("/approve · /approved", "exempt trusted members"),
-                    ("/report", "reply: alert admins by DM"),
-                    ("/fedban · /fedinfo", "federation bans across groups"),
-                    ("/modlog · /setlog", "action log, here or in a log chat"),
-                ]) + "\n"
-                "<b>✨ EXTRAS</b> — /afk · /whois · /export · /import · /language\n\n"
-                "<i>Times look like 30m, 12h, 7d, 2w.</i>"
-            )
+            return (Doc("📖", "Group Management · Help", "Fast command reference")
+                    .text("Most settings are managed from <code>/settings</code> in your group. "
+                          "Commands shown here are for admins unless noted.")
+                    .h("🛡", "Moderation")
+                    .table([
+                        ("/warn · /unwarn", "Warn or clear warnings"),
+                        ("/mute · /tmute · /unmute", "Mute members, optionally timed"),
+                        ("/kick · /ban · /tban", "Remove or ban members"),
+                        ("/sban · /unban", "Silent ban and unban"),
+                        ("/purge · /pin · /unpin", "Clean messages and manage pins"),
+                    ], header=("Command", "What it does"))
+                    .h("👑", "Admin tools")
+                    .table([
+                        ("/promote · /demote", "Manage admins"),
+                        ("/title · /chatinfo", "Group title and information"),
+                        ("/lock links · /unlock media · /locks", "Control links, media and other content"),
+                        ("/adminlist · /stats", "Roster and group stats"),
+                        ("/disable · /disabled", "Manage command availability"),
+                    ], header=("Command", "What it does"))
+                    .h("⚙️", "Group care")
+                    .table([
+                        ("/settings", "Buttons for shield, welcomes, flood, night mode and more"),
+                        ("/rules · /setrules", "Read or update group rules"),
+                        ("/filter · /mfilter · /stop · /filters", "Text and media auto-replies"),
+                        ("/stopall", "Remove all auto-replies (clone owner only)"),
+                        ("/save · /get · #trigger", "Saved notes"),
+                        ("/welcome · /setwelcome", "Welcome messages and media"),
+                    ], header=("Command", "What it does"))
+                    .h("🤝", "Trust & safety")
+                    .table([
+                        ("/approve · /approved", "Manage trusted members"),
+                        ("/report", "Reply to report a message to admins"),
+                        ("/fedban · /fedinfo", "Shared federation bans"),
+                        ("/modlog · /setlog", "Moderation log and destination"),
+                        ("/afk · /whois · /id", "Away status, member cards and IDs"),
+                        ("/export · /import", "Back up and restore group settings"),
+                    ], header=("Command", "What it does"))
+                    .h("✨", "Filters & discovery")
+                    .table([
+                        ("/blacklist · /addblacklist · /unblacklist", "Manage blocked words"),
+                        ("/blsticker · /addblsticker · /unblsticker", "Manage blocked stickers"),
+                        ("/antichannel · /cleaner", "Channel-post and cleanup controls"),
+                        ("/anime · /manga · /character", "Search AniList titles and people"),
+                        ("/browse · /airing · /topanime", "Explore AniList releases and ratings"),
+                        ("/gettags · /anisettings", "AniList genres and lookup help"),
+                    ], header=("Command", "What it does"))
+                    .footer("Times: 30m · 12h · 7d · 2w. Open /settings in a group to manage controls."))
         if page == "about":
-            return (
-                f"{_bar('ℹ️ ABOUT')}\n\n"
-                "I'm a <b>Group Management clone</b> — a full guard for your groups:\n\n"
-                + _table([
-                    ("🛡 Shield & locks", "links, media, bots, forwards"),
-                    ("⚠️ Warnings", "auto mute/kick/ban at the limit"),
-                    ("🌊 Flood & night", "anti-spam + quiet hours"),
-                    ("🤖 CAPTCHA · 🚨 raid", "join checks & burst shield"),
-                    ("👋 Greetings", "text/media welcomes, DM too"),
-                    ("📝 Notes & filters", "#trigger notes, auto-replies"),
-                    ("🌐 Federations", "shared bans across groups"),
-                    ("📩 DM alerts", "admins notified, with Undo"),
-                ]) + "\n"
-                "<i>Open /settings inside a group — everything is buttons. 💪</i>"
-            )
-        return (
-            f"{_bar('🛡️ ' + tr({}, 'welcome_title'))}\n\n"
-            "👋 <b>Hey! I keep groups safe & friendly.</b>\n\n"
-            + _table([
-                ("➕ Step 1", "Add me to a group & make me admin"),
-                ("⭐ Step 2", "Make me admin"),
-                ("⚙️ Step 3", "Open /settings — everything is buttons"),
-            ]) + "\n"
-            "🛡 <i>I handle spam, floods, raids & bad members — quietly, 24×7.</i>\n"
-            "<i>Tap 📖 Help for the short command list.</i>"
-        )
+            return (Doc("ℹ️", "About this Group Management clone", "A practical group safety assistant")
+                    .text("A full group safety toolkit you can configure from buttons.")
+                    .table([
+                        ("🛡 Shield & locks", "Links, media, bots and forwards"),
+                        ("⚠️ Warnings", "Escalation to mute, kick or ban"),
+                        ("🌊 Flood & night", "Anti-spam and quiet hours"),
+                        ("🤖 CAPTCHA · 🚨 Anti-raid", "Join checks and burst protection"),
+                        ("👋 Greetings", "Welcome and goodbye messages"),
+                        ("📝 Notes & filters", "Saved notes and automatic replies"),
+                        ("🌐 Federations", "Shared bans across groups"),
+                        ("📩 DM alerts", "Admin notifications with moderation actions"),
+                    ], header=("Feature", "Overview"))
+                    .footer("Open /settings in your group to configure the bot."))
+        return (Doc("🛡️", "Group Management", "A safer, friendlier group — managed from one place")
+                .text("👋 <b>Hey! I help keep your groups safe and welcoming.</b>")
+                .table([
+                    ("1 · Add", "Add me to a group"),
+                    ("2 · Admin", "Grant the permissions I need"),
+                    ("3 · Configure", "Open /settings in the group"),
+                ], header=("Step", "Get started"), caption="Quick setup")
+                .text("🛡 Spam, floods, raids and bad members are easier to manage with the right permissions.")
+                .footer("Tap Help for commands, or Support if you need a hand."))
+
+    def _settings_doc(self, page: str, s: dict, chat_title: str = ""):
+        from core.rich import Doc
+
+        title = tr(s, "settings")
+        doc = Doc("⚙️", title, chat_title or "Group controls")
+        if page == "security":
+            doc.h("🤖", "Security")
+            doc.table([
+                ("Join CAPTCHA", _onoff(s.get("captcha_on"))),
+                ("Anti-raid", _onoff(s.get("raid_on"))),
+                ("Anti-channel", _onoff(s.get("anti_channel"))),
+            ], header=("Protection", "State"))
+            doc.text("CAPTCHA holds new members until they verify. Anti-raid responds to join bursts. "
+                     "Anti-channel removes external channel-profile posts; anonymous group admins are exempt.")
+        elif page == "greet":
+            doc.h("👋", "Greetings")
+            doc.table([
+                ("Welcome messages", _onoff(s.get("greetings"))),
+                ("Send welcome by DM", _onoff(s.get("greet_dm"))),
+                ("Clean old welcomes", _onoff(s.get("clean_welcome"))),
+            ], header=("Option", "State"))
+            doc.text("Use /setwelcome and /setgoodbye. Placeholders: {name}, {chat}, {id}. Preview with /welcome.")
+        elif page == "night":
+            state = (f"{s.get('night_start', 23):02d}:00–{s.get('night_end', 7):02d}:00 UTC"
+                     if s.get("night_on") else "Off")
+            doc.h("🌙", "Night mode")
+            doc.table([("Quiet hours", state), ("Admins", "Exempt")], header=("Setting", "Value"))
+            doc.text("During quiet hours, member messages are quietly deleted.")
+        elif page == "shield":
+            doc.h("🛡", "Content shield")
+            doc.table([
+                ("Shield", _onoff(s.get("shield"))),
+                ("Blocked types", ", ".join(s.get("guard_kinds") or []) or "None"),
+            ], header=("Setting", "Value"))
+            doc.text("Tap a type below to toggle it. Enabling a type also enables the shield.")
+        elif page == "warn":
+            doc.h("⚠️", "Warning policy")
+            doc.table([
+                ("Escalate after", f"{s.get('warn_limit', 3)} warnings"),
+                ("Action", s.get("warn_action", "mute")),
+            ], header=("Setting", "Value"))
+            doc.text("Change the warning count or action with the buttons below.")
+        elif page == "flood":
+            value = (f"{s.get('flood_limit')} messages in {s.get('flood_window', 10):g}s"
+                     if s.get("flood_limit") else "Off")
+            doc.h("🌊", "Flood watch")
+            doc.table([
+                ("Threshold", value),
+                ("Action", s.get("flood_action", "mute")),
+            ], header=("Setting", "Value"))
+            doc.text("Only members are automatically acted on; admins are exempt.")
+        else:
+            kinds = ", ".join(s.get("guard_kinds") or []) or "None"
+            flood = (f"{s.get('flood_limit')} msgs / {s.get('flood_window', 10):g}s"
+                     if s.get("flood_limit") else "Off")
+            doc.table([
+                ("🛡 Shield", f"{_onoff(s.get('shield'))} · {kinds}"),
+                ("👋 Greetings", _onoff(s.get("greetings"))),
+                ("⚠️ Warning policy", f"{s.get('warn_limit', 3)} → {s.get('warn_action', 'mute')}"),
+                ("🌊 Flood watch", f"{flood} → {s.get('flood_action', 'mute')}"),
+                ("🌙 Night mode", _onoff(s.get("night_on"))),
+                ("🤖 CAPTCHA", _onoff(s.get("captcha_on"))),
+                ("🚨 Anti-raid", _onoff(s.get("raid_on"))),
+                ("📜 Rules", "Set" if s.get("rules") else "Not set"),
+                ("💬 Auto-replies", len(s.get("replies") or {})),
+                ("📝 Notes", len(s.get("notes") or {})),
+                ("🤝 Approved", len(s.get("approved") or {})),
+                ("📋 Log chat", "Set" if s.get("log_chat") else "Off"),
+                ("🧹 Clean service", _onoff(s.get("clean_service"))),
+                ("📩 DM alerts", _onoff(s.get("dm_alerts"))),
+                ("🌐 Language", s.get("lang", "en").upper()),
+            ], header=("Control", "Current setting"))
+            doc.text(f"{tr(s, 'admins_only')} Use the buttons below to tune this group.")
+        doc.footer("Changes apply to this group only. Access to Telegram controls depends on bot permissions.")
+        return doc
+
+    @staticmethod
+    def _public_start_link(value: str) -> str:
+        """Accept configured public HTTPS URLs, not arbitrary callback schemes."""
+        if not isinstance(value, str):
+            return ""
+        value = value.strip()
+        try:
+            parsed = urlsplit(value)
+            if (parsed.scheme.lower() != "https" or not parsed.hostname
+                    or parsed.username is not None or parsed.password is not None):
+                return ""
+            return value
+        except (TypeError, ValueError):
+            return ""
 
     def _start_markup(self, bot_username: str) -> InlineKeyboardMarkup:
-        add_url = f"https://t.me/{bot_username}?startgroup=true" if bot_username else "https://t.me"
-        return InlineKeyboardMarkup([
-            [_btn("➕ Add me to your group", add_url, style="success", url=True)],
-            [_btn("📖 Help", f"gw:{self.bot_id}:nav:help", style="primary"),
-             _btn("ℹ️ About", f"gw:{self.bot_id}:nav:about", style="primary")],
-            [_btn("👤 Owner", f"tg://user?id={self.owner_id}", url=True),
-             _btn("🏠 Home", f"gw:{self.bot_id}:nav:home")],
+        import config
+
+        username = (bot_username.strip().lstrip("@") if isinstance(bot_username, str) else "")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", username, flags=re.ASCII):
+            username = ""
+        rows = []
+        if username:
+            rows.append([_btn("➕ Add me to your group",
+                              f"https://t.me/{username}?startgroup=true",
+                              style="success", url=True)])
+        rows.append([
+            _btn("📖 Help", f"gw:{self.bot_id}:nav:help", style="primary"),
+            _btn("ℹ️ About", f"gw:{self.bot_id}:nav:about", style="primary"),
         ])
+        rows.append([
+            _btn("👤 Owner", f"tg://user?id={self.owner_id}", url=True),
+            _btn("🏠 Home", f"gw:{self.bot_id}:nav:home"),
+        ])
+        support_url = (self._public_start_link(getattr(config, "SUPPORT_URL", ""))
+                       or self._public_start_link(getattr(config, "CONTACT_URL", "")))
+        if support_url:
+            support_button = _btn("💬 Support", support_url, style="primary", url=True)
+        else:
+            support_button = _btn("💬 Support", f"tg://user?id={self.owner_id}", url=True)
+        links = [support_button]
+        updates_url = (self._public_start_link(getattr(config, "UPDATES_URL", ""))
+                       or "https://github.com/Beasgohan-code/Videl1/releases")
+        links.append(_btn("📢 Updates", updates_url, style="primary", url=True))
+        rows.append(links)
+        return InlineKeyboardMarkup(rows)
 
     # ── moderation core ────────────────────────────────────────────
     async def _act(self, client: Client, message: Message, action: str):
@@ -420,9 +682,9 @@ class _BotHandlers:
         markup = None
         if undo:
             markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"↩️ Undo ({undo})",
+                _button(f"↩️ Undo ({undo})",
                                      callback_data=f"gw:{self.bot_id}:undo:{chat_id or message.chat.id}:{target_id}:{undo}"),
-                InlineKeyboardButton("✅ Keep", callback_data=f"gw:{self.bot_id}:keep"),
+                _button("✅ Keep", callback_data=f"gw:{self.bot_id}:keep"),
             ]])
         if settings.get("log_chat"):
             try:
@@ -457,17 +719,17 @@ class _BotHandlers:
         async def _start(c, m: Message):
             me = getattr(c, "me", None)
             username = getattr(me, "username", "") or ""
-            await m.reply_text(self._start_text("home"),
-                               reply_markup=self._start_markup(username),
-                               parse_mode=enums.ParseMode.HTML)
+            from core import rich
+            await rich.reply(m, self._start_doc("home"),
+                             reply_markup=self._start_markup(username))
 
         @app.on_message(filters.private & filters.command("help"))
         async def _dm_help(c, m: Message):
             me = getattr(c, "me", None)
             username = getattr(me, "username", "") or ""
-            await m.reply_text(self._start_text("help"),
-                               reply_markup=self._start_markup(username),
-                               parse_mode=enums.ParseMode.HTML)
+            from core import rich
+            await rich.reply(m, self._start_doc("help"),
+                             reply_markup=self._start_markup(username))
 
         @app.on_message(filters.private & filters.command(["connect", "disconnect", "connection"]))
         async def _connect(c, m: Message):
@@ -512,37 +774,35 @@ class _BotHandlers:
                 return await m.reply_text("🔒 You're no longer an admin there — disconnected.",
                                           parse_mode=enums.ParseMode.HTML)
             s = await store.get_settings(bot_id, chat_id)
-            await m.reply_text(self._settings_text("main", s, str(chat_id)),
-                               parse_mode=enums.ParseMode.HTML)
-            await m.reply_text("ℹ️ Buttons work in the group: open /settings there to change switches.",
-                               parse_mode=enums.ParseMode.HTML)
+            from core import rich
+            doc = self._settings_doc("main", s, str(chat_id))
+            doc.text("ℹ️ For interactive controls, open /settings in the group.")
+            await rich.reply(m, doc)
 
         @app.on_message(filters.group & filters.command("help"))
-        async def _help(_c, m: Message):
+        async def _help(c, m: Message):
+            me = getattr(c, "me", None)
+            username = getattr(me, "username", "") or ""
+            from core import rich
+            await rich.reply(m, self._start_doc("help"),
+                             reply_markup=self._start_markup(username))
+
+        @app.on_message(filters.group & filters.command("antichannel"))
+        async def _antichannel(c, m: Message):
+            if m.from_user is None or not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            args = (m.command or [])[1:]
+            settings = await store.get_settings(bot_id, m.chat.id)
+            if len(args) > 1 or (args and args[0].lower() not in ("on", "off")):
+                return await m.reply_text("Use <code>/antichannel</code>, <code>/antichannel on</code> or <code>/antichannel off</code>.",
+                                          parse_mode=enums.ParseMode.HTML)
+            enabled = (not bool(settings.get("anti_channel")) if not args
+                       else args[0].lower() == "on")
+            settings = await store.update_settings(bot_id, m.chat.id, {"anti_channel": enabled})
+            state = "enabled" if settings.get("anti_channel") else "disabled"
             await m.reply_text(
-                f"{_bar('🛡️ COMMANDS')}\n\n"
-                "<b>Admins</b>\n"
-                "/warn /unwarn — warn or clear warnings\n"
-                "/mute /tmute 12h /unmute — silence a member\n"
-                "/kick — remove (can rejoin)\n"
-                "/ban /tban 7d /sban /unban — ban, timed, silent, undo\n"
-                "/purge 20 — delete recent messages\n"
-                "/pin /unpin — manage pins\n"
-                "/rules /setrules — group rules\n"
-                "/filter /stop /filters — keyword auto-replies\n"
-                "/report — (reply) send a report to admins by DM\n"
-                "/save /get /notes /clear — saved notes (#trigger works too)\n"
-                "/welcome — preview greetings; /welcome on|off toggles them\n"
-                "/setwelcome /setgoodbye — greeting texts\n"
-                "/whois — member card (admins get action buttons)\n"
-                "/approve /unapprove /approved — trusted members exempt from automation\n"
-                "In DM: /connect &lt;group_id&gt; then moderate by ID; /settings views settings\n"
-                "/setlog &lt;chat_id&gt; — post moderation logs to another chat\n"
-                "/modlog — recent moderation actions\n"
-                "/afk — mark yourself away; /export /import — settings backup\n"
-                "/blocksticker — (reply to a sticker) block just that sticker\n"
-                "/settings — group settings (buttons)\n\n"
-                "<i>Reply to a member or use their user ID. Times: 30m, 12h, 7d, 2w.</i>",
+                f"🛡 <b>Anti-channel {state}.</b> The bot will try to remove external channel-profile posts. "
+                "Anonymous posts made as this group are exempt; deletion requires bot delete-message rights.",
                 parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command("settings"))
@@ -550,9 +810,9 @@ class _BotHandlers:
             if not await _is_admin(c, m.chat.id, m.from_user.id):
                 return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
             s = await store.get_settings(bot_id, m.chat.id)
-            await m.reply_text(self._settings_text("main", s, m.chat.title or ""),
-                               reply_markup=self._settings_markup("main", s),
-                               parse_mode=enums.ParseMode.HTML)
+            from core import rich
+            await rich.reply(m, self._settings_doc("main", s, m.chat.title or ""),
+                             reply_markup=self._settings_markup("main", s))
 
         @app.on_callback_query(filters.regex(rf"^gw:{bot_id}:"))
         async def _settings_cb(c, q: CallbackQuery):
@@ -563,9 +823,9 @@ class _BotHandlers:
                 me = getattr(c, "me", None)
                 username = getattr(me, "username", "") or ""
                 try:
-                    await q.message.edit_text(self._start_text(page),
-                                              reply_markup=self._start_markup(username),
-                                              parse_mode=enums.ParseMode.HTML)
+                    from core import rich
+                    await rich.edit(q.message, self._start_doc(page),
+                                    reply_markup=self._start_markup(username))
                 except Exception:
                     pass
                 return await q.answer()
@@ -700,7 +960,7 @@ class _BotHandlers:
                     page = "night"
                 elif key == "clean_service":
                     s = await store.update_settings(bot_id, chat_id, {"clean_service": not s.get("clean_service")})
-                elif key in ("captcha_on", "raid_on"):
+                elif key in ("captcha_on", "raid_on", "anti_channel"):
                     s = await store.update_settings(bot_id, chat_id, {key: not s.get(key)})
                     page = "security"
                 elif key == "greet_dm":
@@ -739,16 +999,26 @@ class _BotHandlers:
                 s = await store.update_settings(bot_id, chat_id,
                                                 {"night_end": (int(s.get("night_end", 7)) + 1) % 24})
                 page = "night"
+            elif action == "floodlimit":
+                value = next_flood_value(s.get("flood_limit", 6), FLOOD_LIMITS, 6)
+                s = await store.update_settings(bot_id, chat_id, {"flood_limit": value})
+                page = "flood"
+            elif action == "floodwindow":
+                value = next_flood_value(s.get("flood_window", 10), FLOOD_WINDOWS, 10)
+                s = await store.update_settings(bot_id, chat_id, {"flood_window": float(value)})
+                page = "flood"
             elif action == "floodaction":
                 order = ["mute", "kick", "ban"]
-                nxt = order[(order.index(s.get("flood_action", "mute")) + 1) % len(order)]
+                current = s.get("flood_action", "mute")
+                nxt = order[(order.index(current) + 1) % len(order)] if current in order else "mute"
                 s = await store.update_settings(bot_id, chat_id, {"flood_action": nxt})
                 page = "flood"
             else:
                 return await q.answer("Unknown control.", show_alert=True)
-            await q.message.edit_text(self._settings_text(page, s, q.message.chat.title or ""),
-                                      reply_markup=self._settings_markup(page, s),
-                                      parse_mode=enums.ParseMode.HTML)
+            from core import rich
+            await rich.edit(q.message,
+                            self._settings_doc(page, s, q.message.chat.title or ""),
+                            reply_markup=self._settings_markup(page, s))
             await q.answer("Saved ✅")
 
         @app.on_message((filters.group | filters.private) & filters.command(
@@ -774,6 +1044,53 @@ class _BotHandlers:
             if ids:
                 await c.delete_messages(m.chat.id, ids)
             await m.reply_text(f"🧹 <b>Purged {len(ids)} messages.</b>", parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message((filters.group | filters.private) & filters.command("id"))
+        async def _id(c, m: Message):
+            target = m.reply_to_message or m
+            user = (getattr(target, "from_user", None) if m.reply_to_message is not None
+                    else getattr(m, "from_user", None))
+            chat = getattr(target, "chat", None) or m.chat
+            lines = [
+                f"<b>Chat ID:</b> <code>{_esc(getattr(chat, 'id', m.chat.id))}</code>",
+                f"<b>Message ID:</b> <code>{_esc(getattr(target, 'id', 'unknown'))}</code>",
+            ]
+            if user is not None:
+                username = getattr(user, "username", None)
+                lines.extend([
+                    f"<b>User:</b> {_esc(getattr(user, 'first_name', '') or 'Unknown')}",
+                    f"<b>User ID:</b> <code>{_esc(getattr(user, 'id', 'unknown'))}</code>",
+                    f"<b>Username:</b> @{_esc(username)}" if username else "<b>Username:</b> none",
+                ])
+            chat_username = getattr(chat, "username", None)
+            if chat_username:
+                lines.append(f"<b>Chat username:</b> @{_esc(chat_username)}")
+            origin = getattr(target, "forward_origin", None)
+            forward_user = getattr(target, "forward_from", None)
+            forward_chat = getattr(target, "forward_from_chat", None)
+            if forward_user is None and origin is not None:
+                forward_user = getattr(origin, "sender_user", None)
+            if forward_chat is None and origin is not None:
+                forward_chat = (getattr(origin, "sender_chat", None)
+                                or getattr(origin, "chat", None))
+            if forward_user is not None:
+                forward_name = getattr(forward_user, "first_name", None) or "Forwarded user"
+                forward_username = getattr(forward_user, "username", None)
+                lines.append(f"<b>Forwarded from:</b> {_esc(forward_name)}"
+                             f" · ID <code>{_esc(getattr(forward_user, 'id', 'unknown'))}</code>"
+                             + (f" · @{_esc(forward_username)}" if forward_username else ""))
+            elif forward_chat is not None:
+                forward_name = getattr(forward_chat, "title", None) or "Forwarded chat/channel"
+                forward_username = getattr(forward_chat, "username", None)
+                lines.append(f"<b>Forwarded from:</b> {_esc(forward_name)}"
+                             f" · ID <code>{_esc(getattr(forward_chat, 'id', 'unknown'))}</code>"
+                             + (f" · @{_esc(forward_username)}" if forward_username else ""))
+            elif origin is not None:
+                hidden = getattr(origin, "sender_user_name", None)
+                if hidden:
+                    lines.append(f"<b>Forwarded from:</b> {_esc(hidden)} (hidden identity; no user ID available)")
+            await m.reply_text("🆔 <b>Message IDs</b>\n\n" + "\n".join(lines),
+                               parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command(["welcome", "resetwelcome", "resetgoodbye"]))
         async def _welcome_cmd(c, m: Message):
@@ -841,12 +1158,15 @@ class _BotHandlers:
             s = await store.get_settings(bot_id, m.chat.id)
             notes = dict(s.get("notes") or {})
             if cmd == "notes":
-                if not notes:
-                    return await m.reply_text("📝 No notes yet. Admins: <code>/save faq &lt;text&gt;</code>",
-                                              parse_mode=enums.ParseMode.HTML)
-                listing = ", ".join(sorted(notes))
-                return await m.reply_text(f"{_bar('📝 NOTES')}\n\n{_esc(listing)}\n\n<i>Open one with /get or #trigger.</i>",
-                                          parse_mode=enums.ParseMode.HTML)
+                from core.rich import Doc
+                from core import rich
+                doc = Doc("📝", "Saved notes", f"{len(notes)} triggers")
+                if notes:
+                    doc.items([f"#{name}" for name in sorted(notes)[:100]])
+                    doc.footer("Open a note with /get <trigger> or by sending #trigger.")
+                else:
+                    doc.text("No notes yet. Admins can add one with /save faq <text>.")
+                return await rich.reply(m, doc)
             if cmd == "get":
                 args = (m.command or [])[1:]
                 note = notes.get(args[0].lower()) if args else None
@@ -887,33 +1207,33 @@ class _BotHandlers:
                     _btn("👢 Kick", f"gw:{bot_id}:act:{m.chat.id}:{target_id}:kick", style="danger"),
                     _btn("🔨 Ban", f"gw:{bot_id}:act:{m.chat.id}:{target_id}:ban", style="danger"),
                 ]])
-            card = _table([
-                ("👤 Name", label),
-                ("🆔 User ID", target_id),
-                ("🎖 Status", getattr(status, "value", status) or "unknown"),
-                ("⚠️ Warnings", f"{warns}/{s.get('warn_limit', 3)}"),
-                ("🤝 Approved", "yes" if str(target_id) in (s.get("approved") or {}) else "no"),
-            ])
-            await m.reply_text(
-                f"{_bar('👤 MEMBER')}\n\n{card}",
-                parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+            from core.rich import Doc
+            from core import rich
+            doc = (Doc("👤", "Member card", label)
+                   .table([
+                       ("User ID", target_id),
+                       ("Chat status", getattr(status, "value", status) or "unknown"),
+                       ("Warnings", f"{warns}/{s.get('warn_limit', 3)}"),
+                       ("Approved", "Yes" if str(target_id) in (s.get("approved") or {}) else "No"),
+                   ], header=("Profile", "Status")))
+            await rich.reply(m, doc, reply_markup=markup)
 
         @app.on_message(filters.group & filters.command("modlog"))
         async def _modlog(c, m: Message):
             if not await _is_admin(c, m.chat.id, m.from_user.id):
                 return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
             entries = await store.recent_actions(bot_id, m.chat.id, limit=10)
+            from core.rich import Doc
+            from core import rich
             if not entries:
-                return await m.reply_text("📋 No moderation actions recorded yet.",
-                                          parse_mode=enums.ParseMode.HTML)
-            lines = []
-            for e in entries:
-                line = f"• <b>{_esc(e.get('action'))}</b> → <code>{e.get('target_id')}</code> by <code>{e.get('actor_id')}</code>"
-                if e.get("reason"):
-                    line += f" — {_esc(e['reason'])}"
-                lines.append(line)
-            await m.reply_text(f"{_bar('📋 MODERATION LOG')}\n\n" + "\n".join(lines),
-                               parse_mode=enums.ParseMode.HTML)
+                return await rich.reply(m, Doc("📋", "Moderation log", "No recent actions")
+                                        .text("Actions taken in this group will appear here."))
+            rows = [(str(e.get("action") or "unknown"), str(e.get("target_id") or "—"),
+                     str(e.get("actor_id") or "—"), str(e.get("reason") or "—"))
+                    for e in entries]
+            doc = (Doc("📋", "Moderation log", f"Latest {len(rows)} actions")
+                   .table(rows, header=("Action", "Target", "By", "Reason")))
+            await rich.reply(m, doc)
 
         @app.on_message(filters.group & filters.command(["setlog", "logchannel", "unsetlog"]))
         async def _setlog(c, m: Message):
@@ -954,13 +1274,16 @@ class _BotHandlers:
             s = await store.get_settings(bot_id, m.chat.id)
             approved = dict(s.get("approved") or {})
             if cmd == "approved":
-                if not approved:
-                    return await m.reply_text("🤝 No approved members yet.", parse_mode=enums.ParseMode.HTML)
-                lines = "\n".join(
-                    f"• <code>{uid}</code>" + (f" — {_esc(r)}" if r else "")
-                    for uid, r in sorted(approved.items()))
-                return await m.reply_text(f"{_bar('🤝 APPROVED MEMBERS')}\n\n{lines}",
-                                          parse_mode=enums.ParseMode.HTML)
+                from core.rich import Doc
+                from core import rich
+                doc = Doc("🤝", "Approved members", f"{len(approved)} trusted IDs")
+                if approved:
+                    doc.table([(uid, reason or "No reason set")
+                               for uid, reason in sorted(approved.items())[:100]],
+                              header=("User ID", "Reason"))
+                else:
+                    doc.text("No approved members yet. Use /approve to exempt a member from automation.")
+                return await rich.reply(m, doc)
             if not await _is_admin(c, m.chat.id, m.from_user.id):
                 return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
             if cmd == "unapproveall":
@@ -989,29 +1312,148 @@ class _BotHandlers:
             return await m.reply_text(f"🤝 <b>{_esc(label)}</b> is {state}.", parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command(
-            ["blocksticker", "unblocksticker", "blockedstickers"]))
-        async def _stickers(c, m: Message):
-            cmd = (m.command or ["blockedstickers"])[0].lower()
-            s = await store.get_settings(bot_id, m.chat.id)
-            blocked = list(s.get("blocked_stickers") or [])
-            if cmd == "blockedstickers":
+            ["blacklist", "addblacklist", "unblacklist", "blacklistmode"]))
+        async def _blacklist(c, m: Message):
+            if m.from_user is None or not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            cmd = ((m.command or ["blacklist"])[0].split("@", 1)[0]).lower()
+            settings = await store.get_settings(bot_id, m.chat.id)
+            words = normalize_blacklist_words(settings.get("blacklist_words") or [])
+            mode = str(settings.get("blacklist_mode", "del")).lower()
+            if mode not in BLACKLIST_MODES:
+                mode = "del"
+            if cmd == "blacklist":
+                from core.rich import Doc
+                from core import rich
+                doc = Doc("🚫", "Blocked words", f"Action mode: {mode} · {len(words)} entries")
+                if words:
+                    doc.items(words[:40])
+                    if len(words) > 40:
+                        doc.footer(f"Showing 40 of {len(words)}. Use /unblacklist to remove an entry.")
+                else:
+                    doc.text("No words are blocked. Add terms with /addblacklist.")
+                return await rich.reply(m, doc)
+            if cmd == "blacklistmode":
+                args = (m.command or [])[1:]
+                if not args:
+                    seconds = _bounded_blacklist_duration(settings.get("blacklist_duration", 3600))
+                    return await m.reply_text(
+                        f"⚙️ <b>Blacklist mode:</b> <code>{_esc(mode)}</code>"
+                        + (f" · timed action: {seconds // 60}m" if mode in ("tban", "tmute") else "")
+                        + "\nUse /blacklistmode off|del|warn|ban|kick|mute|tban|tmute [duration].",
+                        parse_mode=enums.ParseMode.HTML)
+                selected = args[0].lower()
+                if selected not in BLACKLIST_MODES:
+                    return await m.reply_text(
+                        "Use /blacklistmode off|del|warn|ban|kick|mute|tban|tmute [duration].",
+                        parse_mode=enums.ParseMode.HTML)
+                updates = {"blacklist_mode": selected}
+                if selected in ("tban", "tmute"):
+                    if len(args) != 2:
+                        return await m.reply_text(
+                            f"Timed mode requires a duration, e.g. <code>/blacklistmode {selected} 1h</code>.",
+                            parse_mode=enums.ParseMode.HTML)
+                    duration = parse_duration(args[1])
+                    if duration is None or duration > timedelta(days=365):
+                        return await m.reply_text("Duration must be between 1 minute and 365 days.")
+                    updates["blacklist_duration"] = int(duration.total_seconds())
+                elif len(args) != 1:
+                    return await m.reply_text("Only timed ban/mute modes take a duration.")
+                await store.update_settings(bot_id, m.chat.id, updates)
+                return await m.reply_text(f"✅ Blacklist mode set to <code>{_esc(selected)}</code>.",
+                                          parse_mode=enums.ParseMode.HTML)
+
+            args = (m.command or [])[1:]
+            raw = m.text or m.caption or ""
+            if raw.strip():
+                try:
+                    args = shlex.split(raw.split(maxsplit=1)[1]) if len(raw.split(maxsplit=1)) > 1 else []
+                except ValueError:
+                    return await m.reply_text('Use quotes for phrases, e.g. <code>/addblacklist "red flag"</code>.',
+                                              parse_mode=enums.ParseMode.HTML)
+            if not args and m.reply_to_message is not None:
+                source = m.reply_to_message.text or m.reply_to_message.caption or ""
+                args = [source]
+            terms = normalize_blacklist_words(args, limit=20)
+            if not terms:
                 return await m.reply_text(
-                    f"🚫 <b>{len(blocked)}</b> sticker(s) blocked in this group.",
+                    "Give one or more words, or reply to a message. Terms are matched as whole words.",
                     parse_mode=enums.ParseMode.HTML)
-            if not await _is_admin(c, m.chat.id, m.from_user.id):
+            if cmd == "addblacklist":
+                combined = normalize_blacklist_words([*words, *terms], limit=100)
+                added = len(combined) - len(words)
+                await store.update_settings(bot_id, m.chat.id, {"blacklist_words": combined})
+                return await m.reply_text(
+                    f"✅ Added {added} word(s); {len(combined)} total. Current mode: <code>{_esc(mode)}</code>.",
+                    parse_mode=enums.ParseMode.HTML)
+            remaining = [word for word in words if word not in set(terms)]
+            removed = len(words) - len(remaining)
+            await store.update_settings(bot_id, m.chat.id, {"blacklist_words": remaining})
+            await m.reply_text(f"✅ Removed {removed} word(s); {len(remaining)} remain.",
+                               parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command("cleaner"))
+        async def _cleaner(c, m: Message):
+            if m.from_user is None or not await _is_admin(c, m.chat.id, m.from_user.id):
+                return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
+            args = (m.command or [])[1:]
+            settings = await store.get_settings(bot_id, m.chat.id)
+            current = bool(settings.get("clean_service")) or bool(settings.get("clean_commands"))
+            if len(args) > 1 or (args and args[0].lower() not in ("on", "off")):
+                return await m.reply_text("Use <code>/cleaner [on|off]</code>.",
+                                          parse_mode=enums.ParseMode.HTML)
+            enabled = args[0].lower() == "on" if args else not current
+            await store.update_settings(bot_id, m.chat.id,
+                                        {"clean_service": enabled, "clean_commands": enabled})
+            state = "on" if enabled else "off"
+            return await m.reply_text(
+                f"🧹 Cleaner is <b>{state}</b> — service messages and slash-command messages "
+                f"will {'be removed' if enabled else 'remain'}.", parse_mode=enums.ParseMode.HTML)
+
+        @app.on_message(filters.group & filters.command(
+            ["blocksticker", "unblocksticker", "blockedstickers", "addblsticker", "unblsticker", "blsticker"]))
+        async def _stickers(c, m: Message):
+            cmd = ((m.command or ["blockedstickers"])[0].split("@", 1)[0]).lower()
+            cmd = {"blsticker": "blockedstickers", "addblsticker": "blocksticker",
+                   "unblsticker": "unblocksticker"}.get(cmd, cmd)
+            s = await store.get_settings(bot_id, m.chat.id)
+            blocked = [value for value in (s.get("blocked_stickers") or [])
+                       if isinstance(value, str) and value][:100]
+            if cmd == "blockedstickers":
+                from core.rich import Doc
+                from core import rich
+                doc = Doc("🚫", "Blocked stickers", f"{len(blocked)} sticker IDs")
+                if blocked:
+                    doc.items([value[:100] for value in blocked[:20]])
+                    if len(blocked) > 20:
+                        doc.footer(f"Showing 20 of {len(blocked)} blocked stickers.")
+                else:
+                    doc.text("No stickers are currently blocked.")
+                return await rich.reply(m, doc)
+            if m.from_user is None or not await _is_admin(c, m.chat.id, m.from_user.id):
                 return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
             replied = m.reply_to_message
             sticker = getattr(replied, "sticker", None) if replied else None
-            if sticker is None:
-                return await m.reply_text("Reply to the sticker you want to manage.",
-                                          parse_mode=enums.ParseMode.HTML)
-            unique = sticker.file_unique_id
+            args = (m.command or [])[1:]
+            unique = getattr(sticker, "file_unique_id", None)
+            if unique is None and cmd == "unblocksticker" and len(args) == 1:
+                unique = args[0].strip()
+            if not unique:
+                return await m.reply_text(
+                    "Reply to a sticker to add/remove it, or pass its file_unique_id to /unblsticker.",
+                    parse_mode=enums.ParseMode.HTML)
             if cmd == "blocksticker":
                 if unique not in blocked:
+                    if len(blocked) >= 100:
+                        return await m.reply_text("The sticker blacklist is full (100 maximum).")
                     blocked.append(unique)
                     await store.update_settings(bot_id, m.chat.id, {"blocked_stickers": blocked})
-                return await m.reply_text("🚫 Sticker blocked — I'll delete it here from now on.",
-                                          parse_mode=enums.ParseMode.HTML)
+                current_mode = str(s.get("blacklist_mode", "del")).lower()
+                if current_mode not in BLACKLIST_MODES:
+                    current_mode = "del"
+                return await m.reply_text(
+                    f"🚫 Sticker blocked; blacklist mode is <code>{_esc(current_mode)}</code>.",
+                    parse_mode=enums.ParseMode.HTML)
             if unique in blocked:
                 blocked.remove(unique)
                 await store.update_settings(bot_id, m.chat.id, {"blocked_stickers": blocked})
@@ -1103,15 +1545,16 @@ class _BotHandlers:
             s = await store.get_settings(bot_id, m.chat.id)
             kinds = set(s.get("guard_kinds") or [])
             if cmd == "locks":
-                table = _table([
-                    (f"{'🔒' if (k in kinds or 'all' in kinds) else '🔓'} {k}",
-                     "locked" if (k in kinds or "all" in kinds) else "open")
+                from core.rich import Doc
+                from core import rich
+                rows = [
+                    (k.title(), "Locked" if (k in kinds or "all" in kinds) else "Open")
                     for k in GUARD_KINDS if k != "all"
-                ] + [("🛡 Shield", _onoff(s.get("shield")))])
-                return await m.reply_text(
-                    f"{_bar('🔐 LOCKS')}\n\n{table}\n"
-                    "<i>/lock links · /unlock media · types: links, media, stickers, forwards, bots, all</i>",
-                    parse_mode=enums.ParseMode.HTML)
+                ] + [("Content shield", _onoff(s.get("shield")))]
+                doc = (Doc("🔐", "Content locks", m.chat.title or "Group protection")
+                       .table(rows, header=("Content type", "State"))
+                       .footer("Use /lock links or /unlock media. Types: links, media, stickers, forwards, bots, all."))
+                return await rich.reply(m, doc)
             args = (m.command or [])[1:]
             kind = lock_kind(args[0]) if args else ""
             if not kind:
@@ -1163,14 +1606,17 @@ class _BotHandlers:
             except Exception:
                 count = "?"
             s = await store.get_settings(bot_id, m.chat.id)
-            await m.reply_text(
-                f"{_bar('💬 CHAT INFO')}\n\n"
-                f"Title: <b>{_esc(m.chat.title or '—')}</b>\n"
-                f"ID: <code>{m.chat.id}</code>\n"
-                f"Members: <b>{count}</b>\n"
-                f"Shield: {'on' if s.get('shield') else 'off'} · Greetings: {'on' if s.get('greetings') else 'off'} · "
-                f"Federation: {s.get('fed_id') or 'none'}",
-                parse_mode=enums.ParseMode.HTML)
+            from core.rich import Doc
+            from core import rich
+            doc = (Doc("💬", "Group overview", m.chat.title or "Untitled group")
+                   .table([
+                       ("Chat ID", m.chat.id),
+                       ("Members", count),
+                       ("Content shield", _onoff(s.get("shield"))),
+                       ("Greetings", _onoff(s.get("greetings"))),
+                       ("Federation", s.get("fed_id") or "Not connected"),
+                   ], header=("Detail", "Value")))
+            await rich.reply(m, doc)
 
         @app.on_message((filters.group | filters.private) & filters.command("createfed"))
         async def _createfed(c, m: Message):
@@ -1212,11 +1658,15 @@ class _BotHandlers:
             s = await store.get_settings(bot_id, m.chat.id)
             current = {normalize_cmd(x) for x in s.get("disabled_cmds") or []}
             if cmd == "disabled":
-                listing = ", ".join(sorted(current)) or "none"
-                return await m.reply_text(
-                    f"{_bar('🚫 DISABLED COMMANDS')}\n\n{_table([('🚫 Off here', listing)])}\n"
-                    "<i>Admins can always use every command. /enable &lt;command&gt; restores one.</i>",
-                    parse_mode=enums.ParseMode.HTML)
+                from core.rich import Doc
+                from core import rich
+                doc = Doc("🚫", "Disabled commands", f"{len(current)} turned off for members")
+                if current:
+                    doc.items([f"/{name}" for name in sorted(current)])
+                else:
+                    doc.text("No commands are disabled in this group.")
+                doc.footer("Admins can always use commands. /enable <command> restores one.")
+                return await rich.reply(m, doc)
             args = (m.command or [])[1:]
             target = normalize_cmd(args[0]) if args else ""
             known = {n for n, _ in GROUP_WORKER_COMMANDS}
@@ -1246,24 +1696,29 @@ class _BotHandlers:
             except Exception:
                 return await m.reply_text("Couldn't fetch the admin list — am I admin here?",
                                           parse_mode=enums.ParseMode.HTML)
+            from core.rich import Doc, link
+            from core import rich
             owners, admins, bots = [], [], []
             for member in members:
                 user = getattr(member, "user", None)
                 if user is None:
                     continue
-                name = _esc(user.first_name or str(user.id))
-                entry = f'<a href="tg://user?id={user.id}">{name}</a>'
+                name = user.first_name or str(user.id)
+                entry = link(name, f"tg://user?id={int(user.id)}")
                 status = getattr(member, "status", None)
                 if getattr(user, "is_bot", False):
-                    bots.append(f"🤖 {entry}")
+                    bots.append(("🤖 Bot", entry))
                 elif status == enums.ChatMemberStatus.OWNER:
-                    owners.append(f"👑 {entry}")
+                    owners.append(("👑 Owner", entry))
                 else:
-                    admins.append(f"⭐ {entry}")
-            lines = owners + admins + bots
-            await m.reply_text(
-                f"{_bar('👑 ADMIN TEAM')}\n\n" + ("\n".join(lines) if lines else "No admins found."),
-                parse_mode=enums.ParseMode.HTML)
+                    admins.append(("⭐ Admin", entry))
+            rows = owners + admins + bots
+            doc = Doc("👑", "Admin team", f"{len(rows)} administrators and service bots")
+            if rows:
+                doc.table(rows, header=("Role", "Member"))
+            else:
+                doc.text("No administrators were returned for this group.")
+            await rich.reply(m, doc)
 
         @app.on_message(filters.group & filters.command("stats"))
         async def _stats(c, m: Message):
@@ -1276,19 +1731,22 @@ class _BotHandlers:
                 actions = len(await store.recent_actions(bot_id, m.chat.id, limit=200))
             except Exception:
                 actions = "?"
-            table = _table([
-                ("👥 Members", members),
-                ("📋 Logged actions", f"{actions} (recent)"),
-                ("🤝 Approved members", len(s.get("approved") or {})),
-                ("📝 Notes", len(s.get("notes") or {})),
-                ("💬 Auto-replies", len(s.get("replies") or {})),
-                ("🚫 Blocked stickers", len(s.get("blocked_stickers") or [])),
-                ("⛔ Disabled commands", len(s.get("disabled_cmds") or [])),
-                ("🛡 Shield", _onoff(s.get("shield"))),
-                ("🌐 Federation", s.get("fed_id") or "none"),
-            ])
-            await m.reply_text(f"{_bar('📊 GROUP STATS')}\n\n{table}",
-                               parse_mode=enums.ParseMode.HTML)
+            from core.rich import Doc
+            from core import rich
+            doc = (Doc("📊", "Group stats", m.chat.title or "Group snapshot")
+                   .table([
+                       ("Members", members),
+                       ("Recent logged actions", actions),
+                       ("Approved members", len(s.get("approved") or {})),
+                       ("Saved notes", len(s.get("notes") or {})),
+                       ("Auto-replies", len(s.get("replies") or {})),
+                       ("Blocked stickers", len(s.get("blocked_stickers") or [])),
+                       ("Disabled commands", len(s.get("disabled_cmds") or [])),
+                       ("Content shield", _onoff(s.get("shield"))),
+                       ("Federation", s.get("fed_id") or "Not connected"),
+                   ], header=("Metric", "Value"))
+                   .footer("Counts are a snapshot and can change as the group is used."))
+            await rich.reply(m, doc)
 
         @app.on_message(filters.group & filters.command(["joinfed", "leavefed", "fedinfo"]))
         async def _joinfed(c, m: Message):
@@ -1417,34 +1875,122 @@ class _BotHandlers:
             await m.reply_text("✅ <b>Rules saved.</b> Members can read them with /rules.",
                                parse_mode=enums.ParseMode.HTML)
 
-        @app.on_message(filters.group & filters.command(["filter", "stop", "filters"]))
+        @app.on_message(filters.group & filters.command(["filter", "mfilter", "stop", "filters", "stopall"]))
         async def _filters_cmd(c, m: Message):
-            cmd = (m.command or ["filters"])[0].lower()
+            cmd = ((m.command or ["filters"])[0].split("@", 1)[0]).lower()
             s = await store.get_settings(bot_id, m.chat.id)
-            replies = dict(s.get("replies") or {})
+            replies = dict(s.get("replies") or {}) if isinstance(s.get("replies"), dict) else {}
+            media_replies = (dict(s.get("media_replies") or {})
+                             if isinstance(s.get("media_replies"), dict) else {})
+            media_captions = (dict(s.get("media_reply_captions") or {})
+                              if isinstance(s.get("media_reply_captions"), dict) else {})
             if cmd == "filters":
-                if not replies:
-                    return await m.reply_text("💬 No auto-replies yet. Admins: <code>/filter hello Hi there!</code>",
-                                              parse_mode=enums.ParseMode.HTML)
-                lines = "\n".join(f"• <b>{_esc(k)}</b> → {_esc(v)[:60]}" for k, v in sorted(replies.items()))
-                return await m.reply_text(f"{_bar('💬 AUTO-REPLIES')}\n\n{lines}",
+                if not replies and not media_replies:
+                    return await m.reply_text(
+                        "💬 No auto-replies yet. Admins: <code>/filter hello **Hi {first}!**</code> "
+                        "or reply to media with <code>/mfilter photo</code>.",
+                        parse_mode=enums.ParseMode.HTML)
+                lines = [f"• <b>{_esc(key)}</b> → {_esc(value)[:70]}"
+                         for key, value in sorted(replies.items())
+                         if isinstance(key, str) and isinstance(value, str)]
+                lines.extend(f"• <b>{_esc(key)}</b> → <i>{_esc(value.split(':', 1)[0])} reply</i>"
+                             for key, value in sorted(media_replies.items())
+                             if isinstance(key, str) and isinstance(value, str))
+                body = "\n".join(lines[:50]) or "No valid auto-replies."
+                if len(lines) > 50:
+                    body += f"\n…and {len(lines) - 50} more."
+                return await m.reply_text(f"{_bar('💬 FILTERS')}\n\n{body}",
                                           parse_mode=enums.ParseMode.HTML)
-            if not await _is_admin(c, m.chat.id, m.from_user.id):
+            if cmd == "stopall":
+                if (m.from_user is None or getattr(m.from_user, "is_bot", False)
+                        or m.from_user.id != self.owner_id):
+                    return await m.reply_text("🔒 <b>Owner only.</b>", parse_mode=enums.ParseMode.HTML)
+                await store.update_settings(bot_id, m.chat.id,
+                                           {"replies": {}, "media_replies": {}, "media_reply_captions": {}})
+                return await m.reply_text("🧹 All text and media auto-replies removed.",
+                                          parse_mode=enums.ParseMode.HTML)
+            if m.from_user is None or not await _is_admin(c, m.chat.id, m.from_user.id):
                 return await m.reply_text("🔒 <b>Admins only.</b>", parse_mode=enums.ParseMode.HTML)
-            parts = (m.text or "").split(maxsplit=2 if cmd == "filter" else 1)
-            if cmd == "filter":
-                if len(parts) < 3:
-                    return await m.reply_text("Usage: <code>/filter &lt;word&gt; &lt;reply&gt;</code>",
+
+            if cmd == "mfilter":
+                raw = m.text or ""
+                tail = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+                try:
+                    args = shlex.split(tail)
+                except ValueError:
+                    args = []
+                if len(args) != 1 or m.reply_to_message is None:
+                    return await m.reply_text(
+                        'Reply to a photo/video/sticker and use <code>/mfilter &lt;trigger&gt;</code>; '
+                        'quote multiword triggers.', parse_mode=enums.ParseMode.HTML)
+                key = " ".join(args[0].split()).casefold()[:64]
+                replied = m.reply_to_message
+                media_type = next((kind for kind in (
+                    "photo", "video", "animation", "document", "audio", "voice", "sticker")
+                    if getattr(replied, kind, None) is not None), None)
+                media = getattr(replied, media_type, None) if media_type else None
+                file_id = getattr(media, "file_id", None)
+                if not key or not isinstance(file_id, str) or not file_id or len(file_id) > 2048:
+                    return await m.reply_text("That reply has no supported media file.",
                                               parse_mode=enums.ParseMode.HTML)
-                replies[parts[1].lower()[:40]] = parts[2].strip()[:500]
-                await store.update_settings(bot_id, m.chat.id, {"replies": replies})
-                return await m.reply_text(f"✅ Auto-reply saved for <b>{_esc(parts[1].lower())}</b>.",
+                if key not in media_replies and key not in replies and len(media_replies) + len(replies) >= 100:
+                    return await m.reply_text("The group filter limit is 100 triggers.")
+                replies.pop(key, None)
+                media_replies[key] = f"{media_type}:{file_id}"
+                caption = replied.caption or ""
+                if caption:
+                    media_captions[key] = caption[:500]
+                else:
+                    media_captions.pop(key, None)
+                await store.update_settings(bot_id, m.chat.id,
+                                           {"replies": replies, "media_replies": media_replies,
+                                            "media_reply_captions": media_captions})
+                return await m.reply_text(f"✅ Media auto-reply saved for <b>{_esc(key)}</b>.",
                                           parse_mode=enums.ParseMode.HTML)
-            if len(parts) < 2 or parts[1].lower() not in replies:
-                return await m.reply_text("That auto-reply doesn't exist.", parse_mode=enums.ParseMode.HTML)
-            replies.pop(parts[1].lower())
-            await store.update_settings(bot_id, m.chat.id, {"replies": replies})
-            await m.reply_text("🗑 Auto-reply removed.", parse_mode=enums.ParseMode.HTML)
+
+            if cmd == "filter":
+                parsed = parse_filter_command(m.text or "")
+                if parsed is None:
+                    return await m.reply_text(
+                        'Usage: <code>/filter &lt;trigger&gt; &lt;Markdown reply&gt;</code>; '
+                        'quote multiword triggers, e.g. <code>/filter "price list" See {chatname}</code>.',
+                        parse_mode=enums.ParseMode.HTML)
+                key, template = parsed
+                if not key:
+                    return await m.reply_text("Trigger can't be empty.")
+                if key not in replies and key not in media_replies and len(replies) + len(media_replies) >= 100:
+                    return await m.reply_text("The group filter limit is 100 triggers.")
+                media_replies.pop(key, None)
+                media_captions.pop(key, None)
+                replies[key] = template
+                await store.update_settings(bot_id, m.chat.id,
+                                           {"replies": replies, "media_replies": media_replies,
+                                            "media_reply_captions": media_captions})
+                return await m.reply_text(
+                    f"✅ Markdown auto-reply saved for <b>{_esc(key)}</b>. Placeholders: "
+                    "<code>{first} {last} {fullname} {username} {id} {chatname} {chatid} {mention}</code>.",
+                    parse_mode=enums.ParseMode.HTML)
+
+            raw = m.text or ""
+            tail = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+            try:
+                args = shlex.split(tail)
+            except ValueError:
+                args = []
+            if len(args) != 1:
+                return await m.reply_text('Use <code>/stop &lt;trigger&gt;</code>.',
+                                          parse_mode=enums.ParseMode.HTML)
+            key = " ".join(args[0].split()).casefold()[:64]
+            was_present = key in replies or key in media_replies
+            replies.pop(key, None)
+            media_replies.pop(key, None)
+            media_captions.pop(key, None)
+            if was_present:
+                await store.update_settings(bot_id, m.chat.id,
+                                           {"replies": replies, "media_replies": media_replies,
+                                            "media_reply_captions": media_captions})
+                return await m.reply_text("🗑 Auto-reply removed.", parse_mode=enums.ParseMode.HTML)
+            return await m.reply_text("That auto-reply doesn't exist.", parse_mode=enums.ParseMode.HTML)
 
         @app.on_message(filters.group & filters.command(["pin", "unpin"]))
         async def _pin(c, m: Message):
@@ -1466,9 +2012,9 @@ class _BotHandlers:
             reported = m.reply_to_message
             offender = reported.from_user
             markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🗑 Delete", callback_data=f"gw:{bot_id}:rep:{m.chat.id}:{reported.id}:{offender.id}:del"),
-                InlineKeyboardButton("🔨 Ban", callback_data=f"gw:{bot_id}:rep:{m.chat.id}:{reported.id}:{offender.id}:ban"),
-                InlineKeyboardButton("✅ Ignore", callback_data=f"gw:{bot_id}:keep"),
+                _button("🗑 Delete", callback_data=f"gw:{bot_id}:rep:{m.chat.id}:{reported.id}:{offender.id}:del"),
+                _button("🔨 Ban", callback_data=f"gw:{bot_id}:rep:{m.chat.id}:{reported.id}:{offender.id}:ban"),
+                _button("✅ Ignore", callback_data=f"gw:{bot_id}:keep"),
             ]])
             text = (f"🚩 <b>Member report</b>\n\nGroup: <b>{_esc(m.chat.title or m.chat.id)}</b>\n"
                     f"Reported: {_esc(offender.first_name or offender.id)} ({offender.id})\n"
@@ -1528,7 +2074,7 @@ class _BotHandlers:
                     try:
                         await c.restrict_chat_member(m.chat.id, user.id, ChatPermissions())
                         markup = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("✅ I'm human — let me chat",
+                            _button("✅ I'm human — let me chat",
                                                  callback_data=f"gw:{bot_id}:verify:{m.chat.id}:{user.id}")]])
                         await c.send_message(
                             m.chat.id,
@@ -1600,9 +2146,45 @@ class _BotHandlers:
 
         @app.on_message(filters.group & filters.incoming & ~filters.service, group=5)
         async def _guard(c, m: Message):
+            if is_external_channel_post(m):
+                settings = await store.get_settings(bot_id, m.chat.id)
+                if settings.get("anti_channel"):
+                    try:
+                        await m.delete()
+                    except Exception:
+                        pass
+                    return
             if m.from_user is None:
                 return
             s = await store.get_settings(bot_id, m.chat.id)
+            if s.get("clean_commands"):
+                command_text = m.text or m.caption or ""
+                if command_text.startswith("/"):
+                    try:
+                        await m.delete()
+                    except Exception:
+                        pass
+            blacklist_mode = str(s.get("blacklist_mode", "del")).lower()
+            if blacklist_mode not in BLACKLIST_MODES:
+                blacklist_mode = "del"
+            # Enforce blocklists before AFK, notes or auto-replies can consume the message.
+            has_blacklist = bool(s.get("blacklist_words") or s.get("blocked_stickers"))
+            if blacklist_mode != "off" and has_blacklist and not is_approved(s, m.from_user.id):
+                if await store.get_fed_ban(bot_id, s.get("fed_id") or "", m.from_user.id):
+                    try:
+                        await c.ban_chat_member(m.chat.id, m.from_user.id)
+                    except Exception:
+                        pass
+                    return
+                if await _status(c, m.chat.id, m.from_user.id) == enums.ChatMemberStatus.MEMBER:
+                    blacklist_hit = match_blacklisted_word(
+                        m.text or m.caption or "", s.get("blacklist_words") or [])
+                    if blacklist_hit:
+                        await self._apply_blacklist_action(c, m, s, item=blacklist_hit)
+                        return
+                    if sticker_blocked(m, s.get("blocked_stickers") or []):
+                        await self._apply_blacklist_action(c, m, s, item="sticker")
+                        return
             afk_doc = await store.get_afk(bot_id, m.chat.id, m.from_user.id)
             if afk_doc:
                 await store.clear_afk(bot_id, m.chat.id, m.from_user.id)
@@ -1630,7 +2212,31 @@ class _BotHandlers:
                     return
             hit = match_reply(text_in, s.get("replies") or {})
             if hit:
-                await m.reply_text(_esc(hit[1])[:1000], parse_mode=enums.ParseMode.HTML)
+                rendered = render_filter_reply(hit[1], m.from_user, m.chat)
+                try:
+                    await m.reply_text(rendered, parse_mode=enums.ParseMode.MARKDOWN)
+                except Exception as exc:
+                    log.warning("text filter reply failed in chat %s (%s)",
+                                m.chat.id, type(exc).__name__)
+                return
+            media_hit = match_reply(text_in, s.get("media_replies") or {})
+            if media_hit:
+                spec = media_hit[1]
+                media_type, separator, file_id = spec.partition(":")
+                if (not separator or media_type not in
+                        ("photo", "video", "animation", "document", "audio", "voice", "sticker")
+                        or not file_id or len(file_id) > 2048):
+                    return
+                media_captions = s.get("media_reply_captions")
+                caption_template = media_captions.get(media_hit[0], "") if isinstance(media_captions, dict) else ""
+                caption = render_filter_reply(caption_template, m.from_user, m.chat) if caption_template else ""
+                try:
+                    sender = getattr(c, f"send_{media_type}")
+                    kwargs = {"caption": caption, "parse_mode": enums.ParseMode.MARKDOWN} if caption and media_type != "sticker" else {}
+                    await sender(m.chat.id, file_id, **kwargs)
+                except Exception as exc:
+                    log.warning("media filter reply failed in chat %s (%s)",
+                                m.chat.id, type(exc).__name__)
                 return
             if s.get("night_on") and not is_approved(s, m.from_user.id) and in_quiet_hours(
                     datetime.now(timezone.utc).hour,
@@ -1651,12 +2257,6 @@ class _BotHandlers:
                 return  # approved members are exempt from automated actions
             if await _status(c, m.chat.id, m.from_user.id) != enums.ChatMemberStatus.MEMBER:
                 return  # admins/restricted/unknown are never auto-punished
-            if sticker_blocked(m, s.get("blocked_stickers") or []):
-                try:
-                    await m.delete()
-                except Exception:
-                    pass
-                return
             violation = content_violation(m, s.get("guard_kinds") or []) if s.get("shield") else ""
             flooded = bool(s.get("flood_limit")) and self.flood.hit(
                 m.chat.id, m.from_user.id,
@@ -1683,6 +2283,8 @@ class _BotHandlers:
 def attach_group_handlers(app: Client, *, bot_id: int, owner_id: int, store) -> _BotHandlers:
     handlers = _BotHandlers(bot_id=bot_id, owner_id=owner_id, store=store)
     handlers.attach(app)
+    from .anime import attach_anime_handlers
+    attach_anime_handlers(app, bot_id=bot_id)
     return handlers
 
 
@@ -1690,7 +2292,24 @@ def attach_group_handlers(app: Client, *, bot_id: int, owner_id: int, store) -> 
 GROUP_WORKER_COMMANDS = [
     ("start", "About this group-management clone"),
     ("help", "List group commands"),
+    ("anime", "Search AniList for anime"),
+    ("manga", "Search AniList for manga"),
+    ("character", "Search AniList for a character"),
+    ("gettags", "List AniList anime genres"),
+    ("browse", "Browse trending/upcoming/latest anime"),
+    ("anisettings", "AniList lookup help and settings"),
+    ("airing", "Check an anime's next episode"),
+    ("topanime", "Show top-rated anime"),
     ("settings", "Group settings & switches (admins)"),
+    ("antichannel", "Toggle removal of channel-profile posts (admins)"),
+    ("cleaner", "Toggle service and command message cleanup (admins)"),
+    ("blacklist", "List blocked words (admins)"),
+    ("addblacklist", "Add blocked words (admins)"),
+    ("unblacklist", "Remove blocked words (admins)"),
+    ("blacklistmode", "Choose action for blocked content (admins)"),
+    ("blsticker", "List blocked stickers"),
+    ("addblsticker", "Block a replied sticker (admins)"),
+    ("unblsticker", "Unblock a sticker by reply or ID (admins)"),
     ("warn", "Warn a member (reply or user ID)"),
     ("unwarn", "Clear a member's warnings"),
     ("mute", "Mute a member (reply or user ID)"),
@@ -1706,9 +2325,11 @@ GROUP_WORKER_COMMANDS = [
     ("unpin", "Remove all pins (admins)"),
     ("rules", "Show the group rules"),
     ("setrules", "Set the group rules (admins)"),
-    ("filter", "Auto-reply: /filter word reply (admins)"),
-    ("stop", "Remove an auto-reply (admins)"),
-    ("filters", "List auto-replies"),
+    ("filter", "Markdown auto-reply with placeholders (admins)"),
+    ("mfilter", "Save a replied media auto-reply (admins)"),
+    ("stop", "Remove a text or media auto-reply (admins)"),
+    ("filters", "List text and media auto-replies"),
+    ("stopall", "Remove all auto-replies (owner only)"),
     ("report", "Report a message to admins by DM"),
     ("welcome", "Preview greetings or turn them on/off"),
     ("resetwelcome", "Reset the welcome text (admins)"),
@@ -1720,6 +2341,7 @@ GROUP_WORKER_COMMANDS = [
     ("notes", "List saved notes"),
     ("clear", "Delete a note (admins)"),
     ("whois", "Member card with admin actions"),
+    ("id", "Show IDs for a user, chat, reply or forward"),
     ("language", "Show or set my language"),
     ("promote", "Promote a member to admin (admins)"),
     ("demote", "Demote an admin to member (admins)"),

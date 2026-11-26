@@ -8,6 +8,7 @@ group-management plugin.
 from __future__ import annotations
 
 import re
+import shlex
 import time
 from collections import OrderedDict
 from datetime import timedelta
@@ -18,6 +19,22 @@ _LINK_RE = re.compile(r"(https?://|t\.me/|telegram\.me/|www\.)", re.IGNORECASE)
 
 # Guard kinds the clone worker can police on its own.
 GUARD_KINDS = ("links", "media", "stickers", "forwards", "bots", "all")
+FLOOD_LIMITS = (3, 4, 5, 6, 8, 10, 15, 20)
+FLOOD_WINDOWS = (3, 5, 10, 15, 30, 60)
+BLACKLIST_MODES = ("off", "del", "warn", "ban", "kick", "mute", "tban", "tmute")
+
+
+def next_flood_value(current, options: tuple[int, ...], default: int) -> int:
+    """Cycle an admin-selected flood setting through a finite safe range."""
+    try:
+        numeric = float(current)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    index = next((i for i, option in enumerate(options)
+                  if numeric == float(option)), None)
+    if index is None:
+        return default
+    return options[(index + 1) % len(options)]
 
 _LOCK_ALIASES = {
     "link": "links", "url": "links", "urls": "links",
@@ -63,6 +80,7 @@ def default_settings() -> dict:
     """Fresh per-(clone bot, chat) settings for the group worker."""
     return {
         "shield": False,          # passive guard master switch
+        "anti_channel": False,    # delete channel-sender posts; exempt anonymous group admins
         "guard_kinds": [],        # subset of GUARD_KINDS
         "greetings": False,       # welcome/goodbye messages
         "greet_text": "👋 Welcome {name} to {chat}!",
@@ -73,7 +91,9 @@ def default_settings() -> dict:
         "flood_window": 10.0,     # seconds
         "flood_action": "mute",   # mute | kick | ban
         "rules": "",              # group rules text (/rules)
-        "replies": {},            # keyword -> auto-reply (/filter)
+        "replies": {},            # keyword -> Markdown auto-reply (/filter)
+        "media_replies": {},      # keyword -> type:file_id (/mfilter)
+        "media_reply_captions": {}, # keyword -> optional Markdown caption
         "dm_alerts": True,        # DM the clone owner on moderation actions
         "notes": {},              # trigger -> saved note (/save, #trigger)
         "night_on": False,        # quiet hours: delete member messages
@@ -88,7 +108,11 @@ def default_settings() -> dict:
         "greet_media_type": "",   # photo | sticker
         "clean_welcome": False,   # delete the previous welcome when a new one posts
         "clean_service": False,   # delete Telegram service messages (joins, pins…)
+        "clean_commands": False,  # delete group messages beginning with / after handlers run
         "blocked_stickers": [],   # sticker file_unique_ids blocked individually
+        "blacklist_words": [],    # case-insensitive whole-word/phrase blocklist
+        "blacklist_mode": "del",  # off | del | warn | ban | kick | mute | tban | tmute
+        "blacklist_duration": 3600,  # seconds used by tban/tmute blacklist actions
         "fed_id": "",             # federation this group belongs to ("" = none)
         "lang": "en",             # UI language: en | hi | es
     }
@@ -170,25 +194,117 @@ def in_quiet_hours(hour: int, start: int, end: int) -> bool:
     return hour >= start or hour < end
 
 
+def normalize_blacklist_words(values, *, limit: int = 100) -> list[str]:
+    """Normalize and bound a group's case-insensitive blocked-word list."""
+    if not isinstance(values, (list, tuple)):
+        return []
+    limit = max(0, int(limit))
+    if limit == 0:
+        return []
+    out = []
+    seen = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        word = " ".join(raw.split()).casefold()[:64].strip()
+        if word and word not in seen:
+            seen.add(word)
+            out.append(word)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def match_blacklisted_word(text: str, words) -> str | None:
+    """Return the first whole-word/phrase blacklist hit, case-insensitively."""
+    if not text:
+        return None
+    text = str(text)
+    for word in normalize_blacklist_words(words):
+        pattern = re.compile(r"(?<!\w)" + re.escape(word) + r"(?!\w)", re.IGNORECASE)
+        if pattern.search(text):
+            return word
+    return None
+
+
 def sticker_blocked(message, blocked) -> bool:
     """True when the message is a sticker whose unique ID is blocklisted."""
     sticker = getattr(message, "sticker", None)
-    if sticker is None:
+    if sticker is None or not isinstance(blocked, (list, tuple, set)):
         return False
     unique = getattr(sticker, "file_unique_id", None)
-    return bool(unique) and unique in set(blocked or [])
+    if not isinstance(unique, str) or not unique:
+        return False
+    return any(isinstance(value, str) and value == unique for value in list(blocked)[:100])
+
+
+def parse_filter_command(text: str) -> tuple[str, str] | None:
+    """Parse `/filter trigger Markdown reply`, allowing a quoted phrase trigger."""
+    raw = str(text or "")
+    parts = raw.split(maxsplit=1)
+    if len(parts) < 2:
+        return None
+    lexer = shlex.shlex(parts[1], posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        trigger = lexer.get_token()
+        reply = lexer.instream.read().strip()
+    except (ValueError, TypeError):
+        return None
+    key = " ".join(str(trigger or "").split()).casefold()[:64]
+    reply = reply[:1000]
+    return (key, reply) if key and reply else None
 
 
 def match_reply(text: str, replies: dict) -> tuple[str, str] | None:
-    """First keyword auto-reply matching *text* (whole-word, case-insensitive)."""
-    if not text or text.startswith("/") or not replies:
+    """Return the first whole-word/phrase filter hit (case-insensitive)."""
+    if not isinstance(text, str) or not text or text.startswith("/") or not isinstance(replies, dict):
         return None
-    low = f" {text.lower()} "
-    for keyword, reply in replies.items():
-        needle = str(keyword).lower().strip()
-        if needle and f" {needle} " in low:
-            return str(keyword), str(reply)
-    return None
+    hits = []
+    for keyword, reply in list(replies.items())[:100]:
+        if not isinstance(keyword, str) or not isinstance(reply, str):
+            continue
+        needle = " ".join(keyword.split())[:64]
+        if not needle:
+            continue
+        pattern = r"(?<!\w)" + re.escape(needle) + r"(?!\w)"
+        if re.search(pattern, text[:4096], flags=re.IGNORECASE):
+            hits.append((needle, keyword, reply[:1000]))
+    if not hits:
+        return None
+    _, keyword, reply = min(hits, key=lambda hit: (-len(hit[0]), hit[0].casefold()))
+    return keyword, reply
+
+
+def render_filter_reply(template: str, user, chat) -> str:
+    """Expand common placeholders while keeping dynamic values Markdown-safe."""
+    def md_escape(value) -> str:
+        text = str(value or "")
+        return re.sub(r"([\\_*`\[\]])", r"\\\1", text)[:256]
+
+    uid = getattr(user, "id", 0)
+    try:
+        uid = int(uid)
+    except (TypeError, ValueError, OverflowError):
+        uid = 0
+    first = getattr(user, "first_name", "") or "member"
+    last = getattr(user, "last_name", "") or ""
+    full = " ".join(str(part).strip() for part in (first, last) if str(part or "").strip()) or "member"
+    username = getattr(user, "username", "") or ""
+    title = getattr(chat, "title", "") or "this group"
+    chat_id = getattr(chat, "id", "")
+    mention = f"[{md_escape(full)}](tg://user?id={uid})" if uid > 0 else md_escape(full)
+    values = {
+        "{first}": md_escape(first), "{last}": md_escape(last),
+        "{fullname}": md_escape(full), "{username}": md_escape(f"@{username}" if username else ""),
+        "{id}": str(uid), "{chatname}": md_escape(title), "{chatid}": md_escape(chat_id),
+        "{mention}": mention,
+    }
+    rendered = str(template or "")[:1000]
+    for placeholder, value in values.items():
+        rendered = rendered.replace(placeholder, value)
+    return rendered
 
 
 def render_greeting(template: str, *, name: str, chat: str, user_id: int) -> str:
@@ -259,6 +375,20 @@ class FloodWatch:
         return False
 
 
+def is_external_channel_post(message) -> bool:
+    """Match channel-originated posts without deleting anonymous group-admin posts."""
+    sender_chat = getattr(message, "sender_chat", None)
+    if sender_chat is None:
+        return False
+    sender_id = getattr(sender_chat, "id", None)
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    if sender_id is None or sender_id == chat_id:
+        return False
+    kind = getattr(sender_chat, "type", None)
+    kind = getattr(kind, "value", kind)
+    return str(kind).lower() == "channel" or bool(getattr(message, "is_automatic_forward", False))
+
+
 def content_violation(message, guard_kinds) -> str:
     """Return the first guard violation for a message-like object."""
     kinds = set(guard_kinds or [])
@@ -320,5 +450,38 @@ def sanitize_settings_import(data, defaults: dict) -> dict | None:
             if not all(isinstance(k, str) and isinstance(v, str)
                        for k, v in value.items()):
                 return None
-            out[key] = {k[:60]: v[:500] for k, v in value.items()}
+            if key == "replies":
+                if len(value) > 100:
+                    return None
+                cleaned = {" ".join(k.split()).casefold()[:64]: v[:1000]
+                           for k, v in value.items()}
+                if not all(cleaned):
+                    return None
+                out[key] = cleaned
+            elif key == "media_replies":
+                if len(value) > 100:
+                    return None
+                cleaned = {}
+                for raw_key, raw_value in value.items():
+                    trigger = " ".join(raw_key.split()).casefold()[:64]
+                    kind, separator, file_id = raw_value.partition(":")
+                    if (not trigger or not separator
+                            or kind not in ("photo", "video", "animation", "document", "audio", "voice", "sticker")
+                            or not file_id or len(file_id) > 2048):
+                        return None
+                    cleaned[trigger] = f"{kind}:{file_id}"
+                out[key] = cleaned
+            elif key == "media_reply_captions":
+                if len(value) > 100:
+                    return None
+                cleaned = {" ".join(k.split()).casefold()[:64]: v[:500]
+                           for k, v in value.items()}
+                if not all(cleaned):
+                    return None
+                out[key] = cleaned
+            else:
+                out[key] = {k[:60]: v[:500] for k, v in value.items()}
+    if (len(out.get("replies", {})) + len(out.get("media_replies", {})) > 100
+            or not set(out.get("media_reply_captions", {})).issubset(out.get("media_replies", {}))):
+        return None
     return out

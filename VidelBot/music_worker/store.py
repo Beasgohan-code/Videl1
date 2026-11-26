@@ -1,7 +1,7 @@
 """Mongo-backed settings for the clone Music worker, scoped per clone+chat."""
 from __future__ import annotations
 
-from .logic import default_settings
+from .logic import default_settings, normalize_settings
 
 
 _TRACK_FIELDS = ("title", "duration", "requested_by", "source")
@@ -11,6 +11,10 @@ class MusicWorkerStore:
     def __init__(self, db):
         self._settings = db["music_worker_settings"]
         self._queues = db["music_worker_queues"]
+        try:
+            self._bots = db["registered_bots"]
+        except (KeyError, TypeError):
+            self._bots = None
         self._playlists = db["music_worker_playlists"]
 
     # ── personal playlists (per clone + user) ───────────────────
@@ -55,15 +59,25 @@ class MusicWorkerStore:
         return {"bot_id": int(bot_id), "chat_id": int(chat_id)}
 
     async def get_settings(self, bot_id: int, chat_id: int) -> dict:
-        doc = await self._settings.find_one(self._key(bot_id, chat_id))
-        settings = default_settings()
-        if doc:
-            settings.update({k: v for k, v in doc.items() if k in settings})
-        return settings
+        bot_id, chat_id = int(bot_id), int(chat_id)
+        legacy_defaults = await self._settings.find_one(self._key(bot_id, 0))
+        clone_doc = (await self._bots.find_one({"_id": bot_id})
+                     if self._bots is not None else None)
+        chat_doc = (None if chat_id == 0 else
+                    await self._settings.find_one(self._key(bot_id, chat_id)))
+        values = {}
+        for doc in (legacy_defaults,
+                    clone_doc.get("music_settings_defaults") if isinstance(clone_doc, dict) else None,
+                    chat_doc):
+            if isinstance(doc, dict):
+                values.update({k: v for k, v in doc.items() if k in default_settings()})
+        return normalize_settings(values)
 
     async def update_settings(self, bot_id: int, chat_id: int, updates: dict) -> dict:
         allowed = {k: v for k, v in (updates or {}).items() if k in default_settings()}
         if allowed:
+            safe = normalize_settings(allowed)
+            allowed = {key: safe[key] for key in allowed}
             await self._settings.update_one(
                 self._key(bot_id, chat_id), {"$set": allowed}, upsert=True)
         return await self.get_settings(bot_id, chat_id)

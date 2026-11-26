@@ -86,9 +86,12 @@ looks for a whole-word match, using Unicode word boundaries and case-insensitive
 matching. Where multiple triggers match, the longest wins; ties are alphabetical.
 It skips slash/dot/exclamation/hash-prefixed messages, bot senders, sender-chat
 posts, outgoing messages and text over 4,096 characters. It uses a separate
-handler group so normal clone commands still run. This is **not** a complete filter system: phrases, media, formatting, buttons, per-user rules and `/stop` or
-`/stopall` are not implemented. Telegram bot privacy mode or missing group
-permissions can prevent ordinary messages from reaching the bot.
+handler group so normal clone commands still run. The behavior in this subsection
+is specific to the legacy File Store worker; it does not provide phrases, media,
+formatting, buttons, per-user rules, `/stop` or `/stopall`. The standalone Group
+worker profile has a separate filter implementation described in the Group
+worker section below. Telegram bot privacy mode or missing group permissions can
+prevent ordinary messages from reaching either worker.
 
 Reply processing is best-effort, not a durable queue. The process allows one
 filter settings check per group per second and at most one attempted reply per
@@ -331,19 +334,26 @@ data migration has been performed. The separate Music worker remains outside thi
 ## Separate Group Management worker (new)
 
 `VidelBot/group_worker/` is a standalone worker program for Group
-Management clones, built in the same spirit as the File Store worker
-but as its own codebase. It does not import or copy the main bot's
-`plugins/group_mod` plugin, does not modify `filestore/worker_bot/`,
-and uses normal Standard commands (`/settings`, `/warn`, `/mute`,
-`/tmute`, `/kick`, `/ban`, `/tban`, `/sban`, `/unban`, `/purge`), settings model
-(`group_worker_settings` / `group_worker_warns`, scoped per clone bot
-and chat), guard, warn and flood logic. Stage 1 (core moderation +
-greetings) is implemented and unit-tested. It is not wired into
-`run.py` yet: group-profile clones are still served by the existing
-in-worker profile, and running both would double-handle the same bots.
-The production runtime choice and retirement of the old path remain a
-separate approved step. A Music worker will be its own folder under
-the same pattern once the voice-chat dependency stack is verified.
+Management clones, built as its own codebase. It does not import or copy
+the main bot's `plugins/group_mod` plugin, does not modify
+`filestore/worker_bot/`, and stores per-clone/per-chat group settings and
+warning data independently. Its implemented features include standard
+moderation, group care and safety controls, AniList anime/manga/character
+lookups, and an admin-controlled anti-channel-post guard. AniList uses a
+fixed public API endpoint with bounded inputs, request throttling, timeouts,
+brief caching, safe HTML rendering and validated result links.
+
+The worker is deliberately not wired into `run.py`: Group-profile clones
+are still served by the existing in-process profile. Do not run both
+programs for the same tokens; a reviewed single-controller cutover and
+non-overlapping rollout remain outstanding. Per-group word/sticker
+blacklists are now supported with whole-word/phrase matching and configurable
+moderation actions; timed actions are bounded to one minute–365 days, and
+admins/approved users are exempt. Per-group Markdown text/media filters,
+placeholders, owner-only `/stopall`, and `/id` for replies/forward origins are
+also supported. `/cleaner [on|off]`
+controls service-message and slash-command cleanup. AniList availability, Telegram delivery,
+moderation outcomes and bot permissions still need live validation.
 
 ## Group Management mode ON by default + clone settings (main bot)
 
@@ -361,31 +371,50 @@ to them and /settings has been used there.
 ## Music worker (stage 1)
 
 `VidelBot/music_worker/` is the separate worker program for Music
-clones, following the same pattern as the group worker: own commands
-(`/play`, `/queue`, `/skip`, `/remove`, `/stop`), rich start, DJ-mode
-and volume settings in `music_worker_settings`, bounded per-chat
-queues. Voice-chat streaming is deliberately not faked: it needs a
-verified PyTgCalls/WzGram stack, a per-clone assistant session
-lifecycle, `music` profile selection, and exclusive runtime wiring —
-all separate approved steps. The engine is not imported by `run.py`.
+clones, following the same pattern as the group worker: own commands,
+per-clone assistant sessions, persistent bounded queues, playlists,
+channel playback, seek/speed controls, repeat modes, upcoming-track
+shuffle and a Rich now-playing panel. The supported PyTgCalls/WzGram
+stack is installed in its own requirements; actual joining and audible
+controls still need live-Telegram proof. The engine is intentionally not
+imported by `run.py`; provision one standalone Music worker after
+assistant setup. The File Store engine/watchdog query only legacy and File
+Store profiles; the standalone Music engine queries Music profiles and
+reconciles owner-dashboard start/stop requests every 10 seconds. This is
+registry desired-state coordination, not a distributed lease. Playback and
+queue controls remain subject to live voice-chat validation.
 
 ## Standalone worker programs
 
 Each clone profile worker is a separate program:
 `GROUP_WORKER_STANDALONE=1 python -m group_worker` and
 `MUSIC_WORKER_STANDALONE=1 python -m music_worker` (run from
-`VidelBot/`). The env opt-in is a fail-closed exclusivity guard —
-never run a standalone worker while the main process serves the same
-clones. Neither is wired into `run.py`; switching a profile's runtime
-to its standalone worker is an operator step.
+`VidelBot/`). The env opt-in is a fail-closed acknowledgement —
+never run multiple workers for the same clone tokens. Neither is wired into
+`run.py`; switching a profile's runtime to its standalone worker is an
+operator step. The File Store engine and watchdog now query only legacy/File
+Store profiles; Group and Music standalone engines use profile-specific
+queries.
 
 Music streaming (stage 2): `music_worker/player.py` wraps
 PyTgCalls 3.0.1 on WzGram 3.1.7. The earlier "missing
 GroupcallForbidden" blocker was two legacy Pyrogram error names;
 they are aliased to WzGram's `GroupCallInvalid` at player setup
 (probe-verified: import, construction and call API all succeed).
-Real voice-chat joining still needs live-Telegram proof with a real
-clone, and `music` profile selection stays gated until then.
+Music profile selection is enabled after encrypted assistant-session
+setup. The owner dashboard can request Music start/stop and edit clone-wide Music
+defaults while the worker is offline; chat-specific settings override those
+defaults. The standalone Music worker reconciles desired state every 10 seconds.
+A separate
+owner-confirmed recovery path can switch an inactive Music clone back to File
+Store or Group when the Music worker reports stopped/unknown. Fresh active reports
+block recovery; reports older than two minutes are marked stale and require
+explicit confirmation that no separate Music process remains connected. A stale
+local report is not proof of process exit, and recovery never remotely stops
+another process.
+Real voice-chat joining still needs live-Telegram proof with a real clone; the
+standalone worker must remain separate from `run.py` and be the only Music
+process for those clone tokens.
 
 ## Music profile setup (assistant session)
 
@@ -394,9 +423,12 @@ main bot (owner DM): the owner can **paste** a Pyrogram session
 string or **create one here** via a guided phone → OTP (→ 2FA)
 login. Sessions are stored only Fernet-encrypted
 (`music_session_encrypted`; storage is refused without a valid
-ENCRYPTION_KEY), the pasted message is deleted, and the profile
-flips to `music` only after a session is saved — with the same
-stopped/owner CAS rules as other switches. The music worker then
+ENCRYPTION_KEY). Session, phone, OTP and 2FA input messages must be deleted
+before processing; failed deletion cancels the flow. Session writes are
+owner-scoped, so an ownership transfer during login cannot store credentials
+on the new owner's clone. Expired login clients are disconnected; uncertain
+cleanup is retained for retry. The profile flips to `music` only after a session
+is saved — with the same stopped/owner CAS rules as other switches. The music worker then
 runs playback (PyTgCalls) on that assistant user account while the
 clone bot takes commands; without a session it falls back to the
 bot client, and a dead session degrades to queue-only mode.

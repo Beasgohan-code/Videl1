@@ -350,3 +350,99 @@ The main-bot `group_mod` plugin gained Miss Standard restriction aliases (`/ban`
 Verification: focused group tests **48 passed**; complete offline backend suite **1645 passed, 33 skipped**, with one Python-version warning. Tests use fake Telegram clients and mock MongoDB; no live Telegram, real Mongo concurrency, or production deployment was performed. CI on PR #3: all checks pass (Python CI, Frontend, native tools, Vercel).
 
 CI reliability fix: commits `2589dbf` and `5808602` replaced fragile `curl --retry 30` health checks with a `wait_for_url` polling loop (up to ~3 min) and added per-test retries with server log dumping. The "Test Next workspace drafts with synthetic API" step had been failing consistently since `a04f6cd` despite identical frontend code; all six browser tests pass locally with sparticuz Chromium.
+
+## Clone worker reliability and flood controls (working-tree changes)
+
+Group and Music worker shutdown now retains uncertain Telegram clients across stop failures and cancellation, retries them on a subsequent stop, and prevents a clone from restarting while any prior client may remain alive. Music teardown additionally stops the PyTgCalls player before its assistant/bot clients; player shutdown is bounded and uncertain player instances remain fenced for retry. The Group settings panel now exposes bounded flood threshold/window choices (3–20 messages, 3–60 seconds). Updated worker docs and TODO to distinguish completed offline features from single-controller cutover and live validation still pending. The protected `VidelBot/filestore/worker_bot/` folder and `run.py` were not changed.
+
+Verification: complete offline backend suite **1726 passed, 33 skipped**, one Python-version warning; targeted clone-worker suites passed. Fake Telegram/player and test-store evidence only; no live Telegram voice chat, real MongoDB concurrency, multi-process ownership or production rollout was tested. Changes remain uncommitted on `arena/18baa515-videl1`.
+
+## Music clone repeat and queue controls (working-tree changes)
+
+Reviewed Music clone feature coverage and added repeat modes (`/loop off|one|all`) and `/shuffle`, which only reorders upcoming tracks; repeat settings and queue ordering persist per clone/group. The controls are available in both commands and the now-playing panel; repeat mode also appears in Music settings. Upcoming-only `/remove` and `/move` protect the current track and persist queue changes. The standalone worker already includes playlists, channel playback, autoplay, and seek/speed controls.
+
+Verification: full offline backend suite **1729 passed, 33 skipped**, one Python-version warning. Tests exercise repeat transitions, current-track preservation, deterministic shuffle behavior, protected upcoming edits and persisted queue state. Real Telegram voice-chat joining and audible loop/seek/speed behavior remain unverified; standalone ownership and live rollout are still pending.
+
+## Group worker AniList commands and anti-channel guard (working-tree changes)
+
+Added `/anime`, `/manga`, `/character`, `/gettags`, `/browse`, `/airing`, `/topanime` and `/anisettings` to the standalone Group worker. AniList requests use a fixed GraphQL endpoint, bounded user searches, a short per-clone cache, a serialized request interval, concurrency limits and timeouts. Result cards escape API text, suppress spoiler-marked tags, request the non-adult media filter and only create buttons for validated AniList URLs. No credentials or user-configurable endpoints are accepted.
+
+Added admin `/antichannel [on|off]` plus a Security settings toggle. It deletes posts sent as an external channel profile only when enabled; posts sent as the group itself (including anonymous group admins) are exempt, and no channel bans are attempted. Deletion still depends on Telegram bot rights.
+
+Verification: complete offline backend suite **1734 passed, 33 skipped**, one Python-version warning; focused Group/AniList suites passed. AniList was tested with mocked HTTP responses only; live API, Telegram delivery and delete permissions remain unverified. Protected File Store worker and `run.py` remain unchanged.
+
+## Group worker: per-group word and sticker blacklists
+
+Implemented bounded per-clone/group blocked words and stickers in
+`VidelBot/group_worker/`, with case-insensitive whole-word/phrase matching,
+admin list/add/remove and action-mode commands, and sticker-ID commands.
+Modes are `off`, `del`, `warn`, `ban`, `kick`, `mute`, `tban`, and `tmute`;
+timed actions are clamped to 1 minute–365 days, and warning mode follows the
+group's existing warn escalation. Approved users and admins are exempt, and
+blocklist checks run before note/filter auto-replies. Focused Group/AniList
+tests passed (33); syntax and `git diff --check` passed. Telegram permissions
+and live moderation outcomes remain unverified.
+
+
+## Group worker: combined message cleaner toggle
+
+Added admin `/cleaner [on|off]`, which toggles service-message cleanup and
+post-handler deletion of incoming messages beginning with `/`. This complements
+the existing clean-service setting and keeps command handlers able to process
+commands before cleanup runs. Syntax, focused tests and live bot delete rights
+remain subject to validation.
+
+
+## Prevent Music profiles from entering the File Store watchdog retry loop
+
+Separated active clone queries by runtime: the in-process File Store engine and
+watchdog now load only legacy/File Store profiles, while standalone Group and
+Music engines query their own profiles. Music dashboard start/stop controls
+now write owner/profile-checked desired state; the standalone Music worker
+reconciles changes every 10 seconds, publishes local runtime state, and backs
+off repeated startup failures. Added an explicit owner-confirmed Music-to
+File Store/Group recovery path that refuses a reported running/uncertain Music
+client and warns that it cannot stop another process. This does not add Music
+or Group to `run.py` or change the protected File Store worker engine.
+
+Focused profile-routing, Music-engine, Group-worker, clone-profile and
+reactivation suites pass (130 tests). Python compile and `git diff --check` pass.
+This remains registry desired-state coordination, not a distributed lease; live
+deployment and Telegram client stop/start behavior need validation.
+
+A follow-up closes the stale-observation recovery dead end: Music runtime reports
+are refreshed by the worker's 10-second reconcile loop. Fresh `starting`,
+`running`, `stopping`, or `uncertain` reports still block recovery; after two
+minutes without a report, the dashboard marks it stale and permits a second
+owner confirmation. The atomic recovery write applies the same freshness cutoff
+in Mongo, while missing timestamps stay conservative. Staleness is not proof a
+separate process exited; owners must independently confirm it is disconnected.
+
+
+## Group worker: Markdown text and media filters
+
+Expanded `/filter` to support quoted phrase triggers, Markdown replies and safe
+dynamic user/chat placeholders; added `/mfilter` for reply-based media filters,
+`/stop` across both types, `/filters`, and owner-only `/stopall`. Media file IDs
+and filter counts are bounded/validated on settings import; approved filters are
+scoped per clone and chat. Focused Group tests (33) cover parsing, placeholders,
+media dispatch, removal, owner authorization and import validation. Live Telegram
+media delivery and Markdown rendering remain unverified.
+
+
+## Group worker: `/id` message and forwarded-origin details
+
+Added `/id` in groups and private chats for the command sender, chat and message;
+when replying it reports the replied user's ID/username, and includes forwarded
+user/chat origins or hidden-sender labels when Telegram provides them. Output is
+HTML-escaped and does not mislabel the command author as a forwarded message
+sender. Group-focused tests pass; live Telegram forward metadata variants remain
+unverified.
+
+## Music credential-refresh and session-flow hardening
+
+The standalone Music reconciler now detects changed encrypted bot/assistant credentials or command owner with non-reversible in-memory fingerprints. It stops the old worker first, refuses replacement if shutdown is uncertain, then restarts from the current registry record with normal retry backoff. The main bot's legacy toggle callback routes Music clones to desired-state writes, never the File Store engine. Owners can also edit clone-wide DJ/autoplay/repeat/volume/speed defaults from the main dashboard while Music is offline; existing per-chat settings override the defaults, and values are normalized on read.
+
+Assistant-session writes now require the current owner and a non-deleted clone. Setup input messages (session string, phone, OTP, 2FA password) are deleted before processing; deletion failure cancels the flow without saving credentials. Expired flows disconnect their temporary login client, late session strings are discarded, pending flows are bounded and serialized per owner, late credentials are discarded,
+and uncertain login-client cleanup is retained for retries. Focused Music/profile/Group
+regression suites pass; fake Telegram and mock Mongo only. Live credential revocation, bot API deletion rights, multi-process ownership and production recovery remain unverified.
