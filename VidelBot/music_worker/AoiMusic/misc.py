@@ -1,0 +1,89 @@
+
+
+
+import socket
+import time
+
+try:
+    import heroku3
+except ImportError:
+    heroku3 = None
+from pyrogram import filters
+
+import config
+from AoiMusic.core.mongo import pymongodb
+
+from .logging import LOGGER
+
+SUDOERS = filters.user()
+
+
+HAPP = None
+db = {}
+_boot_ = time.time()
+
+
+def is_heroku():
+    return "heroku" in socket.getfqdn()
+
+
+XCB = [
+    "/",
+    "@",
+    ".",
+    "com",
+    ":",
+    "git",
+    "heroku",
+    "push",
+    str(config.HEROKU_API_KEY),
+    "https",
+    str(config.HEROKU_APP_NAME),
+    "HEAD",
+    "main",
+]
+
+
+def dbb():
+    global db
+    db = {}
+    LOGGER(__name__).info(f"Database Initialized.")
+
+
+def sudo():
+    global SUDOERS
+    OWNER = config.OWNER_ID
+    if not config.MONGO_DB_URI:
+        for user_id in OWNER:
+            SUDOERS.add(user_id)
+    else:
+        sudoersdb = pymongodb.sudoers
+        sudoers = sudoersdb.find_one({"sudo": "sudo"})
+        sudoers = [] if not sudoers else sudoers["sudoers"]
+        for user_id in OWNER:
+            SUDOERS.add(user_id)
+            if user_id not in sudoers:
+                sudoers.append(user_id)
+                sudoersdb.update_one(
+                    {"sudo": "sudo"},
+                    {"$set": {"sudoers": sudoers}},
+                    upsert=True,
+                )
+        if sudoers:
+            for x in sudoers:
+                SUDOERS.add(x)
+    LOGGER(__name__).info(f"Sudoers Loaded.")
+
+
+def heroku():
+    global HAPP
+    if is_heroku() and heroku3 is not None:
+        if config.HEROKU_API_KEY and config.HEROKU_APP_NAME:
+            try:
+                Heroku = heroku3.from_key(config.HEROKU_API_KEY)
+                HAPP = Heroku.app(config.HEROKU_APP_NAME)
+                LOGGER(__name__).info(f"Heroku App Configured")
+            except Exception:
+                LOGGER(__name__).warning(
+                    f"Please make sure your Heroku API Key and Your App name are configured correctly in the heroku."
+                )

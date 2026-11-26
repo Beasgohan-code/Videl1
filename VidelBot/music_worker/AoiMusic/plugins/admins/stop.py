@@ -1,0 +1,113 @@
+
+#
+import asyncio
+from pyrogram import filters
+from pyrogram.types import Message
+
+from config import BANNED_USERS, adminlist
+from strings import get_string, command
+from AoiMusic import app
+from AoiMusic.core.call import AoiCall
+from AoiMusic.misc import SUDOERS, db
+from AoiMusic.plugins import extra_plugins_enabled
+from AoiMusic.utils.database import (
+    delete_filter,
+    get_cmode,
+    get_lang,
+    is_active_chat,
+    is_commanddelete_on,
+    is_maintenance,
+    is_nonadmin_chat,
+    set_loop,
+)
+from AoiMusic.utils.rich_msg import (
+    pemoji,
+    rich_button,
+    rich_button_row,
+    rich_esc,
+    rich_heading,
+    reply_note,
+    send_rich,
+    status_card,
+)
+
+
+@app.on_message(command("STOP_COMMAND") & filters.group & ~BANNED_USERS)
+async def stop_music(cli, message: Message):
+    if await is_maintenance() is False:
+        if message.from_user.id not in SUDOERS:
+            return
+    if not len(message.command) < 2:
+        if extra_plugins_enabled:
+            if not message.command[0][0] == "c" and not message.command[0][0] == "e":
+                filter = " ".join(message.command[1:])
+                deleted = await delete_filter(message.chat.id, filter)
+                if deleted:
+                    return await reply_note(message, f"**ᴅᴇʟᴇᴛᴇᴅ ғɪʟᴛᴇʀ {filter}.**")
+                else:
+                    return await reply_note(message, "**ɴᴏ sᴜᴄʜ ғɪʟᴛᴇʀ.**")
+
+    if await is_commanddelete_on(message.chat.id):
+        async def _del_cmd():
+            try:
+                await message.delete()
+            except Exception:
+                pass
+        asyncio.create_task(_del_cmd())
+    try:
+        language = await get_lang(message.chat.id)
+        _ = get_string(language)
+    except Exception:
+        _ = get_string("en")
+
+    if message.sender_chat:
+        return await send_rich(
+            message.chat.id,
+            rich_heading(f'{pemoji("⚠")} ᴀɴᴏɴʏᴍᴏᴜs ᴀᴅᴍɪɴ ᴅᴇᴛᴇᴄᴛᴇᴅ', level=4)
+            + f"<p>{rich_esc(_['general_4'])}</p>"
+            + rich_button_row(
+                rich_button("ʜᴏᴡ ᴛᴏ ꜰɪx ᴛʜɪꜱ?", callback_data="AnonymousAdmin", style="danger", emoji="HELP_SUPPORT"),
+            ),
+        )
+
+    if message.command[0][0] == "c":
+        chat_id = await get_cmode(message.chat.id)
+        if chat_id is None:
+            return await reply_note(message, _["setting_12"])
+        try:
+            await app.get_chat(chat_id)
+        except Exception:
+            return await reply_note(message, _["cplay_4"])
+    else:
+        chat_id = message.chat.id
+    if not await is_active_chat(chat_id):
+        return await reply_note(message, _["general_6"])
+    is_non_admin = await is_nonadmin_chat(message.chat.id)
+    if not is_non_admin:
+        if message.from_user.id not in SUDOERS:
+            admins = adminlist.get(message.chat.id)
+            if not admins:
+                return await reply_note(message, _["admin_18"])
+            else:
+                if message.from_user.id not in admins:
+                    return await reply_note(message, _["admin_19"])
+    try:
+        check = db.get(chat_id)
+        if check:
+            old_m = check[0].get("mystic")
+            old_rmid = check[0].get("rich_mid")
+            if old_rmid:
+                from AoiMusic.utils.rich_panels import mark_panel_closed
+                mark_panel_closed(chat_id, old_rmid)
+            if old_m:
+                async def _del_old(m=old_m):
+                    try:
+                        await m.delete()
+                    except Exception:
+                        pass
+                asyncio.create_task(_del_old())
+    except Exception:
+        pass
+    await AoiCall.stop_stream(chat_id)
+    await set_loop(chat_id, 0)
+    await reply_note(message, _["admin_9"].format(message.from_user.mention))

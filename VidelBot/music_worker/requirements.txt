@@ -1,6 +1,27 @@
-# Standalone Music worker program dependencies.
-# pytgcalls/ntgcalls are ONLY needed here (voice-chat streaming) and are
-# deliberately not in the main bot's requirements.txt.
-wzgram==3.1.7
+async-lru==2.4.0
+aiohttp==3.14.5
+beautifulsoup4==4.15.0
+dnspython==2.9.2
+soupsieve==4.1.3
+gitpython==3.2.1
+heroku3==5.2.1
+httpx[http2]==0.28.1
+motor==3.7.1
+pillow==13.0.0
+psutil==7.2.2
 py-tgcalls==3.0.1
-yt-dlp
+ntgcalls==3.0.7
+python-dotenv==1.2.4
+pyyaml==6.0.4
+requests==2.34.2
+speedtest-cli==2.1.3
+tgcrypto==1.2.5
+urllib3==2.8.0
+uvloop==0.23.0
+flask==3.1.3
+gunicorn==27.0.1
+yt-dlp==2026.10.26
+yt-dlp-getpot-wpc==1.1.2
+py-yt-search==0.8.2
+pyroblack==3.0.8
+static-ffmpeg

@@ -1,0 +1,1387 @@
+
+#
+import asyncio
+import re
+import shutil
+import subprocess
+import time
+from functools import partial
+from typing import Union
+
+from json import JSONDecodeError
+from ntgcalls import FFmpegError, TelegramServerError
+from pytgcalls.exceptions import (InvalidVideoProportion, NoActiveGroupCall,
+                                  NoAudioSourceFound, NoVideoSourceFound)
+from pyrogram.types import InlineKeyboardMarkup
+from pytgcalls import PyTgCalls, filters
+# py-tgcalls 3.x dropped AlreadyJoinedError. Aliasing it to NoActiveGroupCall
+# used to make every retry play that hit a plain "No active group call" get
+# caught as "already joined" and abort the settle loop after the first
+# attempt — misreporting a missing-call problem as an AlreadyInVoiceChat
+# splash. Keep a distinct sentinel so NoActiveGroupCall keeps falling through
+# to the real retries.
+try:
+    from pytgcalls.exceptions import AlreadyJoinedError
+except ImportError:
+    class AlreadyJoinedError(Exception):
+        pass
+from pytgcalls.types import (
+    ChatUpdate,
+    GroupCallConfig,
+    MediaStream,
+    Update,
+)
+from pytgcalls.types import StreamEnded
+
+import pytgcalls.ffmpeg as _pytgcalls_ffmpeg
+import pytgcalls.types.stream.media_stream as _pytgcalls_media_stream
+
+def _binary_works(name: str) -> bool:
+    path = shutil.which(name)
+    if not path:
+        return False
+    try:
+        result = subprocess.run(
+            [path, "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _ensure_ffmpeg_binaries() -> None:
+    """Ensure working ffmpeg & ffprobe binaries are available on PATH."""
+    if _binary_works("ffmpeg") and _binary_works("ffprobe"):
+        return
+    try:
+        import static_ffmpeg
+        try:
+            static_ffmpeg.add_paths(weak=False)
+        except TypeError:
+            static_ffmpeg.add_paths()
+    except Exception:
+        pass
+
+
+_ensure_ffmpeg_binaries()
+
+_PYTGCALLS_SUPPORTED_FLAGS = {}
+
+
+def _pytgcalls_supported_flags(process: str) -> set:
+    cached = _PYTGCALLS_SUPPORTED_FLAGS.get(process)
+    if cached is not None:
+        return cached
+    try:
+        result = subprocess.run(
+            [process, "-h", "full"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        output = result.stdout.decode("utf-8", "replace")
+    except Exception:
+        output = ""
+    flags = set()
+    for names in re.findall(
+        r"(?m)^ *(--?\w[\w-]*(?:, *--?\w[\w-]*)*)",
+        output,
+    ):
+        flags.update(name.strip() for name in names.split(","))
+    if flags:
+        flags.add("-i")
+        _PYTGCALLS_SUPPORTED_FLAGS[process] = flags
+    return flags
+
+
+async def _pytgcalls_cleanup_commands(commands, process_name=None, blacklist=None):
+    process = process_name or commands[0]
+    supported = _pytgcalls_supported_flags(process)
+    if not supported:
+        if not blacklist:
+            return [v for v in commands if v]
+        new_commands = []
+        ignore_next = False
+        for value in commands:
+            if not value:
+                continue
+            is_flag = value[0] == "-" and not value[1:].replace(".", "", 1).isdigit()
+            if is_flag:
+                ignore_next = value in blacklist
+            if not ignore_next:
+                new_commands.append(value)
+            elif not is_flag:
+                ignore_next = False
+        return new_commands
+    new_commands = []
+    ignore_next = False
+    for value in commands:
+        if not value:
+            continue
+        is_flag = value[0] == "-" and not value[1:].replace(".", "", 1).isdigit()
+        if is_flag:
+            ignore_next = value not in supported or (
+                blacklist is not None and value in blacklist
+            )
+        if not ignore_next:
+            new_commands.append(value)
+        elif not is_flag:
+            ignore_next = False
+    return new_commands
+
+
+_pytgcalls_ffmpeg.cleanup_commands = _pytgcalls_cleanup_commands
+_pytgcalls_media_stream.cleanup_commands = _pytgcalls_cleanup_commands
+
+_orig_check_stream = _pytgcalls_ffmpeg.check_stream
+
+
+async def _safe_check_stream(*args, **kwargs):
+    try:
+        return await _orig_check_stream(*args, **kwargs)
+    except ProcessLookupError as exc:
+        raise FFmpegError(
+            "ffprobe exited with empty output (ProcessLookupError in check_stream)"
+        ) from exc
+
+
+_pytgcalls_ffmpeg.check_stream = _safe_check_stream
+if hasattr(_pytgcalls_media_stream, "check_stream"):
+    _pytgcalls_media_stream.check_stream = _safe_check_stream
+
+import config
+from strings import get_string
+from AoiMusic import LOGGER, Platform, app, userbot
+from AoiMusic.misc import db
+from AoiMusic.utils.database import (
+    add_active_chat,
+    add_active_video_chat,
+    get_active_chats,
+    get_audio_bitrate,
+    get_instant_play,
+    get_lang,
+    get_loop,
+    get_video_bitrate,
+    group_assistant,
+    is_active_chat,
+    music_on,
+    remove_active_chat,
+    remove_active_video_chat,
+    set_loop,
+)
+from AoiMusic.utils.exceptions import AssistantErr
+from AoiMusic.utils.rich_panels import spawn_now_playing
+from AoiMusic.utils.rich_msg import RichMystic, send_rich
+from AoiMusic.utils.stream.autoclear import auto_clean
+from AoiMusic.utils.thumbnails import gen_thumb
+
+from pyrogram.enums import ChatMemberStatus
+from pyrogram.errors import (
+    ChannelsTooMuch,
+    ChatAdminRequired,
+    ChannelPrivate,
+    FloodWait,
+    InviteHashExpired,
+    InviteRequestSent,
+    UserAlreadyParticipant,
+    UserNotParticipant,
+)
+
+from AoiMusic.core.userbot import assistants
+from AoiMusic.utils.database import (
+    get_assistant,
+    get_lang,
+    set_assistant,
+)
+
+links = {}
+
+# YouTube direct URLs are IP-bound to the proxy that fetched them.
+# FFmpeg must use the same proxy or playback is silent (HTTP 403).
+_PROXY = (getattr(config, "PROXY_URL", None) or "").strip()
+_PROXY_FFMPEG = f"-http_proxy {_PROXY} " if _PROXY else ""
+
+
+# How long the assistant stays in the voice chat after the queue empties.
+# Leaving immediately means every next /play pays the full group-call
+# handshake (~15s: join + key exchange + confirm_call). Staying put makes the
+# next track a stream swap instead, which is sub-second.
+VC_IDLE_GRACE = int(getattr(config, "VC_IDLE_GRACE", 600) or 600)
+_idle_leave_tasks = {}
+
+# stream_end for a video track can fire twice (audio and video source ends
+# reported separately), and the two change_stream() runs then race: each pops
+# its own queue head, the second play() call replaces the first, and the user
+# sees the second queued song instead of the first plus a doubled
+# "downloading your next song" card. A per-chat lock serialises runs and a
+# short dedup window throws away the echo.
+_END_DEDUP_WINDOW = 2.5
+_end_locks: dict = {}
+_end_last: dict = {}
+_stop_log_last: dict = {}
+
+# When each track actually began streaming, stamped at every play point. A
+# 2.5s dedup window is not enough for video MediaStreams: their audio and
+# video decoders EOF separately, and the second stream_end can land well past
+# the window. That late echo used to run _advance_queue again, which popped
+# the NEXT (already playing) track, saw an empty queue and left the call —
+# the queued song died seconds after starting. Knowing when the current
+# track started lets an end event be rejected as an echo whenever far less
+# than the track's own duration has elapsed.
+_track_started: dict = {}
+
+# Two /play commands landing on the same chat within the ~13s group-call
+# handshake used to race each other into join_call: both saw "not active",
+# the second wiped the first track's queue and started its own join, and the
+# result was a card with no audio (only lyrics) or an assistant that never
+# appeared. join_call is serialised per chat, the chat is marked active
+# BEFORE the handshake so a second play queues itself instead of racing, and
+# the active flag is rolled back if the join actually fails.
+_join_locks: dict = {}
+MEDIA_ERRORS = (TimeoutError, FileNotFoundError, JSONDecodeError, FFmpegError,
+                ProcessLookupError, NoAudioSourceFound, NoVideoSourceFound,
+                InvalidVideoProportion)
+
+# When the bot empties the queue it leaves the call itself; Telegram then
+# delivers a LEFT_CALL update that can land AFTER a fresh /play has already
+# re-joined — treating that echo as "assistant removed" ran stop_stream and
+# kicked the assistant back out mid-play (assistant gone, card alive, no
+# audio). Our own recent leaves are stamped and their echo ignored.
+_SELF_LEFT_GRACE = 20
+_self_left: dict = {}
+
+# How often to compare the in-memory active list against the real calls. This
+# is the safety net for VC ends whose LEFT_CALL is never delivered (or gets
+# swallowed by the self-leave echo guard above).
+_RECONCILE_INTERVAL = int(getattr(config, "VC_STATE_RECONCILE_INTERVAL", 30) or 30)
+
+
+def _mark_self_left(chat_id: int) -> None:
+    _self_left[chat_id] = time.monotonic()
+
+
+def _was_self_left(chat_id: int) -> bool:
+    return time.monotonic() - _self_left.get(chat_id, 0.0) < _SELF_LEFT_GRACE
+
+
+async def _rollback_join(chat_id: int) -> None:
+    """Undo the pre-handshake active-marking when the join truly fails.
+
+    Without this a failed join leaves the chat 'active' and every following
+    /play silently queues behind a call that nobody is in.
+    """
+    from AoiMusic.utils.stream.autoclear import auto_clean as _ac
+
+    try:
+        popped = db.pop(chat_id, None)
+        if popped:
+            await _ac(popped)
+        db[chat_id] = []
+        await remove_active_video_chat(chat_id)
+        await remove_active_chat(chat_id)
+    except Exception:  # noqa: BLE001
+        LOGGER(__name__).warning("[Call] rollback_join cleanup failed for %s", chat_id)
+
+def _is_remote_url(link) -> bool:
+    return isinstance(link, str) and link.startswith(("http://", "https://"))
+
+
+def _needs_proxy(link) -> bool:
+    """Only external non-API remote URLs need the ffmpeg proxy.
+
+    Localhost and Media API (/stream/vid_... or /stream/aud_...) URLs are
+    already proxied by our own backend — routing them through PROXY_URL breaks
+    or slows down playback.
+    """
+    if not _is_remote_url(link):
+        return False
+    if any(host in link for host in ("127.0.0.1", "localhost", "[::1]")):
+        return False
+    if "/stream/vid_" in link or "/stream/aud_" in link:
+        return False
+    api_base = (getattr(config, "MEDIA_API_URL", "") or "").strip().rstrip("/")
+    if api_base and link.startswith(api_base):
+        return False
+    return True
+
+
+def _build_ffmpeg_params(link, video: bool = False) -> str:
+    """Build safe input-side FFmpeg options for local vs remote streams."""
+    is_remote = _is_remote_url(link)
+    if not is_remote:
+        return _LOCAL_FFMPEG_PARAMS_VIDEO if video else _LOCAL_FFMPEG_PARAMS
+    use_proxy = bool(_PROXY_FFMPEG and _needs_proxy(link))
+    prefix = (
+        _PROXY_FFMPEG
+        if use_proxy
+        else "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+    )
+    if video:
+        return (
+            f"{prefix}"
+            "-analyzeduration 5000000 -probesize 2097152 "
+            "-thread_queue_size 2048 "
+            "-fflags +genpts+discardcorrupt+nobuffer "
+            "-flags low_delay"
+        )
+    return (
+        f"{prefix}"
+        "-analyzeduration 3000000 -probesize 524288 "
+        "-thread_queue_size 4096 "
+        "-fflags +genpts+discardcorrupt+nobuffer "
+        "-flags low_delay"
+    )
+
+
+# ffmpeg parameters for remote URLs (fallback constants kept for compatibility).
+_REMOTE_FFMPEG_PARAMS = (
+    f"{_PROXY_FFMPEG}"
+    "-analyzeduration 3000000 -probesize 524288 "
+    "-thread_queue_size 4096 "
+    "-fflags +genpts+discardcorrupt+nobuffer "
+    "-flags low_delay"
+)
+
+# For local files: instant probe + low-latency pipe start
+_LOCAL_FFMPEG_PARAMS = (
+    "-thread_queue_size 4096 "
+    "-analyzeduration 500000 -probesize 65536 "
+    "-fflags +genpts+discardcorrupt+nobuffer "
+    "-flags low_delay"
+)
+
+# Video-specific: larger probe size for MP4 moov/stream headers
+_REMOTE_FFMPEG_PARAMS_VIDEO = (
+    f"{_PROXY_FFMPEG}"
+    "-analyzeduration 5000000 -probesize 2097152 "
+    "-thread_queue_size 2048 "
+    "-fflags +genpts+discardcorrupt+nobuffer "
+    "-flags low_delay"
+)
+
+_LOCAL_FFMPEG_PARAMS_VIDEO = (
+    "-thread_queue_size 2048 "
+    "-analyzeduration 2000000 -probesize 524288 "
+    "-fflags +genpts+discardcorrupt+nobuffer "
+    "-flags low_delay"
+)
+
+
+async def _clear_(chat_id):
+    popped = db.pop(chat_id, None)
+    if popped:
+        await auto_clean(popped)
+    db[chat_id] = []
+    await remove_active_video_chat(chat_id)
+    await remove_active_chat(chat_id)
+    await set_loop(chat_id, 0)
+
+
+async def _chat_has_live_call(chat_id: int, calls) -> bool | None:
+    """Whether any of our PyTgCalls clients still holds this chat's call.
+
+    The in-memory `active` list is only a hint: a VC can be ended without us
+    seeing a LEFT_CALL (missed update, swallowed echo, assistant switched), and
+    a stale hint makes /play append to a queue nobody is playing.
+    """
+    missing = False
+    for client in calls:
+        try:
+            if chat_id in await client._binding.calls():
+                return True
+        except Exception:
+            missing = True
+    return None if missing else False
+
+
+async def _assistant_still_in_call(chat_id: int):
+    """Telegram-side answer to 'is the assistant really in this call?'.
+
+    True/False are definitive, None means the check itself failed. Used by the
+    LEFT_CALL handler so an old leave echo cannot kill a fresh session while a
+    genuine VC end is still cleaned up immediately.
+    """
+    try:
+        assistant = await get_assistant(chat_id)
+        members = []
+        async for member in assistant.get_call_members(chat_id):
+            if member is not None:
+                members.append(member)
+        return any(m.chat.id == assistant.id for m in members)
+    except ValueError:
+        return False
+    except Exception:
+        return None
+
+
+async def _drop_old_card(mystic) -> None:
+    """Retire the previous now-playing/status card (delete is best effort)."""
+    if mystic is None:
+        return
+    try:
+        await mystic.delete()
+    except Exception:
+        pass
+
+
+async def _spawn_then_clean(_, chat_id, old_mystic, *spawn_args, **spawn_kw):
+    """Spawn the next now-playing card while the OLD reply anchor is still
+    alive, and only then delete the previous card — the same order stream()
+    uses. Deleting first (the old behaviour in _advance_queue) left the
+    anchor dead at send time, so queued tracks shipped plain emoji.
+    """
+    mid_np = await spawn_now_playing(_, chat_id, *spawn_args, **spawn_kw)
+    await _drop_old_card(old_mystic)
+    return mid_np
+
+
+class Call:
+    def __init__(self):
+        self.calls = []
+
+        for client in userbot.clients:
+            pycall = PyTgCalls(client)
+            self.calls.append(pycall)
+
+    def is_join_pending(self, chat_id: int) -> bool:
+        lock = _join_locks.get(chat_id)
+        return lock is not None and lock.locked()
+
+    async def is_live_chat(self, chat_id: int) -> bool:
+        """Active flag AND a real call. Clears stale state when they disagree.
+
+        stream() uses this to decide between appending to the queue and
+        starting a fresh session. Without the call check, a chat whose VC ended
+        silently keeps looking active and every /play just piles onto a dead
+        queue (the song shows "Added to queue at #45" while no assistant is in
+        the call).
+        """
+        if not await is_active_chat(chat_id):
+            return False
+        lock = _join_locks.get(chat_id)
+        if lock is not None and lock.locked():
+            return True
+        if await _chat_has_live_call(chat_id, self.calls) is not False:
+            return True
+        in_call = await _assistant_still_in_call(chat_id)
+        if in_call is not False:
+            return True
+        LOGGER(__name__).info(
+            "[Call] stale active chat %s (assistant not in call); clearing queue",
+            chat_id,
+        )
+        await _clear_(chat_id)
+        return False
+
+    async def _reconcile_active_chats(self):
+        """Clear active state whose VC is gone, even if no LEFT_CALL arrived."""
+        while True:
+            await asyncio.sleep(_RECONCILE_INTERVAL)
+            for chat_id in list(await get_active_chats()):
+                lock = _join_locks.get(chat_id)
+                if lock is not None and lock.locked():
+                    continue
+                try:
+                    await self.is_live_chat(chat_id)
+                except Exception as e:
+                    LOGGER(__name__).debug(
+                        "[Call] reconcile failed for %s: %s", chat_id, e
+                    )
+
+    async def pause_stream(self, chat_id: int):
+        assistant = await group_assistant(self, chat_id)
+        await assistant.pause(chat_id)
+
+    async def resume_stream(self, chat_id: int):
+        assistant = await group_assistant(self, chat_id)
+        await assistant.resume(chat_id)
+
+    async def mute_stream(self, chat_id: int):
+        assistant = await group_assistant(self, chat_id)
+        await assistant.mute(chat_id)
+
+    async def unmute_stream(self, chat_id: int):
+        assistant = await group_assistant(self, chat_id)
+        await assistant.unmute(chat_id)
+
+    async def stop_stream(self, chat_id: int):
+        # Cleanup must not depend on resolving the assistant: if that lookup
+        # fails, the stale active flag would keep growing the queue forever.
+        self._cancel_idle_leave(chat_id)
+        _mark_self_left(chat_id)
+        try:
+            from AoiMusic.utils.stream import lyrics as _lyrics_mod
+            _lyrics_mod.stop(chat_id)
+        except Exception:
+            pass
+        try:
+            from AoiMusic.utils.stream.stream import _prefetch_tasks
+            _pt = _prefetch_tasks.pop(chat_id, None)
+            if _pt and not _pt.done():
+                _pt.cancel()
+        except Exception:
+            pass
+        await _clear_(chat_id)
+        try:
+            assistant = await group_assistant(self, chat_id)
+            await asyncio.wait_for(assistant.leave_call(chat_id), timeout=5.0)
+        except Exception as e:
+            # A user spamming the skip/close button fires stop_stream every
+            # ~2s while the assistant is already out — one line per burst is
+            # enough, a traceback wall is not.
+            key = ("stop", chat_id)
+            now = time.time()
+            if now - _stop_log_last.get(key, 0) < 60:
+                LOGGER(__name__).debug(
+                    "stop stream for chat %s: %s", chat_id, e
+                )
+            else:
+                _stop_log_last[key] = now
+                LOGGER(__name__).error(
+                    f"Failed to stop stream for chat {chat_id}: {e}"
+                )
+
+    async def force_stop_stream(self, chat_id: int):
+        assistant = await group_assistant(self, chat_id)
+        try:
+            check = db.get(chat_id)
+            check.pop(0)
+        except Exception as e:
+            LOGGER(__name__).error(f"Error popping queue for chat {chat_id}: {e}")
+        await remove_active_video_chat(chat_id)
+        await remove_active_chat(chat_id)
+        try:
+            await assistant.leave_call(chat_id, close=False)
+        except Exception as e:
+            LOGGER(__name__).error(f"Failed to force leave call for chat {chat_id}: {e}")
+
+    async def skip_stream(
+        self,
+        chat_id: int,
+        link: str,
+        video: Union[bool, str] = None,
+        image: Union[bool, str] = None,
+    ):
+        import time as _t
+        _j0 = _t.monotonic()
+        self._cancel_idle_leave(chat_id)
+        # Arm the advance dedup: the replaced stream's echo must not pop the
+        # just-started track within the dedup window afterwards.
+        _end_last[chat_id] = _t.monotonic()
+        assistant = await group_assistant(self, chat_id)
+        LOGGER(__name__).info("[Call] join_call: group_assistant %.1fs", _t.monotonic() - _j0)
+        audio_stream_quality = await get_audio_bitrate(chat_id)
+        video_stream_quality = await get_video_bitrate(chat_id)
+        call_config = GroupCallConfig(auto_start=False)
+        ffmpeg_params = _build_ffmpeg_params(link, video=bool(video))
+        if video:
+            stream = MediaStream(
+                link,
+                audio_parameters=audio_stream_quality,
+                video_parameters=video_stream_quality,
+                ffmpeg_parameters=ffmpeg_params,
+            )
+        elif image and config.PRIVATE_BOT_MODE == str(True):
+            stream = MediaStream(
+                image,
+                audio_path=link,
+                audio_parameters=audio_stream_quality,
+                video_parameters=video_stream_quality,
+                ffmpeg_parameters=ffmpeg_params,
+            )
+        else:
+            stream = MediaStream(
+                link,
+                audio_parameters=audio_stream_quality,
+                video_flags=MediaStream.Flags.IGNORE,
+                ffmpeg_parameters=ffmpeg_params,
+            )
+
+        if video:
+            await add_active_video_chat(chat_id)
+        else:
+            await remove_active_video_chat(chat_id)
+
+        try:
+            await assistant.play(chat_id, stream, config=call_config)
+        except (NoActiveGroupCall, UserNotParticipant, ChannelPrivate):
+            await self.join_chat(chat_id)
+            assistant = await group_assistant(self, chat_id)
+            await asyncio.sleep(0.6)
+            await assistant.play(chat_id, stream, config=call_config)
+        except (*MEDIA_ERRORS, AlreadyJoinedError, TelegramServerError) as first_err:
+            LOGGER(__name__).warning(
+                "[Call] skip_stream first attempt failed for %s (%s: %s); settling 0.5s & retrying",
+                chat_id,
+                type(first_err).__name__,
+                first_err,
+            )
+            await asyncio.sleep(0.5)
+            await assistant.play(chat_id, stream, config=call_config)
+
+        # A skipped-in track just began: its end event must not be mistaken
+        # for the replaced track's echo (or the reverse).
+        _track_started[chat_id] = time.monotonic()
+        self._schedule_idle_leave(assistant, chat_id)
+
+    async def seek_stream(self, chat_id, file_path, to_seek, duration, mode):
+        assistant = await group_assistant(self, chat_id)
+        audio_stream_quality = await get_audio_bitrate(chat_id)
+        video_stream_quality = await get_video_bitrate(chat_id)
+        call_config = GroupCallConfig(auto_start=False)
+        is_remote = _needs_proxy(file_path)
+        proxy_part = _PROXY_FFMPEG if is_remote else ""
+        stream = (
+            MediaStream(
+                file_path,
+                audio_parameters=audio_stream_quality,
+                video_parameters=video_stream_quality,
+                ffmpeg_parameters=f"{proxy_part}-ss {to_seek} -to {duration} -thread_queue_size 2048 -analyzeduration 3000000 -probesize 65536 -fflags +genpts+discardcorrupt+nobuffer -flags low_delay",
+            )
+            if mode == "video"
+            else MediaStream(
+                file_path,
+                audio_parameters=audio_stream_quality,
+                ffmpeg_parameters=f"{proxy_part}-ss {to_seek} -to {duration} -thread_queue_size 4096 -analyzeduration 5000000 -probesize 131072 -fflags +genpts+discardcorrupt -flags low_delay",
+                video_flags=MediaStream.Flags.IGNORE,
+            )
+        )
+        await assistant.play(chat_id, stream, config=call_config)
+        # Seek restarts the source at to_seek: keep the start stamp aligned
+        # with media position so the end-echo check in change_stream still
+        # measures remaining time correctly.
+        try:
+            _track_started[chat_id] = time.monotonic() - float(to_seek)
+        except (TypeError, ValueError):
+            _track_started[chat_id] = time.monotonic()
+
+    async def stream_call(self, link):
+        assistant = await group_assistant(self, config.LOGGER_ID)
+        join_as = getattr(assistant, "_cache_local_peer", None)
+        if join_as is None:
+            try:
+                join_as = await assistant._app.resolve_peer(
+                    await assistant._app.get_id()
+                )
+            except Exception as exc:
+                LOGGER(__name__).warning(
+                    f"Could not resolve assistant peer for stream check: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        source = link
+        if isinstance(link, str) and link.startswith(("http://", "https://")):
+            os.makedirs("cache", exist_ok=True)
+            local_check = os.path.join("cache", "startup_check.mp4")
+            if not (os.path.isfile(local_check) and os.path.getsize(local_check) > 1024):
+                try:
+                    import aiohttp
+                    headers = {"User-Agent": "Mozilla/5.0 (compatible; VidelMusic/1.0)"}
+                    async with aiohttp.ClientSession(
+                        timeout=aiohttp.ClientTimeout(total=15),
+                        headers=headers,
+                    ) as session:
+                        async with session.get(link, allow_redirects=True) as resp:
+                            if resp.status == 200:
+                                data = await resp.read()
+                                if len(data) > 1024:
+                                    with open(local_check, "wb") as f:
+                                        f.write(data)
+                except Exception as dl_exc:
+                    LOGGER(__name__).warning(
+                        f"Startup check local download fallback failed: {type(dl_exc).__name__}: {dl_exc}"
+                    )
+            if os.path.isfile(local_check) and os.path.getsize(local_check) > 1024:
+                source = local_check
+        call_config = GroupCallConfig(auto_start=False, join_as=join_as)
+        await assistant.play(config.LOGGER_ID, MediaStream(source), config=call_config)
+        await asyncio.sleep(0.5)
+        await assistant.leave_call(config.LOGGER_ID)
+
+    async def join_chat(self, chat_id, attempts=1):
+        max_attempts = len(assistants) - 1
+        userbot = await get_assistant(chat_id)
+        try:
+            language = await get_lang(chat_id)
+            _ = get_string(language)
+        except Exception:
+            _ = get_string("en")
+        try:
+            member = await app.get_chat_member(chat_id, userbot.id)
+        except UserNotParticipant:
+            pass
+        except ChatAdminRequired:
+            raise AssistantErr(_["call_1"])
+        except Exception as e:
+            LOGGER(__name__).exception(
+                "[Call] membership check failed for chat %s (%s)",
+                chat_id, type(e).__name__,
+            )
+            raise AssistantErr(_["call_3"].format(f"{type(e).__name__}: {e}"))
+        else:
+            if member.status == ChatMemberStatus.BANNED:
+                raise AssistantErr(_["call_2"].format(userbot.username, userbot.id))
+            if member.status != ChatMemberStatus.LEFT:
+                return
+        try:
+            chat = await app.get_chat(chat_id)
+        except ChatAdminRequired:
+            raise AssistantErr(_["call_1"])
+        except Exception as e:
+            raise AssistantErr(_["call_3"].format(f"{type(e).__name__}: {e}"))
+        if chat_id in links:
+            invitelink = links[chat_id]
+        else:
+            if chat.username:
+                invitelink = chat.username
+                try:
+                    await userbot.resolve_peer(invitelink)
+                except Exception:
+                    pass
+            else:
+                try:
+                    invitelink = await app.export_chat_invite_link(chat_id)
+                except ChatAdminRequired:
+                    raise AssistantErr(_["call_1"])
+                except Exception as e:
+                    raise AssistantErr(
+                        _["call_3"].format(f"{type(e).__name__}: {e}")
+                    )
+
+            if invitelink.startswith("https://t.me/+"):
+                invitelink = invitelink.replace(
+                    "https://t.me/+", "https://t.me/joinchat/"
+                )
+            links[chat_id] = invitelink
+
+        try:
+            await asyncio.sleep(1)
+            try:
+                await userbot.join_chat(invitelink)
+            except AttributeError:
+                pass  # pyroblack parse bug
+        except InviteRequestSent:
+            # The assistant can't join until approved — do it on the bot's
+            # side instead of erroring out: after approval the upcoming
+            # retry play should just work on join-request-restricted groups.
+            try:
+                await app.approve_chat_join_request(chat_id, userbot.id)
+                await asyncio.sleep(1.5)
+            except Exception as e:
+                raise AssistantErr(_["call_3"].format(type(e).__name__))
+        except UserAlreadyParticipant:
+            pass
+        except InviteHashExpired:
+            # Cached invite links die (old link revocation); a re-export on
+            # the next attempt heals the join instead of erroring the user.
+            links.pop(chat_id, None)
+            if attempts <= max_attempts:
+                attempts += 1
+                return await self.join_chat(chat_id, attempts)
+            raise AssistantErr(_["call_3"].format(type(InviteHashExpired).__name__))
+        except ChannelsTooMuch:
+            if attempts <= max_attempts:
+                attempts += 1
+                userbot = await set_assistant(chat_id)
+                return await self.join_chat(chat_id, attempts)
+            else:
+                raise AssistantErr(_["call_9"].format(config.SUPPORT_GROUP))
+        except FloodWait as e:
+            time = e.value
+            if time < 20:
+                await asyncio.sleep(time)
+                attempts += 1
+                return await self.join_chat(chat_id, attempts)
+            else:
+                if attempts <= max_attempts:
+                    attempts += 1
+                    userbot = await set_assistant(chat_id)
+                    return await self.join_chat(chat_id, attempts)
+
+                raise AssistantErr(_["call_10"].format(time))
+        except ChannelPrivate as e:
+            links.pop(chat_id, None)
+            if attempts <= max_attempts:
+                attempts += 1
+                return await self.join_chat(chat_id, attempts)
+            raise AssistantErr(
+                _["call_3"].format(
+                    "assistant cannot resolve/join this chat (stale invite "
+                    f"link or access): {e}"
+                )
+            )
+        except Exception as e:
+            # Surface the full traceback: the invite-path errors were only
+            # ever reported as their class name, hiding real causes.
+            LOGGER(__name__).exception(
+                "[Call] join_chat failed for chat %s (%s)", chat_id, type(e).__name__
+            )
+            # Common join denials deserve plain words, not a class name.
+            friendly = {
+                "ChatWriteForbidden": (
+                    "assistant can't write in this chat — make it admin"
+                ),
+                "UserBannedInChannel": "assistant is banned in this chat",
+                "ChatIdInvalid": (
+                    "chat id invalid — add the bot to the group again"
+                ),
+            }.get(type(e).__name__)
+            if friendly:
+                raise AssistantErr(_["call_3"].format(friendly))
+            raise AssistantErr(_["call_3"].format(f"{type(e).__name__}: {e}"))
+
+    async def join_call(
+        self,
+        chat_id: int,
+        original_chat_id: int,
+        link,
+        video: Union[bool, str] = None,
+        image: Union[bool, str] = None,
+    ):
+        # Serialise joins per chat: a second /play that lands while the
+        # ~13s handshake is running must queue, not race.
+        lock = _join_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            try:
+                return await self._join_call_locked(
+                    chat_id, original_chat_id, link, video, image
+                )
+            except (Exception, asyncio.CancelledError):
+                await _rollback_join(chat_id)
+                raise
+
+    async def _join_call_locked(
+        self,
+        chat_id: int,
+        original_chat_id: int,
+        link,
+        video: Union[bool, str] = None,
+        image: Union[bool, str] = None,
+    ):
+        import time as _t
+        _j0 = _t.monotonic()
+        self._cancel_idle_leave(chat_id)
+        await add_active_chat(chat_id)
+        await music_on(chat_id)
+        if video:
+            await add_active_video_chat(chat_id)
+        assistant = await group_assistant(self, chat_id)
+        LOGGER(__name__).info("[Call] join_call: group_assistant %.1fs", _t.monotonic() - _j0)
+        audio_stream_quality = await get_audio_bitrate(chat_id)
+        video_stream_quality = await get_video_bitrate(chat_id)
+        call_config = GroupCallConfig(auto_start=False)
+        ffmpeg_params = _build_ffmpeg_params(link, video=bool(video))
+        if video:
+            stream = MediaStream(
+                link,
+                audio_parameters=audio_stream_quality,
+                video_parameters=video_stream_quality,
+                ffmpeg_parameters=ffmpeg_params,
+            )
+        elif image and config.PRIVATE_BOT_MODE == str(True):
+            stream = MediaStream(
+                image,
+                audio_path=link,
+                audio_parameters=audio_stream_quality,
+                video_parameters=video_stream_quality,
+                ffmpeg_parameters=ffmpeg_params,
+            )
+        else:
+            stream = MediaStream(
+                link,
+                audio_parameters=audio_stream_quality,
+                video_flags=MediaStream.Flags.IGNORE,
+                ffmpeg_parameters=ffmpeg_params,
+            )
+
+        LOGGER(__name__).info("[Call] join_call: MediaStream built at %.1fs", _t.monotonic() - _j0)
+        try:
+            await assistant.play(
+                chat_id=chat_id,
+                stream=stream,
+                config=call_config,
+            )
+            LOGGER(__name__).info("[Call] join_call: assistant.play done at %.1fs", _t.monotonic() - _j0)
+        except (NoActiveGroupCall, UserNotParticipant, ChannelPrivate):
+            await self.join_chat(chat_id)
+            assistant = await group_assistant(self, chat_id)
+            for settle in (0.6, 2.5, 6.0):
+                await asyncio.sleep(settle)
+                try:
+                    await assistant.play(chat_id=chat_id, stream=stream, config=call_config)
+                    break
+                except NoActiveGroupCall:
+                    continue
+            else:
+                raise AssistantErr("**No Active Voice Chat Found**")
+        except AlreadyJoinedError:
+            # The assistant is already in the call: the behaviour users need
+            # is a clean source switch, not an error splash. A short settle
+            # then replay also heals the mid-handshake "mic off / silent"
+            # state left over from racing plays.
+            LOGGER(__name__).info(
+                "[Call] AlreadyJoinedError on first play for chat %s; settle+replay", chat_id
+            )
+            await asyncio.sleep(0.75)
+            try:
+                await assistant.play(chat_id=chat_id, stream=stream, config=call_config)
+            except Exception as e:
+                LOGGER(__name__).warning(
+                    "[Call] replay after AlreadyJoinedError failed for chat %s: %s: %s",
+                    chat_id, type(e).__name__, e,
+                )
+                raise AssistantErr(
+                    "**ASSISTANT IS ALREADY IN VOICECHAT **\n\nMusic bot system detected that assistant is already in the voicechat, if the problem continues restart the videochat and try again."
+                )
+        except TelegramServerError:
+            raise AssistantErr(
+                "**TELEGRAM SERVER ERROR**\n\nPlease restart Your voicechat."
+            )
+        # Fresh join: the stream begins now. Covers every replay path above
+        # since this is the common tail of join_call.
+        _track_started[chat_id] = time.monotonic()
+        self._schedule_idle_leave(assistant, chat_id)
+
+    async def warm_join(self, chat_id):
+        """Resolve the peer and the active group call ahead of the real join.
+
+        Both round trips are Telegram-side, so doing them while the stream URL
+        is being resolved hides most of the handshake latency.
+        """
+        try:
+            assistant = await group_assistant(self, chat_id)
+            if chat_id in await assistant._binding.calls():
+                return
+            resolved = await assistant.resolve_chat_id(chat_id)
+            await assistant._app.get_input_call(resolved)
+            assistant._cache_user_peer.put(resolved, assistant._cache_local_peer)
+        except Exception as e:
+            LOGGER(__name__).debug("warm_join for %s skipped: %s", chat_id, e)
+
+    async def _delayed_leave(self, client, chat_id, delay=None):
+        await asyncio.sleep(delay if delay is not None else VC_IDLE_GRACE)
+        if db.get(chat_id):
+            return
+        try:
+            await client.leave_call(chat_id, close=False)
+            _mark_self_left(chat_id)
+            LOGGER(__name__).info("[Call] idle leave done for chat %s", chat_id)
+        except Exception as e:
+            LOGGER(__name__).error(f"Failed idle leave for chat {chat_id}: {e}")
+        finally:
+            # We are out of the call: drop the active flag too, otherwise the
+            # next /play queues behind a call that no longer exists.
+            await _clear_(chat_id)
+            _idle_leave_tasks.pop(chat_id, None)
+
+    def _cancel_idle_leave(self, chat_id):
+        task = _idle_leave_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _schedule_idle_leave(self, client, chat_id, delay=None):
+        # Feature toggle (AUTO_LEAVING_ASSISTANT) with the timer from
+        # AUTO_LEAVE_ASSISTANT_TIME; disabled by default, like upstream.
+        if getattr(config, "AUTO_LEAVING_ASSISTANT", "False") != str(True):
+            return
+        self._cancel_idle_leave(chat_id)
+        _idle_leave_tasks[chat_id] = asyncio.create_task(
+            self._delayed_leave(client, chat_id, delay)
+        )
+
+    async def change_stream(self, client, chat_id):
+        lock = _end_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            now = time.monotonic()
+            if now - _end_last.get(chat_id, 0.0) < _END_DEDUP_WINDOW:
+                LOGGER(__name__).info(
+                    "[Call] duplicate stream_end suppressed for chat %s", chat_id
+                )
+                return
+            # An end event that arrives while the current track has barely
+            # played cannot be its own natural end — it is the echo of a
+            # replaced or previously finished stream. Without this check the
+            # echo popped the playing track and left the call mid-song.
+            check = db.get(chat_id) or []
+            cur = check[0] if check else None
+            if cur and cur.get("seconds"):
+                started = _track_started.get(chat_id, 0.0)
+                elapsed = now - started if started else 0.0
+                if elapsed + 10.0 < cur["seconds"]:
+                    LOGGER(__name__).info(
+                        "[Call] stream_end echo of replaced track suppressed "
+                        "for chat %s (elapsed %.1fs < dur %.1fs)",
+                        chat_id, elapsed, cur["seconds"],
+                    )
+                    return
+            _end_last[chat_id] = now
+            await self._advance_queue(client, chat_id)
+
+    async def _advance_queue(self, client, chat_id):
+        check = db.get(chat_id)
+        popped = None
+        loop = await get_loop(chat_id)
+        # Empty/missing queue: nothing to play next. Leave quietly instead of
+        # raising (a stale stream_end can arrive while a new track is joining).
+        if not check:
+            await _clear_(chat_id)
+            # Leave for real: keeping the assistant in the call makes the next
+            # /play take py-tgcalls' set_stream_sources path, which switches the
+            # source without restarting ffmpeg, so the chat hears silence.
+            self._cancel_idle_leave(chat_id)
+            _mark_self_left(chat_id)
+            try:
+                await client.leave_call(chat_id, close=False)
+            except Exception as e:
+                LOGGER(__name__).error(f"Failed to leave call for empty queue chat {chat_id}: {e}")
+            return
+        try:
+            old_mystic = None
+            if loop == 0:
+                popped = check.pop(0)
+            else:
+                loop = loop - 1
+                await set_loop(chat_id, loop)
+            if popped:
+                await auto_clean(popped)
+                # Deletion of the old card is deferred to _spawn_then_clean:
+                # it must happen AFTER the next card is sent, so the reply
+                # anchor is still a live message at that moment.
+                old_mystic = popped.get("mystic")
+            if popped:
+                try:
+                    from AoiMusic.utils.autoplay import record_played_track
+                    record_played_track(chat_id, popped.get("vidid", ""), popped.get("title"))
+                except Exception:
+                    pass
+            if not check and popped:
+                try:
+                    from AoiMusic.utils.autoplay import enqueue_autoplay_if_enabled
+                    if await enqueue_autoplay_if_enabled(chat_id, popped):
+                        check = db.get(chat_id)
+                except Exception as ap_err:
+                    LOGGER(__name__).warning(f"Autoplay failed for chat {chat_id}: {ap_err}")
+            if not check:
+                await _drop_old_card(old_mystic)
+                await _clear_(chat_id)
+                _mark_self_left(chat_id)
+                try:
+                    await client.leave_call(chat_id, close=False)
+                except Exception as e:
+                    LOGGER(__name__).error(f"Failed to leave call for chat {chat_id}: {e}")
+                return
+        except Exception as e:
+            LOGGER(__name__).error(f"Error in change_stream for chat {chat_id}: {e}")
+            try:
+                await _clear_(chat_id)
+                _mark_self_left(chat_id)
+                await client.leave_call(chat_id, close=False)
+            except Exception as e2:
+                LOGGER(__name__).error(f"Failed to leave call after error for chat {chat_id}: {e2}")
+            return
+        else:
+            queued = check[0]["file"]
+            language = await get_lang(chat_id)
+            _ = get_string(language)
+            title = (check[0]["title"]).title()
+            user = check[0]["by"]
+            original_chat_id = check[0]["chat_id"]
+            streamtype = check[0]["streamtype"]
+            audio_stream_quality = await get_audio_bitrate(chat_id)
+            video_stream_quality = await get_video_bitrate(chat_id)
+            videoid = check[0]["vidid"]
+            userid = check[0].get("user_id")
+            check[0]["played"] = 0
+            video = True if str(streamtype) == "video" else False
+            call_config = GroupCallConfig(auto_start=False)
+            if "live_" in queued:
+                n, link = await Platform.youtube.video(videoid, True)
+                if n == 0:
+                    await _drop_old_card(old_mystic)
+                    return await send_rich(original_chat_id, f"<p>{_['call_7']}</p>")
+                ffmpeg_params = _build_ffmpeg_params(link, video=bool(video))
+                if video:
+                    stream = MediaStream(
+                        link,
+                        audio_parameters=audio_stream_quality,
+                        video_parameters=video_stream_quality,
+                        ffmpeg_parameters=ffmpeg_params,
+                    )
+                else:
+                    try:
+                        image = await Platform.youtube.thumbnail(videoid, True)
+                    except Exception:
+                        image = None
+                    if image and config.PRIVATE_BOT_MODE == str(True):
+                        stream = MediaStream(
+                            image,
+                            audio_path=link,
+                            audio_parameters=audio_stream_quality,
+                            video_parameters=video_stream_quality,
+                            ffmpeg_parameters=ffmpeg_params,
+                        )
+                    else:
+                        stream = MediaStream(
+                            link,
+                            audio_parameters=audio_stream_quality,
+                            video_flags=MediaStream.Flags.IGNORE,
+                            ffmpeg_parameters=ffmpeg_params,
+                        )
+                try:
+                    await client.play(chat_id, stream, config=call_config)
+                    _track_started[chat_id] = time.monotonic()
+                except Exception as exc:
+                    LOGGER(__name__).error("[Call] stream switch failed for %s (%s video=%s): %s: %s", chat_id, videoid, video, type(exc).__name__, exc)
+                    await _drop_old_card(old_mystic)
+                    return await send_rich(original_chat_id, f"<p>{_['call_7']}</p>")
+                mid_np = await _spawn_then_clean(
+                    _, chat_id, old_mystic, None, title, check[0]["dur"], user,
+                    thumb=await gen_thumb(videoid),
+                )
+            elif "vid_" in queued:
+                video = True if str(streamtype) == "video" else False
+                rich_mid = await send_rich(original_chat_id, f"<p>{_['call_8']}</p>")
+                mystic = RichMystic(original_chat_id, rich_mid)
+                from AoiMusic.utils.stream.stream import play_youtube_source
+                image = None
+                if not video and config.PRIVATE_BOT_MODE == str(True):
+                    try:
+                        image = await Platform.youtube.thumbnail(videoid, True)
+                    except Exception:
+                        pass
+                try:
+                    stream_link = await play_youtube_source(
+                        videoid, video, mystic,
+                        partial(self.skip_stream, chat_id, video=video, image=image),
+                        instant=await get_instant_play(chat_id),
+                    )
+                except Exception as exc:
+                    LOGGER(__name__).error("[Call] auto-next switch failed for %s (%s video=%s): %s: %s", chat_id, videoid, video, type(exc).__name__, exc)
+                    # If this was an Autoplay suggestion (e.g. region-blocked/unavailable video),
+                    # automatically try 1 fresh suggestion before giving up!
+                    recovered = False
+                    if "ᴀᴜᴛᴏᴘʟᴀʏ" in str(user) or "autoplay" in str(user).lower():
+                        try:
+                            from AoiMusic.utils.autoplay import enqueue_autoplay_if_enabled
+                            failed_item = check.pop(0) if check else None
+                            if failed_item and await enqueue_autoplay_if_enabled(chat_id, failed_item):
+                                check = db.get(chat_id)
+                                if check:
+                                    videoid = check[0]["vidid"]
+                                    title = (check[0]["title"]).title()
+                                    user = check[0]["by"]
+                                    video = True if str(check[0]["streamtype"]) == "video" else False
+                                    stream_link = await play_youtube_source(
+                                        videoid, video, mystic,
+                                        partial(self.skip_stream, chat_id, video=video, image=image),
+                                        instant=await get_instant_play(chat_id),
+                                    )
+                                    recovered = True
+                        except Exception as retry_exc:
+                            LOGGER(__name__).error("[Call] autoplay retry also failed for %s: %s: %s", chat_id, type(retry_exc).__name__, retry_exc)
+                    if not recovered:
+                        await _drop_old_card(old_mystic)
+                        return await mystic.edit_text(_["call_7"])
+                try:
+                    # Precise "via" tag for the card — the db entry only gets a
+                    # guess at queue time, this overwrites it with the truth.
+                    from AoiMusic.utils.stream.stream import _play_source_tag
+                    db[chat_id][0]["source"] = _play_source_tag(stream_link)
+                except Exception:
+                    pass
+                # Spawn first (the status card is still a live reply anchor),
+                # THEN retire the old cards — deletion order is what keeps
+                # premium emoji on queued tracks.
+                mid_np = await _spawn_then_clean(
+                    _, chat_id, old_mystic, videoid, title, check[0]["dur"], user,
+                    thumb=await gen_thumb(videoid),
+                )
+                if 'mystic' in locals():
+                    await mystic.delete()
+            elif "index_" in queued:
+                # A queued playlist item arrives as a downloaded file path.
+                # Streaming the permalink instead means the next track starts
+                # when the previous one ends rather than after another fetch.
+                play_source = videoid
+                if video is not None and not str(videoid).startswith("http"):
+                    try:
+                        from AoiMusic.utils.stream.stream import _api_stream_url
+                        permalink = await _api_stream_url(
+                            check[0].get("vidid"), bool(video)
+                        )
+                        if permalink and check[0].get("vidid") not in (
+                            None, "", "telegram"
+                        ):
+                            play_source = permalink
+                    except Exception as e:
+                        LOGGER(__name__).debug(
+                            "playlist permalink unavailable: %s: %s",
+                            type(e).__name__, e,
+                        )
+                ffmpeg_params = _build_ffmpeg_params(play_source, video=bool(video))
+                stream = (
+                    MediaStream(
+                        play_source,
+                        audio_parameters=audio_stream_quality,
+                        video_parameters=video_stream_quality,
+                        ffmpeg_parameters=ffmpeg_params,
+                    )
+                    if str(streamtype) == "video"
+                    else MediaStream(
+                        play_source,
+                        audio_parameters=audio_stream_quality,
+                        video_flags=MediaStream.Flags.IGNORE,
+                        ffmpeg_parameters=ffmpeg_params,
+                    )
+                )
+                try:
+                    await client.play(chat_id, stream, config=call_config)
+                    _track_started[chat_id] = time.monotonic()
+                except Exception as exc:
+                    LOGGER(__name__).error("[Call] stream switch failed for %s (%s video=%s): %s: %s", chat_id, videoid, video, type(exc).__name__, exc)
+                    await _drop_old_card(old_mystic)
+                    return await send_rich(original_chat_id, f"<p>{_['call_7']}</p>")
+                try:
+                    from AoiMusic.utils.stream.stream import _play_source_tag
+                    db[chat_id][0]["source"] = _play_source_tag(play_source)
+                except Exception:
+                    pass
+                mid_np = await _spawn_then_clean(
+                    _, chat_id, old_mystic, None, title, check[0]["dur"], user,
+                    thumb=config.STREAM_IMG_URL,
+                )
+            else:
+                url = check[0].get("url")
+                if videoid == "telegram":
+                    image = None
+                elif videoid == "soundcloud":
+                    image = None
+
+                elif "saavn" in videoid:
+                    url = check[0].get("url")
+                    details = await Platform.saavn.info(url)
+                    image = details["thumb"]
+                else:
+                    try:
+                        image = await Platform.youtube.thumbnail(videoid, True)
+                    except Exception:
+                        image = None
+                ffmpeg_params = _build_ffmpeg_params(queued, video=bool(video))
+                if video:
+                    stream = MediaStream(
+                        queued,
+                        audio_parameters=audio_stream_quality,
+                        video_parameters=video_stream_quality,
+                        ffmpeg_parameters=ffmpeg_params,
+                    )
+                else:
+                    if image and config.PRIVATE_BOT_MODE == str(True):
+                        stream = MediaStream(
+                            image,
+                            audio_path=queued,
+                            audio_parameters=audio_stream_quality,
+                            video_parameters=video_stream_quality,
+                            ffmpeg_parameters=ffmpeg_params,
+                        )
+                    else:
+                        stream = MediaStream(
+                            queued,
+                            audio_parameters=audio_stream_quality,
+                            video_flags=MediaStream.Flags.IGNORE,
+                            ffmpeg_parameters=ffmpeg_params,
+                        )
+                try:
+                    await client.play(chat_id, stream, config=call_config)
+                    _track_started[chat_id] = time.monotonic()
+                except Exception as exc:
+                    LOGGER(__name__).error("[Call] stream switch failed for %s (%s video=%s): %s: %s", chat_id, videoid, video, type(exc).__name__, exc)
+                    await _drop_old_card(old_mystic)
+                    return await send_rich(original_chat_id, f"<p>{_['call_7']}</p>")
+                if videoid == "telegram":
+                    mid_np = await _spawn_then_clean(
+                        _, chat_id, old_mystic, None, title, check[0]["dur"], user,
+                        thumb=(
+                            config.TELEGRAM_AUDIO_URL
+                            if str(streamtype) == "audio"
+                            else config.TELEGRAM_VIDEO_URL
+                        ),
+                    )
+                elif videoid == "soundcloud":
+                    mid_np = await _spawn_then_clean(
+                        _, chat_id, old_mystic, None, title, check[0]["dur"], user,
+                        thumb=config.SOUNCLOUD_IMG_URL,
+                    )
+                elif "saavn" in videoid:
+                    mid_np = await _spawn_then_clean(
+                        _, chat_id, old_mystic, None, title, check[0]["dur"], user,
+                        thumb=image,
+                    )
+
+                else:
+                    img = await gen_thumb(videoid)
+                    mid_np = await _spawn_then_clean(
+                        _, chat_id, old_mystic, videoid, title, check[0]["dur"], user,
+                        thumb=img,
+                    )
+
+    async def ping(self):
+        pings = []
+        for call in self.calls:
+            pings.append(call.ping)
+        if pings:
+            return str(round(sum(pings) / len(pings), 3))
+        else:
+            LOGGER(__name__).error("No active clients for ping calculation.")
+            return "No active clients"
+
+    async def start(self):
+        """Starts all PyTgCalls instances for the existing userbot clients."""
+        LOGGER(__name__).info(f"Starting PyTgCall Clients")
+        await asyncio.gather(*[c.start() for c in self.calls])
+        await self.decorators()
+        asyncio.create_task(self._reconcile_active_chats())
+
+
+
+    async def decorators(self):
+        for call in self.calls:
+
+            @call.on_update(filters.chat_update(ChatUpdate.Status.LEFT_CALL))
+            async def stream_services_handler(client, update):
+                # Ignore only a PROVABLE echo of our own leave: the assistant
+                # must really be in a fresh call. A plain time window swallowed
+                # genuine VC ends, leaving the chat "active" with no assistant
+                # so every /play just appended to a dead queue.
+                if _was_self_left(update.chat_id):
+                    still_in = await _assistant_still_in_call(update.chat_id)
+                    _self_left.pop(update.chat_id, None)
+                    if still_in is not False:
+                        LOGGER(__name__).info(
+                            "[Call] LEFT_CALL echo of our own leave ignored for chat %s",
+                            update.chat_id,
+                        )
+                        return
+                LOGGER(__name__).info(
+                    "[Call] VC end detected for chat %s; clearing queue", update.chat_id
+                )
+                await self.stop_stream(update.chat_id)
+
+            @call.on_update(filters.stream_end())
+            async def stream_end_handler(client, update: Update):
+                await self.change_stream(client, update.chat_id)
+
+
+    def __getattr__(self, name):
+        if not self.calls:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        first_call = self.calls[0]
+        if hasattr(first_call, name):
+            return getattr(first_call, name)
+        raise AttributeError(f"'{type(first_call).__name__}' object has no attribute '{name}'")
+
+
+AoiCall = Call()

@@ -1,0 +1,89 @@
+{
+  "name": "Videl Music Worker",
+  "description": "Telegram voice-chat music and group-management bot powered by PyTgCalls and MongoDB.",
+  "branch": "main",
+  "start_command": "PYTHONPATH=.. MUSIC_WORKER_STANDALONE=1 python3 -m music_worker",
+  "requirements_file": "requirements.txt",
+  "buildpacks": [
+    "ffmpeg",
+    "gcc"
+  ],
+  "apt_packages": [],
+  "recommended_ram": 1024,
+  "env": {
+    "API_ID": {
+      "description": "Telegram API ID from https://my.telegram.org",
+      "placeholder": "12345678",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Telegram API Hash from https://my.telegram.org",
+      "placeholder": "your_api_hash",
+      "required": true,
+      "secret": true
+    },
+    "BOT_TOKEN": {
+      "description": "Telegram Bot Token from @BotFather",
+      "placeholder": "123456789:AA...",
+      "required": true,
+      "secret": true
+    },
+    "STRING_SESSIONS": {
+      "description": "Pyrogram v2 String Session(s) for Voice Chat assistant (comma-separated for multiple)",
+      "placeholder": "BQA...",
+      "required": true,
+      "secret": true
+    },
+    "MONGO_DB_URI": {
+      "description": "MongoDB Atlas connection string",
+      "placeholder": "mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority",
+      "required": true,
+      "secret": true
+    },
+    "OWNER_ID": {
+      "description": "Your Telegram numeric user ID",
+      "placeholder": "123456789",
+      "required": true
+    },
+    "LOGGER_ID": {
+      "description": "Private Log Group ID (bot & assistant must be admins with voice chat enabled)",
+      "placeholder": "-1001234567890",
+      "required": true
+    },
+    "MEDIA_API_URL": {
+      "description": "Optional media API base URL",
+      "value": "https://host-repository.vercel.app",
+      "required": false
+    },
+    "MEDIA_API_KEY": {
+      "description": "Optional media API key",
+      "placeholder": "your_media_api_key_here",
+      "required": true,
+      "secret": true
+    },
+    "SUPPORT_CHANNEL": {
+      "description": "Updates channel URL",
+      "value": "https://t.me/Telegram",
+      "required": false
+    },
+    "SUPPORT_GROUP": {
+      "description": "Support group URL",
+      "value": "https://t.me/Telegram",
+      "required": false
+    },
+    "SPOTIFY_CLIENT_ID": {
+      "description": "Optional Spotify Client ID for faster Spotify link resolution",
+      "required": false
+    },
+    "SPOTIFY_CLIENT_SECRET": {
+      "description": "Optional Spotify Client Secret",
+      "required": false,
+      "secret": true
+    },
+    "DURATION_LIMIT": {
+      "description": "Max track duration in minutes",
+      "value": "5400",
+      "required": false
+    }
+  }
+}

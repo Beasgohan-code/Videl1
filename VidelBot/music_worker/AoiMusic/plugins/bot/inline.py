@@ -1,0 +1,84 @@
+
+#
+
+import asyncio
+
+from py_yt import VideosSearch
+from pyrogram.types import (
+    InlineKeyboardMarkup,
+    InlineQueryResultPhoto,
+)
+
+from config import BANNED_USERS
+from AoiMusic import app
+from AoiMusic.utils.inlinequery import answer
+from AoiMusic.utils.premium import link_btn
+
+
+@app.on_inline_query(~BANNED_USERS)
+async def inline_query_handler(client, query):
+    text = query.query.strip().lower()
+    answers = []
+    if text.strip() == "":
+        try:
+            await client.answer_inline_query(query.id, results=answer, cache_time=10)
+        except Exception:
+            return
+    else:
+        # Inline results need the raw py_yt fields (channel link, view counts),
+        # but a hung search must not leave the inline button spinning: cap it.
+        a = VideosSearch(text, limit=20)
+        try:
+            result = (await asyncio.wait_for(a.next(), 15)).get("result") or []
+        except asyncio.TimeoutError:
+            try:
+                return await client.answer_inline_query(query.id, results=answer, cache_time=10)
+            except Exception:
+                return
+        for res in result[:15]:
+            title = (res["title"]).title()
+            duration = res["duration"]
+            views = res["viewCount"]["short"]
+            thumbnail = res["thumbnails"][0]["url"].split("?")[0]
+            channellink = res["channel"]["link"]
+            channel = res["channel"]["name"]
+            link = res["link"]
+            published = res.get("publishedTime") or "Unknown"
+            description = f"{views} | {duration} Mins | {channel}  | {published}"
+            buttons = InlineKeyboardMarkup(
+                [
+                    [
+                        link_btn(
+                            "🎥 ᴡᴀᴛᴄʜ ᴏɴ ʏᴏᴜᴛᴜʙᴇ",
+                            url=link,
+                            emoji="🎥",
+                        )
+                    ],
+                ]
+            )
+            searched_text = f"""
+❇️**ᴛɪᴛʟᴇ:** [{title}]({link})
+
+⏳**ᴅᴜʀᴀᴛɪᴏɴ:** {duration} Mins
+👀**ᴠɪᴇᴡs:** `{views}`
+⏰**ᴘᴜʙʟɪsʜᴇᴅ ᴛɪᴍᴇ:** {published}
+🎥**ᴄʜᴀɴɴᴇʟ ɴᴀᴍᴇ:** {channel}
+📎**ᴄʜᴀɴɴᴇʟ ʟɪɴᴋ:** [ᴠɪsɪᴛ ғʀᴏᴍ ʜᴇʀᴇ]({channellink})
+
+__ʀᴇᴘʟʏ ᴡɪᴛʜ /play ᴏɴ ᴛʜɪs sᴇᴀʀᴄʜᴇᴅ ᴍᴇssᴀɢᴇ ᴛᴏ sᴛʀᴇᴀᴍ ɪᴛ ᴏɴ ᴠᴏɪᴄᴇᴄʜᴀᴛ.__
+
+⚡️ ** ɪɴʟɪɴᴇ sᴇᴀʀᴄʜ ʙʏ {app.mention} **"""
+            answers.append(
+                InlineQueryResultPhoto(
+                    photo_url=thumbnail,
+                    title=title,
+                    thumbnail_url=thumbnail,
+                    description=description,
+                    caption=searched_text,
+                    reply_markup=buttons,
+                )
+            )
+        try:
+            return await client.answer_inline_query(query.id, results=answers)
+        except Exception:
+            return

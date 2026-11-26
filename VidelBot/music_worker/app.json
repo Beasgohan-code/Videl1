@@ -1,0 +1,51 @@
+{
+  "name": "Videl Music Worker",
+  "description": "Telegram voice-chat music and group-management bot powered by PyTgCalls and MongoDB.",
+  "keywords": [
+    "python3",
+    "telegram",
+    "music-bot",
+    "pyrogram",
+    "pytgcalls",
+    "mongodb"
+  ],
+  "env": {
+    "API_ID": {
+      "description": "Get this value from https://my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Get this value from https://my.telegram.org",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Telegram Bot Token from @BotFather",
+      "required": true
+    },
+    "MONGO_DB_URI": {
+      "description": "MongoDB Atlas connection URI",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Telegram numeric user ID of the bot owner",
+      "required": true
+    },
+    "STRING_SESSIONS": {
+      "description": "Pyrogram v2 String Session(s), comma-separated for multiple assistants",
+      "required": true
+    },
+    "LOGGER_ID": {
+      "description": "Log Group ID (bot and assistant must be admins)",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    },
+    {
+      "url": "https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest.git"
+    }
+  ],
+  "stack": "container"
+}
