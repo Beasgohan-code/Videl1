@@ -103,7 +103,7 @@ def test_music_dashboard_offers_session_setup_without_file_store_worker_controls
         await add(clone_profile='music');q=FakeQuery('dashboard_42',uid=5)
         await my_bots.dashboard_callback(FakeClient(),q)
         text,markup=edits[-1];data=[b.callback_data for b in buttons(markup)]
-        assert 'Music' in text and 'standalone music program' in text
+        assert 'Music' in text and 'Music clone worker' in text
         assert 'clmusic_42' in data and 'toggle_bot_42' not in data
         assert 'sensitive-token' not in text
     run(go())

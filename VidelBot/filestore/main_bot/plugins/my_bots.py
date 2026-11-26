@@ -194,7 +194,7 @@ async def _mode_dashboard(query, bot, mode):
                     f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
                     f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
                     f"<b>Desired state:</b> {desired_label} · <b>Music worker report:</b> {runtime}\n\n"
-                    "Use the controls below to request start/stop. A separate standalone Music worker must be deployed; "
+                    "Use the controls below to request start/stop. The dedicated Music clone worker must be deployed; "
                     "it reconciles these requests about every 10 seconds. The report is only that worker's local observation, "
                     "not proof about other processes; reports older than two minutes are marked stale, not stopped.\n"
                     "If you recover to another profile, first confirm no separate Music process still holds this token.\n\n"
@@ -419,7 +419,7 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
                 f"<b>Bot ID:</b> <code>{bot_id}</code>\n\n"
                 "This clone is safely paused until an assistant account session is saved. "
                 "Its Music profile will only be selected after encrypted session storage succeeds. "
-                "Then restart the standalone music program to load it.")
+                "The Music clone worker will load it on its next sync.")
         buttons = [[InlineKeyboardButton("🎵 Set up assistant session", callback_data=f"clmusic_{bot_id}")],
                    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍʏ ʙᴏᴛs", callback_data="my_bots")]]
         from core.ui import smart_edit
@@ -564,7 +564,7 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
             return await query.answer("❌ Bot not found or access denied!", show_alert=True)
         # Old dashboard buttons can outlive the Music panel. Never try to start
         # a Music profile through the File Store engine; persist desired state
-        # for the standalone Music reconciler instead.
+        # for the separate Music clone reconciler instead.
         desired = bot.get("is_active") is not True
         if desired and (not isinstance(bot.get("music_session_encrypted"), str)
                         or not bot["music_session_encrypted"].startswith("enc:")):

@@ -3,8 +3,9 @@ Clone lifecycle: a clone nobody uses for CLONE_INACTIVE_DAYS (default 7) is deac
 
 • activity = any message / button press inside the clone (worker middleware → main_db.update_last_active)
 • a day before (¼ of the period for very short periods) the owner gets a warning with ✅ Keep it running
-• on deactivation the worker is stopped, is_active=False, deactivated_reason="inactive",
-  the owner gets 🟢 Reactivate and the log channel a #CloneDeactivated entry
+• on File Store/Group deactivation the local worker is stopped before the registry update;
+  Music writes inactive desired state for its separate worker to reconcile on the next sync.
+• the owner gets 🟢 Reactivate and the log channel a #CloneDeactivated entry
 • reactivating (here or with 🟢 Start in the dashboard) restarts the inactivity clock
 """
 from datetime import datetime, timedelta, timezone
@@ -51,7 +52,12 @@ def _same_snapshot(old, current):
 
 
 async def _deactivate_if_idle_unchanged(bot, worker_engine):
-    """Attempt at most once locally; conflicts after stop remain uncertain."""
+    """Deactivate a local clone after its confirmed stop, or request Music stop by desired state.
+
+    The controller cannot observe/stop a separate Music worker's client. For
+    Music, this only CAS-updates the registry's desired state; it never treats
+    the worker's report as proof of a fleet-wide stop.
+    """
     bot_id = bot["_id"]
     if (_sweep_paused or bot_id in _sweep_holds or bot_id in _sweep_claims
             or len(_sweep_claims) >= _SWEEP_HOLD_LIMIT):
@@ -59,6 +65,20 @@ async def _deactivate_if_idle_unchanged(bot, worker_engine):
     _sweep_claims.add(bot_id)
     attempted, committed = False, False
     try:
+        if bot.get("clone_profile") == "music":
+            # Music clients belong to the dedicated process. CAS the desired
+            # inactive state after a fresh snapshot; the worker observes and
+            # stops on its next poll. This is not a physical-stop confirmation.
+            fresh = await main_db.get_bot(bot_id)
+            if _sweep_paused or not _same_snapshot(bot, fresh):
+                return False
+            attempted = True
+            if not await main_db.deactivate_inactive_if_unchanged(bot):
+                attempted = False  # acknowledged CAS conflict: nothing was stopped or changed
+                return False
+            committed = True
+            return True
+
         observed = worker_engine.get_worker(bot_id)
         if observed is None:
             return False  # a missing local client is not a confirmed fleet-wide stop
@@ -149,7 +169,10 @@ async def sweep(app, worker_engine, now: datetime = None) -> dict:
                 if not await _deactivate_if_idle_unchanged(bot, worker_engine):
                     continue
                 done["deactivated"].append(bot_id)
-                log.info("Clone %s marked inactive after confirmed local stop.", bot_id)
+                if bot.get("clone_profile") == "music":
+                    log.info("Music clone %s marked inactive in desired state; worker stop is pending sync.", bot_id)
+                else:
+                    log.info("Clone %s marked inactive after confirmed local stop.", bot_id)
                 try:
                     from core import botlog
                     await botlog.event("CloneDeactivated", (
@@ -159,11 +182,17 @@ async def sweep(app, worker_engine, now: datetime = None) -> dict:
                 except Exception:
                     log.warning("Could not send clone inactivity log.")
                 try:
+                    detail = (
+                        "The registry now requests Music stop; the dedicated worker will apply it on its next sync. "
+                        "This request is not proof that a separate process has already stopped."
+                        if bot.get("clone_profile") == "music" else
+                        "The local client stop was confirmed and the registry was updated."
+                    )
                     await app.send_message(
                         owner,
                         f"<b>💤 @{name} was marked inactive</b>\n\n<blockquote>After {days} days of recorded inactivity, "
-                        "the local client stop was confirmed and the registry was updated. Users, files, links and settings are kept.</blockquote>\n"
-                        "<i>This is a local snapshot; other processes are not checked.</i>",
+                        f"{detail} Users, files, links and settings are kept.</blockquote>\n"
+                        "<i>Runtime reports are local observations, not proof about other processes.</i>",
                         reply_markup=Kb([[Btn("🟢 ʀᴇᴀᴄᴛɪᴠᴀᴛᴇ", callback_data=f"cl_on_{bot_id}"),
                                           Btn("📋 ᴍʏ ʙᴏᴛs", callback_data="my_bots")]]))
                 except Exception:
@@ -261,14 +290,14 @@ async def reactivate_cb(client: Client, query: CallbackQuery):
                                     "Reopen the Music dashboard before retrying.", _dash_kb(bot_id))
         if not changed:
             return await query.answer("Clone state changed. Reopen its dashboard.", show_alert=True)
-        await query.answer("Music start requested; the standalone Music worker will reconcile it.")
+        await query.answer("Music start requested; the Music clone worker will reconcile it.")
         stale_note = ("The last worker report was stale; this does not prove a separate process has stopped. "
                       if bot.get("music_runtime_state") in ("starting", "running", "stopping", "uncertain")
                       else "")
         return await smart_edit(
             query.message,
             "<b>🎵 Music start requested.</b>\n"
-            f"{stale_note}The standalone Music worker must be running to apply it; this is a desired-state update, not a live-client confirmation.",
+            f"{stale_note}The dedicated Music clone worker must be running to apply it; this is a desired-state update, not a live-client confirmation.",
             _dash_kb(bot_id))
     # Old buttons must not start or reset an already-active or malformed record.
     if (not valid_registry_id(bot_id) or bot_id != requested_id

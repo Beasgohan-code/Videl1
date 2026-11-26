@@ -305,16 +305,16 @@ class MainDB:
         return await cursor.to_list(length=None)
 
     async def get_active_bots_for_profile(self, profile: str) -> list:
-        """Get active clones owned by one standalone profile runtime."""
+        """Get active clones owned by a profile-specific worker runtime."""
         if profile not in ("group", "music"):
-            raise ValueError("Unsupported standalone clone profile")
+            raise ValueError("Unsupported clone worker profile")
         cursor = self.bots.find({"is_active": True, "clone_profile": profile,
                                  "is_deleted": {"$ne": True}})
         return await cursor.to_list(length=None)
 
     async def set_profile_active(self, bot_id: int, owner_id: int,
                                  profile: str, active: bool) -> bool:
-        """Change a standalone clone's desired state using owner/profile CAS."""
+        """Change a profile clone's desired state using owner/profile CAS."""
         if profile not in ("group", "music") or type(active) is not bool:
             return False
         now = datetime.now(timezone.utc)
@@ -331,7 +331,7 @@ class MainDB:
         return result.matched_count == 1
 
     async def set_music_runtime_state(self, bot_id: int, state: str) -> bool:
-        """Publish standalone Music worker observation; not a distributed lease."""
+        """Publish a Music worker observation; not a distributed lease."""
         if state not in ("starting", "running", "stopping", "stopped", "uncertain"):
             return False
         result = await self.bots.update_one(

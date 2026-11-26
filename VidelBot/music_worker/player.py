@@ -34,7 +34,10 @@ def ensure_compat() -> bool:
     if target is None:
         return False
     for legacy in ("GroupcallForbidden", "GroupcallInvalid"):
-        if not hasattr(errors, legacy):
+        # Some installed Pyrogram-compatible builds still export these names,
+        # but with distinct legacy classes. PyTgCalls expects the single
+        # GroupCallInvalid type used by the supported Videl/WzGram runtime.
+        if getattr(errors, legacy, None) is not target:
             setattr(errors, legacy, target)
     return True
 

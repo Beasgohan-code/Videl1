@@ -368,7 +368,7 @@ async def _finish_creation(client, query, state, mode):
     try:
         bot_doc = await main_db.get_bot(bot_id)
         if mode == "music":
-            # Music clones are served by the standalone music program,
+            # Music clones are served by the dedicated Music clone worker,
             # never by this process's File Store/Group worker engine.
             worker_started = False
         else:
@@ -393,7 +393,7 @@ async def _finish_creation(client, query, state, mode):
         worker_started = False
     if mode == "music":
         icon = "🎵"
-        status = "Music mode — set up the assistant session, then start it with the standalone music program"
+        status = "Music mode — set up the assistant session, then start it from the Music clone worker"
     else:
         icon = "🟢" if worker_started else "🟡"
         status = "Observed running in this process" if worker_started else "Not observed running in this process"

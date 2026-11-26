@@ -1,11 +1,12 @@
 """Process-side engine for active Music clones.
 
-Starts only clones whose saved profile is ``music``, using this
-package's own handlers/store and assistant-session playback. It is not
-imported by ``run.py``: run it as a separate, sole Music worker so the
-same bot token cannot be consumed by competing clients. The player
-engine is stopped before the assistant and bot clients; uncertain
-resources remain fenced and can be retried.
+Starts only active clones whose saved profile is ``music``, using this
+package's handlers/store and per-clone assistant-session playback. It runs
+as a separate, single Music worker process; the main controller persists
+owner desired state while this process reconciles it. Never run another
+client against the same clone token. The player engine is stopped before
+the assistant and bot clients; uncertain local resources are retained for
+retry, but local reports are not distributed fencing.
 """
 from __future__ import annotations
 
@@ -15,8 +16,9 @@ import logging
 import time
 import weakref
 
-from pyrogram import Client
+from pyrogram import Client, ContinuePropagation
 from pyrogram.enums import ParseMode
+from pyrogram.handlers import CallbackQueryHandler, MessageHandler
 from pyrogram.types import BotCommand, BotCommandScopeAllGroupChats
 
 from filestore.database.main_db import MainDB
@@ -30,6 +32,18 @@ from .store import MusicWorkerStore
 log = logging.getLogger(__name__)
 main_db = MainDB()
 _PLAYER_STOP_TIMEOUT = 5.0
+
+
+def _attach_activity_middleware(app, bot_id: int) -> None:
+    """Keep Videl's idle lifecycle accurate for activity handled by Music clones."""
+    async def update_activity(client, update):
+        if time.monotonic() - main_db._last_active_written.get(bot_id, -1e9) >= 60:
+            from core.bg import spawn
+            spawn(main_db.update_last_active(bot_id), name="music-clone-last-active")
+        raise ContinuePropagation
+
+    app.add_handler(MessageHandler(update_activity), group=-1)
+    app.add_handler(CallbackQueryHandler(update_activity), group=-1)
 
 
 def _client_still_running(app) -> bool:
@@ -127,7 +141,7 @@ class MusicWorkerEngine:
         """Converge local clients to the active Music-profile records.
 
         The registry is desired state, not a distributed lease: run exactly one
-        standalone Music worker and never overlap it with another token client.
+        Music clone worker and never overlap it with another token client.
         """
         desired = await main_db.get_active_bots_for_profile("music")
         desired_by_id = {int(doc["_id"]): doc for doc in desired}
@@ -197,6 +211,7 @@ class MusicWorkerEngine:
             in_memory=True,
             workers=4,
         )
+        _attach_activity_middleware(app, bot_id)
         from .player import build_player
         # Playback runs on the assistant user account when the clone has
         # one (collected by the main bot's Music setup); the clone bot

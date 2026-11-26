@@ -42,7 +42,7 @@ async def profile_panel(client, query):
             "see /help in the group. Telegram admin rights are required.\n"
             "<b>Music</b> plays in voice chats via an assistant account — picking it "
             "asks for a session string (paste one, or create it here with a guided login).\n\n"
-            + ("<i>Experimental: single current worker instance only.</i>" if ready else
+            + ("<i>Experimental: one configured runtime per profile; status reports are local only.</i>" if ready else
                "<i>Switching is disabled until the operator verifies a single current worker instance.</i>"))
     buttons = Kb([
         [Btn("📁 File Store", callback_data=f"clprofile_set_{bot_id}_filestore"),

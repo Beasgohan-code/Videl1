@@ -181,11 +181,11 @@ async def save_session_and_select(bot_id: int, owner_id: int, session: str) -> s
 
 
 _RESULT_TEXT = {
-    "saved": "✅ <b>Music mode is ready for this clone.</b>\n\nThe standalone Music worker "
+    "saved": "✅ <b>Music mode is ready for this clone.</b>\n\nThe Music clone worker "
              "will pick it up on its next sync (about 10 seconds) if that service is running. "
-             "This controller does not run Music clones itself.",
+             "The controller records desired state; the dedicated worker runs Music clones.",
     "unchanged": "✅ This clone is already active in Music mode; the session was updated. "
-                 "The standalone Music worker will refresh it on its next sync.",
+                 "The Music clone worker will refresh it on its next sync.",
     "stop_first": "⏸ Session saved, but the clone is running. Stop it first, then pick Music again.",
     "disabled": "⚠️ Profile switching is disabled by the operator right now. The session was saved.",
     "denied": "❌ Bot not found or access denied!",
@@ -211,7 +211,7 @@ def _prompt_markup(bot_id: int, has_saved: bool) -> Kb:
 
 @Client.on_callback_query(filters.regex(r"^clmusicstate_(\d+)_(on|off)$"))
 async def music_runtime_toggle(client, query):
-    """Set desired Music state; the standalone Music worker reconciles it."""
+    """Set desired Music state; the dedicated Music clone worker reconciles it."""
     bot_id = int(query.matches[0].group(1))
     desired = query.matches[0].group(2) == "on"
     bot = await _owned(query, bot_id)

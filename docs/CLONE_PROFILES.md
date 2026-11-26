@@ -4,8 +4,9 @@ Clone owners can choose one profile in their private bot dashboard. Legacy recor
 without `clone_profile` use File Store. A profile switch changes only the registry
 field; it does not delete File Store files, links, settings, administrators, or
 other clone data. Stored links are not served while Group Management is active.
-Stop the clone, select the profile, and start it again. Music is displayed as
-unavailable: there is **no voice-chat playback runtime** in this implementation.
+Stop the clone, select the profile, and start it again. Music clones use the
+dedicated per-clone Music worker described below; playback still needs live
+Telegram validation.
 
 Group Management is an independent clone worker, not a registration of the
 main bot's group plugin. It currently implements a standard subset of
@@ -196,11 +197,12 @@ automatic retry, and a lost response may mean a welcome was sent anyway.
 
 After token and channel verification, the private setup wizard asks for one mode
 before registering or starting a clone. File Store is available; Group Management
-is available only when the operator has enabled the single-instance flag. Music is
-shown as unavailable and cannot be selected. The verified channel is still required
-for every mode by the existing registration flow. The choice expires after five
-minutes; cancelling or expiring it does not register a bot. After registration,
-stop the clone and use the dashboard profile selector to change modes.
+and Music are available only when the operator has enabled the single-instance
+profile setting. Music registration pauses the clone until an assistant session
+is safely encrypted and saved. The verified channel is still required for every
+mode by the existing registration flow. The choice expires after five minutes;
+cancelling or expiring it does not register a bot. After registration, stop the
+clone and use the dashboard profile selector to change modes.
 
 Restoring a previously removed clone offers **Keep saved mode** rather than
 silently replacing its profile. Its token, owner, deletion state and saved mode
@@ -263,25 +265,28 @@ install that forced combination. PyTgCalls also brings native `ntgcalls` and LGP
 obligations. See [PyTgCalls](https://github.com/pytgcalls/pytgcalls) and
 [the 3.0.0 package](https://pypi.org/project/py-tgcalls/3.0.0/).
 
-Music selection is now available in clone creation, but the bot is **not** marked
+Music selection is available in clone creation, but the bot is **not** marked
 as a Music profile before its assistant session has been safely stored. Choosing
 Music registers a paused clone with `music_setup_pending`; it does not start the
-File Store worker. The owner is then offered the encrypted assistant-session
-setup flow (paste or guided phone/OTP/optional-2FA login). A successful save
-atomically changes the stopped clone to the Music profile and active desired
-state. If setup is abandoned, the clone remains paused and can be resumed from
-its dashboard.
+File Store worker. The owner is then offered encrypted assistant-session setup
+(paste or guided phone/OTP/optional-2FA login). A successful save changes the
+stopped clone to the Music profile and active desired state. If setup is
+abandoned, the clone remains paused and can be resumed from its dashboard.
 
-Music clones are served only by the separate `VidelBot/music_worker/` program;
-they are not wired into `run.py` or the File Store worker. After completing
-setup, restart the standalone Music program so it loads the new clone. The
-assistant session is a full account credential: it is stored Fernet-encrypted,
-never logged, and storage is refused when `ENCRYPTION_KEY` is missing or invalid.
-Use an assistant account you trust and can revoke. Queue and voice playback are
-implemented in the standalone package, but real Telegram voice-chat behavior,
-native dependency behavior, multi-process coordination, and production recovery
-remain unverified; the automated tests use simulated Telegram and MongoDB. Do
-not treat successful onboarding as proof of live playback or deployment health.
+Music clones are served by the dedicated `VidelBot/music_worker/` process. It
+uses the same Videl clone registry and encrypted credentials, and reconciles
+only active `clone_profile=music` records; it is not imported into `run.py` or
+the File Store worker. Shared activity middleware updates clone last-active
+records so the existing idle lifecycle also sees Music-clone usage. The owner
+dashboard persists start/stop desired state, which the worker applies on its
+next sync. The assistant session is a full
+account credential: it is stored Fernet-encrypted, never logged, and storage is
+refused when `ENCRYPTION_KEY` is missing or invalid. Use an assistant account
+you trust and can revoke. Deploy exactly one Music worker process: runtime
+reports are local observations, not distributed fencing or proof that another
+process stopped. Real Telegram voice-chat behavior and production recovery
+remain unverified; automated tests use simulated Telegram and MongoDB. Do not
+treat successful onboarding as proof of live playback or deployment health.
 
 The clone connection/mode pickers, creation receipt, cancellation screen, **My bots**
 list and File Store dashboard use the shared Richgram `Doc` renderer. The owner's
@@ -368,53 +373,40 @@ CAPTCHA and night mode per group, stored in the group worker's own
 worker serves the clone; groups appear after the clone has been added
 to them and /settings has been used there.
 
-## Music worker (stage 1)
+## Music clone worker (stage 1)
 
-`VidelBot/music_worker/` is the separate worker program for Music
-clones, following the same pattern as the group worker: own commands,
-per-clone assistant sessions, persistent bounded queues, playlists,
-channel playback, seek/speed controls, repeat modes, upcoming-track
-shuffle and a Rich now-playing panel. The supported PyTgCalls/WzGram
-stack is installed in its own requirements; actual joining and audible
-controls still need live-Telegram proof. The engine is intentionally not
-imported by `run.py`; provision one standalone Music worker after
-assistant setup. The File Store engine/watchdog query only legacy and File
-Store profiles; the standalone Music engine queries Music profiles and
-reconciles owner-dashboard start/stop requests every 10 seconds. This is
-registry desired-state coordination, not a distributed lease. Playback and
-queue controls remain subject to live voice-chat validation.
+`VidelBot/music_worker/` is a dedicated per-clone worker, following the same
+profile-specific process pattern as the Group worker: own commands, encrypted
+assistant sessions, persistent bounded queues, playlists, channel playback,
+seek/speed controls, repeat modes, upcoming-track shuffle and a now-playing
+panel. Its engine reads active Music-profile records from the shared clone
+registry, starts one bot client plus an optional assistant/player per clone,
+and reconciles desired state every 10 seconds. Changed credentials are applied
+only after the old local resources stop; uncertain stops are retained for retry.
+The supported PyTgCalls/WzGram stack is installed in addition to Videl's shared
+requirements. Actual joining and audible controls still need live-Telegram proof.
 
-## Standalone worker programs
+## Profile-specific worker processes
 
-Each clone profile worker is a separate program:
-`GROUP_WORKER_STANDALONE=1 python -m group_worker` and
-`MUSIC_WORKER_STANDALONE=1 python -m music_worker` (run from
-`VidelBot/`). The env opt-in is a fail-closed acknowledgement —
-never run multiple workers for the same clone tokens. Neither is wired into
-`run.py`; switching a profile's runtime to its standalone worker is an
-operator step. The File Store engine and watchdog now query only legacy/File
-Store profiles; Group and Music standalone engines use profile-specific
-queries.
+Group and Music profile runtimes are separate from `run.py` and the File Store
+engine. Run Group with `GROUP_WORKER_STANDALONE=1 python -m group_worker`; run
+Music from `VidelBot/` with `MUSIC_CLONE_WORKER=1 python -m music_worker`.
+Deploy exactly one process for each profile service and never run multiple
+workers against the same clone token. These flags are operator acknowledgements,
+not distributed fencing. The File Store engine/watchdog query only legacy/File
+Store profiles; Group and Music engines query their own profile-specific sets.
 
-Music streaming (stage 2): `music_worker/player.py` wraps
-PyTgCalls 3.0.1 on WzGram 3.1.7. The earlier "missing
-GroupcallForbidden" blocker was two legacy Pyrogram error names;
-they are aliased to WzGram's `GroupCallInvalid` at player setup
-(probe-verified: import, construction and call API all succeed).
-Music profile selection is enabled after encrypted assistant-session
-setup. The owner dashboard can request Music start/stop and edit clone-wide Music
-defaults while the worker is offline; chat-specific settings override those
-defaults. The standalone Music worker reconciles desired state every 10 seconds.
-A separate
-owner-confirmed recovery path can switch an inactive Music clone back to File
-Store or Group when the Music worker reports stopped/unknown. Fresh active reports
-block recovery; reports older than two minutes are marked stale and require
-explicit confirmation that no separate Music process remains connected. A stale
-local report is not proof of process exit, and recovery never remotely stops
-another process.
-Real voice-chat joining still needs live-Telegram proof with a real clone; the
-standalone worker must remain separate from `run.py` and be the only Music
-process for those clone tokens.
+Music streaming: `music_worker/player.py` wraps PyTgCalls 3.0.1 on WzGram
+3.1.7. The earlier `GroupcallForbidden` blocker was two legacy Pyrogram error
+names; they are aliased to WzGram's `GroupCallInvalid`. The owner dashboard can
+request Music start/stop and edit clone-wide defaults while the worker is
+offline; chat-specific settings override those defaults. Runtime reports are
+local observations, not a distributed lease. Owner-confirmed recovery can
+switch an inactive Music clone back to File Store or Group when reports are
+stopped/unknown; fresh active reports block recovery, while stale reports
+require explicit confirmation that no separate Music process remains connected.
+Recovery never remotely stops another process. Real voice-chat joining still
+needs live-Telegram proof with a real clone.
 
 ## Music profile setup (assistant session)
 

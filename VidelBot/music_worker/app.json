@@ -1,51 +1,25 @@
 {
   "name": "videl-music-worker",
-  "description": "Telegram voice-chat music and group-management bot powered by PyTgCalls and MongoDB.",
+  "description": "Dedicated Videl clone worker for the Music profile.",
   "keywords": [
     "python3",
     "telegram",
-    "music-bot",
-    "pyrogram",
+    "music-clones",
+    "wzgram",
     "pytgcalls",
     "mongodb"
   ],
   "env": {
-    "API_ID": {
-      "description": "Get this value from https://my.telegram.org",
-      "required": true
-    },
-    "API_HASH": {
-      "description": "Get this value from https://my.telegram.org",
-      "required": true
-    },
-    "BOT_TOKEN": {
-      "description": "Telegram Bot Token from @BotFather",
-      "required": true
-    },
-    "MONGO_DB_URI": {
-      "description": "MongoDB Atlas connection URI",
-      "required": true
-    },
-    "OWNER_ID": {
-      "description": "Telegram numeric user ID of the bot owner",
-      "required": true
-    },
-    "STRING_SESSIONS": {
-      "description": "Pyrogram v2 String Session(s), comma-separated for multiple assistants",
-      "required": true
-    },
-    "LOGGER_ID": {
-      "description": "Log Group ID (bot and assistant must be admins)",
-      "required": true
-    }
+    "API_ID": { "description": "Same Telegram API ID configured for Videl", "required": true },
+    "API_HASH": { "description": "Same Telegram API hash configured for Videl", "required": true },
+    "MONGO_URI": { "description": "Same MongoDB URI/database used by Videl", "required": true },
+    "ENCRYPTION_KEY": { "description": "Same Fernet key used by Videl to encrypt clone credentials", "required": true },
+    "CLONE_PROFILES_SINGLE_INSTANCE": { "description": "Single-instance clone profile setting", "value": "True", "required": true },
+    "MUSIC_CLONE_WORKER": { "description": "Single Music worker acknowledgement", "value": "1", "required": true },
+    "MUSIC_WORKER_SYNC_SECONDS": { "description": "Desired-state reconciliation interval", "value": "10", "required": false }
   },
-  "buildpacks": [
-    {
-      "url": "heroku/python"
-    },
-    {
-      "url": "https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest.git"
-    }
-  ],
+  "formation": {
+    "worker": { "quantity": 1, "size": "standard-1x" }
+  },
   "stack": "container"
 }

@@ -1,1 +1,1 @@
-worker: PYTHONPATH=.. MUSIC_WORKER_STANDALONE=1 MALLOC_ARENA_MAX=2 MALLOC_TRIM_THRESHOLD_=65536 python3 -m music_worker
+worker: cd .. && MUSIC_CLONE_WORKER=1 python3 -m music_worker

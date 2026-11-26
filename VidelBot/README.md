@@ -19,7 +19,7 @@ Videl is **one** Telegram bot that combines:
 | 📝 **Owner log channel** (`core/botlog.py`) | Every event tagged in `LOG_CHANNEL` – who started the bot, who cloned which bot, logins, payments, bans, restarts… – boot/shutdown/clone reports also in the owners' DM, plus a daily activity report |
 | 🐕 **Keep-alive + Watchdog** | Health server + self-ping for free hosts; automatic temp-file cleanup, low-disk rescue, stuck-flow expiry, clone-bot self-healing, hang detection & auto-restart |
 
-**Experimental clone profiles:** File Store and limited Group Management modes use the configured worker runtime. Music setup stores the assistant session encrypted and uses a separate standalone Music worker; it is not started by `run.py`, and voice-chat behavior still needs live validation. Keep exactly one runtime per clone token. See [profile setup and safety limits](../docs/CLONE_PROFILES.md).
+**Experimental clone profiles:** File Store, Group Management, and Music clones use profile-specific worker lifecycles. Music setup stores the assistant session encrypted; a dedicated Music clone worker reconciles active Music-profile records independently of `run.py`. Deploy exactly one Music worker process, and note that runtime reports are local observations rather than distributed fencing. Live voice-chat behavior still needs validation. See [profile setup and safety limits](../docs/CLONE_PROFILES.md).
 
 Everything runs in a single process on a single bot token; clone bots are extra
 Pyrogram clients started by the worker engine.
@@ -526,7 +526,7 @@ Inside clones: `-10` Stars payments (atomic `charge_id` idempotency) → `-3` an
 
 ### Optional premium button icons
 
-A default-off, allowlisted experiment decorates matching buttons on primary-bot Bot API text sends and edits. See [configuration, fallback and limitations](../docs/PREMIUM_BUTTON_ICONS.md). Experimental Music clone setup is available through encrypted session onboarding and the separate standalone worker; live voice-chat behavior remains unverified. See [clone profiles](../docs/CLONE_PROFILES.md).
+A default-off, allowlisted experiment decorates matching buttons on primary-bot Bot API text sends and edits. See [configuration, fallback and limitations](../docs/PREMIUM_BUTTON_ICONS.md). Experimental Music clone setup is available through encrypted session onboarding and the dedicated per-clone worker; live voice-chat behavior remains unverified. See [clone profiles](../docs/CLONE_PROFILES.md).
 
 ### 6. Troubleshooting
 - **`ImportError` or `RICH_AVAILABLE == False` after installing packages:** `richgram` lists `kurigram` in its package metadata, which shares the `pyrogram` import namespace with `wzgram`. Run `pip uninstall -y kurigram && pip install --no-deps --force-reinstall wzgram==3.1.6` (already automated in the root `Dockerfile` and `.github/workflows/ci.yml`).

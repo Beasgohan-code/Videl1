@@ -259,3 +259,26 @@ def test_sweep_records_projection_omits_unrelated_fields():
         assert 'settings' not in records[0] and 'session' not in records[0]
         assert records[0]['bot_token_encrypted'] == 'private-secret'
     run(go())
+
+
+def test_music_idle_sweep_requests_desired_stop_without_claiming_remote_stop():
+    async def go():
+        await add(clone_profile="music", music_runtime_state="running",
+                  music_runtime_updated_at=NOW)
+        eng = Engine()  # the controller has no local Music client
+        app = FakeClient()
+        result = await lifecycle.sweep(app, eng, now=NOW)
+        saved = await MainDB().get_bot(BOT)
+        message = notices(app)[-1][1][1]
+
+        assert result["deactivated"] == [BOT]
+        assert eng.stops == []
+        assert saved["is_active"] is False
+        # The separate worker's report is retained as an observation; the
+        # dashboard must not reinterpret this request as a confirmed stop.
+        assert saved["music_runtime_state"] == "running"
+        assert "requests Music stop" in message
+        assert "not proof" in message
+        assert "local client stop was confirmed" not in message
+
+    run(go())

@@ -207,7 +207,7 @@ def test_music_reactivation_blocks_fresh_report_but_accepts_stale_desired_state(
     run(go())
 
 
-def test_music_reactivation_requests_standalone_runtime_not_filestore(monkeypatch):
+def test_music_reactivation_requests_clone_worker_not_filestore(monkeypatch):
     async def go():
         eng = Engine()
         monkeypatch.setattr(engine_module, "worker_engine", eng)

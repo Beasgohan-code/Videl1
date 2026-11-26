@@ -1,62 +1,79 @@
-# Videl Music Worker
+# Videl Music Clone Worker
 
-A standalone Telegram music and group-management bot, based on the complete
-feature set requested for this worker. It lives under `VidelBot/music_worker`
-and uses its own configuration, dependencies, assistant sessions, and MongoDB
-collections.
+A dedicated worker process for Videl clone bots with the **Music** profile.
+It uses Videl's existing clone registry, encrypted bot-token and assistant
+session fields, profile controls, owner-scoped dashboards, and Mongo-backed
+per-clone settings, queues, and playlists. It does not run a separate global
+music bot and does not need a second `BOT_TOKEN` or global assistant session.
 
-## Features
+## Clone lifecycle
 
-### Music and voice chats
-- Audio/video playback, channel playback, live streams and multi-source search.
-- Queue, now-playing panel, pause/resume, skip/stop, seek, speed, volume,
-  repeat, shuffle, vote-skip and authorized DJ controls.
-- Autoplay, personal playlists, lyrics, song downloads, top tracks, radio,
-  inline search and active-player tools.
-- YouTube, Spotify, Apple Music, SoundCloud, JioSaavn, Resso and Telegram media
-  sources, subject to the configured providers and their availability.
+- Reads only active, non-deleted records where `clone_profile` is `music`.
+- Creates one bot client, optional encrypted-session assistant client, and
+  voice-call player for each clone. Handler/store state is scoped by clone ID.
+- Reconciles desired state every 10 seconds by default: starts newly activated
+  clones, stops deactivated/deleted/profile-changed clones, and reloads changed
+  bot or assistant credentials after the old local clients have stopped.
+- Tracks clone messages and button activity through Videl's shared last-active
+  lifecycle, so its idle sweep can make profile-appropriate decisions.
+- Uses bounded exponential retry for failed starts and retries uncertain local
+  stops before attempting replacement clients. Runtime status is only a local
+  observation published to the dashboard; it is **not** a distributed lease or
+  proof that another process has stopped.
+- On SIGINT/SIGTERM, stops voice-call engines before assistant/bot clients and
+  closes MongoDB. Deploy exactly one Music worker service instance; do not run
+  multiple copies or a legacy global bot against the same clone tokens.
 
-### Group management
-- Admin and member tools; bans, mutes, warnings and moderation logs.
-- Content locks, anti-flood and other security controls, welcome/goodbye,
-  notes, filters, rules, approvals, AFK and group utilities.
-- Owner/sudo administration and deployment utilities from the upstream feature
-  set. Carefully review the privileged commands before granting sudo access.
+The controller already provides the owner flow: choose a clone's Music profile,
+securely save its assistant session, then use the clone dashboard to request
+start/stop and manage Music defaults. Bot tokens and user sessions stay in the
+existing encrypted clone record; they are never copied to worker env variables.
 
-The bot includes rich mobile-friendly help, settings, queue and now-playing
-panels. Use `/help` in Telegram to browse the command modules.
+## Deploy
 
-## Standalone setup
+Use the existing **VidelBot** environment and dependency set, then add the
+Music playback dependencies. From the `VidelBot/` directory:
 
 ```sh
-cd VidelBot/music_worker
 python -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Fill the required values in .env, then:
-PYTHONPATH=.. MUSIC_WORKER_STANDALONE=1 python -m music_worker
+pip install -r music_worker/requirements.txt
 ```
 
-From `VidelBot/`, the equivalent entry point is:
+Configure the same `config.env` values used by Videl, including `API_ID`,
+`API_HASH`, `MONGO_URI` (or `DB_URI`), and a valid `ENCRYPTION_KEY`. Set
+`CLONE_PROFILES_SINGLE_INSTANCE=True` and configure the deployment for exactly
+one worker instance. For non-Docker deployments, install FFmpeg on the host
+and ensure both `ffmpeg` and `ffprobe` are on `PATH`. Then start it from
+`VidelBot/`:
 
 ```sh
-MUSIC_WORKER_STANDALONE=1 python -m music_worker
+MUSIC_CLONE_WORKER=1 python -m music_worker
 ```
 
-Required settings include Telegram `API_ID`, `API_HASH`, `BOT_TOKEN`, one or
-more `STRING_SESSIONS`, `MONGO_DB_URI`, and `OWNER_ID`. Optional API keys,
-Spotify credentials, cookies and proxy settings are described in `.env.example`
-and `config/config.py`. Never commit real tokens, sessions, database URIs, API
-keys or cookies.
+`MUSIC_WORKER_SYNC_SECONDS` optionally changes the polling interval (2–300
+seconds; default 10). `MUSIC_CLONE_WORKER=1` is a fail-closed operator
+acknowledgement, not distributed fencing. Do not start a second copy. The
+worker must be able to reach the same MongoDB database as the main Videl
+controller.
 
-## Runtime boundary
+For Docker, build from the repository root so the image includes both Videl's
+shared clone modules and this worker:
 
-This is now the standalone single-bot application. It does **not** participate
-in Videl's per-clone Music-profile reconciliation, and the Videl main bot does
-not launch it. Set `MUSIC_WORKER_STANDALONE=1` and run only one instance for a
-bot/session; the guard is an operator acknowledgement, not a distributed lease.
-The previous clone-aware modules remain in this folder for migration and
-management compatibility, but are not used by the standalone entry point.
+```sh
+docker build -f VidelBot/music_worker/Dockerfile -t videl-music-worker .
+```
 
-The required upstream MIT license notice is preserved in [`LICENSE`](LICENSE).
+Run the image with Videl's regular environment variables, plus
+`MUSIC_CLONE_WORKER=1`. The container has FFmpeg installed for voice playback.
+
+## Music features
+
+Clone-profile handlers currently provide `/play`, queue controls, `/pause`,
+`/resume`, `/skip`, `/stop`, `/remove`, `/move`, settings, search and personal
+playlists, with per-clone/per-chat isolation. Playback uses the clone's
+assistant session when configured; a missing or unusable player degrades
+honestly to queue-only mode. The archived global single-bot source remains in the repository for provenance,
+but it is disabled and is not used by this clone-worker runtime.
+
+The upstream MIT `LICENSE` and required copyright notices are retained.
