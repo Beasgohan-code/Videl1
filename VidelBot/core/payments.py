@@ -111,6 +111,14 @@ def new_expiry(current_expiry, days: int):
     return (base + timedelta(days=days)).isoformat()
 
 
+def expiry_for_user(user: dict, days: int):
+    """Calculate a grant's expiry without writing or modifying the user."""
+    current = user.get("premium_expiry") if user.get("is_premium") else None
+    if user.get("is_premium") and not current:
+        return None  # already lifetime
+    return new_expiry(current, days)
+
+
 async def grant_premium(user_id: int, days: int, name: str = ""):
     """Activate / extend saver premium by *days* (0 = lifetime). Returns the
     new expiry (ISO date) or None for lifetime. Shared by payments, gifts,
@@ -119,11 +127,7 @@ async def grant_premium(user_id: int, days: int, name: str = ""):
     if not await saver_db.is_user_exist(user_id):
         await saver_db.add_user(user_id, name or "")
     user = await saver_db.col.find_one({"id": user_id}) or {}
-    current = user.get("premium_expiry") if user.get("is_premium") else None
-    if user.get("is_premium") and not current:
-        expiry = None  # already lifetime
-    else:
-        expiry = new_expiry(current, days)
+    expiry = expiry_for_user(user, days)
     await saver_db.add_premium(user_id, expiry)
     return expiry
 

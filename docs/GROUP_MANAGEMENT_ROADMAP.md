@@ -63,3 +63,54 @@ The separate `group_knowledge` plugin adds a group-visible `/faq` knowledge base
 ## Stage 9 — private moderation casebook (implemented in branch)
 
 `group_cases` adds a manually maintained casebook in private chat using `/modcase`. Each read, write and callback checks the caller's live Telegram group-admin restriction privilege and the bot's membership; data is scoped by bot and group. Cases support searching by subject ID, revision-checked notes, close/reopen and explicit purge; no Telegram moderation action is performed. Records contain user/admin IDs and manually entered text, are not encrypted by the plugin, and persist until explicit purge; see `VidelBot/plugins/group_cases/README.md` for limits, permission races and retention caveats. This is not an immutable audit ledger or verification of live Telegram/MongoDB. Other advanced plugin, security and frontend roadmap work remains outstanding.
+
+## Stage 10 — read-only group setup check (implemented in branch)
+
+The main `group_mod` plugin adds admin-only `/gcheck`: a read-only diagnostic showing automation state (anti-raid, join requests, anti-flood, warning policy, locks, filters) plus a live snapshot of this bot's restrict/delete/pin/change-info/invite rights as granted, missing, or unknown. It performs no moderation and changes no settings. Rights can change after the snapshot; fake-client tests do not prove live Telegram behavior. This is separate from the clone worker and does not copy the Group Mode plugin into it.
+
+## Stage 11 — Standard restriction aliases and warning policy (implemented in branch)
+
+The main `group_mod` plugin adds standard restriction commands alongside the existing `/gban`, `/kick`, `/mute` family: `/ban`, `/tban <time>`, `/dban` (delete+ban), `/sban` (silent), `/unban`, `/tmute`, `/dmute`, `/smute`, `/dkick`, `/skick`, `/swarn`, `/dwarn`, `/rmwarn`, `/resetwarn`. Warning policy gains `/warnings`, `/setwarnlimit` and `/setwarnmode`; `/warnconfig` now accepts `kick|ban|tban TIME|mute|tmute TIME` and threshold enforcement applies the configured mode (plain `mute` keeps the legacy 6-hour duration). All actions reuse the existing live permission verification, admin-target immunity and unconfirmed-result handling. No credits or currency were added.
+
+## Stage 12 — granular locks, blocklists, notes, flood and CAPTCHA (implemented in branch)
+
+- **Locks:** 40+ granular types (text, photo, video, document, audio, voice, videonote, sticker, gif, poll, contact, location, game, dice, checklist, album, command, url, invitelink, botlink, email, phone, emoji, forwarduser/forwardbot/forwardchannel, inline, externalreply, spoiler) plus legacy links/forwards/media/bots/all. `/locks list`, `/locktypes`, `/lockwarns on|off`, and custom per-lock modes via `/lock <types> ### <reason> {mode [time]}`.
+- **Blocklists:** `/addblocklist`, `/rmblocklist`, `/blocklist`, `/blocklistmode`, `/blocklistdelete` with word, `"phrase"` and `(a, b)` list triggers. Locks take precedence over blocklists in the passive guard.
+- **Filters:** `/filter`, `/stop`, `/filters` with word, `"phrase"`, `(a, b)` list, `prefix:` and `exact:` triggers.
+- **Notes:** `/save`, `/get`, `/notes`, `/clear` plus `#trigger` retrieval in the passive guard.
+- **Anti-flood:** `/setflood`, `/setfloodtimer`, `/setfloodmode`, `/flood`, `/clearflood` with configurable limit, window and enforcement mode. Unconfirmed Telegram results never claim success.
+- **CAPTCHA:** `/captcha on|off`, `/captchamode button`, `/setcaptchatext`. New members are muted until they press the verify button under the welcome message; only the new member can verify.
+- **Bot API 10.3:** `/pin`, `/unpin`, `/purge`, `/setwelcome`, `/resetwelcome`. Dashboards (`/gsettings`, `/gcheck`) and the command menu reflect the new state.
+
+## Stage 13 — moderation log (implemented in branch)
+
+Every confirmed moderation action is recorded to a bounded `group_modlog` collection (newest 1000 entries per chat retained): bans, mutes, kicks, warns, unbans, unmutes and all Standard aliases, with actor, target, reason and UTC timestamp. `/modlog` lists recent group actions and `/modhistory <user>` lists actions against a specific user; both are admin-only. Logging is best-effort and never raises into the moderation handler. This is an operational aid, not an immutable audit ledger; entries are not encrypted and persist until trimmed by the per-chat cap.
+
+## Stage 14 — Bulk lock controls, URL whitelist, filter cleanup, and admin directory
+
+Status: implemented in the regular-bot `group_mod` plugin; the protected clone worker remains untouched.
+
+- `/lockall` enables the all-content lock, and `/unlockall` clears all locks and per-lock modes after live admin and bot permission checks.
+- `/whitelist` and `/rmwhitelist` manage domains exempt from `links` and `url` locks; `/allowlist` and `/rmallowlist` are aliases. Exemption requires every URL in a message to use a whitelisted domain or subdomain, so mixed safe/unsafe messages remain blocked.
+- `/stopall` clears every keyword filter after permission verification and reports how many were removed.
+- `/adminlist` lists the owner and administrators currently returned by Telegram, with escaped names and username/ID labels.
+- Plugin manifest/index upgraded to group_mod 1.3.0 with 82 unique commands; the Telegram group command scope remains below the 100-command ceiling.
+- Evidence: focused group-management/security tests and the full backend test suite pass locally with mocked Telegram clients; no live Telegram or production deployment claim is made.
+
+## Stage 15 — Goodbye templates, chat cleaning, and portable group settings
+
+Status: implemented in the regular-bot `group_mod` plugin (v1.4.0); the protected clone worker remains untouched.
+
+- `/setgoodbye` / `/resetgoodbye` complete the greeting pair alongside welcomes.
+- `/cleanwelcome` now actually deletes the previous welcome when a new one is sent (both plain and CAPTCHA flows record the welcome message id); `/cleanservice` deletes service messages when enabled.
+- `/export` emits portable group settings JSON; `/import` validates types, bounds sizes, re-validates lock names, clamps numeric ranges, discards unknown keys, and applies nothing on invalid payloads.
+- Evidence: focused and full backend tests pass with mocked Telegram clients; no live Telegram or production claim is made.
+
+## Stage 16 — Per-group command disabling and permanent pins
+
+Status: implemented in the regular-bot `group_mod` plugin (v1.5.0); the protected clone worker remains untouched.
+
+- `/disable`, `/enable`, and `/disabled` manage a per-group disabled-command set enforced by the passive guard: non-admin invocations are deleted, administrators are exempt, unknown member status fails safe (no deletion), and the management commands cannot disable themselves.
+- `/permapin` sends and pins a permanent announcement with honest unconfirmed-pin reporting.
+- Disabled commands participate in settings export/import with validation (name pattern + protected-name exclusion).
+- Evidence: focused and full backend tests pass with mocked Telegram clients; no live Telegram or production claim is made.

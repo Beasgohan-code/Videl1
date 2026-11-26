@@ -1,0 +1,598 @@
+
+#
+# Settings module — rich-message panels (Bot API 10.3) + AoiMusic branding.
+#
+
+from pyrogram import filters
+from pyrogram.enums import ChatType
+from pyrogram.errors import MessageNotModified
+from pyrogram.types import CallbackQuery, Message
+
+import config
+from config import BANNED_USERS, CLEANMODE_DELETE_MINS, OWNER_ID
+from strings import command
+from AoiMusic import app
+from AoiMusic.utils.database import (
+    add_nonadmin_chat,
+    cleanmode_off,
+    cleanmode_on,
+    commanddelete_off,
+    commanddelete_on,
+    get_aud_bit_name,
+    get_authuser,
+    get_authuser_names,
+    get_instant_play,
+    get_playmode,
+    get_playtype,
+    get_vid_bit_name,
+    is_cleanmode_on,
+    is_commanddelete_on,
+    is_nonadmin_chat,
+    remove_nonadmin_chat,
+    save_audio_bitrate,
+    save_video_bitrate,
+    set_instant_play,
+    set_playmode,
+    set_playtype,
+)
+from AoiMusic.utils.decorators.admins import ActualAdminCB
+from AoiMusic.utils.decorators.language import language, languageCB
+from AoiMusic.utils.inline.settings import (
+    audio_quality_markup,
+    auth_users_markup,
+    cleanmode_settings_markup,
+    instantplay_markup,
+    playmode_users_markup,
+    setting_markup,
+    video_quality_markup,
+)
+from AoiMusic.utils.inline.start import private_panel
+from AoiMusic.utils.rich_msg import (
+    rich_img,
+    edit_rich,
+    pemoji,
+    rich_button,
+    rich_button_row,
+    rich_esc,
+    rich_heading,
+    send_rich,
+)
+
+
+def _settings_head(_, chat_title, chat_id):
+    return (
+        rich_heading(f'{pemoji("⚙")} Group Settings', level=4)
+        + f"<p>{rich_esc(_['setting_1'].format(chat_title, chat_id))}</p>"
+    )
+
+
+@app.on_message(command("SETTINGS_COMMAND") & filters.group & ~BANNED_USERS)
+@language
+async def settings_mar(client, message: Message, _):
+    body = _settings_head(_, message.chat.title, message.chat.id)
+    body += setting_markup(_)
+    await send_rich(message.chat.id, body)
+
+
+@app.on_callback_query(filters.regex("settings_helper") & ~BANNED_USERS)
+@languageCB
+async def settings_cb(client, CallbackQuery, _):
+    try:
+        await CallbackQuery.answer(_["set_cb_8"])
+    except Exception:
+        pass
+    body = _settings_head(
+        _, CallbackQuery.message.chat.title, CallbackQuery.message.chat.id
+    )
+    body += setting_markup(_)
+    return await edit_rich(
+        CallbackQuery.message.chat.id, CallbackQuery.message.id, body
+    )
+
+
+@app.on_callback_query(filters.regex("settingsback_helper") & ~BANNED_USERS)
+@languageCB
+async def settings_back_markup(client, CallbackQuery: CallbackQuery, _):
+    try:
+        await CallbackQuery.answer()
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+    if CallbackQuery.message.chat.type == ChatType.PRIVATE:
+        try:
+            await app.resolve_peer(OWNER_ID[0])
+            OWNER = OWNER_ID[0]
+        except Exception:
+            OWNER = None
+        body = rich_img(config.START_IMG_URL) if config.START_IMG_URL else ""
+        body += _['start_1'].format(app.mention)
+        body += private_panel(_, app.username, OWNER)
+        try:
+            await edit_rich(
+                CallbackQuery.message.chat.id, CallbackQuery.message.id, body
+            )
+        except MessageNotModified:
+            pass
+    else:
+        body = _settings_head(
+            _,
+            CallbackQuery.message.chat.title,
+            CallbackQuery.message.chat.id,
+        )
+        body += setting_markup(_)
+        try:
+            await edit_rich(
+                CallbackQuery.message.chat.id, CallbackQuery.message.id, body
+            )
+        except MessageNotModified:
+            pass
+
+
+## Audio and Video Quality
+async def gen_buttons_aud(_, aud):
+    buttons = audio_quality_markup(_)
+    if aud == "STUDIO":
+        buttons = audio_quality_markup(_, STUDIO=True)
+    elif aud == "HIGH":
+        buttons = audio_quality_markup(_, HIGH=True)
+    elif aud == "MEDIUM":
+        buttons = audio_quality_markup(_, MEDIUM=True)
+    elif aud == "LOW":
+        buttons = audio_quality_markup(_, LOW=True)
+    return buttons
+
+
+async def gen_buttons_vid(_, aud):
+    buttons = video_quality_markup(_)
+    if aud == "UHD_4K":
+        buttons = video_quality_markup(_, UHD_4K=True)
+    elif aud == "QHD_2K":
+        buttons = video_quality_markup(_, QHD_2K=True)
+    elif aud == "FHD_1080p":
+        buttons = video_quality_markup(_, FHD_1080p=True)
+    elif aud == "HD_720p":
+        buttons = video_quality_markup(_, HD_720p=True)
+    elif aud == "SD_480p":
+        buttons = video_quality_markup(_, SD_480p=True)
+    elif aud == "SD_360p":
+        buttons = video_quality_markup(_, SD_360p=True)
+    return buttons
+
+
+# without admin rights
+
+
+@app.on_callback_query(
+    filters.regex(
+        pattern=r"^(SEARCHANSWER|PLAYMODEANSWER|PLAYTYPEANSWER|AUTHANSWER|CMANSWER|COMMANDANSWER|CM|AQ|VQ|PM|AU|IP|INSTANTPLAYANSWER)$"
+    )
+    & ~BANNED_USERS
+)
+@languageCB
+async def without_Admin_rights(client, CallbackQuery, _):
+    command = CallbackQuery.matches[0].group(1)
+    chat_id = CallbackQuery.message.chat.id
+    mid = CallbackQuery.message.id
+    if command == "SEARCHANSWER":
+        try:
+            return await CallbackQuery.answer(_["setting_3"], show_alert=True)
+        except Exception:
+            return
+    if command == "PLAYMODEANSWER":
+        try:
+            return await CallbackQuery.answer(_["setting_10"], show_alert=True)
+        except Exception:
+            return
+    if command == "PLAYTYPEANSWER":
+        try:
+            return await CallbackQuery.answer(_["setting_11"], show_alert=True)
+        except Exception:
+            return
+    if command == "AUTHANSWER":
+        try:
+            return await CallbackQuery.answer(_["setting_4"], show_alert=True)
+        except Exception:
+            return
+    if command == "CMANSWER":
+        try:
+            return await CallbackQuery.answer(
+                _["setting_9"].format(CLEANMODE_DELETE_MINS),
+                show_alert=True,
+            )
+        except Exception:
+            return
+    if command == "COMMANDANSWER":
+        try:
+            return await CallbackQuery.answer(_["setting_14"], show_alert=True)
+        except Exception:
+            return
+    if command == "IP":
+        try:
+            await CallbackQuery.answer(_["set_cb_4"], show_alert=True)
+        except Exception:
+            pass
+        instant = await get_instant_play(chat_id)
+        body = (
+            rich_heading(f'{pemoji("⚡")} ɪɴꜱᴛᴀɴᴛ ᴘʟᴀʏ ꜱᴡɪᴛᴄʜ', level=4)
+            + instantplay_markup(_, instant)
+        )
+        return await edit_rich(chat_id, mid, body)
+    if command == "INSTANTPLAYANSWER":
+        try:
+            return await CallbackQuery.answer(_["setting_4"], show_alert=True)
+        except Exception:
+            return
+    if command == "CM":
+        try:
+            await CallbackQuery.answer(_["set_cb_5"], show_alert=True)
+        except Exception:
+            pass
+        sta = None
+        cle = None
+        if await is_cleanmode_on(chat_id):
+            cle = True
+        if await is_commanddelete_on(chat_id):
+            sta = True
+        buttons = cleanmode_settings_markup(_, status=cle, dels=sta)
+        body = (
+            rich_heading(f'{pemoji("🧹")} ᴄʟᴇᴀɴ-ᴍᴏᴅᴇ ᴄᴏɴᴛʀᴏʟꜱ', level=4)
+            + buttons
+        )
+
+    if command == "AQ":
+        try:
+            await CallbackQuery.answer(_["set_cb_1"], show_alert=True)
+        except Exception:
+            pass
+        aud = await get_aud_bit_name(chat_id)
+        buttons = await gen_buttons_aud(_, aud)
+        body = (
+            rich_heading(f'{pemoji("🎚")} ᴀᴜᴅɪᴏ qᴜᴀʟɪᴛʏ ᴢᴏɴᴇ', level=4)
+            + buttons
+        )
+    if command == "VQ":
+        try:
+            await CallbackQuery.answer(_["set_cb_2"], show_alert=True)
+        except Exception:
+            pass
+        aud = await get_vid_bit_name(chat_id)
+        buttons = await gen_buttons_vid(_, aud)
+        body = (
+            rich_heading(f'{pemoji("🎥")} ᴠɪᴅᴇᴏ qᴜᴀʟɪᴛʏ ᴢᴏɴᴇ', level=4)
+            + buttons
+        )
+    if command == "PM":
+        try:
+            await CallbackQuery.answer(_["set_cb_4"], show_alert=True)
+        except Exception:
+            pass
+        playmode = await get_playmode(chat_id)
+        if playmode == "Direct":
+            Direct = True
+        else:
+            Direct = None
+        is_non_admin = await is_nonadmin_chat(chat_id)
+        if not is_non_admin:
+            Group = True
+        else:
+            Group = None
+        playty = await get_playtype(chat_id)
+        if playty == "Everyone":
+            Playtype = None
+        else:
+            Playtype = True
+        buttons = playmode_users_markup(_, Direct, Group, Playtype)
+        body = (
+            rich_heading(f'{pemoji("🎮")} ᴘʟᴀʏ-ᴍᴏᴅᴇ ᴄᴏɴᴛʀᴏʟꜱ', level=4)
+            + buttons
+        )
+    if command == "AU":
+        try:
+            await CallbackQuery.answer(_["set_cb_3"], show_alert=True)
+        except Exception:
+            pass
+        is_non_admin = await is_nonadmin_chat(chat_id)
+        if not is_non_admin:
+            buttons = auth_users_markup(_, True)
+        else:
+            buttons = auth_users_markup(_)
+        body = (
+            rich_heading(f'{pemoji("🔒")} ᴀᴜᴛʜ-ᴜꜱᴇʀ ᴡɪᴢᴀʀᴅ', level=4)
+            + buttons
+        )
+    try:
+        return await edit_rich(chat_id, mid, body)
+    except MessageNotModified:
+        return
+
+
+# Audio Video Quality
+
+
+@app.on_callback_query(
+    filters.regex(
+        pattern=r"^(LOW|MEDIUM|HIGH|STUDIO|SD_360p|SD_480p|HD_720p|FHD_1080p|QHD_2K|UHD_4K)$"
+    )
+    & ~BANNED_USERS
+)
+@ActualAdminCB
+async def aud_vid_cb(client, CallbackQuery, _):
+    command = CallbackQuery.matches[0].group(1)
+    chat_id = CallbackQuery.message.chat.id
+    mid = CallbackQuery.message.id
+    try:
+        await CallbackQuery.answer(_["set_cb_6"], show_alert=True)
+    except Exception:
+        pass
+    audio = command in ["LOW", "MEDIUM", "HIGH", "STUDIO"]
+    if command == "LOW":
+        await save_audio_bitrate(chat_id, "LOW")
+        buttons = audio_quality_markup(_, LOW=True)
+    if command == "MEDIUM":
+        await save_audio_bitrate(chat_id, "MEDIUM")
+        buttons = audio_quality_markup(_, MEDIUM=True)
+    if command == "HIGH":
+        await save_audio_bitrate(chat_id, "HIGH")
+        buttons = audio_quality_markup(_, HIGH=True)
+    if command == "STUDIO":
+        await save_audio_bitrate(chat_id, "STUDIO")
+        buttons = audio_quality_markup(_, STUDIO=True)
+    if command == "SD_360p":
+        await save_video_bitrate(chat_id, "SD_360p")
+        buttons = video_quality_markup(_, SD_360p=True)
+    if command == "SD_480p":
+        await save_video_bitrate(chat_id, "SD_480p")
+        buttons = video_quality_markup(_, SD_480p=True)
+    if command == "HD_720p":
+        await save_video_bitrate(chat_id, "HD_720p")
+        buttons = video_quality_markup(_, HD_720p=True)
+    if command == "FHD_1080p":
+        await save_video_bitrate(chat_id, "FHD_1080p")
+        buttons = video_quality_markup(_, FHD_1080p=True)
+    if command == "QHD_2K":
+        await save_video_bitrate(chat_id, "QHD_2K")
+        buttons = video_quality_markup(_, QHD_2K=True)
+    if command == "UHD_4K":
+        await save_video_bitrate(chat_id, "UHD_4K")
+        buttons = video_quality_markup(_, UHD_4K=True)
+    head = (
+        f'{pemoji("🎚")} ᴀᴜᴅɪᴏ qᴜᴀʟɪᴛʏ ᴢᴏɴᴇ'
+        if audio
+        else f'{pemoji("🎥")} ᴠɪᴅᴇᴏ qᴜᴀʟɪᴛʏ ᴢᴏɴᴇ'
+    )
+    body = rich_heading(head, level=4) + buttons
+    try:
+        return await edit_rich(chat_id, mid, body)
+    except MessageNotModified:
+        return
+
+
+@app.on_callback_query(
+    filters.regex(pattern=r"^(CLEANMODE|COMMANDELMODE)$") & ~BANNED_USERS
+)
+@ActualAdminCB
+async def cleanmode_mark(client, CallbackQuery, _):
+    command = CallbackQuery.matches[0].group(1)
+    chat_id = CallbackQuery.message.chat.id
+    mid = CallbackQuery.message.id
+    try:
+        await CallbackQuery.answer(_["set_cb_6"], show_alert=True)
+    except Exception:
+        pass
+    if command == "CLEANMODE":
+        sta = None
+        if await is_commanddelete_on(chat_id):
+            sta = True
+        cle = None
+        if await is_cleanmode_on(chat_id):
+            await cleanmode_off(chat_id)
+        else:
+            await cleanmode_on(chat_id)
+            cle = True
+        buttons = cleanmode_settings_markup(_, status=cle, dels=sta)
+        body = (
+            rich_heading(f'{pemoji("🧹")} ᴄʟᴇᴀɴ-ᴍᴏᴅᴇ ᴄᴏɴᴛʀᴏʟꜱ', level=4)
+            + buttons
+        )
+        return await edit_rich(chat_id, mid, body)
+    if command == "COMMANDELMODE":
+        cle = None
+        sta = None
+        if await is_cleanmode_on(chat_id):
+            cle = True
+        if await is_commanddelete_on(chat_id):
+            await commanddelete_off(chat_id)
+        else:
+            await commanddelete_on(chat_id)
+            sta = True
+        buttons = cleanmode_settings_markup(_, status=cle, dels=sta)
+    body = (
+        rich_heading(f'{pemoji("🧨")} ᴄᴏᴍᴍᴀɴᴅ ᴄʟᴇᴀɴ ꜱᴇᴛᴜᴘ', level=4)
+        + buttons
+    )
+    try:
+        return await edit_rich(chat_id, mid, body)
+    except MessageNotModified:
+        return
+
+
+# Play Mode Settings
+@app.on_callback_query(
+    filters.regex(pattern=r"^(MODECHANGE|CHANNELMODECHANGE|PLAYTYPECHANGE)$")
+    & ~BANNED_USERS
+)
+@ActualAdminCB
+async def playmode_ans(client, CallbackQuery, _):
+    command = CallbackQuery.matches[0].group(1)
+    chat_id = CallbackQuery.message.chat.id
+    mid = CallbackQuery.message.id
+    if command == "CHANNELMODECHANGE":
+        is_non_admin = await is_nonadmin_chat(chat_id)
+        if not is_non_admin:
+            await add_nonadmin_chat(chat_id)
+            Group = None
+        else:
+            await remove_nonadmin_chat(chat_id)
+            Group = True
+        playmode = await get_playmode(chat_id)
+        if playmode == "Direct":
+            Direct = True
+        else:
+            Direct = None
+        playty = await get_playtype(chat_id)
+        if playty == "Everyone":
+            Playtype = None
+        else:
+            Playtype = True
+        buttons = playmode_users_markup(_, Direct, Group, Playtype)
+    if command == "MODECHANGE":
+        try:
+            await CallbackQuery.answer(_["set_cb_6"], show_alert=True)
+        except Exception:
+            pass
+        playmode = await get_playmode(chat_id)
+        if playmode == "Direct":
+            await set_playmode(chat_id, "Inline")
+            Direct = None
+        else:
+            await set_playmode(chat_id, "Direct")
+            Direct = True
+        is_non_admin = await is_nonadmin_chat(chat_id)
+        if not is_non_admin:
+            Group = True
+        else:
+            Group = None
+        playty = await get_playtype(chat_id)
+        if playty == "Everyone":
+            Playtype = False
+        else:
+            Playtype = True
+        buttons = playmode_users_markup(_, Direct, Group, Playtype)
+    if command == "PLAYTYPECHANGE":
+        try:
+            await CallbackQuery.answer(_["set_cb_6"], show_alert=True)
+        except Exception:
+            pass
+        playty = await get_playtype(chat_id)
+        if playty == "Everyone":
+            await set_playtype(chat_id, "Admin")
+            Playtype = False
+        else:
+            await set_playtype(chat_id, "Everyone")
+            Playtype = True
+        playmode = await get_playmode(chat_id)
+        if playmode == "Direct":
+            Direct = True
+        else:
+            Direct = None
+        is_non_admin = await is_nonadmin_chat(chat_id)
+        if not is_non_admin:
+            Group = True
+        else:
+            Group = None
+        buttons = playmode_users_markup(_, Direct, Group, Playtype)
+    body = (
+        rich_heading(f'{pemoji("🎮")} ᴘʟᴀʏ-ᴍᴏᴅᴇ ᴄᴏɴᴛʀᴏʟꜱ', level=4)
+        + buttons
+    )
+    try:
+        return await edit_rich(chat_id, mid, body)
+    except MessageNotModified:
+        return
+
+
+# Instant Play Settings
+@app.on_callback_query(
+    filters.regex(pattern=r"^(INSTANTPLAYCHANGE)$") & ~BANNED_USERS
+)
+@ActualAdminCB
+async def instantplay_ans(client, CallbackQuery, _):
+    try:
+        await CallbackQuery.answer(_["set_cb_6"], show_alert=True)
+    except Exception:
+        pass
+    chat_id = CallbackQuery.message.chat.id
+    mid = CallbackQuery.message.id
+    instant = await get_instant_play(chat_id)
+    if instant:
+        await set_instant_play(chat_id, False)
+    else:
+        await set_instant_play(chat_id, True)
+    instant = await get_instant_play(chat_id)
+    body = (
+        rich_heading(f'{pemoji("⚡")} ɪɴꜱᴛᴀɴᴛ ᴘʟᴀʏ ꜱᴡɪᴛᴄʜ', level=4)
+        + instantplay_markup(_, instant)
+    )
+    try:
+        return await edit_rich(chat_id, mid, body)
+    except MessageNotModified:
+        return
+
+
+# Auth Users Settings
+@app.on_callback_query(filters.regex(pattern=r"^(AUTH|AUTHLIST)$") & ~BANNED_USERS)
+@ActualAdminCB
+async def authusers_mar(client, CallbackQuery, _):
+    command = CallbackQuery.matches[0].group(1)
+    chat_id = CallbackQuery.message.chat.id
+    mid = CallbackQuery.message.id
+    if command == "AUTHLIST":
+        _authusers = await get_authuser_names(chat_id)
+        if not _authusers:
+            try:
+                return await CallbackQuery.answer(_["setting_5"], show_alert=True)
+            except Exception:
+                return
+        else:
+            try:
+                await CallbackQuery.answer(_["set_cb_7"], show_alert=True)
+            except Exception:
+                pass
+            j = 0
+            body = rich_heading(f'{pemoji("🔗")} ᴀᴜᴛʜᴇᴅ ᴠɪᴘ ᴘᴇᴏᴘʟᴇ', level=4)
+            body += f"<p>{rich_esc(_['auth_6'])}</p>"
+            msg = _["auth_7"]
+            for note in _authusers:
+                _note = await get_authuser(chat_id, note)
+                user_id = _note["auth_user_id"]
+                admin_id = _note["admin_id"]
+                admin_name = _note["admin_name"]
+                try:
+                    user = await client.get_users(user_id)
+                    user = user.first_name
+                    j += 1
+                except Exception:
+                    continue
+                body += (
+                    f"<p>{j}➤ {rich_esc(user)} <code>{user_id}</code></p>"
+                    f"<p>{pemoji('➡')} {rich_esc(_['auth_8'])} "
+                    f"{rich_esc(admin_name)} <code>{admin_id}</code></p>"
+                )
+            body += rich_button_row(
+                rich_button(f"{pemoji('⬅')} {_['BACK_BUTTON']}", callback_data="AU", style="primary"),
+                rich_button(f"{pemoji('❌')} {_['CLOSE_BUTTON']}", callback_data="close", style="danger"),
+            )
+            try:
+                return await edit_rich(chat_id, mid, body)
+            except MessageNotModified:
+                return
+    try:
+        await CallbackQuery.answer(_["set_cb_6"], show_alert=True)
+    except Exception:
+        pass
+    if command == "AUTH":
+        is_non_admin = await is_nonadmin_chat(chat_id)
+        if not is_non_admin:
+            await add_nonadmin_chat(chat_id)
+            buttons = auth_users_markup(_)
+        else:
+            await remove_nonadmin_chat(chat_id)
+            buttons = auth_users_markup(_, True)
+    body = (
+        rich_heading(f'{pemoji("🔒")} ᴀᴜᴛʜ-ᴜꜱᴇʀ ᴡɪᴢᴀʀᴅ', level=4)
+        + buttons
+    )
+    try:
+        return await edit_rich(chat_id, mid, body)
+    except MessageNotModified:
+        return

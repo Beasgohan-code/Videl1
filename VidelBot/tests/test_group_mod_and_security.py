@@ -692,3 +692,258 @@ def test_unrecognized_target_status_is_not_safe_to_moderate():
             return await super().get_chat_member(chat_id, user_id)
     c = UnknownStatus({10: (enums.ChatMemberStatus.OWNER, None), 999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())})
     assert not run(gmod.verify_mod_permissions(c, -100888, 10, target_id=77))[0]
+
+
+def test_gcheck_shows_readonly_bot_rights_snapshot_for_admin():
+    from plugins.group_mod import plugin as gmod
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs(can_pin_messages=False)),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+    })
+    m = _grp_msg("/gcheck", uid=10, client=c)
+    run(gmod.gcheck_cmd(c, m))
+    text = m.replies[-1]
+    lowered = text.lower()
+    assert "𝗚𝗥𝗢𝗨𝗣 𝗖𝗛𝗘𝗖𝗞" in text
+    assert "ʀᴇꜱᴛʀɪᴄᴛ ᴍᴇᴍʙᴇʀꜱ" in text and "granted" in lowered
+    assert "ᴘɪɴ ᴍᴇꜱꜱᴀɢᴇꜱ" in text and "missing" in lowered
+    assert "read-only snapshot" in lowered
+    assert not c.called("ban_chat_member") and not c.called("restrict_chat_member")
+
+
+def test_gcheck_refuses_non_admin_and_reports_unknown_bot_rights():
+    from plugins.group_mod import plugin as gmod
+
+    class FailingBotClient(GroupFakeClient):
+        async def get_chat_member(self, chat_id, user_id):
+            if int(user_id) == 999:
+                raise RuntimeError("telegram unavailable")
+            return await super().get_chat_member(chat_id, user_id)
+
+    c = FailingBotClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        20: (enums.ChatMemberStatus.MEMBER, None),
+    })
+    denied = _grp_msg("/gcheck", uid=20, client=c)
+    run(gmod.gcheck_cmd(c, denied))
+    assert "permission" in denied.replies[-1].lower()
+
+    m = _grp_msg("/gcheck", uid=10, client=c)
+    run(gmod.gcheck_cmd(c, m))
+    assert "unknown" in m.replies[-1]
+
+
+def test_modlog_records_and_lists_moderation_actions():
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        77: (enums.ChatMemberStatus.MEMBER, None),
+    })
+    # Perform a ban via /gban and a warn via /warn.
+    ban_msg = _grp_msg("/gban 77 spamming", uid=10, client=c)
+    run(gmod.gban_cmd(c, ban_msg))
+    warn_msg = _grp_msg("/warn 77 rule violation", uid=10, client=c)
+    run(gmod.warn_cmd(c, warn_msg))
+
+    # Both actions should be recorded.
+    entries = run(vdb.db["group_modlog"].find({"chat_id": -100888}).sort("ts", 1).to_list(length=10))
+    assert len(entries) == 2
+    actions = [e["action"] for e in entries]
+    assert "gban" in actions and "warn" in actions
+    assert all(e["target_id"] == 77 for e in entries)
+    assert all(e["actor_id"] == 10 for e in entries)
+
+    # /modlog lists recent actions for admins.
+    log_msg = _grp_msg("/modlog", uid=10, client=c)
+    run(gmod.modlog_cmd(c, log_msg))
+    assert "gban" in log_msg.replies[-1].lower() or "ban" in log_msg.replies[-1].lower()
+
+    # /modhistory filters by target user.
+    hist_msg = _grp_msg("/modhistory 77", uid=10, client=c)
+    run(gmod.modlog_cmd(c, hist_msg))
+    assert "77" in hist_msg.replies[-1]
+
+    # Non-admins are refused.
+    denied = _grp_msg("/modlog", uid=77, client=c)
+    run(gmod.modlog_cmd(c, denied))
+    assert "permission" in denied.replies[-1].lower()
+
+
+def test_modlog_is_bounded_per_chat():
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+
+    # Insert more than the per-chat cap and verify trimming keeps the newest.
+    async def _fill():
+        col = vdb.db["group_modlog"]
+        for i in range(gmod._MODLOG_MAX_PER_CHAT + 50):
+            await col.insert_one({
+                "chat_id": -100999, "action": "warn", "target_id": 1,
+                "target_label": "T", "actor_id": 2, "reason": "", "silent": False,
+                "ts": 1000.0 + i,
+            })
+        await gmod._log_mod_action(-100999, "ban", 1, "T", 2, "overflow")
+        count = await col.count_documents({"chat_id": -100999})
+        newest = await col.find_one({"chat_id": -100999}, sort=[("ts", -1)])
+        return count, newest
+
+    count, newest = run(_fill())
+    assert count <= gmod._MODLOG_MAX_PER_CHAT
+    assert newest["action"] == "ban"
+
+
+def test_lockall_unlockall_whitelist_and_stopall_management():
+    from plugins.group_mod import plugin as gmod
+    from core.db import vdb
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        20: (enums.ChatMemberStatus.MEMBER, None),
+    })
+
+    locked = _grp_msg("/lockall", uid=10, client=c)
+    run(gmod.lock_cmd(c, locked))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["locks"] == ["all"]
+    assert "only admins can send messages" in locked.replies[-1].lower()
+
+    denied = _grp_msg("/unlockall", uid=20, client=c)
+    run(gmod.lock_cmd(c, denied))
+    assert run(gmod.get_group_cfg(-100888))["locks"] == ["all"]
+    assert "permission" in denied.replies[-1].lower()
+
+    unlocked = _grp_msg("/unlockall", uid=10, client=c)
+    run(gmod.lock_cmd(c, unlocked))
+    assert run(gmod.get_group_cfg(-100888))["locks"] == []
+
+    added = _grp_msg("/whitelist https://www.Example.com/path docs.example.com", uid=10, client=c)
+    run(gmod.whitelist_cmd(c, added))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["url_whitelist"] == ["docs.example.com", "example.com"]
+
+    allowed = SimpleNamespace(text="Read https://docs.example.com/guide", caption=None)
+    blocked = SimpleNamespace(text="Read https://evil.example.net/guide", caption=None)
+    mixed = SimpleNamespace(text="https://example.com/a https://evil.example.net/b", caption=None)
+    assert gmod.match_locked_content(allowed, ["url"], cfg["url_whitelist"]) == ""
+    assert gmod.match_locked_content(blocked, ["url"], cfg["url_whitelist"]) == "url"
+    assert gmod.match_locked_content(mixed, ["links"], cfg["url_whitelist"]) == "links"
+
+    removed = _grp_msg("/rmallowlist example.com", uid=10, client=c)
+    run(gmod.whitelist_cmd(c, removed))
+    assert run(gmod.get_group_cfg(-100888))["url_whitelist"] == ["docs.example.com"]
+
+    run(vdb.db["group_settings"].update_one(
+        {"_id": -100888}, {"$set": {"filters": {"hello": "Hi", "bye": "Bye"}}}, upsert=True,
+    ))
+    gmod._CFG_CACHE.clear()
+    stopped = _grp_msg("/stopall", uid=10, client=c)
+    run(gmod.gfilter_cmd(c, stopped))
+    assert run(gmod.get_group_cfg(-100888))["filters"] == {}
+    assert "2 filters deleted" in stopped.replies[-1].lower()
+
+
+def test_adminlist_formats_telegram_administrators():
+    from plugins.group_mod import plugin as gmod
+
+    class AdminClient(GroupFakeClient):
+        async def get_chat_administrators(self, chat_id):
+            yield SimpleNamespace(
+                status=enums.ChatMemberStatus.OWNER,
+                user=SimpleNamespace(id=10, first_name="Ada <Admin>", username="ada"),
+            )
+            yield SimpleNamespace(
+                status=enums.ChatMemberStatus.ADMINISTRATOR,
+                user=SimpleNamespace(id=11, first_name="Grace", username=None),
+            )
+
+    c = AdminClient({999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs())})
+    msg = _grp_msg("/adminlist", uid=20, client=c)
+    run(gmod.adminlist_cmd(c, msg))
+    text = msg.replies[-1]
+    assert "@ada" in text and "ID 11" in text
+    assert "@ada" in text and "ID 11" in text
+    assert "<Admin>" not in text
+
+
+def test_setgoodbye_clean_toggles_and_settings_export_import():
+    from plugins.group_mod import plugin as gmod
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        20: (enums.ChatMemberStatus.MEMBER, None),
+    })
+    bye = _grp_msg("/setgoodbye Bye {first}!", uid=10, client=c)
+    run(gmod.greeting_options_cmd(c, bye))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["goodbye_on"] is True and cfg["goodbye_text"] == "Bye {first}!"
+
+    clean = _grp_msg("/cleanwelcome on", uid=10, client=c)
+    run(gmod.greeting_options_cmd(c, clean))
+    service = _grp_msg("/cleanservice on", uid=10, client=c)
+    run(gmod.greeting_options_cmd(c, service))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["cleanwelcome"] is True and cfg["cleanservice"] is True
+
+    denied = _grp_msg("/cleanservice off", uid=20, client=c)
+    run(gmod.greeting_options_cmd(c, denied))
+    assert run(gmod.get_group_cfg(-100888))["cleanservice"] is True
+    assert "permission" in denied.replies[-1].lower()
+
+    exported = _grp_msg("/export", uid=10, client=c)
+    run(gmod.group_settings_transfer_cmd(c, exported))
+    assert '"goodbye_text": "Bye {first}!"' in exported.replies[-1]
+    assert '"cleanservice": true' in exported.replies[-1]
+
+    hostile = _grp_msg('/import {"locks": ["url", "bogus"], "warn_limit": 99, "notes": {"x": 1}, "evil": true}', uid=10, client=c)
+    run(gmod.group_settings_transfer_cmd(c, hostile))
+    assert "invalid" in hostile.replies[-1].lower() or "unsafe" in hostile.replies[-1].lower()
+    assert run(gmod.get_group_cfg(-100888))["locks"] == []
+
+    imported = _grp_msg('/import {"locks": ["url", "bogus"], "warn_limit": 99, "notes": {"faq": "Read the FAQ"}}', uid=10, client=c)
+    run(gmod.group_settings_transfer_cmd(c, imported))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["locks"] == ["url"] and cfg["warn_limit"] == 20
+    assert cfg["notes"] == {"faq": "Read the FAQ"}
+    assert "evil" not in cfg or cfg.get("evil") is None
+
+
+def test_disable_enable_commands_guard_and_permapin():
+    from plugins.group_mod import plugin as gmod
+
+    c = GroupFakeClient({
+        999: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        10: (enums.ChatMemberStatus.ADMINISTRATOR, _full_privs()),
+        20: (enums.ChatMemberStatus.MEMBER, None),
+    })
+    disabled = _grp_msg("/disable rules notes disable", uid=10, client=c)
+    run(gmod.disable_cmd(c, disabled))
+    cfg = run(gmod.get_group_cfg(-100888))
+    assert cfg["disabled_commands"] == ["notes", "rules"]  # protected names refused
+
+    member_msg = _grp_msg("/rules", uid=20, client=c)
+    run(gmod.group_passive_guard(c, member_msg))
+    assert member_msg.deleted is True or c.called("delete_messages") or getattr(member_msg, "deleted", False)
+
+    enabled = _grp_msg("/enable rules", uid=10, client=c)
+    run(gmod.disable_cmd(c, enabled))
+    assert run(gmod.get_group_cfg(-100888))["disabled_commands"] == ["notes"]
+
+    listed = _grp_msg("/disabled", uid=20, client=c)
+    run(gmod.disable_cmd(c, listed))
+    assert "notes" in listed.replies[-1]
+
+    pin = _grp_msg("/permapin Read the rules please", uid=10, client=c)
+    run(gmod.permapin_cmd(c, pin))
+    assert c.called("send_message") and c.called("pin_chat_message")
+    assert "pinned" in pin.replies[-1].lower()
+
+    denied = _grp_msg("/permapin nope", uid=20, client=c)
+    run(gmod.permapin_cmd(c, denied))
+    assert "permission" in denied.replies[-1].lower()

@@ -1,0 +1,221 @@
+
+#
+
+
+from pyrogram import filters
+from pyrogram.types import InlineKeyboardMarkup, Message
+
+import asyncio
+from functools import partial
+
+import config
+from config import BANNED_USERS
+from strings import command
+from AoiMusic import LOGGER, Platform, app
+from AoiMusic.core.call import AoiCall
+from AoiMusic.misc import db
+from AoiMusic.utils.rich_panels import spawn_now_playing
+from AoiMusic.utils.stream import lyrics as lyrics_display
+from AoiMusic.utils.database import get_instant_play, get_loop
+from AoiMusic.utils.decorators import AdminRightsCheck
+from AoiMusic.utils.stream.autoclear import auto_clean
+from AoiMusic.utils.thumbnails import gen_thumb
+from AoiMusic.utils.rich_msg import reply_note, status_card
+
+
+async def _start_lyrics_for_skip(chat_id, title, duration):
+    """Start synced lyrics for the track a skip just switched to.
+
+    Skipping moved the audio on without telling the lyrics display at all, so
+    skipping through a queue produced no lyrics whatsoever. This goes through the
+    same helper the play path uses, which already does the per-chat setting check,
+    the assistant client lookup and the error handling — a skip should not be the
+    one path where any of that is missing.
+    """
+    from AoiMusic.utils.stream.stream import _start_lyrics
+    try:
+        await _start_lyrics(chat_id, title, duration)
+    except Exception as e:
+        LOGGER(__name__).debug("skip: lyrics failed: %s: %s", type(e).__name__, e)
+
+
+@app.on_message(command("SKIP_COMMAND") & filters.group & ~BANNED_USERS)
+@AdminRightsCheck
+async def skip(cli, message: Message, _, chat_id):
+    if not len(message.command) < 2:
+        loop = await get_loop(chat_id)
+        if loop != 0:
+            return await reply_note(message, _["admin_12"])
+        state = message.command[1]
+        if state.isnumeric():
+            state = int(state)
+            check = db.get(chat_id)
+            if not check:
+                return await reply_note(message, _["queue_2"])
+            count = len(check)
+            if count > 2:
+                count = int(count - 1)
+            if not (1 <= state <= count):
+                return await reply_note(message, _["admin_15"].format(count))
+            for x in range(state):
+                popped = None
+                try:
+                    popped = check.pop(0)
+                    if popped.get("mystic"):
+                        try:
+                            await popped.get("mystic").delete()
+                        except Exception:
+                            pass
+                except Exception:
+                    return await reply_note(message, _["admin_16"])
+                if popped:
+                    await auto_clean(popped)
+                if not check:
+                    try:
+                        await reply_note(message,
+                            _["admin_10"].format(
+                                message.from_user.first_name
+                            ),
+                        )
+                        await AoiCall.stop_stream(chat_id)
+                    except Exception:
+                        return
+                    return
+        else:
+            return await reply_note(message, _["admin_13"])
+    else:
+        check = db.get(chat_id)
+        popped = None
+        try:
+            popped = check.pop(0)
+            if popped:
+                await auto_clean(popped)
+                if popped.get("mystic"):
+                    try:
+                        await popped.get("mystic").delete()
+                    except Exception:
+                        pass
+            if not check and popped:
+                try:
+                    from AoiMusic.utils.autoplay import enqueue_autoplay_if_enabled
+                    if await enqueue_autoplay_if_enabled(chat_id, popped):
+                        check = db.get(chat_id)
+                except Exception:
+                    pass
+            if not check:
+                await reply_note(message,
+                    _["admin_10"].format(message.from_user.first_name),
+                )
+                try:
+                    return await AoiCall.stop_stream(chat_id)
+                except Exception:
+                    return
+        except Exception:
+            try:
+                await reply_note(message,
+                    _["admin_10"].format(message.from_user.first_name),
+                )
+                return await AoiCall.stop_stream(chat_id)
+            except Exception:
+                return
+    queued = check[0]["file"]
+    title = (check[0]["title"]).title()
+    user = check[0]["by"]
+    user_id = message.from_user.id
+    streamtype = check[0]["streamtype"]
+    videoid = check[0]["vidid"]
+    duration_min = check[0]["dur"]
+    status = True if str(streamtype) == "video" else None
+    if "live_" in queued:
+        n, link = await Platform.youtube.video(videoid, True)
+        if n == 0:
+            return await reply_note(message, _["admin_11"].format(title))
+        try:
+            await AoiCall.skip_stream(chat_id, link, video=status)
+            asyncio.create_task(
+                _start_lyrics_for_skip(chat_id, title, check[0]["dur"])
+            )
+        except Exception:
+            return await reply_note(message, _["call_7"])
+        mid_np = await spawn_now_playing(
+            _, chat_id, None, title, duration_min, user,
+            thumb=await gen_thumb(videoid),
+        )
+    elif "vid_" in queued:
+        from AoiMusic.utils.stream.stream import play_youtube_source
+
+        mystic = await status_card(message.chat.id, _["call_8"])
+        try:
+            await play_youtube_source(
+                videoid, status, mystic, partial(AoiCall.skip_stream, chat_id, video=status),
+                instant=await get_instant_play(chat_id),
+            )
+        except Exception as exc:
+            LOGGER(__name__).error("[Skip] Failed to switch YouTube stream in %s (%s video=%s): %s: %s", chat_id, videoid, status, type(exc).__name__, exc)
+            recovered = False
+            if "ᴀᴜᴛᴏᴘʟᴀʏ" in str(user) or "autoplay" in str(user).lower():
+                try:
+                    from AoiMusic.utils.autoplay import enqueue_autoplay_if_enabled
+                    failed_item = check.pop(0) if check else None
+                    if failed_item and await enqueue_autoplay_if_enabled(chat_id, failed_item):
+                        check = db.get(chat_id)
+                        if check:
+                            videoid = check[0]["vidid"]
+                            title = (check[0]["title"]).title()
+                            duration_min = check[0]["dur"]
+                            user = check[0]["by"]
+                            status = True if str(check[0]["streamtype"]) == "video" else None
+                            await play_youtube_source(
+                                videoid, status, mystic, partial(AoiCall.skip_stream, chat_id, video=status),
+                                instant=await get_instant_play(chat_id),
+                            )
+                            recovered = True
+                except Exception as retry_exc:
+                    LOGGER(__name__).error("[Skip] Autoplay retry also failed in %s: %s: %s", chat_id, type(retry_exc).__name__, retry_exc)
+            if not recovered:
+                return await mystic.edit_text(_["call_7"])
+        asyncio.create_task(_start_lyrics_for_skip(chat_id, title, check[0]["dur"]))
+        mid_np = await spawn_now_playing(
+            _, chat_id, videoid, title, duration_min, user, thumb=await gen_thumb(videoid),
+        )
+        await mystic.delete()
+    elif "index_" in queued:
+        try:
+            await AoiCall.skip_stream(chat_id, videoid, video=status)
+        except Exception:
+            return await reply_note(message, _["call_7"])
+        mid_np = await spawn_now_playing(
+            _, chat_id, None, title, duration_min, user,
+            thumb=config.STREAM_IMG_URL,
+        )
+    else:
+        try:
+            await AoiCall.skip_stream(chat_id, queued, video=status)
+        except Exception:
+            return await reply_note(message, _["call_7"])
+        if videoid == "telegram":
+            mid_np = await spawn_now_playing(
+                _, chat_id, None, title, check[0]["dur"], user,
+                thumb=(
+                    config.TELEGRAM_AUDIO_URL
+                    if str(streamtype) == "audio"
+                    else config.TELEGRAM_VIDEO_URL
+                ),
+            )
+        elif videoid == "soundcloud":
+            mid_np = await spawn_now_playing(
+                _, chat_id, None, title, check[0]["dur"], user,
+                thumb=config.SOUNDCLOUD_IMG_URL,
+            )
+        elif "saavn" in videoid:
+            url = check[0]["url"]
+            details = await Platform.saavn.info(url)
+            mid_np = await spawn_now_playing(
+                _, chat_id, None, title, check[0]["dur"], user,
+                thumb=details["thumb"] or config.TELEGRAM_AUDIO_URL,
+            )
+        else:
+            mid_np = await spawn_now_playing(
+                _, chat_id, videoid, title, duration_min, user,
+                thumb=await gen_thumb(videoid),
+            )

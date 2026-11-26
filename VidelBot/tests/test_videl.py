@@ -739,8 +739,8 @@ def test_check_clone_health(monkeypatch):
         run(check_bots(c, m))
         last = m.sent[-1]
         report = last.edits[-1] if last.edits else last.text
-        assert "reachable: <code>1</code>" in report and "responding: <code>1</code>" in report
-        assert "not running: <code>1</code>" in report and "deactivated: <code>1</code>" in report
+        assert "matching identity: <code>1</code>" in report and "check unconfirmed: <code>1</code>" in report
+        assert "active, no local client: <code>1</code>" in report and "inactive, no local client: <code>1</code>" in report
         assert "dead_bot" in report and "gone_bot" in report and "/check fix" in report
     finally:
         worker_engine.workers.pop(1, None)

@@ -1,15 +1,17 @@
 
 import html
 import asyncio
-from pyrogram import Client, filters
+import re
+from pyrogram import Client, enums, filters
 from pyrogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
 from filestore.fs_config import LOGGER, BACKEND_API_SECRET, BACKEND_API_URL
-from filestore.database.main_db import MainDB
+from filestore.database.main_db import MainDB, music_runtime_report_is_fresh
 from filestore.utils.security import mask_token, decrypt_token
+from filestore.utils.registry_ids import valid_registry_id
 
 log = LOGGER(__name__)
 
@@ -35,6 +37,21 @@ def _rotate_row(bot: dict):
     except Exception:
         return []
 
+def _navigation_blocked(user_id, *, allow_registration=False):
+    """Do not discard another active wizard; only the list permits registration."""
+    from filestore.main_bot.plugins.create_bot import _creation_state
+    state = _creation_state.get(user_id)
+    return state is not None and not (allow_registration and state.get("step") == "registering")
+
+
+async def _busy_notice(query):
+    from filestore.main_bot.plugins.create_bot import _creation_state
+    if (_creation_state.get(query.from_user.id) or {}).get("step") == "registering":
+        return await query.answer("Registration is in progress. Check My Bots and wait before opening its dashboard.", show_alert=True)
+    return await query.answer(
+        "A bot setup or setting is in progress. Continue it or use /cancel in private chat.", show_alert=True)
+
+
 # =============================================================================
 # CALLBACK: My Bots (list all bots)
 # =============================================================================
@@ -43,66 +60,327 @@ async def my_bots_callback(client: Client, query: CallbackQuery):
     """List all bots owned by the user."""
     user_id = query.from_user.id
 
-    from filestore.main_bot.plugins.create_bot import _creation_state
-    _creation_state.pop(user_id, None)
-
+    if _navigation_blocked(user_id, allow_registration=True):
+        return await _busy_notice(query)
     bots = await main_db.get_user_bots(user_id)
+    if _navigation_blocked(user_id, allow_registration=True):
+        return await _busy_notice(query)
 
     if not bots:
-        await query.message.edit_text(
-            "<b>━━━━━━━━━━━━━━━━━━━━━\n"
-            "📋 𝗠𝗬 𝗕𝗢𝗧𝗦\n"
-            "━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-            "<blockquote>ʏᴏᴜ ʜᴀᴠᴇɴ'ᴛ ᴄʀᴇᴀᴛᴇᴅ ᴀɴʏ ʙᴏᴛs ʏᴇᴛ.\n"
-            "ᴛᴀᴘ <b>⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ</b> ᴛᴏ ɢᴇᴛ sᴛᴀʀᴛᴇᴅ!</blockquote>",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⚡ ᴄʀᴇᴀᴛᴇ ʙᴏᴛ", callback_data="create_bot")],
-                [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_menu")],
-            ]),
-        )
+        from core import rich
+        from core.ui import styled_button
+        doc = (rich.Doc("📋", "My bots", "Your clone workspace")
+               .status("empty", "No bots yet", "Create your first clone to get started"))
+        markup = InlineKeyboardMarkup([
+            [styled_button("⚡ Create a bot", style="success", callback_data="create_bot")],
+            [styled_button("🔙 Back to menu", style="primary", callback_data="back_menu")],
+        ])
+        await rich.edit(query.message, doc, reply_markup=markup)
         await query.answer()
         return
 
     # Build buttons for each bot
     from filestore.worker_bot.engine import worker_engine
     from filestore.main_bot.plugins.clone_lifecycle import period, status_of
+    from core.ui import styled_button
     buttons = []
     counts = {"🟢": 0, "💤": 0, "🔴": 0}
     for bot in bots:
         bot_id = bot["_id"]
         emoji, _label = status_of(bot, worker_engine.get_worker(bot_id) is not None)
         counts[emoji] += 1
-        buttons.append([InlineKeyboardButton(f"{emoji} @{bot.get('bot_username', 'unknown')}",
-                                             callback_data=f"dashboard_{bot_id}")])
+        username = bot.get("bot_username")
+        if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", username, flags=re.ASCII):
+            username = "unknown"
+        buttons.append([styled_button(f"{emoji} @{username}", style="primary",
+                                      callback_data=f"dashboard_{bot_id}")])
     from core.plans import clone_limit
     max_bots = await clone_limit(query.from_user.id)
+    if _navigation_blocked(user_id, allow_registration=True):
+        return await _busy_notice(query)
     if len(bots) < max_bots:
-        buttons.append([InlineKeyboardButton("⚡ ᴄʀᴇᴀᴛᴇ ᴀɴᴏᴛʜᴇʀ", callback_data="create_bot")])
-    else:   # Bot API 10.3 disabled button – a status chip, not an action
-        buttons.append([InlineKeyboardButton(f"🔒 ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ · {len(bots)}/{max_bots}",
-                                             callback_data="noop:limit")])
-        buttons.append([InlineKeyboardButton("💳 ᴍᴏʀᴇ ʙᴏᴛs · ᴘʟᴀɴs", callback_data="vx_home")])
-    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍᴇɴᴜ", callback_data="back_menu")])
+        buttons.append([styled_button("⚡ Create another", style="success", callback_data="create_bot")])
+    else:   # Disabled status chip; plans remain an explicit action.
+        buttons.append([styled_button(f"🔒 Limit reached · {len(bots)}/{max_bots}", disabled=True)])
+        buttons.append([styled_button("💳 More bots · plans", style="primary", callback_data="vx_home")])
+    buttons.append([styled_button("🔙 Back to menu", style="primary", callback_data="back_menu")])
 
-    summary = " · ".join(f"{k} {v}" for k, v in counts.items() if v)
+    summary = " · ".join(f"{k} {v}" for k, v in counts.items() if v) or "No running clones yet"
     limit = period()
-    note = (f"\n<i>💤 Clones unused for {limit.days} days switch off automatically – tap one to turn it back on.</i>"
+    note = (f"Clones unused for {limit.days} days switch off automatically; open a clone to reactivate it."
             if limit else "")
-    from core.ui import smart_edit
-    await smart_edit(
-        query.message,
-        f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 𝗠𝗬 𝗕𝗢𝗧𝗦  [{len(bots)}/{max_bots if max_bots < 999 else '∞'}]\n"
-        f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-        f"<blockquote>{summary}\nsᴇʟᴇᴄᴛ ᴀ ʙᴏᴛ ᴛᴏ ᴏᴘᴇɴ ɪᴛs ᴅᴀsʜʙᴏᴀʀᴅ:</blockquote>{note}",
-        InlineKeyboardMarkup(buttons),
-    )
+    from core import rich
+    doc = (rich.Doc("📋", "My bots", f"{len(bots)} / {max_bots if max_bots < 999 else '∞'} clones")
+           .status("success" if counts["🟢"] else "info", "Live snapshot", summary)
+           .text("Choose a bot to open its dashboard. Status icons show this process's observation, not a health guarantee."))
+    if note:
+        doc.footer(note)
+    await rich.edit(query.message, doc, InlineKeyboardMarkup(buttons))
     await query.answer()
 
 
 # =============================================================================
 # CALLBACK: Bot Dashboard (main dashboard for a specific bot)
 # =============================================================================
+
+def _dashboard_identity(query):
+    """Only direct human owners in their own private conversation may view it."""
+    user = getattr(query, "from_user", None)
+    chat = getattr(getattr(query, "message", None), "chat", None)
+    uid = getattr(user, "id", None)
+    return (type(uid) is int and 0 < uid < 2**63
+            and getattr(user, "is_bot", None) is False
+            and getattr(chat, "type", None) == enums.ChatType.PRIVATE
+            and getattr(chat, "id", None) == uid)
+
+
+async def _mode_dashboard(query, bot, mode):
+    """Read-only group/unsupported view; existing controls enforce their own rules."""
+    from core.ui import smart_edit
+    bot_id = bot["_id"]
+    name = bot.get("bot_username")
+    name = (name if isinstance(name, str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", name, flags=re.ASCII)
+            else None)
+    saved = bot.get("is_active")
+    state = "Active" if saved is True else "Inactive" if saved is False else "Unknown"
+    if mode == "group":
+        try:
+            from filestore.worker_bot.engine import worker_engine
+            local = "Present" if worker_engine.get_worker(bot_id) is not None else "Not found"
+        except Exception:
+            local = "Unavailable"
+        import config
+        gate = ("Single-instance group profiles are enabled on this process."
+                if config.CLONE_PROFILES_SINGLE_INSTANCE else
+                "Starting group profiles is disabled until the operator verifies a single current worker.")
+        text = ("<b>🛡 ɢʀᴏᴜᴘ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ</b>\n\n"
+                f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
+                f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
+                f"<b>Saved state:</b> {state} · <b>Local client:</b> {local}\n\n"
+                "<b>Get started</b>\n"
+                "① Verify the bot identity, add it to your group and grant the rights it needs.\n"
+                "② Use <code>/gcheck</code> in the group to inspect bot rights, "
+                "then <code>/help</code> for the group guide.\n"
+                "③ Moderation, rules, welcomes, notes and text filters depend on group permissions.\n"
+                f"④ In this private chat, use <code>/clonegroupcheck {bot_id} &lt;group_id&gt;</code> "
+                "for a read-only rights snapshot (you must be a group admin).\n\n"
+                "File Store commands are not served in this mode; existing File Store data is retained. "
+                "Music voice-chat playback is unavailable.\n\n"
+                f"<i>{gate} Local client presence is not a health check or proof of exclusive ownership. "
+                "This view is a snapshot; permissions and state can change.</i>")
+        buttons = []
+        if name:
+            buttons.append([InlineKeyboardButton("➕ Add to group", url=f"https://t.me/{name}?startgroup"),
+                            InlineKeyboardButton("🤖 Open bot", url=f"https://t.me/{name}")])
+        buttons.append([InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")])
+        buttons.append([InlineKeyboardButton("📦 ᴛʀᴀɴsꜰᴇʀ", callback_data=f"transfer_{bot_id}"),
+                        InlineKeyboardButton("🗑 ᴅᴇʟᴇᴛᴇ", callback_data=f"confirm_delete_{bot_id}")])
+        buttons.extend(row for row in [_rotate_row(bot)] if row)
+        if local == "Present" or (local == "Not found" and config.CLONE_PROFILES_SINGLE_INSTANCE is True
+                                  and type(saved) is bool):
+            buttons.append([InlineKeyboardButton("🔴 sᴛᴏᴘ" if local == "Present" else "🟢 sᴛᴀʀᴛ",
+                                                 callback_data=f"toggle_bot_{bot_id}")])
+    else:
+        label = "Music" if mode == "music" else "Unknown / unsupported"
+        if mode == "music":
+            runtime = bot.get("music_runtime_state", "unknown")
+            if runtime not in ("starting", "running", "stopping", "stopped", "uncertain"):
+                runtime = "unknown"
+            if runtime in ("starting", "running", "stopping", "uncertain") and not music_runtime_report_is_fresh(bot):
+                runtime = "stale"
+            desired_label = "on" if saved is True else "off" if saved is False else "unknown"
+            text = ("<b>🎵 ᴍᴜsɪᴄ</b>\n\n"
+                    f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
+                    f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
+                    f"<b>Desired state:</b> {desired_label} · <b>Music worker report:</b> {runtime}\n\n"
+                    "Use the controls below to request start/stop. The dedicated Music clone worker must be deployed; "
+                    "it reconciles these requests about every 10 seconds. The report is only that worker's local observation, "
+                    "not proof about other processes; reports older than two minutes are marked stale, not stopped.\n"
+                    "If you recover to another profile, first confirm no separate Music process still holds this token.\n\n"
+                    "Set up the assistant account (paste a session string or guided login), add the bot to your group, "
+                    "then use <code>/play &lt;song&gt;</code>. Existing File Store data is retained.")
+            state_action = "off" if saved is True else "on"
+            state_label = "⏹ Request Music stop" if state_action == "off" else "▶ Request Music start"
+            buttons = [[InlineKeyboardButton(state_label, callback_data=f"clmusicstate_{bot_id}_{state_action}")],
+                       [InlineKeyboardButton("⚙️ Music defaults", callback_data=f"clmusicsettings_{bot_id}")],
+                       [InlineKeyboardButton("🎵 Set up assistant session", callback_data=f"clmusic_{bot_id}")],
+                       [InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")]]
+            if saved is False and runtime in ("stopped", "unknown", "stale"):
+                label = ("🧯 Recover (stale report; confirm)" if runtime == "stale"
+                         else "🧯 Recover to File Store (confirm)")
+                buttons.append([InlineKeyboardButton(label,
+                                                     callback_data=f"clprofile_recover_{bot_id}_filestore")])
+        else:
+            text = ("<b>🧩 ᴄʟᴏɴᴇ ᴘʀᴏꜰɪʟᴇ</b>\n\n"
+                    f"<b>Bot:</b> {('@' + name) if name else 'Username unavailable'}\n"
+                    f"<b>Bot ID:</b> <code>{bot_id}</code>\n"
+                    f"<b>Saved profile:</b> {label} · <b>Saved state:</b> {state}\n\n"
+                    "This profile cannot be started here. "
+                    "Your existing File Store data has not been removed. "
+                    "Contact the operator before attempting recovery; this view does not check other workers.")
+            buttons = [[InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")]]
+    buttons.append([InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍʏ ʙᴏᴛs", callback_data="my_bots")])
+    await smart_edit(query.message, text, InlineKeyboardMarkup(buttons))
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+
+
+def _next_music_setting_value(setting: str, settings: dict) -> str:
+    if setting == "dj":
+        return "off" if settings.get("dj_mode") else "on"
+    if setting == "autoplay":
+        return "off" if settings.get("autoplay") else "on"
+    if setting == "loop":
+        return {"off": "one", "one": "all", "all": "off"}.get(settings.get("loop_mode"), "off")
+    if setting == "volume":
+        choices = (50, 75, 100, 125, 150, 200)
+        current = settings.get("volume", 100)
+        return str(next((choice for choice in choices if choice > current), choices[0]))
+    choices = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0)
+    current = settings.get("speed", 1.0)
+    return str(next((choice for choice in choices if choice > current), choices[0]))
+
+
+def _music_owner_settings_markup(bot_id: int, settings: dict) -> InlineKeyboardMarkup:
+    targets = {key: _next_music_setting_value(key, settings)
+               for key in ("dj", "autoplay", "loop", "volume", "speed")}
+    target_dj, target_autoplay = targets["dj"], targets["autoplay"]
+    target_loop, target_volume, target_speed = targets["loop"], targets["volume"], targets["speed"]
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"{'✅' if settings.get('dj_mode') else '▫️'} DJ mode",
+            callback_data=f"clmusicsetting_{bot_id}_dj_{target_dj}")],
+        [InlineKeyboardButton(
+            f"{'✅' if settings.get('autoplay') else '▫️'} Autoplay",
+            callback_data=f"clmusicsetting_{bot_id}_autoplay_{target_autoplay}")],
+        [InlineKeyboardButton(
+            f"🔁 Repeat: {settings.get('loop_mode', 'off')}",
+            callback_data=f"clmusicsetting_{bot_id}_loop_{target_loop}")],
+        [InlineKeyboardButton(
+            f"🔊 Default volume: {settings.get('volume', 100)}%",
+            callback_data=f"clmusicsetting_{bot_id}_volume_{target_volume}")],
+        [InlineKeyboardButton(
+            f"🎚 Default speed: {float(settings.get('speed', 1.0)):g}×",
+            callback_data=f"clmusicsetting_{bot_id}_speed_{target_speed}")],
+        [InlineKeyboardButton("🔙 Music dashboard", callback_data=f"dashboard_{bot_id}")],
+    ])
+
+
+async def _music_owner_settings_data(bot_id: int):
+    from filestore.database.mongo import get_db
+    from music_worker.store import MusicWorkerStore
+    store = MusicWorkerStore(get_db())
+    return store, await store.get_settings(bot_id, 0)
+
+
+async def _render_music_owner_settings(query, bot_id: int, settings: dict):
+    from core.ui import smart_edit
+    text = ("<b>⚙️ Music defaults</b>\n\n"
+            f"DJ mode: <b>{'on' if settings.get('dj_mode') else 'off'}</b>\n"
+            f"Autoplay: <b>{'on' if settings.get('autoplay') else 'off'}</b>\n"
+            f"Repeat: <b>{settings.get('loop_mode', 'off')}</b> · "
+            f"Volume: <b>{settings.get('volume', 100)}%</b> · "
+            f"Speed: <b>{float(settings.get('speed', 1.0)):g}×</b>\n\n"
+            "These defaults are saved directly, even while the Music worker is offline. "
+            "They apply to groups without their own override; existing group settings and linked channels are unchanged. "
+            "The running worker reads them on its next settings lookup.")
+    await smart_edit(query.message, text, _music_owner_settings_markup(bot_id, settings))
+
+
+async def _music_settings_owner(query, bot_id: int):
+    if not _dashboard_identity(query) or type(bot_id) is not int or not 0 < bot_id < 2**63:
+        await query.answer("❌ Bot not found or access denied!", show_alert=True)
+        return None
+    try:
+        bot = await main_db.get_bot(bot_id)
+    except Exception:
+        await query.answer("Clone ownership couldn't be checked. Retry from the dashboard.",
+                           show_alert=True)
+        return None
+    if (not bot or bot.get("owner_id") != query.from_user.id
+            or bot.get("is_deleted", False) is not False
+            or bot.get("clone_profile") != "music"):
+        await query.answer("❌ Bot not found or access denied!", show_alert=True)
+        return None
+    return bot
+
+
+@Client.on_callback_query(filters.regex(r"^clmusicsettings_(\d+)$"))
+async def music_owner_settings_panel(client: Client, query: CallbackQuery):
+    match = re.fullmatch(r"clmusicsettings_(\d+)", query.data or "")
+    if not match:
+        return await query.answer("Invalid settings panel.", show_alert=True)
+    bot_id = int(match.group(1))
+    if not await _music_settings_owner(query, bot_id):
+        return
+    try:
+        _, settings = await _music_owner_settings_data(bot_id)
+    except Exception:
+        return await query.answer("Music defaults couldn't be loaded. Retry from the dashboard.",
+                                  show_alert=True)
+    if not await _music_settings_owner(query, bot_id):
+        return
+    await _render_music_owner_settings(query, bot_id, settings)
+    await query.answer()
+
+
+@Client.on_callback_query(filters.regex(
+    r"^clmusicsetting_(\d+)_(dj|autoplay|loop|volume|speed)(?:_([A-Za-z0-9.]+))?$"))
+async def music_owner_setting_toggle(client: Client, query: CallbackQuery):
+    match = re.fullmatch(
+        r"clmusicsetting_(\d+)_(dj|autoplay|loop|volume|speed)(?:_([A-Za-z0-9.]+))?",
+        query.data or "")
+    if not match:
+        return await query.answer("Invalid Music setting.", show_alert=True)
+    bot_id, setting, requested = int(match.group(1)), match.group(2), match.group(3)
+    if not await _music_settings_owner(query, bot_id):
+        return
+    try:
+        _, settings = await _music_owner_settings_data(bot_id)
+        if requested is None:  # accept older dashboard buttons; new ones are idempotent targets
+            requested = _next_music_setting_value(setting, settings)
+        if setting in ("dj", "autoplay"):
+            if requested not in ("on", "off"):
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            key, value = ("dj_mode" if setting == "dj" else "autoplay", requested == "on")
+        elif setting == "loop":
+            if requested not in ("off", "one", "all"):
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            key, value = "loop_mode", requested
+        elif setting == "volume":
+            try:
+                value = int(requested)
+            except ValueError:
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            if value not in (50, 75, 100, 125, 150, 200):
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            key = "volume"
+        else:
+            try:
+                value = float(requested)
+            except ValueError:
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            if value not in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0):
+                return await query.answer("Invalid Music setting value.", show_alert=True)
+            key = "speed"
+        saved = await main_db.update_music_settings_defaults(
+            bot_id, query.from_user.id, {key: value})
+        if not saved:
+            return await query.answer("Clone ownership/profile changed. Refresh before trying again.",
+                                      show_alert=True)
+        if not await _music_settings_owner(query, bot_id):
+            return
+        _, settings = await _music_owner_settings_data(bot_id)
+    except Exception:
+        return await query.answer("Music default couldn't be saved. Refresh before trying again.",
+                                  show_alert=True)
+    await _render_music_owner_settings(query, bot_id, settings)
+    await query.answer("Saved; per-group overrides are unchanged.")
+
 
 @Client.on_callback_query(filters.regex(r"^dashboard_(\d+)$"))
 async def dashboard_callback(client: Client, query: CallbackQuery):
@@ -114,16 +392,47 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
         return
 
     bot_id = int(match.group(1))
+    if not _dashboard_identity(query) or not 0 < bot_id < 2**63:
+        return await query.answer("❌ Bot not found or access denied!", show_alert=True)
     user_id = query.from_user.id
 
-    from filestore.main_bot.plugins.create_bot import _creation_state
-    _creation_state.pop(user_id, None)
+    if _navigation_blocked(user_id):
+        return await _busy_notice(query)
 
     # Verify ownership
     bot = await main_db.get_bot(bot_id)
-    if not bot or bot["owner_id"] != user_id:
+    if _navigation_blocked(user_id):
+        return await _busy_notice(query)
+    if (not bot or not valid_registry_id(bot.get("_id")) or bot["_id"] != bot_id
+            or not valid_registry_id(bot.get("owner_id")) or bot["owner_id"] != user_id
+            or bot.get("is_deleted", False) is not False):
         await query.answer("❌ Bot not found or access denied!", show_alert=True)
         return
+
+    if bot.get("music_setup_pending") is True:
+        name = bot.get("bot_username")
+        safe_name = (name if isinstance(name, str)
+                     and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", name, flags=re.ASCII)
+                     else None)
+        text = ("<b>🎵 Music setup pending</b>\n\n"
+                f"<b>Bot:</b> {('@' + safe_name) if safe_name else 'Username unavailable'}\n"
+                f"<b>Bot ID:</b> <code>{bot_id}</code>\n\n"
+                "This clone is safely paused until an assistant account session is saved. "
+                "Its Music profile will only be selected after encrypted session storage succeeds. "
+                "The Music clone worker will load it on its next sync.")
+        buttons = [[InlineKeyboardButton("🎵 Set up assistant session", callback_data=f"clmusic_{bot_id}")],
+                   [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍʏ ʙᴏᴛs", callback_data="my_bots")]]
+        from core.ui import smart_edit
+        await smart_edit(query.message, text, InlineKeyboardMarkup(buttons))
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        return
+
+    mode = bot.get("clone_profile", "filestore")
+    if mode != "filestore":
+        return await _mode_dashboard(query, bot, mode)
 
     from filestore.worker_bot.engine import worker_engine
     is_live = worker_engine.get_worker(bot_id) is not None
@@ -143,32 +452,33 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
     username = bot.get("bot_username", "unknown")
     channel = bot.get("log_channel_id", "Not set")
 
-    # Get settings summary
-    settings = bot.get("settings", {})
-    shortener = bot.get("shortener", {})
+    # Render registry details as structured, escaped Richgram values. Stored
+    # settings are operator/user data: never interpolate them as raw HTML.
+    settings = bot.get("settings")
+    settings = settings if isinstance(settings, dict) else {}
+    shortener = bot.get("shortener")
+    shortener = shortener if isinstance(shortener, dict) else {}
     auto_del = settings.get("auto_delete_time", 0)
-    auto_del_text = f"{auto_del}s" if auto_del > 0 else "ᴅɪsᴀʙʟᴇᴅ"
-    shortener_status = "✅" if shortener.get("enabled") else "❌"
-    protect_status = "✅ ᴏɴ" if settings.get("protect_content") else "❌ ᴏꜰꜰ"
-    perm_link_status = "✅ ᴏɴ" if settings.get("permanent_link") else "❌ ᴏꜰꜰ"
-    maint_status = "🛠 ᴏɴ" if settings.get("maintenance_mode") else "❌ ᴏꜰꜰ"
+    auto_del_text = f"{auto_del}s" if isinstance(auto_del, (int, float)) and auto_del > 0 else "Disabled"
+    shortener_status = "Enabled" if shortener.get("enabled") is True else "Disabled"
+    protect_status = "On" if settings.get("protect_content") is True else "Off"
+    perm_link_status = "On" if settings.get("permanent_link") is True else "Off"
+    maint_status = "On" if settings.get("maintenance_mode") is True else "Off"
 
-    text = (
-        f"<b>━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚙️ 𝗕𝗢𝗧 𝗗𝗔𝗦𝗛𝗕𝗢𝗔𝗥𝗗\n"
-        f"━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
-        f"<blockquote>"
-        f"◈ <b>ʙᴏᴛ:</b> @{username}\n"
-        f"◈ <b>sᴛᴀᴛᴜs:</b> {status}\n"
-        f"{activity_line}"
-        f"◈ <b>ᴄʜᴀɴɴᴇʟ:</b> <code>{channel}</code>\n"
-        f"◈ <b>ᴀᴜᴛᴏ-ᴅᴇʟ:</b> {auto_del_text}\n"
-        f"◈ <b>sʜᴏʀᴛᴇɴᴇʀ:</b> {shortener_status}\n"
-        f"◈ <b>ᴘʀᴏᴛᴇᴄᴛɪᴏɴ:</b> {protect_status}\n"
-        f"◈ <b>ᴘᴇʀᴍ ʟɪɴᴋ:</b> {perm_link_status}\n"
-        f"◈ <b>ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ:</b> {maint_status}"
-        f"</blockquote>"
-    )
+    from core import rich
+    dashboard_doc = (rich.Doc("⚙️", "Bot dashboard", "File Store clone · owner controls")
+                     .status("success" if is_live else "warning", "Runtime", status)
+                     .text(activity_line.strip())
+                     .kv_table([
+                         ("Bot", rich.code("@" + str(username))),
+                         ("Log channel", rich.code(channel)),
+                         ("Auto-delete", auto_del_text),
+                         ("Shortener", shortener_status),
+                         ("Content protection", protect_status),
+                         ("Permanent links", perm_link_status),
+                         ("Maintenance", maint_status),
+                     ])
+                     .footer("Local client status is an observation, not a health check or guarantee."))
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -206,6 +516,7 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
             InlineKeyboardButton("📥 ʀᴇsᴛᴏʀᴇ", callback_data=f"restore_bot_{bot_id}"),
             InlineKeyboardButton("🛠 ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ", callback_data=f"toggle_maint_{bot_id}"),
         ],
+        [InlineKeyboardButton("🧩 Bot profile", callback_data=f"clprofile_{bot_id}")],
         [
             InlineKeyboardButton("✨ ᴇxᴛʀᴀs", callback_data=f"xtr_{bot_id}"),
             InlineKeyboardButton("📈 ᴀɴᴀʟʏᴛɪᴄs", callback_data=f"xan_{bot_id}"),
@@ -223,8 +534,7 @@ async def dashboard_callback(client: Client, query: CallbackQuery):
         [InlineKeyboardButton("🔙 ʙᴀᴄᴋ ᴛᴏ ᴍʏ ʙᴏᴛs", callback_data="my_bots")],
     ])
 
-    from core.ui import smart_edit   # coloured buttons through the Bot API when available
-    await smart_edit(query.message, text, keyboard)
+    await rich.edit(query.message, dashboard_doc, keyboard)
 
     try:
         await query.answer()
@@ -249,13 +559,43 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
         await query.answer("❌ Access denied!", show_alert=True)
         return
 
+    if bot.get("clone_profile") == "music":
+        if not _dashboard_identity(query):
+            return await query.answer("❌ Bot not found or access denied!", show_alert=True)
+        # Old dashboard buttons can outlive the Music panel. Never try to start
+        # a Music profile through the File Store engine; persist desired state
+        # for the separate Music clone reconciler instead.
+        desired = bot.get("is_active") is not True
+        if desired and (not isinstance(bot.get("music_session_encrypted"), str)
+                        or not bot["music_session_encrypted"].startswith("enc:")):
+            return await query.answer("Save an encrypted assistant session before starting Music.",
+                                      show_alert=True)
+        try:
+            await main_db.set_profile_active(bot_id, user_id, "music", desired)
+        except Exception:
+            return await query.answer("Music state request could not be confirmed. Reopen the dashboard.",
+                                      show_alert=True)
+        current = await main_db.get_bot(bot_id)
+        if (not current or current.get("clone_profile") != "music"
+                or current.get("is_active") is not desired):
+            return await query.answer("Music state changed. Reopen the dashboard.", show_alert=True)
+        await query.answer("Music start requested." if desired else "Music stop requested.")
+        return await _mode_dashboard(query, current, "music")
+
     from filestore.worker_bot.engine import worker_engine
     is_live = worker_engine.get_worker(bot_id) is not None
 
     if is_live:
         # Answer immediately before slow stop
         await query.answer("🔴 sᴛᴏᴘᴘɪɴɢ...", show_alert=False)
-        await worker_engine.stop_worker(bot_id)
+        stopped = await worker_engine.stop_worker(bot_id)
+        if stopped is False:
+            from core.ui import smart_edit
+            return await smart_edit(query.message,
+                                    "<b>⚠️ Stop could not be confirmed.</b>\n\n"
+                                    "The bot may still be running. Profile changes are blocked; "
+                                    "contact the operator before taking further action.",
+                                    InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")]]))
         await main_db.set_bot_active(bot_id, False)
         await _clone_log(client, "CloneStopped", query.from_user, bot)
     else:
@@ -266,10 +606,15 @@ async def toggle_bot_callback(client: Client, query: CallbackQuery):
             await worker_engine.start_worker(bot_doc)
             await main_db.set_bot_active(bot_id, True)
             await _clone_log(client, "CloneStarted", query.from_user, bot)
-        except Exception as e:
-            import html
-            log.error(f"Failed to start bot {bot_id}: {e}")
-            await _clone_log(client, "CloneFailed", query.from_user, bot, f"<b>❌ Error:</b> <code>{html.escape(str(e))[:200]}</code>")
+        except Exception:
+            # Client/Telegram errors may contain credentials; do not echo them.
+            log.error("Failed to start clone %s.", bot_id)
+            await _clone_log(client, "CloneFailed", query.from_user, bot, "<b>❌ Start could not be confirmed.</b>")
+            from core.ui import smart_edit
+            return await smart_edit(query.message,
+                                    "<b>⚠️ Start could not be confirmed.</b>\n\n"
+                                    "Check the dashboard and contact the operator before retrying.",
+                                    InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Dashboard", callback_data=f"dashboard_{bot_id}")]]))
 
     # Refresh dashboard
     await dashboard_callback(client, query)
@@ -800,15 +1145,11 @@ async def backup_bot_callback(client: Client, query: CallbackQuery):
     from filestore.database.worker_db import WorkerDB
     wdb = WorkerDB(bot_id)
     try:
-        admins = await wdb.get_all_admins()
-        channels = await wdb.show_channels()
-        users = await wdb.total_users()
-        banned = await wdb.get_ban_users()
         backup["counts"] = {
-            "admins": len(admins),
-            "fsub_channels": len(channels),
-            "users": users,
-            "banned": len(banned),
+            "admins": await wdb.total_admins(),
+            "fsub_channels": await wdb.total_channels(),
+            "users": await wdb.total_users(),
+            "banned": await wdb.total_banned(),
         }
     except Exception:
         backup["counts"] = {}

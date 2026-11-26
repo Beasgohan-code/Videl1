@@ -1,0 +1,78 @@
+Auth: |
+  <b>Auth Users များသည် Group တွင် Admin မဟုတ်ဘဲ Music Admin Command များကို အသုံးပြုနိုင်သည်။</b>
+
+  <b>✧ {0}</b> [Username] - Group ၏ AUTH LIST ထဲသို့ ထည့်သွင်းရန်။
+  <b>✧ {1}</b> [Username] - Group ၏ AUTH LIST မှ ဖယ်ရှားရန်။
+  <b>✧ {2}</b> - Group ၏ AUTH LIST စာရင်းကြည့်ရန်။
+
+Admin: |
+  <b>c သည် Channel Play အတွက် ဖြစ်သည်</b>
+
+  <b>✧ {0}</b> - ဖွင့်နေသော သီချင်းကို ခေတ္တရပ်ရန်။
+  <b>✧ {1}</b> - ရပ်ထားသော သီချင်းကို ပြန်ဖွင့်ရန်။
+  <b>✧ {2}</b> - Voice Chat အသံပိတ်ရန်။
+  <b>✧ {3}</b> - Voice Chat အသံပြန်ဖွင့်ရန်။
+  <b>✧ {4}</b> - နောက်သီချင်းသို့ ကျော်ရန်။
+  <b>✧ {5}</b> - သီချင်းရပ်ပြီး Voice Chat မှ ထွက်ရန်။
+  <b>✧ {6}</b> - Queue ထဲမှ သီချင်းများကို Shuffle လုပ်ရန်။
+  <b>✧ {7}</b> - သီချင်းအချိန် ရှေ့သို့ရွှေ့ရန်။
+  <b>✧ {8}</b> - သီချင်းအချိန် နောက်သို့ရွှေ့ရန်။
+  <b>✧ {9}</b> - Group အတွက် Bot ကို Reboot လုပ်ရန်။
+  <b>✧ {10}</b> [Enable/Disable သို့မဟုတ် 1-10] - သီချင်းကို ထပ်ခါတလဲလဲ Loop ဖွင့်ရန်။
+
+Active: |
+  <b>✧ {0}</b> - Bot တွင် ဖွင့်နေသော Voice Chat များ စစ်ဆေးရန်။
+  <b>✧ {1}</b> - ဖွင့်နေသော Voice နှင့် Video Call များ စစ်ဆေးရန်။
+  <b>✧ {2}</b> - ဖွင့်နေသော Video Call များ စစ်ဆေးရန်။
+  <b>✧ {3}</b> - Bot စနစ်အချက်အလက် (Stats) ကြည့်ရန်။
+
+Play: |
+  <b>✧ {0}</b> - Voice Chat တွင် သီချင်း သို့မဟုတ် ဗီဒီယို ဖွင့်ရန်။
+  <b>✧ {1}</b> - Queue မပျက်စေဘဲ ရှာဖွေသော သီချင်းကို ချက်ချင်းဖွင့်ရန် (Force Play)။
+  <b>✧ {2}</b> - Channel နှင့် ချိတ်ဆက်ပြီး Channel Voice Chat တွင် သီချင်းဖွင့်ရန်။
+  <b>✧ {3}</b> - Direct URL သို့မဟုတ် m3u8 လင့်ခ်များကို တိုက်ရိုက် Stream လုပ်ရန်။
+
+G-cast: |
+  <b>{0} [မက်ဆေ့ချ် သို့မဟုတ် Reply]</b> » Group/User များသို့ Broadcast ပို့ရန်။
+  <u>Modes:</u> <code>-pin</code>, <code>-pinloud</code>, <code>-user</code>, <code>-assistant</code>, <code>-nobot</code>
+
+Bot: |
+  <b>★ {0}</b> - Top 10 Tracks, Users နှင့် Chats Global Stats ကြည့်ရန်။
+  <b>★ {1}</b> - Bot ၏ Sudo Users စာရင်းကြည့်ရန်။
+  <b>★ {2} [သီချင်းအမည်]</b> - သီချင်းစာသား (Lyrics) ရှာဖွေရန်။
+  <b>★ {3} [သီချင်းအမည်/YouTube Link]</b> - MP3/MP4 ဒေါင်းလုဒ်ဆွဲရန်။
+  <b>★ {4}</b> - လက်ရှိ Queue စာရင်းကြည့်ရန်။
+  <b>✧ {5} [CHAT_ID]</b> - Private Mode တွင် Group ခွင့်ပြုရန်။
+  <b>✧ {6} [CHAT_ID]</b> - Group ခွင့်ပြုချက် ပယ်ဖျက်ရန်။
+  <b>✧ {7}</b> - ခွင့်ပြုထားသော Group များ စစ်ဆေးရန်။
+
+P-List: |
+  <b>{0}</b> - သိမ်းထားသော Playlist စာရင်းကြည့်ရန်။
+  <b>{1}</b> - Playlist ထဲမှ သီချင်းဖျက်ရန်။
+  <b>{2}</b> - Playlist ကို **Audio** ဖြင့် ဖွင့်ရန်။
+  <b>{3}</b> - Playlist ကို **Video** ဖြင့် ဖွင့်ရန်။
+
+B-list: |
+  <b>✧ {0}</b> [chat ID] - Group ကို Blacklist လုပ်ရန်။
+  <b>✧ {1}</b> [chat ID] - Blacklist Group ကို Whitelist ပြန်လုပ်ရန်။
+  <b>✧ {2}</b> - Blacklisted Groups စာရင်းကြည့်ရန်။
+  <b>✧ {3}</b> [User] - User ကို Block လုပ်ရန်။
+  <b>✧ {4}</b> [User] - User ကို Unblock လုပ်ရန်။
+  <b>✧ {5}</b> - Blocked Users စာရင်းကြည့်ရန်။
+  <b>✧ {6}</b> [User] - User ကို Global Ban (Gban) လုပ်ရန်။
+  <b>✧ {7}</b> [User] - User ကို Ungban လုပ်ရန်။
+  <b>✧ {8}</b> - Gbanned Users စာရင်းကြည့်ရန်။
+
+Dev: |
+  <b>{0}</b> - Sudo User ထည့်ရန်။
+  <b>{1}</b> - Sudo User ဖယ်ရှားရန်။
+  <b>{2}</b> - Sudo Users စာရင်းကြည့်ရန်။
+  <b>{3}</b> - Heroku Dyno Usage ကြည့်ရန်။
+  <b>{4}</b> / <b>{5}</b> / <b>{6}</b> - Config Vars ကြည့်ရန်/ဖျက်ရန်/ပြင်ရန်။
+  <b>{7}</b> - Bot Restart လုပ်ရန်။
+  <b>{8}</b> - Bot Update လုပ်ရန်။
+  <b>{9}</b> - Server Speedtest စစ်ရန်။
+  <b>{10}</b> - Maintenance Mode ဖွင့်/ပိတ်ရန်။
+  <b>{11}</b> - Logger ဖွင့်/ပိတ်ရန်။
+  <b>{12}</b> - Server Logs ရယူရန်။
+  <b>{13}</b> - Auto-End Stream ဖွင့်/ပိတ်ရန်။

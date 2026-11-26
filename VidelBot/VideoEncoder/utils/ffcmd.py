@@ -237,20 +237,6 @@ def target_video_kbps(target_mb: int, duration: float, a_kbps: int) -> int:
     return max(150, int(total_kbit / duration - a_kbps))
 
 
-def estimate_size(s: dict, info: dict) -> int:
-    """Very rough output size in bytes (shown before / during an encode)."""
-    d = info.get("duration") or 0
-    if not d:
-        return 0
-    if s.get("mode") == "size" and s.get("target_mb"):
-        return int(s["target_mb"] * 1024 * 1024)
-    h = RESOLUTIONS.get(str(s["resolution"])) or info.get("height") or 720
-    h = min(h, info.get("height") or h)
-    base = {480: 700, 576: 900, 720: 1400, 1080: 2800}.get(h, int(h * 2.2))     # kbps at crf 23 (x264)
-    kbps = base * {"av1": 0.5, "hevc": 0.6, "h264": 1.0}[video_codec(s)] * (0.89 ** (s["crf"] - 23))
-    return int((kbps + audio_kbps(s, info)) * 1000 / 8 * d)
-
-
 # ─────────────────────────── command ───────────────────────────
 def output_ext(s: dict) -> str:
     ext = {"MP4": ".mp4", "AVI": ".avi"}.get(str(s["extensions"]).upper(), ".mkv")
@@ -652,6 +638,22 @@ def screenshot_command(src: str, out: str, at: float, width: int = 1280) -> list
             "-frames:v", "1", "-vf", f"scale='min({width},iw)':-2", "-q:v", "3", out]
 
 
+def screenshots_command(src: str, outs: list, times: list, width: int = 1280) -> list:
+    """One ffmpeg process for every screenshot (fast input seeking per timestamp).
+
+    Each output maps its own input's video stream, so the job registry still sees a
+    single cancellable/pausable subprocess instead of many sequential ones.
+    """
+    if len(outs) != len(times):
+        raise ValueError("outs and times must have the same length")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+    for at in times:
+        cmd += ["-ss", f"{float(at):.2f}", "-i", src]
+    for i, out in enumerate(outs):
+        cmd += ["-map", f"{i}:v", "-frames:v", "1", "-vf", f"scale='min({width},iw)':-2", "-q:v", "3", out]
+    return cmd
+
+
 def sample_window(duration: float, length: int = 30) -> tuple:
     """(start, length) – a clip from the middle of the video."""
     length = max(5, min(120, int(length)))
@@ -710,12 +712,12 @@ def parse_timestamp(text: str) -> float | None:
         parts = [float(p) for p in text.split(":")]
     except ValueError:
         return None
-    if len(parts) > 3 or any(p < 0 for p in parts):
+    if len(parts) > 3 or any(not math.isfinite(p) or p < 0 for p in parts):
         return None
     sec = 0.0
     for p in parts:
         sec = sec * 60 + p
-    return sec
+    return sec if math.isfinite(sec) else None
 
 
 def fmt_ts(sec: float) -> str:
@@ -749,10 +751,6 @@ def describe(s: dict) -> dict:
                                                 ("Metadata", s["metadata"])) if on) or "Off",
         "rate": ("2-pass" if s["twopass"] and s["mode"] == "size" else "1-pass"),
     }
-
-
-def ceil_div(a, b):
-    return int(math.ceil(a / b)) if b else 0
 
 
 # ─────────────────────────── Phase 15 tools ───────────────────────────

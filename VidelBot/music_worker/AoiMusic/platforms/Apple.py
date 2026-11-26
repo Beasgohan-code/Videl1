@@ -1,0 +1,78 @@
+
+#
+
+import asyncio
+import re
+
+import aiohttp
+from bs4 import BeautifulSoup
+from py_yt import VideosSearch
+
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+
+
+class Apple:
+    def __init__(self):
+        self.regex = r"^(https:\/\/music.apple.com\/)(.*)$"
+        self.base = "https://music.apple.com/in/playlist/"
+
+    async def valid(self, link: str):
+        if re.search(self.regex, link):
+            return True
+        else:
+            return False
+
+    async def track(self, url, playid: bool | str = None):
+        if playid:
+            url = self.base + url
+        async with aiohttp.ClientSession(headers={"User-Agent": UA}) as session:
+            async with session.get(url, allow_redirects=True) as response:
+                if response.status != 200:
+                    return False
+                html = await response.text()
+        soup = BeautifulSoup(html, "html.parser")
+        search = None
+        for tag in soup.find_all("meta"):
+            if tag.get("property", None) == "og:title":
+                search = tag.get("content", None)
+        if search is None:
+            return False
+        results = VideosSearch(search, limit=1)
+        payload = await asyncio.wait_for(results.next(), 15)
+        for result in payload["result"]:
+            title = result["title"]
+            ytlink = result["link"]
+            vidid = result["id"]
+            duration_min = result["duration"]
+            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
+        track_details = {
+            "title": title,
+            "link": ytlink,
+            "vidid": vidid,
+            "duration_min": duration_min,
+            "thumb": thumbnail,
+        }
+        return track_details, vidid
+
+    async def playlist(self, url, playid: bool | str = None):
+        if playid:
+            url = self.base + url
+        playlist_id = url.split("playlist/")[1]
+        async with aiohttp.ClientSession(headers={"User-Agent": UA}) as session:
+            async with session.get(url, allow_redirects=True) as response:
+                if response.status != 200:
+                    return False
+                html = await response.text()
+        soup = BeautifulSoup(html, "html.parser")
+        applelinks = soup.find_all("meta", attrs={"property": "music:song"})
+        results = []
+        for item in applelinks:
+            content = item.get("content", "")
+            match = re.search(r"music\.apple\.com/[^/]+/(?:song|album|playlist)/([^/]+)/", content)
+            if match:
+                results.append(match.group(1).replace("-", " "))
+        return results, playlist_id

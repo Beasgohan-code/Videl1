@@ -481,7 +481,6 @@ def test_encode_keeps_audio_when_probe_fails(monkeypatch, tmp_path):
         captured["cmd"] = cmd
         raise Stop
 
-    monkeypatch.setattr(encoding, "get_codec", lambda *a, **k: [])   # ffprobe unavailable / failed
     monkeypatch.setattr(encoding.asyncio, "create_subprocess_exec", fake_exec)
     with pytest.raises(Stop):
         run(encoding.encode(str(src), Msg("/dl", uid=5), Msg("s", uid=5)))

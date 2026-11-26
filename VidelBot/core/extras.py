@@ -337,6 +337,12 @@ _FLAGS = [
 ]
 
 
+def _mode_flag(me, field):
+    """Telegram reports capabilities; they are not proof of runtime handling."""
+    value = getattr(me, field, None)
+    return "Enabled" if value is True else "Disabled" if value is False else "Unknown"
+
+
 @Client.on_message(filters.command(["botapi", "aiogram"]) & filters.user(OWNERS))
 async def botapi_cmd(client: Client, message: Message):
     from client import runtime_stack
@@ -371,6 +377,11 @@ async def botapi_cmd(client: Client, message: Message):
         f"<b>getMe latency:</b> <code>{ms:.0f} ms</code>\n"
         f"<b>Stars balance:</b> <code>{bal if bal is not None else '?'}</code> ⭐</blockquote>\n"
         f"<b>Capabilities</b>\n<blockquote>{flags}</blockquote>\n"
+        "<b>BotFather modes · last available getMe</b>\n<blockquote>"
+        f"Bot Management: <b>{_mode_flag(me, 'can_manage_bots')}</b>\n"
+        f"Guest Mode: <b>{_mode_flag(me, 'supports_guest_queries')}</b>\n"
+        f"Guard Mode: <b>{_mode_flag(me, 'supports_join_request_queries')}</b>\n"
+        "These flags do not prove update delivery. Guest replies are fixed introductions; Guardian queries are sent to the manual-review queue when enabled, if confirmed.</blockquote>\n"
         "<b>Features</b>\n<blockquote>"
         f"{'✅' if COLORED_BUTTONS else '▫️'} Coloured buttons (Bot API + WzGram ButtonStyle)\n"
         f"{'✅' if EPHEMERAL_REPLIES else '▫️'} Ephemeral group replies\n"

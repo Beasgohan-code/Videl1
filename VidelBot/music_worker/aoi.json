@@ -1,0 +1,49 @@
+{
+  "name": "videl-music-worker",
+  "description": "Dedicated Videl clone worker for the Music profile; reconciles active clones from the shared registry.",
+  "branch": "main",
+  "start_command": "MUSIC_CLONE_WORKER=1 python3 -m music_worker",
+  "requirements_file": "requirements.txt",
+  "buildpacks": [
+    "python",
+    "ffmpeg",
+    "gcc"
+  ],
+  "recommended_ram": 1024,
+  "env": {
+    "API_ID": {
+      "description": "Same Telegram API ID configured for Videl",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Same Telegram API hash configured for Videl",
+      "required": true,
+      "secret": true
+    },
+    "MONGO_URI": {
+      "description": "Same MongoDB URI/database used by Videl clone registry",
+      "required": true,
+      "secret": true
+    },
+    "ENCRYPTION_KEY": {
+      "description": "Same Fernet key Videl uses to decrypt clone tokens and assistant sessions",
+      "required": true,
+      "secret": true
+    },
+    "CLONE_PROFILES_SINGLE_INSTANCE": {
+      "description": "Must be true only when clone worker deployment is configured as a single instance",
+      "value": "True",
+      "required": true
+    },
+    "MUSIC_CLONE_WORKER": {
+      "description": "Fail-closed operator acknowledgement for the single Music worker process",
+      "value": "1",
+      "required": true
+    },
+    "MUSIC_WORKER_SYNC_SECONDS": {
+      "description": "Desired-state reconciliation interval (2-300 seconds)",
+      "value": "10",
+      "required": false
+    }
+  }
+}

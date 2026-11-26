@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+export MUSIC_CLONE_WORKER=1
+exec python3 -m music_worker

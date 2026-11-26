@@ -37,7 +37,7 @@ const base=process.env.NEXT_PREVIEW_TEST_URL||'http://localhost:3001/next-previe
    await page.getByLabel('Choose files to upload').setInputFiles({name:'fixture.txt',mimeType:'text/plain',buffer:Buffer.from('synthetic')});
    await page.getByRole('heading',{name:'fixture.txt'}).waitFor();
    let file=page.locator('article').filter({has:page.getByRole('heading',{name:'fixture.txt'})});
-   await file.getByRole('button',{name:'Rename'}).click();await file.getByLabel('New filename').fill('renamed.txt');await file.getByRole('button',{name:'Save filename'}).click();
+   await file.getByRole('button',{name:'Rename fixture.txt'}).click();await file.getByLabel('New filename').fill('renamed.txt');await file.getByRole('button',{name:'Save filename'}).click();
    await page.getByRole('heading',{name:'renamed.txt'}).waitFor();file=page.locator('article').filter({has:page.getByRole('heading',{name:'renamed.txt'})});
    await file.getByRole('button',{name:'Trash'}).click();await file.getByRole('button',{name:'Confirm trash'}).click();await file.getByText('In trash',{exact:false}).waitFor();
    await file.getByRole('button',{name:'Restore'}).click();await file.getByText('Active record',{exact:false}).waitFor();

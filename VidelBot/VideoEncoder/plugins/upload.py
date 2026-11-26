@@ -8,7 +8,7 @@ from pyrogram import Client, filters
 from pyrogram.errors.exceptions.bad_request_400 import MessageIdInvalid
 
 from .. import download_dir, encode_dir
-from ..utils.encoding import get_duration, get_thumbnail, get_width_height
+from ..utils.encoding import get_thumbnail, media_metadata
 from ..utils.helper import check_chat
 from ..utils.uploads.drive import DriveNotConfiguredError
 from ..utils.uploads.drive.upload import Uploader
@@ -72,11 +72,8 @@ async def videoupload(client, message):
     if _is_forbidden_upload_target(file):
         await message.reply_text("⚠️ Uploading credential or system files is blocked.")
         return
-    # ffprobe / ffmpeg block – keep them off the event loop
-    duration, (width, height) = await asyncio.gather(
-        asyncio.to_thread(get_duration, file),
-        asyncio.to_thread(get_width_height, file),
-    )
+    # One cached ffprobe for duration + dimensions; ffmpeg stays off the loop.
+    duration, width, height = await media_metadata(file)
     thumb = await asyncio.to_thread(get_thumbnail, file, download_dir, (duration or 0) / 4)
     reply = await message.reply_text(f"📤 Uploading <code>{html.escape(filename)}</code>…")
     try:

@@ -101,13 +101,13 @@ def test_second_copy_waits_until_the_first_releases(monkeypatch):
         instance.ME = "B"
         return await asyncio.wait_for(waiter, 5)
     assert run(scenario()) >= 0.05
-    assert run(col.find_one({"_id": instance.LOCK_ID}))["owner"] == "B"
+    assert run(col.find_one({"_id": instance._lock_id()}))["owner"] == "B"
 
 
 def test_an_expired_lease_is_taken_over_and_the_old_copy_notices(monkeypatch):
     from datetime import datetime, timedelta
     col = _col()
-    run(col.insert_one({"_id": instance.LOCK_ID, "owner": "old", "until": datetime.utcnow() - timedelta(seconds=1)}))
+    run(col.insert_one({"_id": instance._lock_id(), "owner": "old", "until": datetime.utcnow() - timedelta(seconds=1)}))
     monkeypatch.setattr(instance, "ME", "new")
     assert run(instance.try_acquire(col))
     monkeypatch.setattr(instance, "ME", "old")
@@ -453,3 +453,104 @@ def test_new_settings_are_documented():
     for key in ("SINGLE_INSTANCE=", "SOURCE_CACHE_MIN=", "SOURCE_CACHE_GB="):
         assert key in sample
     assert ffcmd.DEFAULTS["size_guard"] is True
+
+
+def test_stale_heartbeat_allows_takeover_before_expiry(monkeypatch):
+    from datetime import datetime, timedelta
+    col = _col()
+    now = datetime.utcnow()
+    # Frozen old copy: lease still "valid" for minutes, but no heartbeat.
+    run(col.insert_one({"_id": instance._lock_id(), "owner": "frozen",
+                        "until": now + timedelta(seconds=300),
+                        "beat": now - timedelta(seconds=instance.STALE + 5)}))
+    monkeypatch.setattr(instance, "ME", "new")
+    assert run(instance.try_acquire(col)) is True
+    assert run(col.find_one({"_id": instance._lock_id()}))["owner"] == "new"
+
+    # Live owner (fresh heartbeat) cannot be taken over early.
+    run(col.update_one({"_id": instance._lock_id()},
+                       {"$set": {"owner": "alive", "beat": datetime.utcnow()}}))
+    monkeypatch.setattr(instance, "ME", "other")
+    assert run(instance.try_acquire(col)) is False
+
+
+def test_startup_grace_protects_a_slow_starting_owner(monkeypatch):
+    from datetime import datetime, timedelta
+    col = _col()
+    now = datetime.utcnow()
+    # Owner took over 30s ago, then its event loop froze importing plugins:
+    # heartbeat is stale, but it is inside the startup grace window.
+    run(col.insert_one({"_id": instance._lock_id(), "owner": "starting",
+                        "until": now + timedelta(seconds=300),
+                        "beat": now - timedelta(seconds=instance.STALE + 10),
+                        "since": now - timedelta(seconds=30)}))
+    monkeypatch.setattr(instance, "ME", "rival")
+    assert run(instance.try_acquire(col)) is False
+
+    # Same stale heartbeat, but the owner took over long ago → frozen/dead.
+    run(col.update_one({"_id": instance._lock_id()},
+                       {"$set": {"since": now - timedelta(seconds=instance.STARTUP_GRACE + 60)}}))
+    assert run(instance.try_acquire(col)) is True
+
+
+def test_lease_is_scoped_per_bot_token(monkeypatch):
+    import config
+    col = _col()
+    monkeypatch.setattr(instance, "ME", "A")
+    assert run(instance.try_acquire(col)) is True
+    first_doc = run(col.find_one({"_id": instance._lock_id()}))
+    assert first_doc["owner"] == "A"
+
+    # A different bot (different token) on the same Mongo gets its own
+    # lease immediately — it must never wait behind an unrelated bot.
+    monkeypatch.setattr(config, "BOT_TOKEN", "999999:OTHER-BOT")
+    monkeypatch.setattr(instance, "ME", "B")
+    assert instance._lock_id() != instance.LOCK_ID
+    assert run(instance.try_acquire(col)) is True
+    # …while a second copy of THAT bot still has to wait.
+    monkeypatch.setattr(instance, "ME", "C")
+    assert run(instance.try_acquire(col)) is False
+
+
+def test_start_with_retry_backs_off_on_telegram_500(monkeypatch):
+    import asyncio as _asyncio
+    import run as run_module
+    from pyrogram.errors import AuthKeyUnregistered, RpcCallFail
+
+    waits = []
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
+
+    class FlakyApp:
+        def __init__(self, failures):
+            self.calls = 0
+            self._failures = failures
+
+        async def start(self):
+            self.calls += 1
+            if self._failures:
+                self._failures -= 1
+                raise RpcCallFail("telegram internal")
+
+    async def scenario():
+        app = FlakyApp(2)
+        await run_module.start_with_retry(app)
+        assert app.calls == 3
+        dead = FlakyApp(0)
+
+        async def dead_start():
+            raise AuthKeyUnregistered("revoked")
+
+        dead.start = dead_start
+        try:
+            await run_module.start_with_retry(dead)
+        except AuthKeyUnregistered:
+            pass
+        else:
+            raise AssertionError("401 must stay fatal")
+
+    run(scenario())
+    assert waits == [30, 60]  # growing backoff, no crash-loop

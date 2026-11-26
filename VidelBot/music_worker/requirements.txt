@@ -1,0 +1,10 @@
+# Minimal runtime for the clone-aware Music worker; the full VidelBot source
+# tree is included so it can use the existing clone database and security code.
+wzgram==3.1.7
+WarpCrypto==2.1.0
+motor==3.7.1
+cryptography==50.0.1
+python-dotenv==1.2.3
+py-tgcalls==3.0.1
+ntgcalls==3.0.7
+yt-dlp==2026.10.26

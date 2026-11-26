@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1280, initial-scale=1.0" />
+<style>
+  @font-face {
+    font-family: "AoiBold";
+    src: url("{{FONT_BOLD_URI}}");
+  }
+  @font-face {
+    font-family: "AoiReg";
+    src: url("{{FONT_REG_URI}}");
+  }
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  html, body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+    background: #060218;
+    font-family: "AoiReg", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  .card {
+    position: relative;
+    width: 1280px;
+    height: 720px;
+    background: url("{{BASE_IMG_URI}}") center/cover no-repeat;
+  }
+  /* Left rounded square box: Song Thumbnail */
+  .song-thumb {
+    position: absolute;
+    left: 44px;
+    top: 230px;
+    width: 182px;
+    height: 182px;
+    border-radius: 18px;
+    overflow: hidden;
+    border: 2px solid rgba(236, 210, 255, 0.92);
+    box-shadow: 0 0 18px rgba(186, 85, 255, 0.65);
+    background: #14082c;
+  }
+  .song-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  /* Clean dark glass masks covering placeholder text while keeping icons & divider intact */
+  .mask-top {
+    position: absolute;
+    left: 318px;
+    top: 236px;
+    width: 392px;
+    height: 92px;
+    background: linear-gradient(90deg, #09031f 0%, #0d0528 75%, #110631 100%);
+    border-radius: 8px;
+  }
+  .mask-bottom {
+    position: absolute;
+    left: 318px;
+    top: 342px;
+    width: 392px;
+    height: 72px;
+    background: linear-gradient(90deg, #0b0425 0%, #10052e 75%, #140736 100%);
+    border-radius: 8px;
+  }
+  .song-title {
+    position: absolute;
+    left: 326px;
+    top: 242px;
+    width: 382px;
+    font-family: "AoiBold", "AoiReg", sans-serif;
+    font-size: 33px;
+    font-weight: 700;
+    line-height: 1.15;
+    color: #ffffff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 2px 12px rgba(190, 90, 255, 0.45);
+  }
+  .artist-name {
+    position: absolute;
+    left: 326px;
+    top: 292px;
+    width: 382px;
+    font-size: 22px;
+    font-weight: 500;
+    color: #e6d9ff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .meta-duration {
+    position: absolute;
+    left: 326px;
+    top: 348px;
+    width: 382px;
+    font-size: 22px;
+    font-weight: 500;
+    color: #f3ecff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .meta-requester {
+    position: absolute;
+    left: 326px;
+    top: 383px;
+    width: 382px;
+    font-size: 22px;
+    font-weight: 500;
+    color: #f3ecff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .meta-requester .uname {
+    color: #d946ef;
+    font-weight: 700;
+  }
+  /* Progress bar timestamps */
+  .time-left {
+    position: absolute;
+    left: 34px;
+    top: 468px;
+    width: 90px;
+    height: 32px;
+    background: #06021a;
+    color: #ffffff;
+    font-family: "AoiBold", "AoiReg", sans-serif;
+    font-size: 23px;
+    font-weight: 600;
+    line-height: 32px;
+  }
+  .time-right {
+    position: absolute;
+    left: 632px;
+    top: 468px;
+    width: 96px;
+    height: 32px;
+    background: #06021a;
+    color: #ffffff;
+    font-family: "AoiBold", "AoiReg", sans-serif;
+    font-size: 23px;
+    font-weight: 600;
+    line-height: 32px;
+    text-align: right;
+  }
+  /* Right Neon Purple Circle: Bot Profile Photo */
+  .bot-avatar {
+    position: absolute;
+    left: 824px;
+    top: 122px;
+    width: 350px;
+    height: 350px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 3px solid rgba(244, 224, 255, 0.85);
+    box-shadow: inset 0 0 24px rgba(190, 75, 255, 0.45), 0 0 24px rgba(190, 75, 255, 0.55);
+    background: #0b031f;
+  }
+  .bot-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="song-thumb"><img src="{{SONG_THUMB_URI}}" alt="" /></div>
+    <div class="mask-top"></div>
+    <div class="mask-bottom"></div>
+    <div class="song-title">{{TITLE}}</div>
+    <div class="artist-name">{{ARTIST}}</div>
+    <div class="meta-duration">Duration : {{DURATION}}</div>
+    <div class="meta-requester">Requested by : <span class="uname">{{REQUESTER}}</span></div>
+    <div class="time-left">{{ELAPSED}}</div>
+    <div class="time-right">{{DURATION}}</div>
+    <div class="bot-avatar"><img src="{{BOT_AVATAR_URI}}" alt="" /></div>
+  </div>
+</body>
+</html>

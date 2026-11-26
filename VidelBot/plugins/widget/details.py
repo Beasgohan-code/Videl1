@@ -11,6 +11,7 @@ import config
 from pyrogram import enums
 from core import botapi
 from core.plugin_manager import plugin_enabled
+from core.telegram_profile import profile_flag
 from plugins.widget.plugin import _beta_enabled, _primary_bot
 
 log = logging.getLogger("videl.widget.details")
@@ -73,8 +74,8 @@ def user_payload(user):
          _row("Username", "@" + str(username) if username else None),
          _row("Account", "Bot" if is_bot is True else "User" if is_bot is False else None), _row("Last seen", seen)]},
         {"label": "Signals", "rows": [_row("Premium", _flag(getattr(user, "is_premium", None))),
-         _row("Verified", _flag(getattr(user, "is_verified", None))), _row("Scam", _flag(getattr(user, "is_scam", None))),
-         _row("Fake", _flag(getattr(user, "is_fake", None))), _row("Restricted", _flag(getattr(user, "is_restricted", None))) ]},
+         _row("Verified", _flag(profile_flag(user, "is_verified"))), _row("Scam", _flag(profile_flag(user, "is_scam"))),
+         _row("Fake", _flag(profile_flag(user, "is_fake"))), _row("Restricted", _flag(getattr(user, "is_restricted", None))) ]},
         {"label": "Technical", "rows": [_row("Data center", getattr(user, "dc_id", None)),
          _row("Deleted", _flag(getattr(user, "is_deleted", None))),
          _row("Support account", _flag(getattr(user, "is_support", None))),

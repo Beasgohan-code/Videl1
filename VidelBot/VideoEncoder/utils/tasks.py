@@ -5,15 +5,10 @@ import contextvars
 import html
 import os
 import time
-from datetime import datetime
 from urllib.parse import unquote_plus
 
-from httpx import delete
 from pyrogram.errors.exceptions.bad_request_400 import (MessageIdInvalid,
                                                         MessageNotModified)
-from pyrogram.parser import html as pyrogram_html
-from pyrogram.types import Message
-from requests.utils import unquote
 
 from .. import LOGGER, data, download_dir, video_mimetype
 from .database.access_db import db
@@ -22,7 +17,7 @@ from .display_progress import humanbytes, progress_for_pyrogram
 from .helper import delete_downloads, get_zip_folder, handle_encode, handle_extract, handle_url
 from .uploads.drive import _get_file_id
 from .uploads.drive.download import Downloader
-from .encoding import get_media_streams
+from .encoding import probe
 from ..video_utils.audio_selector import AudioSelect
 
 _DEPTH = contextvars.ContextVar("videl_enc_depth", default=0)
@@ -212,13 +207,26 @@ async def tg_task(message, msg):
     await handle_encode(filepath, message, msg)
 
 
+def parse_sample_args(text):
+    """Sample length in seconds, clamped to the supported 5–120s range; None if invalid."""
+    from .ffcmd import parse_timestamp
+    parts = (text or "").split()[1:]
+    if not parts:
+        return 30
+    if len(parts) != 1:
+        return None
+    length = parse_timestamp(parts[0])
+    if length is None or length <= 0:
+        return None
+    return int(max(5, min(120, length)))
+
+
 async def sample_task(message, msg):
     """/sample [seconds] – encode a short clip from the middle with the current settings."""
-    from .ffcmd import parse_timestamp
-    parts = (message.text or message.caption or "").split()
-    length = 30
-    if len(parts) > 1:
-        length = int(parse_timestamp(parts[1]) or 30)
+    length = parse_sample_args(message.text or message.caption)
+    if length is None:
+        await msg.edit("Usage: <code>/sample [seconds]</code> (5–120 seconds)")
+        return
     filepath = await _download(message, msg)
     if not filepath:
         return
@@ -274,13 +282,26 @@ async def trim_task(message, msg):
     bump_later("tool")
 
 
+def parse_screens_args(text):
+    """Screenshot count, clamped to 1–10; None for malformed input."""
+    parts = (text or "").split()[1:]
+    if not parts:
+        return 6
+    if len(parts) != 1 or not parts[0].isascii() or not parts[0].isdigit():
+        return None
+    digits = parts[0].lstrip("0") or "0"
+    # Avoid converting an arbitrarily long integer supplied in a command.
+    return 10 if len(digits) > 2 else max(1, min(10, int(digits)))
+
+
 async def screens_task(message, msg):
     from pyrogram.types import InputMediaPhoto
     from . import ffcmd
     from .encoding import probe, screenshots
-    parts = (message.text or message.caption or "").split()
-    count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 6
-    count = max(1, min(10, count))
+    count = parse_screens_args(message.text or message.caption)
+    if count is None:
+        await msg.edit("Usage: <code>/screens [count]</code> (1–10 screenshots)")
+        return
     filepath = await _download(message, msg)
     if not filepath:
         return
@@ -304,8 +325,8 @@ async def af_task(message, msg):
     if not filepath:
         return
 
-    # Probe for streams
-    streams = await asyncio.to_thread(get_media_streams, filepath)
+    # Reuse the cached probe summary for audio streams (no extra ffprobe here).
+    streams = (await probe(filepath)).get("audio") or []
     if not streams:
          await msg.edit("Could not retrieve media streams.")
          return
@@ -551,7 +572,7 @@ async def mux_task(message, msg):
         return
     kind = extra.get("kind") or ffcmd.track_kind(track) or "sub"
     await msg.edit(f"<b>🧩 Adding the {'subtitle' if kind == 'sub' else 'audio'} track…</b>")
-    info, tinfo = await probe(video), await probe(track)
+    info, tinfo = await asyncio.gather(probe(video), probe(track))
     t_codec = ((tinfo.get("audio") or [{}])[0]).get("codec_name", "") if kind == "audio" else ""
     base = os.path.splitext(os.path.basename(video))[0]
     out = os.path.join(enc, base + ".muxed" + ffcmd.mux_ext(video))
@@ -570,7 +591,7 @@ async def mux_task(message, msg):
 async def merge_task(message, msg):
     """/merge – join 2-10 videos (lossless when they match, otherwise normalised to the first one)."""
     from . import ffcmd, scheduler
-    from .encoding import probe, run_ffmpeg
+    from .encoding import probe_many, run_ffmpeg
     parts = scheduler.extra_of(message).get("parts") or []
     dl, enc = _dirs(message)
     paths = []
@@ -585,7 +606,7 @@ async def merge_task(message, msg):
     if len(paths) < 2:
         await msg.edit("❌ <b>Need at least 2 videos to merge</b> – some files were deleted.")
         return
-    infos = [await probe(p) for p in paths]
+    infos = await probe_many(paths)
     base = os.path.splitext(os.path.basename(paths[0]))[0]
     lossless = ffcmd.can_concat_copy(infos)
     if lossless:

@@ -27,6 +27,7 @@ class Engine:
     async def stop_worker(self, bot_id):
         self.stopped.append(bot_id)
         self.workers.pop(bot_id, None)
+        return True
 
     async def start_worker(self, bot):
         self.started.append(bot["_id"])
@@ -39,7 +40,8 @@ class Engine:
 def _bot(bot_id, idle_days, owner=5, **extra):
     from filestore.database.main_db import MainDB
     doc = {"_id": bot_id, "bot_username": f"b{bot_id}_bot", "owner_id": owner, "is_active": True,
-           "last_active": _naive(NOW - timedelta(days=idle_days)), "created_at": _naive(NOW - timedelta(days=30))}
+           "last_active": _naive(NOW - timedelta(days=idle_days)), "created_at": _naive(NOW - timedelta(days=30)),
+           "bot_token_encrypted": "test-encrypted-token"}
     doc.update(extra)
     run(MainDB().bots.insert_one(doc))
 
@@ -63,6 +65,7 @@ def test_sweep_warns_then_deactivates_after_seven_days(monkeypatch):
     _bot(2, 6.5)        # inside the warning window
     _bot(3, 1)          # busy
     eng, app = Engine(), FakeClient()
+    eng.workers[1] = object()
     done = run(cl.sweep(app, eng, now=NOW))
     assert done == {"warned": [2], "deactivated": [1]}
     assert eng.stopped == [1]
@@ -94,7 +97,8 @@ def test_legacy_docs_without_last_active_use_created_at(monkeypatch):
     from filestore.main_bot.plugins import clone_lifecycle as cl
     monkeypatch.setattr(config, "CLONE_INACTIVE_DAYS", 7)
     _bot(1, 0, last_active=None)          # created 30 days ago, never used
-    assert run(cl.sweep(FakeClient(), Engine(), now=NOW))["deactivated"] == [1]
+    eng = Engine(); eng.workers[1] = object()
+    assert run(cl.sweep(FakeClient(), eng, now=NOW))["deactivated"] == [1]
 
 
 def test_reactivating_restarts_the_inactivity_clock(monkeypatch):
@@ -130,7 +134,7 @@ def test_reactivate_button_is_owner_only_and_starts_the_worker(monkeypatch):
     q = FakeQuery("cl_on_1", uid=5)
     run(cl.reactivate_cb(FakeClient(), q))
     assert eng.started == [1] and _doc(1)["is_active"] is True
-    assert "back online" in q.message.edits[-1]
+    assert "Clone marked active; a local client was found" in q.message.edits[-1]
 
 
 def test_keep_running_resets_the_timer(monkeypatch):

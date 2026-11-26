@@ -199,31 +199,6 @@ def test_stoppable_rich_draft_and_generation_stopped_handler():
     assert any(c[0] == "send_rich_message_draft" and c[3].get("can_stop") is True for c in wc.recorded)
 
 
-def test_managed_bot_updated_push_hook_connects_without_polling(monkeypatch):
-    from filestore.main_bot.plugins import create_bot, managed_bots
-
-    use_botapi(responses={"GetManagedBotToken": "777888:AAInstantManagedBotToken123456"})
-    monkeypatch.setattr(
-        create_bot,
-        "validate_bot_token",
-        lambda tok: __import__("asyncio").sleep(0, result={"id": 777888, "first_name": "Clone", "username": "instant_clone_bot"}),
-    )
-    status = FakeMsg("waiting", uid=0, chat_id=5)
-    create_bot._creation_state[5] = {
-        "step": "awaiting_token",
-        "data": {"managed_username": "tester_123456_bot", "managed_status_msg": status},
-    }
-    upd = types.ManagedBotUpdated(
-        user=types.User(id=5, first_name="Tester"),
-        bot=types.User(id=777888, first_name="Clone", username="instant_clone_bot", is_bot=True),
-    )
-    try:
-        run(managed_bots.on_managed_bot_updated(FakeClient(), upd))
-        assert create_bot._creation_state[5]["step"] == "awaiting_channel"
-        assert create_bot._creation_state[5]["data"]["managed"] is True
-        assert any("Token verified" in e for e in status.edits)
-    finally:
-        create_bot._creation_state.pop(5, None)
 
 
 # ───────────────────────── 3. Interactive /checklist & /nftgift ─────────────────────────

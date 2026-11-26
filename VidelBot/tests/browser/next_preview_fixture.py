@@ -1,6 +1,7 @@
 """Isolated synthetic Next preview API. Never connect this fixture to real users or data."""
 import asyncio
 import secrets
+from datetime import date, timedelta
 from aiohttp import web
 
 sessions = {}
@@ -361,7 +362,7 @@ async def notification_collection(request):
         {'notification_id':'notice_1','title':ws['name']+' alert','message':'Synthetic alert','category':'bots','severity':'info','read':False,'created_at':'2026-01-01'},
         {'notification_id':'notice_2','title':'Second alert','message':'Synthetic message','category':'storage','severity':'warning','read':False,'created_at':'2026-01-02'},
     ])
-    if request.method == 'GET': return web.json_response({'notifications':rows, 'activity_logs':[], 'activity_logs_availability':'unavailable'})
+    if request.method == 'GET': return web.json_response({'notifications':rows, 'activity_logs':[], 'activity_logs_availability':'unavailable','conditional_read_updates':True})
     data = await request.json()
     if data.get('mark_all_read') is True:
         for row in rows: row['read'] = True
@@ -370,6 +371,23 @@ async def notification_collection(request):
     if not row or not isinstance(data.get('read'), bool): return web.json_response({'updated':False})
     row['read'] = data['read']
     return web.json_response({'updated':True})
+
+
+async def notification_read(request):
+    context, failure = authorized(request, write=True)
+    if failure is not None: return failure
+    token, ws = context
+    if not roles[token]: return error('Forbidden', 403)
+    rows = notifications[token].setdefault(ws['workspace_id'], [])
+    data = await request.json()
+    if data.get('action') == 'mark_all_read':
+        for row in rows: row['read'] = True
+        return web.json_response({'updated':True,'conditional_read_updates':True})
+    matches = [row for row in rows if row['notification_id'] == data.get('notification_id')]
+    if data.get('action') != 'set_read' or len(matches) != 1 or type(data.get('expected_read')) is not bool or type(data.get('read')) is not bool or matches[0].get('read') is not data['expected_read']:
+        return error('Notification state changed; refresh the inbox.',409)
+    matches[0]['read'] = data['read']
+    return web.json_response({'updated':True,'conditional_read_updates':True})
 
 
 
@@ -413,15 +431,28 @@ async def analytics(request):
     if not analytics_access[token]: return error('Forbidden', 403)
     days=int(request.query.get('days','30'))
     bot=request.query.get('bot_id','all')
+    start, end = request.query.get('start_date'), request.query.get('end_date')
+    labels = ['2026-10-01', '2026-10-02']
+    if start and end:
+        try:
+            first, last = date.fromisoformat(start), date.fromisoformat(end)
+            length = (last-first).days+1
+            if not 1 <= length <= 365: return error('Invalid range', 400)
+            labels = [(first+timedelta(days=i)).isoformat() for i in range(length)]
+        except ValueError: return error('Invalid range', 400)
+    uploads = [2]+[0]*(len(labels)-1)
+    amounts = [1024]+[0]*(len(labels)-1)
     if request.path.endswith('.csv'):
-        return web.Response(text='date,uploads,downloads,storage_bytes_added\n2026-10-01,2,,1024\n',content_type='text/csv')
-    return web.json_response({'range_days':days,'bot_id':bot,'totals':{'stored_files':(42 if ws['workspace_id']=='slow' else 84) if bot=='all' else 5,'storage_bytes':2048,'period_uploads':2},'comparison_previous_period':{'files_delta':1},'series':{'days':['2026-10-01','2026-10-02'],'uploads':[2,0],'storage_bytes_added':[1024,0]},'file_sample_truncated':days==90})
+        text = 'date,uploads,downloads,storage_bytes_added\n'+''.join(f'{d},{u},,{n}\n' for d,u,n in zip(labels,uploads,amounts))
+        return web.Response(text=text,content_type='text/csv',headers={'X-Videl-Analytics-Contract':'utc-range-v1'})
+    return web.json_response({'range_days':len(labels) if start and end else days,'bot_id':bot,'totals':{'stored_files':(42 if ws['workspace_id']=='slow' else 84) if bot=='all' else 5,'storage_bytes':2048,'period_uploads':2},'comparison_previous_period':{'files_delta':1},'series':{'days':labels,'uploads':uploads,'storage_bytes_added':amounts},'file_sample_truncated':days==90,'complete_utc_buckets':True})
 
 app.router.add_get('/api/v1/workspaces/{ws}/analytics', analytics)
 app.router.add_get('/api/v1/workspaces/{ws}/analytics.csv', analytics)
 app.router.add_get('/api/v1/workspaces/{ws}/fleet', fleet)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/templates', template_collection)
 app.router.add_route('*', '/api/v1/workspaces/{ws}/notifications', notification_collection)
+app.router.add_post('/api/v1/workspaces/{ws}/notifications/read', notification_read)
 app.router.add_get('/app', old_app)
 if __name__ == '__main__':
     web.run_app(app, host='127.0.0.1', port=8084, access_log=None)

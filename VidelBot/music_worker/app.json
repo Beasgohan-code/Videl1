@@ -1,0 +1,25 @@
+{
+  "name": "videl-music-worker",
+  "description": "Dedicated Videl clone worker for the Music profile.",
+  "keywords": [
+    "python3",
+    "telegram",
+    "music-clones",
+    "wzgram",
+    "pytgcalls",
+    "mongodb"
+  ],
+  "env": {
+    "API_ID": { "description": "Same Telegram API ID configured for Videl", "required": true },
+    "API_HASH": { "description": "Same Telegram API hash configured for Videl", "required": true },
+    "MONGO_URI": { "description": "Same MongoDB URI/database used by Videl", "required": true },
+    "ENCRYPTION_KEY": { "description": "Same Fernet key used by Videl to encrypt clone credentials", "required": true },
+    "CLONE_PROFILES_SINGLE_INSTANCE": { "description": "Single-instance clone profile setting", "value": "True", "required": true },
+    "MUSIC_CLONE_WORKER": { "description": "Single Music worker acknowledgement", "value": "1", "required": true },
+    "MUSIC_WORKER_SYNC_SECONDS": { "description": "Desired-state reconciliation interval", "value": "10", "required": false }
+  },
+  "formation": {
+    "worker": { "quantity": 1, "size": "standard-1x" }
+  },
+  "stack": "container"
+}

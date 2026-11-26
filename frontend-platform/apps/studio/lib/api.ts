@@ -4,7 +4,7 @@ export type Bot = {bot_id:string; display_name?:string; username?:string; telegr
 export type Identity = {user:{display_name:string; is_platform_admin:boolean; csrf_token?:string; user_id?:number}; workspaces:Workspace[]; catalogs:{workspace_roles:string[]; permission_scopes:string[]}};
 export type WorkspaceDetail = {workspace:{name:string}; my_role:string; my_permissions:Record<string,boolean>};
 export class ApiError extends Error { constructor(message:string,public status:number){super(message)} }
-export async function request(path:string, session:Session | null, options:{method?:string; body?:unknown; signal?:AbortSignal}={}):Promise<unknown> {
+export async function request(path:string, session:Session | null, options:{method?:string; body?:unknown; signal?:AbortSignal; requiredResponseHeader?:{name:string;value:string}}={}):Promise<unknown> {
   if (!path.startsWith('/api/v1/') || path.includes('\\')) throw new TypeError('Only same-origin API paths are supported.');
   const url = new URL(path,window.location.origin);
   if(url.origin!==window.location.origin || !url.pathname.startsWith('/api/v1/')) throw new TypeError('Only same-origin API paths are supported.');
@@ -16,6 +16,7 @@ export async function request(path:string, session:Session | null, options:{meth
   const response=await fetch(path,{method,headers,body:options.body===undefined?undefined:form?options.body as FormData:JSON.stringify(options.body),signal:options.signal,cache:'no-store'});
   const payload:unknown=(response.headers.get('Content-Type')||'').includes('application/json') ? await response.json() : await response.text();
   if(!response.ok){const message=typeof payload==='object'&&payload!==null&&'error' in payload&&typeof payload.error==='string'?payload.error:`HTTP ${response.status}`;throw new ApiError(message,response.status)}
+  if(options.requiredResponseHeader && response.headers.get(options.requiredResponseHeader.name)!==options.requiredResponseHeader.value) throw new Error('The server could not confirm the requested export format. Update all backend workers and try again.');
   return payload;
 }
 const object = (value:unknown): value is Record<string,unknown> => typeof value==='object' && value!==null && !Array.isArray(value);
@@ -69,10 +70,12 @@ export function commandList(value:unknown):CommandRecord[] {
 }
 
 export type FileRecord = {file_uid:string;filename:string;size_bytes:number;category:string;deleted:boolean};
-export type FileResults = {items:FileRecord[];total:number;total_bytes:number;page:number;pages:number;sample_limit:number;sample_truncated:boolean};
+export type FileResults = {items:FileRecord[];total:number;total_bytes:number;page:number;pages:number;sample_limit:number|null;sample_truncated:boolean|null};
 export function fileResults(value:unknown):FileResults {
-  if(!object(value)||!Array.isArray(value.items)||typeof value.total!=='number'||typeof value.total_bytes!=='number'||typeof value.page!=='number'||typeof value.pages!=='number'||typeof value.sample_limit!=='number'||typeof value.sample_truncated!=='boolean')throw new Error('The server returned an invalid file list.');
-  return {total:value.total,total_bytes:value.total_bytes,page:value.page,pages:value.pages,sample_limit:value.sample_limit,sample_truncated:value.sample_truncated,items:value.items.map(f=>{if(!object(f)||typeof f.file_uid!=='string'||typeof f.filename!=='string')throw new Error('The server returned an invalid file record.');return {file_uid:f.file_uid,filename:f.filename,size_bytes:typeof f.size_bytes==='number'?f.size_bytes:0,category:typeof f.category==='string'?f.category:'other',deleted:f.deleted===true}})};
+  if(!object(value)||!Array.isArray(value.items)||typeof value.total!=='number'||typeof value.total_bytes!=='number'||typeof value.page!=='number'||typeof value.pages!=='number'||!Number.isSafeInteger(value.page)||!Number.isSafeInteger(value.pages)||value.page<1||value.pages<1||value.page>value.pages)throw new Error('The server returned an invalid file list.');
+  // Older/mixed backends omitted sampling metadata. Do not infer completeness.
+  const hasSample=Number.isSafeInteger(value.sample_limit)&&Number(value.sample_limit)>0&&typeof value.sample_truncated==='boolean';
+  return {total:value.total,total_bytes:value.total_bytes,page:value.page,pages:value.pages,sample_limit:hasSample?value.sample_limit as number:null,sample_truncated:hasSample?value.sample_truncated as boolean:null,items:value.items.map(f=>{if(!object(f)||typeof f.file_uid!=='string'||typeof f.filename!=='string')throw new Error('The server returned an invalid file record.');return {file_uid:f.file_uid,filename:f.filename,size_bytes:typeof f.size_bytes==='number'?f.size_bytes:0,category:typeof f.category==='string'?f.category:'other',deleted:f.deleted===true}})};
 }
 
 export type TemplateRecord = {id:string;name:string;category:string;description:string;version:string;payload:Record<string,unknown>|null;origin:'official'|'workspace'|'shared'};
@@ -84,13 +87,14 @@ export function templateList(value:unknown,workspace:string):TemplateRecord[] {
   };
   return [...value.official.map(v=>parse(v,true)),...value.workspace_templates.map(v=>parse(v,false))];
 }
-export type NotificationRecord = {id:string;title:string;message:string;category:string;severity:string;created_at:string;read:boolean};
-export function notificationList(value:unknown):NotificationRecord[] {
+export type NotificationRecord = {id:string;title:string;message:string;category:string;severity:string;created_at:string;read:boolean|null};
+export function notificationList(value:unknown):{items:NotificationRecord[];conditional:boolean} {
   if(!object(value)||!Array.isArray(value.notifications))throw new Error('The server returned an invalid notification list.');
-  return value.notifications.map(n=>{
+  const items=value.notifications.map(n=>{
     if(!object(n)||typeof n.notification_id!=='string'||!n.notification_id)throw new Error('The server returned an invalid notification record.');
-    return {id:n.notification_id,title:typeof n.title==='string'?n.title:'Notification',message:typeof n.message==='string'?n.message:'',category:typeof n.category==='string'?n.category:'other',severity:typeof n.severity==='string'?n.severity:'other',created_at:typeof n.created_at==='string'?n.created_at:'',read:n.read===true};
+    return {id:n.notification_id,title:typeof n.title==='string'?n.title:'Notification',message:typeof n.message==='string'?n.message:'',category:typeof n.category==='string'?n.category:'other',severity:typeof n.severity==='string'?n.severity:'other',created_at:typeof n.created_at==='string'?n.created_at:'',read:typeof n.read==='boolean'?n.read:null};
   });
+  return {items,conditional:value.conditional_read_updates===true};
 }
 export type FleetSummary={total:number|null;running:number|null;bots:Bot[]};
 export function fleetSummary(value:unknown):FleetSummary {
@@ -109,13 +113,13 @@ export function teamData(value:unknown):TeamData {
   return {members,role_defaults,reviewed_membership_guards:value.reviewed_membership_guards===true};
 }
 
-export type AnalyticsData={storedFiles:number;storageBytes:number;periodUploads:number;filesDelta:number;sampled:boolean;days:string[];uploads:number[];bytesAdded:number[]};
+export type AnalyticsData={storedFiles:number;storageBytes:number;periodUploads:number;filesDelta:number;sampled:boolean;completeBuckets:boolean;days:string[];uploads:number[];bytesAdded:number[]};
 export function analyticsData(value:unknown):AnalyticsData {
  if(!object(value)||!object(value.totals)||!object(value.comparison_previous_period)||!object(value.series)||typeof value.file_sample_truncated!=='boolean')throw new Error('The server returned invalid analytics.');
  const totals=value.totals,series=value.series,comparison=value.comparison_previous_period;
  const nat=(n:unknown):n is number=>typeof n==='number'&&Number.isSafeInteger(n)&&n>=0;
  if(!nat(totals.stored_files)||!nat(totals.storage_bytes)||!nat(totals.period_uploads)||typeof comparison.files_delta!=='number'||!Number.isSafeInteger(comparison.files_delta)||!Array.isArray(series.days)||!Array.isArray(series.uploads)||!Array.isArray(series.storage_bytes_added)||series.days.length!==series.uploads.length||series.days.length!==series.storage_bytes_added.length||series.days.length>365||!series.days.every((d:unknown)=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d))||!series.uploads.every(nat)||!series.storage_bytes_added.every(nat))throw new Error('The server returned invalid analytics values.');
- return {storedFiles:totals.stored_files,storageBytes:totals.storage_bytes,periodUploads:totals.period_uploads,filesDelta:comparison.files_delta,sampled:value.file_sample_truncated,days:series.days,uploads:series.uploads,bytesAdded:series.storage_bytes_added};
+ return {storedFiles:totals.stored_files,storageBytes:totals.storage_bytes,periodUploads:totals.period_uploads,filesDelta:comparison.files_delta,sampled:value.file_sample_truncated,completeBuckets:value.complete_utc_buckets===true,days:series.days,uploads:series.uploads,bytesAdded:series.storage_bytes_added};
 }
 
 export type PersonalSettings = {theme:'dark'|'light'|'system';fileView:'list'|'grid';compactTables:boolean;atomicFieldUpdates:boolean};

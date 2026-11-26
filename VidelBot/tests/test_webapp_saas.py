@@ -1204,3 +1204,153 @@ def test_personal_settings_api_capability_and_account_isolation():
             assert (await other.json())['settings']['appearance']['theme'] == 'dark'
             assert (await cli.post('/api/v1/settings', headers=first, json={'appearance': {'theme': 'unknown'}})).status == 400
     run(go())
+
+
+def test_filestore_list_sample_contract_and_workspace_access(monkeypatch):
+    """Endpoint contract uses a bounded pre-search sample, not global totals."""
+    from webapp import services_clone_files as fs
+    monkeypatch.setattr(fs, 'FILESTORE_QUERY_LIMIT', 2)
+
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 18881, 'File owner')
+            outsider, other = await _login_link(cli, 18882, 'Other user')
+            coll = db_models.files_col()
+            for num, name, category in [(1, 'a.txt', 'document'), (2, 'b.txt', 'document')]:
+                await coll.insert_one({'file_uid': f'sample_{num}', 'workspace_id': ws, 'owner_id': 18881,
+                    'filename': name, 'category': category, 'deleted': False, 'size_bytes': num,
+                    'uploaded_ts': num, 'tags': []})
+            path = f'/api/v1/workspaces/{ws}/filestore'
+            response = await cli.get(path, headers=owner)
+            assert response.status == 200
+            exact = await response.json()
+            assert (exact['sample_limit'], exact['sample_truncated'], exact['total'], exact['total_bytes']) == (2, False, 2, 3)
+            assert {row['filename'] for row in exact['items']} == {'a.txt', 'b.txt'}
+            assert all('_id' not in row for row in exact['items'])
+            await coll.insert_one({'file_uid': 'sample_3', 'workspace_id': ws, 'owner_id': 18881,
+                'filename': 'needle.png', 'category': 'image', 'deleted': False, 'size_bytes': 3,
+                'uploaded_ts': 3, 'tags': ['needle']})
+            data = await (await cli.get(path, headers=owner)).json()
+            assert (data['sample_limit'], data['sample_truncated'], data['total'], data['total_bytes']) == (2, True, 2, 3)
+            # Search and tags apply after sampling; an excluded record is not found.
+            for query in ('search=needle', 'tag=needle'):
+                data = await (await cli.get(f'{path}?{query}', headers=owner)).json()
+                assert data['sample_truncated'] is True and data['total'] == 0
+            # Category is in the DB query and is applied before sampling.
+            data = await (await cli.get(f'{path}?category=image', headers=owner)).json()
+            assert data['sample_truncated'] is False and [x['filename'] for x in data['items']] == ['needle.png']
+            assert (await cli.get(path, headers=outsider)).status == 403
+            assert (await (await cli.get(f'/api/v1/workspaces/{other}/filestore', headers=outsider)).json())['total'] == 0
+    run(go())
+
+
+def test_analytics_custom_range_validation_applies_to_json_and_csv():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            hdr, ws = await _login_link(cli, 18883, 'Analytics owner')
+            for suffix in ('analytics', 'analytics.csv'):
+                path=f'/api/v1/workspaces/{ws}/{suffix}'
+                for query in ('start_date=bad&end_date=2026-01-01', 'start_date=2026-01-01',
+                              'start_date=2026-01-02&end_date=2026-01-01'):
+                    response=await cli.get(f'{path}?{query}', headers=hdr)
+                    assert response.status == 400
+                    assert 'valid start and end dates' in (await response.json())['error']
+                response = await cli.get(f'{path}?start_date=2026-01-01&end_date=2026-01-02', headers=hdr)
+                assert response.status == 200
+                if suffix.endswith('.csv'):
+                    assert response.headers['X-Videl-Analytics-Contract'] == 'utc-range-v1'
+                    assert '2026-01-01' in await response.text() and '2026-01-02' in await response.text()
+    run(go())
+
+
+def test_conditional_notification_read_is_scoped_reviewed_and_validated():
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner, ws = await _login_link(cli, 18891, 'Inbox owner')
+            other, other_ws = await _login_link(cli, 18892, 'Other owner')
+            coll = db_models.notifications_col()
+            doc={'notification_id':'shared-id','workspace_id':ws,'read':False,'title':'A','created_ts':1}
+            foreign={'notification_id':'shared-id','workspace_id':other_ws,'read':False,'title':'B','created_ts':1}
+            await coll.insert_one(dict(doc));await coll.insert_one(dict(foreign))
+            path=f'/api/v1/workspaces/{ws}/notifications/read'
+            listed=await cli.get(f'/api/v1/workspaces/{ws}/notifications',headers=owner)
+            assert (await listed.json())['conditional_read_updates'] is True
+            valid={'action':'set_read','notification_id':'shared-id','expected_read':False,'read':True}
+            assert (await cli.post(path,headers=other,json=valid)).status == 403
+            await db_models.memberships_col().insert_one({'workspace_id':ws,'user_id':18892,'role':'viewer',
+                'permissions':dict(db_models.DEFAULT_ROLE_PERMISSIONS['viewer'])})
+            assert (await cli.post(path,headers=other,json=valid)).status == 403
+            for invalid in ({}, {'action':'mark_all_read','extra':True},
+                            {**valid,'read':'false'}, {**valid,'expected_read':0},
+                            {**valid,'expected_read':True}, {**valid,'notification_id':''},
+                            {**valid,'extra':'x'}):
+                assert (await cli.post(path,headers=owner,json=invalid)).status == 400
+            wrong={**valid,'expected_read':True,'read':False}
+            assert (await cli.post(path,headers=owner,json=wrong)).status == 409
+            response=await cli.post(path,headers=owner,json=valid)
+            assert response.status==200 and (await response.json())=={'updated':True,'conditional_read_updates':True}
+            assert (await coll.find_one({'workspace_id':ws,'notification_id':'shared-id'}))['read'] is True
+            assert (await coll.find_one({'workspace_id':other_ws,'notification_id':'shared-id'}))['read'] is False
+            assert (await cli.post(path,headers=owner,json=valid)).status == 409
+            assert (await cli.post(path,headers=owner,json={**valid,'notification_id':'missing'})).status == 409
+            await coll.insert_one({'workspace_id':ws,'notification_id':'unknown','created_ts':2})
+            assert (await cli.post(path,headers=owner,json={**valid,'notification_id':'unknown'})).status == 409
+            await coll.insert_one(dict(doc))
+            assert (await cli.post(path,headers=owner,json=wrong)).status == 409
+            assert await coll.count_documents({'workspace_id':ws,'read':False})==1
+            assert (await cli.post(path,headers=owner,json={'action':'mark_all_read'})).status==200
+            assert await coll.count_documents({'workspace_id':ws,'read':False})==0
+            assert (await coll.find_one({'workspace_id':other_ws,'notification_id':'shared-id'}))['read'] is False
+    run(go())
+
+
+def test_conditional_notification_write_outcomes_are_not_falsely_confirmed(monkeypatch):
+    from types import SimpleNamespace
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner,ws=await _login_link(cli,18893,'Owner')
+            coll=db_models.notifications_col()
+            await coll.insert_one({'workspace_id':ws,'notification_id':'n','read':False,'created_ts':1})
+            monkeypatch.setattr(db_models,'notifications_col',lambda:coll)
+            path=f'/api/v1/workspaces/{ws}/notifications/read'
+            body={'action':'set_read','notification_id':'n','expected_read':False,'read':True}
+            async def unmatched(*args,**kwargs):return SimpleNamespace(acknowledged=True,matched_count=0)
+            monkeypatch.setattr(coll,'update_one',unmatched)
+            assert (await cli.post(path,headers=owner,json=body)).status==409
+            async def uncertain(*args,**kwargs):return SimpleNamespace(acknowledged=False)
+            monkeypatch.setattr(coll,'update_one',uncertain)
+            assert (await cli.post(path,headers=owner,json=body)).status==500
+            monkeypatch.setattr(coll,'update_many',uncertain)
+            assert (await cli.post(path,headers=owner,json={'action':'mark_all_read'})).status==500
+            assert (await coll.find_one({'workspace_id':ws,'notification_id':'n'}))['read'] is False
+    run(go())
+
+
+def test_conditional_notification_route_supports_standalone_memory(monkeypatch):
+    from webapp import api_routes
+    assert hasattr(api_routes,'api_notification_conditional_read')
+    async def go():
+        coll=db_models._MemCollection()
+        await coll.insert_one({'workspace_id':'w','notification_id':'n','read':False})
+        update=await coll.update_one({'workspace_id':'w','notification_id':'n','read':False},{'$set':{'read':True}})
+        assert update.acknowledged and update.matched_count==1
+        bulk=await coll.update_many({'workspace_id':'w'},{'$set':{'read':True}})
+        assert bulk.acknowledged and bulk.matched_count==1
+    run(go())
+
+
+def test_conditional_notification_detects_change_between_read_and_write(monkeypatch):
+    async def go():
+        async with TestClient(TestServer(keep_alive.make_app())) as cli:
+            owner,ws=await _login_link(cli,18894,'Owner')
+            coll=db_models.notifications_col()
+            await coll.insert_one({'workspace_id':ws,'notification_id':'n','read':False,'created_ts':1})
+            original=coll.update_one
+            async def racing(query,update,**kwargs):
+                await original({'workspace_id':ws,'notification_id':'n'},{'$set':{'read':True}})
+                return await original(query,update,**kwargs)
+            monkeypatch.setattr(coll,'update_one',racing);monkeypatch.setattr(db_models,'notifications_col',lambda:coll)
+            response=await cli.post(f'/api/v1/workspaces/{ws}/notifications/read',headers=owner,
+                json={'action':'set_read','notification_id':'n','expected_read':False,'read':True})
+            assert response.status==409 and (await coll.find_one({'workspace_id':ws,'notification_id':'n'}))['read'] is True
+    run(go())

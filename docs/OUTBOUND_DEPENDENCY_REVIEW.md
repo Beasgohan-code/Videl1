@@ -19,3 +19,58 @@ This is a source-level inventory of selected paths, **not** a comprehensive depe
 The previous fetch followed redirects before validating the final URL, and DNS pre-checks were separate from actual connections. The new helper rejects private/reserved literals and ambiguous numeric forms, URL userinfo, and unsafe schemes; checks **each** redirect before following; uses a DNS resolver that rejects mixed/private answers and supplies the validated IPs to aiohttp; disables environment proxies and DNS caching; keeps the existing Range and byte cap; and hides exception text that can contain signed URLs. The public-only policy is independent of `LEECH_ALLOW_PRIVATE` for this command. URLs with signed query strings remain supported; fragments are not sent. `ffprobe` is restricted to `file,pipe` protocols, which can disable network-dependent playlists.
 
 **Limits:** This protects the application HTTP header fetch and blocks ffprobe's network protocols; it is not a general sandbox. ffprobe still parses untrusted data and may access local file references. Media parsing needs separate filesystem/process sandboxing, resource limits, egress controls and independent adversarial testing. Other download, plugin, preview, shortener, cloud-provider and webapp paths remain out of scope. The tests use fake DNS and a deliberately local HTTP fixture; they do not validate live Internet infrastructure, every DNS implementation or production network policy.
+
+## Frontend lockfile advisory scan (partial)
+
+`npm audit --json` against the checked-in `frontend-platform` lockfile and the
+registry advisory data returned **3 affected package entries**: 1 critical,
+1 high and 1 low. `npm ls` resolved Astro 6.4.8, Astro's sharp 0.34.5 and
+esbuild 0.27.7. This is an advisory match, not evidence that any particular
+application or deployed service is exploitable. The legacy production front
+door is separate; deployment versions and actual exposure were not verified.
+
+- Astro matches multiple advisories, including [AVIF image optimization RCE](https://github.com/advisories/GHSA-26w7-cxv4-gfx2), [spread-attribute XSS](https://github.com/advisories/GHSA-f48w-9m4c-m7f5), and [dynamic-tag XSS](https://github.com/advisories/GHSA-mh32-jxcr-mh9f).
+- The Astro sharp dependency matches [libvips](https://github.com/advisories/GHSA-f88m-g3jw-g9cj), [libheif](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c), and [librsvg](https://github.com/advisories/GHSA-wq5f-xc86-pv6w) advisories.
+- esbuild matches a [Windows development-server arbitrary file read advisory](https://github.com/advisories/GHSA-g7r4-m6w7-qqqr).
+
+Treat a public Astro preview or cutover as blocked pending applicability review,
+a patched compatible dependency set, regression/build testing and a fresh
+scan. The audit's suggested major-version change is not proof that every listed
+advisory is fixed; do not use `npm audit fix --force` as an unreviewed fix. The
+scan does not cover Python, containers, all runtime routes or license risks.
+
+### Follow-up: tested Astro dependency update
+
+The preview lockfile now uses Astro **7.4.12**, `@astrojs/react` **7.1.9** and
+Vite **8.3.8**; the resolved sharp is **0.35.5**, and the compatible optional
+esbuild peer is **0.28.2**. A fresh `npm ci` and `npm audit --json` on that
+lockfile returned **zero known vulnerabilities** from the registry advisory
+data at the time of the scan, including no matches for the entries above. This
+is not a security certification or an independent vulnerability assessment.
+The audit is not a review of Python, native media libraries, runtime network
+exposure, deployment configuration or all licenses. Astro, `@astrojs/react`,
+Vite and esbuild report MIT licensing in registry metadata; the complete
+transitive license and provenance inventory remains open.
+
+Astro 7 requires Node **22.23.4 or newer**; the frontend workspace engine and
+`.nvmrc` now reflect that. Both frontend typechecks/builds and built-static-site
+Chromium checks passed locally. The Next Studio suite runs with a synthetic API,
+not a live service. The dedicated frontend CI job installs locked dependencies,
+runs an advisory gate for high/critical matches, builds both workspaces and
+tests the built public site; CI still depends on registry and browser downloads.
+Review major-version changes and real deployment routing before approving any
+cutover. This change does not upgrade, deploy or attest the legacy production
+front door or its dependencies.
+
+## MTProto client choice: WzGram vs cbgram (reviewed)
+
+Compared `abhiadi23/wzgram` / upstream WzGram with `abhiadi23/cbgram`.
+Both are the same WzGram (LGPL) lineage with a Rust crypto core.
+Decision: keep upstream **WzGram** (bumped 3.1.6 → 3.1.7, full test
+suite passing). Rationale: WzGram is published on PyPI with versioned
+releases and is already integrated and covered by this repo's tests;
+cbgram is a single-maintainer fork distributed only from git, whose
+mandatory `cbcrypto` core also installs from a git repository — faster
+file-transfer claims are unverified, and git-only dependencies are a
+supply-chain and reproducibility risk for this project. Revisit if
+cbgram ships versioned PyPI releases with published benchmarks.

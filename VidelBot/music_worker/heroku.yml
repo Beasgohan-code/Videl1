@@ -1,0 +1,5 @@
+# Configure the Heroku app root as the repository root so this Dockerfile can
+# copy VidelBot's shared clone registry/runtime modules into the worker image.
+build:
+  docker:
+    worker: VidelBot/music_worker/Dockerfile
